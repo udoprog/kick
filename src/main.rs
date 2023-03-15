@@ -23,7 +23,8 @@ use model::Module;
 use actions::Actions;
 use tracing::metadata::LevelFilter;
 
-const PROJECTS_TOML: &str = "Projects.toml";
+/// Name of project configuration files.
+const KICK_TOML: &str = "Kick.toml";
 
 #[derive(Subcommand)]
 enum Action {
@@ -82,7 +83,7 @@ async fn entry() -> Result<()> {
     let templating = templates::Templating::new()?;
 
     let config = {
-        let config_path = root.join(PROJECTS_TOML);
+        let config_path = root.join(KICK_TOML);
         config::load(&config_path, &templating)
             .with_context(|| config_path.to_string_lossy().into_owned())?
     };
@@ -144,7 +145,7 @@ fn find_root() -> Result<PathBuf> {
     let mut current = std::env::current_dir()?;
 
     loop {
-        if current.join(PROJECTS_TOML).is_file() {
+        if current.join(KICK_TOML).is_file() {
             return Ok(current);
         }
 

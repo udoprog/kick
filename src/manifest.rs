@@ -290,11 +290,16 @@ impl Manifest {
 }
 
 /// Open a `Cargo.toml`.
-pub(crate) fn open<P>(path: P) -> Result<Manifest>
+pub(crate) fn open<P>(path: P) -> Result<Option<Manifest>>
 where
     P: AsRef<Path>,
 {
-    let input = std::fs::read_to_string(path)?;
+    let input = match std::fs::read_to_string(path) {
+        Ok(input) => input,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+
     let doc = input.parse()?;
-    Ok(Manifest { doc })
+    Ok(Some(Manifest { doc }))
 }

@@ -70,7 +70,7 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
             continue;
         }
 
-        let (Some(path), Some((owner, repo))) = (module.path, module.repo().and_then(|repo| repo.split_once('/'))) else {
+        let (Some(path), Some(repo)) = (module.path, module.repo()) else {
             continue;
         };
 
@@ -79,17 +79,16 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
             git::rev_parse(&current_dir, "HEAD").with_context(|| anyhow!("{}", module.name))?;
         let sha = sha.trim();
 
-        let url =
-            format!("https://api.github.com/repos/{owner}/{repo}/actions/workflows/ci.yml/runs");
+        let url = format!(
+            "https://api.github.com/repos/{owner}/{name}/actions/workflows/ci.yml/runs",
+            owner = repo.owner,
+            name = repo.name
+        );
 
         let req = build_request(cx, &client, url)
             .query(&[("exclude_pull_requests", "true"), ("per_page", &limit)]);
 
-        if let Some(url) = &module.url {
-            println!("{}: {url}", module.name);
-        } else {
-            println!("{}: *no url*", module.name);
-        }
+        println!("{}: {}", module.name, module.url);
 
         let res = req.send().await?;
 

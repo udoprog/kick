@@ -64,13 +64,18 @@ pub(crate) struct Opts {
     command: Vec<String>,
 }
 
+#[tracing::instrument(skip_all)]
 pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     for module in &cx.modules {
         if crate::should_skip(&opts.modules, module) {
             continue;
         }
 
-        let mut workspace = workspace::open(cx, module)?;
+        let Some(mut workspace) = workspace::open(cx, module)? else {
+            tracing::warn!(source = ?module.source, module = module.name, "missing workspace for module");
+            continue;
+        };
+
         let span = tracing::info_span!("build", path = ?workspace.path());
         let _enter = span.enter();
         build(cx, &mut workspace, opts).with_context(|| workspace.path().to_owned())?;

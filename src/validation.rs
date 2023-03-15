@@ -109,13 +109,17 @@ pub(crate) enum Validation {
 }
 
 /// Run a single module.
+#[tracing::instrument(skip_all)]
 pub(crate) fn build(
     cx: &Ctxt<'_>,
     module: &Module<'_>,
     validation: &mut Vec<Validation>,
     urls: &mut Urls,
 ) -> Result<()> {
-    let workspace = workspace::open(cx, module)?;
+    let Some(workspace) = workspace::open(cx, module)? else {
+        tracing::warn!(source = ?module.source, module = module.name, "missing workspace for module");
+        return Ok(());
+    };
 
     let primary_crate = match workspace.primary_crate()? {
         Some(primary_crate) => primary_crate,
@@ -136,13 +140,13 @@ pub(crate) fn build(
         None => None,
     };
 
-    let module_url = module.url.as_ref().map(|url| url.to_string());
+    let module_url = module.url.to_string();
 
     let update_params = UpdateParams {
         license: Some(cx.config.license()),
         readme: Some(readme::README_MD),
-        repository: module_url.as_deref(),
-        homepage: module_url.as_deref(),
+        repository: Some(&module_url),
+        homepage: Some(&module_url),
         documentation: documentation.as_deref(),
         authors: &cx.config.authors,
     };

@@ -11,7 +11,7 @@ use relative_path::{RelativePath, RelativePathBuf};
 pub(crate) const CARGO_TOML: &str = "Cargo.toml";
 
 /// Load a workspace starting at the given path.
-pub(crate) fn open(cx: &Ctxt<'_>, module: &Module<'_>) -> Result<Workspace> {
+pub(crate) fn open(cx: &Ctxt<'_>, module: &Module<'_>) -> Result<Option<Workspace>> {
     let path = module.path.ok_or_else(|| anyhow!("missing module path"))?;
 
     let manifest_path = match cx.config.cargo_toml(module.name) {
@@ -22,9 +22,11 @@ pub(crate) fn open(cx: &Ctxt<'_>, module: &Module<'_>) -> Result<Workspace> {
     let primary_crate = cx
         .config
         .crate_for(module.name)
-        .or(module.repo().and_then(|repo| repo.split('/').next_back()));
+        .or(module.repo().map(|repo| repo.name));
 
-    let manifest = manifest::open(manifest_path.to_path(cx.root))?;
+    let Some(manifest) = manifest::open(manifest_path.to_path(cx.root))? else {
+        return Ok(None);
+    };
 
     let manifest_dir = manifest_path
         .parent()
@@ -48,7 +50,8 @@ pub(crate) fn open(cx: &Ctxt<'_>, module: &Module<'_>) -> Result<Workspace> {
                 let manifest_path = manifest_dir.join(CARGO_TOML);
 
                 let manifest = manifest::open(manifest_path.to_path(cx.root))
-                    .with_context(|| anyhow!("{manifest_path}"))?;
+                    .with_context(|| anyhow!("{manifest_path}"))?
+                    .with_context(|| anyhow!("{manifest_path}: missing file"))?;
 
                 queue.push_back(Package {
                     manifest_dir,
@@ -63,11 +66,11 @@ pub(crate) fn open(cx: &Ctxt<'_>, module: &Module<'_>) -> Result<Workspace> {
         }
     }
 
-    Ok(Workspace {
+    Ok(Some(Workspace {
         path: path.into(),
         primary_crate: primary_crate.map(Box::from),
         packages,
-    })
+    }))
 }
 
 fn expand_members<'a>(
