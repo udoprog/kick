@@ -4,11 +4,14 @@ version = "0.0.0"
 authors = ["John-John Tedro <udoprog@tedro.se>"]
 edition = "2021"
 rust-version = "1.65"
+description = "Give your projects a good 🦶!"
 documentation = "https://docs.rs/kick"
 readme = "README.md"
 homepage = "https://github.com/udoprog/kick"
 repository = "https://github.com/udoprog/kick"
 license = "MIT/Apache-2.0"
+keywords = ["project"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0.69"
