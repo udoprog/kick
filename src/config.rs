@@ -47,17 +47,23 @@ pub(crate) struct Repo {
     pub(crate) cargo_toml: Option<RelativePathBuf>,
     /// Disabled modules.
     pub(crate) disabled: BTreeSet<String>,
-    /// Explicit allowlist for badges to enabled.
+    /// Explicit allowlist for badges to enabled which are already disabled.
+    pub(crate) enabled_badges: HashSet<String>,
+    /// Explicit blocklist for badges to enabled.
     pub(crate) disabled_badges: HashSet<String>,
 }
 
 impl Repo {
     /// Test if this repo wants the specified badge.
     pub(crate) fn wants_badge(&self, b: &ConfigBadge) -> bool {
-        if let Some(id) = &b.id {
+        let Some(id) = &b.id else {
+            return b.enabled;
+        };
+
+        if b.enabled {
             !self.disabled_badges.contains(id)
         } else {
-            true
+            self.enabled_badges.contains(id)
         }
     }
 }
@@ -121,14 +127,13 @@ impl Config {
     /// Iterator over badges for the given repo.
     pub(crate) fn badges(&self, path: &RelativePath) -> impl Iterator<Item = &'_ ConfigBadge> {
         let repo = self.repos.get(path);
-
         let repos = repo.into_iter().flat_map(|repo| repo.badges.iter());
 
         self.badges
             .iter()
             .filter(move |b| match repo {
                 Some(repo) => repo.wants_badge(b),
-                None => true,
+                None => b.enabled,
             })
             .chain(repos)
     }
@@ -160,6 +165,7 @@ impl Config {
 
 pub(crate) struct ConfigBadge {
     id: Option<String>,
+    enabled: bool,
     markdown: Option<Template>,
     html: Option<Template>,
 }
@@ -319,7 +325,7 @@ impl<'a> ConfigCtxt<'a> {
         self.in_string(config, key, |_, string| Ok(string))
     }
 
-    fn in_boolean(&mut self, config: &mut toml::Table, key: &str) -> Result<Option<bool>> {
+    fn as_boolean(&mut self, config: &mut toml::Table, key: &str) -> Result<Option<bool>> {
         let Some(value) = config.remove(key) else {
             return Ok(None);
         };
@@ -369,6 +375,7 @@ impl<'a> ConfigCtxt<'a> {
             let src = cx.as_string(&mut value, "src")?;
             let href = cx.as_string(&mut value, "href")?;
             let height = cx.as_string(&mut value, "height")?;
+            let enabled = cx.as_boolean(&mut value, "enabled")?.unwrap_or(true);
 
             let alt = FormatOptional(alt.as_ref(), |f, alt| write!(f, " alt=\"{alt}\""));
 
@@ -386,7 +393,13 @@ impl<'a> ConfigCtxt<'a> {
                 };
 
             cx.ensure_empty(value)?;
-            Ok(ConfigBadge { id, markdown, html })
+
+            Ok(ConfigBadge {
+                id,
+                enabled,
+                markdown,
+                html,
+            })
         })?;
 
         Ok(badges)
@@ -401,7 +414,7 @@ impl<'a> ConfigCtxt<'a> {
 
         let badges = self.badges(&mut config)?.unwrap_or_default();
         let _ = self
-            .in_boolean(&mut config, "center_badges")?
+            .as_boolean(&mut config, "center_badges")?
             .unwrap_or_default();
         let krate = self.as_string(&mut config, "crate")?;
 
@@ -415,6 +428,11 @@ impl<'a> ConfigCtxt<'a> {
         let disabled_badges =
             self.in_array(&mut config, "disabled_badges", |cx, item| cx.string(item))?;
         let disabled_badges = disabled_badges.unwrap_or_default().into_iter().collect();
+
+        let enabled_badges =
+            self.in_array(&mut config, "enabled_badges", |cx, item| cx.string(item))?;
+        let enabled_badges = enabled_badges.unwrap_or_default().into_iter().collect();
+
         self.ensure_empty(config)?;
 
         Ok(Repo {
@@ -423,6 +441,7 @@ impl<'a> ConfigCtxt<'a> {
             krate,
             cargo_toml,
             disabled,
+            enabled_badges,
             disabled_badges,
         })
     }
