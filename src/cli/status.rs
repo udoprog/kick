@@ -65,8 +65,11 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     let limit = opts.limit.unwrap_or(1).max(1).to_string();
 
     for module in cx.modules(&opts.modules) {
+        let span = tracing::info_span!("build", module = module.path.as_str());
+        let _enter = span.enter();
+
         if let Err(e) = build(cx, opts, module, today, &client, &limit).await {
-            tracing::error!(module = module.path.as_str(), "{}", e);
+            error!(e, "{error}");
         }
     }
 
@@ -87,7 +90,7 @@ async fn build(
 
     let current_dir = module.path.to_path(cx.root);
 
-    let sha = git::rev_parse(&current_dir, "HEAD").with_context(|| module.path.clone())?;
+    let sha = git::rev_parse(&current_dir, "HEAD").context("git rev-parse HEAD")?;
     let sha = sha.trim();
 
     let url = format!(
