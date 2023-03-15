@@ -1,5 +1,6 @@
 use core::fmt;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::hash::Hash;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -33,7 +34,7 @@ pub(crate) struct PerCrateRender<'a, T: 'a> {
     /// Globally known rust versions in use.
     rust_versions: RenderRustVersions,
     #[serde(flatten)]
-    extra: &'a toml::Value,
+    extra: &'a HashMap<String, toml::Value>,
 }
 
 pub(crate) struct Repo {
@@ -73,10 +74,10 @@ pub(crate) struct Config {
     pub(crate) job_name: Option<String>,
     pub(crate) license: Option<String>,
     pub(crate) authors: Vec<String>,
-    pub(crate) extra: toml::Value,
     pub(crate) documentation: Option<Template>,
     pub(crate) badges: Vec<ConfigBadge>,
     pub(crate) repos: HashMap<RelativePathBuf, Repo>,
+    pub(crate) extra: HashMap<String, toml::Value>,
 }
 
 impl Config {
@@ -107,12 +108,12 @@ impl Config {
         PerCrateRender {
             crate_params,
             job_name: self.job_name(),
-            extra: &self.extra,
             rust_versions: RenderRustVersions {
                 rustc: cx.rustc_version,
                 edition_2018: rust_version::EDITION_2018,
                 edition_2021: rust_version::EDITION_2021,
             },
+            extra: &self.extra,
         }
     }
 
@@ -271,11 +272,9 @@ impl<'a> ConfigCtxt<'a> {
         Ok(())
     }
 
-    fn table(&mut self, config: toml::Value) -> Result<toml::Table> {
-        match config {
-            toml::Value::Table(table) => Ok(table),
-            other => return Err(self.bail(format_args!("expected table, got {other}"))),
-        }
+    /// Compile a template.
+    fn compile(&mut self, source: &str) -> Result<Template> {
+        self.templating.compile(source)
     }
 
     fn string(&mut self, value: toml::Value) -> Result<String> {
@@ -297,6 +296,69 @@ impl<'a> ConfigCtxt<'a> {
             toml::Value::Array(array) => Ok(array),
             other => Err(self.bail(format_args!("expected array, got {other}"))),
         }
+    }
+
+    fn table(&mut self, value: toml::Value) -> Result<toml::Table> {
+        match value {
+            toml::Value::Table(table) => Ok(table),
+            other => return Err(self.bail(format_args!("expected table, got {other}"))),
+        }
+    }
+
+    fn in_array<F, O>(
+        &mut self,
+        config: &mut toml::Table,
+        key: &str,
+        mut f: F,
+    ) -> Result<Option<Vec<O>>>
+    where
+        F: FnMut(&mut Self, toml::Value) -> Result<O>,
+    {
+        let Some(value) = config.remove(key) else {
+            return Ok(None);
+        };
+
+        self.key(key);
+        let array = self.array(value)?;
+        let mut out = Vec::with_capacity(array.len());
+
+        for (index, item) in array.into_iter().enumerate() {
+            self.path.push(Part::Index(index));
+            out.push(f(self, item)?);
+            self.path.pop();
+        }
+
+        self.path.pop();
+        Ok(Some(out))
+    }
+
+    fn in_table<F, K, V>(
+        &mut self,
+        config: &mut toml::Table,
+        key: &str,
+        mut f: F,
+    ) -> Result<Option<HashMap<K, V>>>
+    where
+        K: Eq + Hash,
+        F: FnMut(&mut Self, String, toml::Value) -> Result<(K, V)>,
+    {
+        let Some(value) = config.remove(key) else {
+            return Ok(None);
+        };
+
+        self.key(key);
+        let table = self.table(value)?;
+        let mut out = HashMap::with_capacity(table.len());
+
+        for (key, item) in table {
+            self.path.push(Part::Key(key.clone()));
+            let (key, value) = f(self, key, item)?;
+            out.insert(key, value);
+            self.path.pop();
+        }
+
+        self.path.pop();
+        Ok(Some(out))
     }
 
     fn in_string<F, O>(&mut self, config: &mut toml::Table, key: &str, f: F) -> Result<Option<O>>
@@ -336,33 +398,6 @@ impl<'a> ConfigCtxt<'a> {
         Ok(Some(out))
     }
 
-    fn in_array<F, O>(
-        &mut self,
-        config: &mut toml::Table,
-        key: &str,
-        mut f: F,
-    ) -> Result<Option<Vec<O>>>
-    where
-        F: FnMut(&mut Self, toml::Value) -> Result<O>,
-    {
-        let Some(value) = config.remove(key) else {
-            return Ok(None);
-        };
-
-        self.key(key);
-        let array = self.array(value)?;
-        let mut out = Vec::with_capacity(array.len());
-
-        for (index, item) in array.into_iter().enumerate() {
-            self.path.push(Part::Index(index));
-            out.push(f(self, item)?);
-            self.path.pop();
-        }
-
-        self.path.pop();
-        Ok(Some(out))
-    }
-
     fn badges(
         &mut self,
         config: &mut toml::Table,
@@ -381,10 +416,10 @@ impl<'a> ConfigCtxt<'a> {
 
             let (markdown, html) =
                 if let (Some(src), Some(href), Some(height)) = (src, href, height) {
-                    let markdown = cx.templating.compile(&format!(
+                    let markdown = cx.compile(&format!(
                         "[<img{alt} src=\"{src}\" height=\"{height}\">]({href})"
                     ))?;
-                    let html = cx.templating.compile(&format!(
+                    let html = cx.compile(&format!(
                         "<a href=\"{href}\"><img{alt} src=\"{src}\" height=\"{height}\"></a>"
                     ))?;
                     (Some(markdown), Some(html))
@@ -408,9 +443,7 @@ impl<'a> ConfigCtxt<'a> {
     fn repo(&mut self, config: toml::Value) -> Result<Repo> {
         let mut config = self.table(config)?;
 
-        let header = self.in_string(&mut config, "header", |cx, string| {
-            cx.templating.compile(&string)
-        })?;
+        let header = self.in_string(&mut config, "header", |cx, string| cx.compile(&string))?;
 
         let badges = self.badges(&mut config)?.unwrap_or_default();
         let _ = self
@@ -465,10 +498,10 @@ pub(crate) fn load(
     };
 
     let default_workflow = cx.in_string(&mut config, "default_workflow", |cx, string| {
-        let path = root_path.join(&string);
+        let path = root_path.join(string);
         let string =
             std::fs::read_to_string(path.to_path(root)).with_context(|| path.to_owned())?;
-        cx.templating.compile(&string)
+        cx.compile(&string)
     })?;
 
     let job_name = cx.in_string(&mut config, "job_name", |_, string| Ok(string))?;
@@ -480,27 +513,19 @@ pub(crate) fn load(
         .in_array(&mut config, "authors", |cx, item| cx.string(item))?
         .unwrap_or_default();
 
-    let documentation = cx.in_string(&mut config, "documentation", |cx, string| {
-        cx.templating.compile(&string)
+    let documentation = cx.in_string(&mut config, "documentation", |cx, source| {
+        cx.compile(&source)
     })?;
 
-    let extra = config
-        .remove("extra")
-        .unwrap_or_else(|| toml::Value::Table(toml::map::Map::default()));
+    let extra = cx
+        .in_table(&mut config, "extra", |_, key, value| Ok((key, value)))?
+        .unwrap_or_default();
 
-    let mut repos = HashMap::new();
-
-    if let Some(config) = config.remove("repos") {
-        cx.key("repos");
-
-        for (id, value) in cx.table(config)? {
-            cx.key(&id);
-            repos.insert(root_path.join(&id), cx.repo(value)?);
-            cx.path.pop();
-        }
-
-        cx.path.pop();
-    }
+    let mut repos = cx
+        .in_table(&mut config, "repos", |cx, id, value| {
+            Ok((root_path.join(id), cx.repo(value)?))
+        })?
+        .unwrap_or_default();
 
     for module in modules {
         let kick_path = module.path.join(KICK_TOML);
@@ -519,10 +544,10 @@ pub(crate) fn load(
         job_name,
         license,
         authors,
-        extra,
         documentation,
         badges,
         repos,
+        extra,
     })
 }
 
