@@ -149,20 +149,26 @@ fn validate(
         Validation::MissingReadme { path } => {
             println!("{path}: Missing README");
         }
-        Validation::MismatchedLibRs { path, new_file } => {
+        Validation::UpdateLib {
+            path,
+            lib: new_file,
+        } => {
             if fix {
-                println!("{path}: Fixing lib.rs");
+                println!("{path}: Fixing");
                 std::fs::write(path.to_path(cx.root), new_file.as_str())?;
             } else {
-                println!("{path}: Mismatched lib.rs");
+                println!("{path}: Needs update");
             }
         }
-        Validation::BadReadme { path, new_file } => {
+        Validation::UpdateReadme {
+            path,
+            readme: new_file,
+        } => {
             if fix {
-                println!("{path}: Fixing README.md");
+                println!("{path}: Fixing");
                 std::fs::write(path.to_path(cx.root), new_file.as_str())?;
             } else {
-                println!("{path}: Bad README.md");
+                println!("{path}: Needs update");
             }
         }
         Validation::ToplevelHeadings {

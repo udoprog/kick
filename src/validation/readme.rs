@@ -28,6 +28,8 @@ struct Readme<'a, 'outer> {
     params: ModuleParams<'a>,
     validation: &'outer mut Vec<Validation>,
     urls: &'outer mut Urls,
+    do_readme: bool,
+    do_lib: bool,
 }
 
 /// Perform readme validation.
@@ -39,6 +41,8 @@ pub(crate) fn build(
     params: ModuleParams<'_>,
     validation: &mut Vec<Validation>,
     urls: &mut Urls,
+    do_readme: bool,
+    do_lib: bool,
 ) -> Result<()> {
     let readme_path = manifest_dir.join(README_MD);
 
@@ -59,6 +63,8 @@ pub(crate) fn build(
         params,
         validation,
         urls,
+        do_readme,
+        do_lib,
     };
 
     validate(cx, &mut readme).with_context(|| anyhow!("{readme_path}: readme validation"))?;
@@ -80,58 +86,61 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
         });
     }
 
-    if rm.entry.to_path(cx.root).is_file() {
-        let mut badges = Vec::new();
+    if !rm.entry.to_path(cx.root).is_file() {
+        return Ok(());
+    }
 
-        for badge in cx.config.badges(&rm.module.path) {
-            badges.push(BadgeParams {
-                markdown: badge.markdown(rm.params)?,
-                html: badge.html(rm.params)?,
-            });
-        }
+    let mut badges = Vec::new();
 
-        let (file, full, rest) = process_lib_rs(cx, rm, &badges)?;
-        let checks = markdown_checks(rm, &file)?;
+    for badge in cx.config.badges(&rm.module.path) {
+        badges.push(BadgeParams {
+            markdown: badge.markdown(rm.params)?,
+            html: badge.html(rm.params)?,
+        });
+    }
 
-        for (file, range) in checks.toplevel_headings {
-            rm.validation.push(Validation::ToplevelHeadings {
-                path: rm.entry.to_owned(),
-                file,
-                range,
-                line_offset: checks.line_offset,
-            });
-        }
+    let (file, full, rest) = process_lib_rs(cx, rm, &badges)?;
 
-        for (file, range) in checks.missing_preceeding_br {
-            rm.validation.push(Validation::MissingPreceedingBr {
-                path: rm.entry.to_owned(),
-                file,
-                range,
-                line_offset: checks.line_offset,
-            });
-        }
+    if rm.do_lib && *file != *full {
+        rm.validation.push(Validation::UpdateLib {
+            path: rm.entry.to_owned(),
+            lib: full.clone(),
+        });
+    }
 
-        let readme_from_lib_rs = readme_from_lib_rs(cx, rm, &full, &rest, &badges)?;
+    let checks = markdown_checks(rm, &file)?;
 
-        if *file != *full {
-            rm.validation.push(Validation::MismatchedLibRs {
-                path: rm.entry.to_owned(),
-                new_file: full,
-            });
-        }
+    for (file, range) in checks.toplevel_headings {
+        rm.validation.push(Validation::ToplevelHeadings {
+            path: rm.entry.to_owned(),
+            file,
+            range,
+            line_offset: checks.line_offset,
+        });
+    }
 
-        let readme = match File::read(rm.readme_path.to_path(cx.root)) {
-            Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => File::new(),
-            Err(e) => return Err(e.into()),
-        };
+    for (file, range) in checks.missing_preceeding_br {
+        rm.validation.push(Validation::MissingPreceedingBr {
+            path: rm.entry.to_owned(),
+            file,
+            range,
+            line_offset: checks.line_offset,
+        });
+    }
 
-        if readme != readme_from_lib_rs {
-            rm.validation.push(Validation::BadReadme {
-                path: rm.readme_path.to_owned(),
-                new_file: Arc::new(readme_from_lib_rs),
-            });
-        }
+    let readme_from_lib_rs = readme_from_lib_rs(cx, rm, &full, &rest, &badges)?;
+
+    let readme = match File::read(rm.readme_path.to_path(cx.root)) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => File::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    if rm.do_readme && readme != readme_from_lib_rs {
+        rm.validation.push(Validation::UpdateReadme {
+            path: rm.readme_path.to_owned(),
+            readme: Arc::new(readme_from_lib_rs),
+        });
     }
 
     Ok(())

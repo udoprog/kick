@@ -52,13 +52,13 @@ pub(crate) enum Validation {
     MissingReadme {
         path: RelativePathBuf,
     },
-    MismatchedLibRs {
+    UpdateLib {
         path: RelativePathBuf,
-        new_file: Arc<File>,
+        lib: Arc<File>,
     },
-    BadReadme {
+    UpdateReadme {
         path: RelativePathBuf,
-        new_file: Arc<File>,
+        readme: Arc<File>,
     },
     ToplevelHeadings {
         path: RelativePathBuf,
@@ -154,29 +154,32 @@ pub(crate) fn build(
             primary_crate_params,
             validation,
             urls,
+            true,
+            false,
         )?;
 
         for package in workspace.packages() {
-            if package.manifest_dir != *module.path && package.manifest.is_publish()? {
-                let variables = cx.config.variables(module);
-
-                let params = cx.config.per_crate_render(
-                    cx,
-                    module,
-                    package.crate_params(module)?,
-                    &variables,
-                );
-
-                readme::build(
-                    cx,
-                    &package.manifest_dir,
-                    module,
-                    package,
-                    params,
-                    validation,
-                    urls,
-                )?;
+            if !package.manifest.is_publish()? {
+                continue;
             }
+
+            let variables = cx.config.variables(module);
+
+            let params =
+                cx.config
+                    .per_crate_render(cx, module, package.crate_params(module)?, &variables);
+
+            readme::build(
+                cx,
+                &package.manifest_dir,
+                module,
+                package,
+                params,
+                validation,
+                urls,
+                package.manifest_dir != *module.path,
+                true,
+            )?;
         }
     }
 
