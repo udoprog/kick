@@ -69,7 +69,7 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
             continue;
         }
 
-        if let Err(e) = build(cx, &opts, module, today, &client, &limit).await {
+        if let Err(e) = build(cx, opts, module, today, &client, &limit).await {
             tracing::error!(module = module.path.as_str(), "{}", e);
         }
     }
@@ -100,7 +100,7 @@ async fn build(
         name = repo.name
     );
 
-    let req = build_request(cx, &client, url)
+    let req = build_request(cx, client, url)
         .query(&[("exclude_pull_requests", "true"), ("per_page", limit)]);
 
     println!("{}: {}", module.path, module.url);
@@ -141,7 +141,7 @@ async fn build(
 
         if opts.jobs || failure {
             if let Some(jobs_url) = &run.jobs_url {
-                let res = build_request(cx, &client, jobs_url.clone()).send().await?;
+                let res = build_request(cx, client, jobs_url.clone()).send().await?;
 
                 if !res.status().is_success() {
                     println!("  {}", res.text().await?);

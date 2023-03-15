@@ -32,9 +32,9 @@ pub(crate) struct Opts {
     /// dependencies which can compile.
     #[arg(long)]
     keep_cargo_lock: bool,
-    /// Save new MSRV.
+    /// Don't save the new MSRV in project `Cargo.toml` files.
     #[arg(long)]
-    save: bool,
+    no_save: bool,
     /// Earliest minor version to test. Default: 2021.
     ///
     /// Supports the following special values, apart from minor version numbers:
@@ -184,10 +184,10 @@ fn build(cx: &Ctxt<'_>, workspace: &mut Workspace, opts: &Opts) -> Result<()> {
         let status = command.status()?;
 
         if status.success() {
-            tracing::info!("Rust {version}: check ok");
+            tracing::info!("Rust {version}: ok");
             candidates.ok();
         } else {
-            tracing::info!("Rust {version}: check failed");
+            tracing::info!("Rust {version}: failed");
             candidates.fail();
         }
 
@@ -196,32 +196,38 @@ fn build(cx: &Ctxt<'_>, workspace: &mut Workspace, opts: &Opts) -> Result<()> {
         }
     }
 
-    if let Some(version) = candidates.get() {
-        tracing::info!("Supported msrv: Rust {version}");
+    let Some(version) = candidates.get() else {
+        tracing::warn!("No MSRV found");
+        return Ok(());
+    };
 
-        if opts.save {
-            if version >= RUST_VERSION_SUPPORTED {
-                for p in workspace.packages_mut() {
-                    if p.manifest.is_publish()? {
-                        tracing::info!(
-                            "Saving {} with rust-version = \"{version}\"",
-                            p.manifest_path
-                        );
-                        p.manifest.set_rust_version(&version.to_string())?;
-                        p.manifest.sort_package_keys()?;
-                        p.manifest.save_to(p.manifest_path.to_path(cx.root))?;
-                    }
-                }
-            } else {
-                for p in workspace.packages_mut() {
-                    if p.manifest.remove_rust_version() {
-                        tracing::info!(
-                            "Saving {} without rust-version (target version outdates rust-version)",
-                            p.manifest_path
-                        );
-                        p.manifest.save_to(p.manifest_path.to_path(cx.root))?;
-                    }
-                }
+    if opts.no_save {
+        tracing::warn!("Found MSRV Rust {version}, but not saving (--no-save)");
+        return Ok(());
+    }
+
+    tracing::info!("Saving MSRV: Rust {version}");
+
+    if version >= RUST_VERSION_SUPPORTED {
+        for p in workspace.packages_mut() {
+            if p.manifest.is_publish()? {
+                tracing::info!(
+                    "Saving {} with rust-version = \"{version}\"",
+                    p.manifest_path
+                );
+                p.manifest.set_rust_version(&version.to_string())?;
+                p.manifest.sort_package_keys()?;
+                p.manifest.save_to(p.manifest_path.to_path(cx.root))?;
+            }
+        }
+    } else {
+        for p in workspace.packages_mut() {
+            if p.manifest.remove_rust_version() {
+                tracing::info!(
+                    "Saving {} without rust-version (target version outdates rust-version)",
+                    p.manifest_path
+                );
+                p.manifest.save_to(p.manifest_path.to_path(cx.root))?;
             }
         }
     }
