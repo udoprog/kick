@@ -28,8 +28,8 @@ pub(crate) struct Repo {
     pub(crate) authors: Vec<String>,
     /// Documentation link of the project.
     pub(crate) documentation: Option<Template>,
-    /// Custom header template.
-    pub(crate) header: Option<Template>,
+    /// Custom lib template.
+    pub(crate) lib: Option<Template>,
     /// Custom readme template.
     pub(crate) readme: Option<Template>,
     /// Custom badges for a specific project.
@@ -56,7 +56,7 @@ impl Repo {
         self.license = other.license.or(self.license.take());
         self.authors.append(&mut other.authors);
         self.documentation = other.documentation.or(self.documentation.take());
-        self.header = other.header.or(self.header.take());
+        self.lib = other.lib.or(self.lib.take());
         self.badges.append(&mut other.badges);
         self.krate = other.krate.or(self.krate.take());
         self.cargo_toml = other.cargo_toml.or(self.cargo_toml.take());
@@ -202,12 +202,12 @@ impl Config {
     }
 
     /// Get the header for the given repo.
-    pub(crate) fn header(&self, path: &RelativePath) -> Option<&Template> {
-        if let Some(header) = self.repos.get(path).and_then(|r| r.header.as_ref()) {
-            return Some(header);
+    pub(crate) fn lib(&self, path: &RelativePath) -> Option<&Template> {
+        if let Some(lib) = self.repos.get(path).and_then(|r| r.lib.as_ref()) {
+            return Some(lib);
         }
 
-        self.base.header.as_ref()
+        self.base.lib.as_ref()
     }
 
     /// Get readme template for the given module.
@@ -561,7 +561,7 @@ impl<'a> ConfigCtxt<'a> {
         let documentation =
             self.in_string(config, "documentation", |cx, source| cx.compile(&source))?;
 
-        let header = self.in_string(config, "header", |cx, string| {
+        let lib = self.in_string(config, "lib", |cx, string| {
             let path = cx.path.join(string);
             let template =
                 std::fs::read_to_string(path.to_path(cx.root)).with_context(|| path.to_owned())?;
@@ -603,7 +603,7 @@ impl<'a> ConfigCtxt<'a> {
             license,
             authors,
             documentation,
-            header,
+            lib,
             readme,
             badges,
             krate,

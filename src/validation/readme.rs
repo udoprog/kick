@@ -81,7 +81,16 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
     }
 
     if rm.entry.to_path(cx.root).is_file() {
-        let (file, new_file) = process_lib_rs(cx, rm)?;
+        let mut badges = Vec::new();
+
+        for badge in cx.config.badges(&rm.module.path) {
+            badges.push(BadgeParams {
+                markdown: badge.markdown(rm.params)?,
+                html: badge.html(rm.params)?,
+            });
+        }
+
+        let (file, full, rest) = process_lib_rs(cx, rm, &badges)?;
         let checks = markdown_checks(rm, &file)?;
 
         for (file, range) in checks.toplevel_headings {
@@ -102,12 +111,12 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
             });
         }
 
-        let readme_from_lib_rs = readme_from_lib_rs(cx, rm, &new_file, rm.params)?;
+        let readme_from_lib_rs = readme_from_lib_rs(cx, rm, &full, &rest, &badges)?;
 
-        if *file != *new_file {
+        if *file != *full {
             rm.validation.push(Validation::MismatchedLibRs {
                 path: rm.entry.to_owned(),
-                new_file,
+                new_file: full,
             });
         }
 
@@ -128,102 +137,73 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
     Ok(())
 }
 
+/// Test if line is a badge comment.
+fn is_badge_comment(c: &str) -> bool {
+    let c = c.trim();
+
+    if c == "<div align=\"center\">" || c == "</div>" {
+        return true;
+    }
+
+    if c.starts_with("[<img ") && c.ends_with(")") {
+        return true;
+    }
+
+    if c.starts_with("[![") && c.ends_with(")") {
+        return true;
+    }
+
+    if c.starts_with("<a href") && c.ends_with("</a>") {
+        return true;
+    }
+
+    false
+}
+
+#[derive(Serialize)]
+struct BadgeParams {
+    html: Option<String>,
+    markdown: Option<String>,
+}
+
+#[derive(Serialize)]
+struct TemplateParams<'a> {
+    badges: &'a [BadgeParams],
+    rest: Option<&'a str>,
+    header_marker: Option<&'a str>,
+    #[serde(flatten)]
+    params: ModuleParams<'a>,
+}
+
+#[derive(Serialize)]
+struct ReadmeParams<'a> {
+    full: Option<&'a str>,
+    rest: Option<&'a str>,
+    badges: &'a [BadgeParams],
+    #[serde(flatten)]
+    params: ModuleParams<'a>,
+}
+
 /// Process the lib rs.
 fn process_lib_rs(
     cx: &Ctxt<'_>,
-    readme: &Readme<'_, '_>,
-) -> Result<(Arc<File>, Arc<File>), anyhow::Error> {
-    /// Test if line is a badge comment.
-    fn is_badge_comment(c: &[u8]) -> bool {
-        let c = trim_ascii(c);
-
-        if c == b"<div align=\"center\">" || c == b"</div>" {
-            return true;
-        }
-
-        if c.starts_with(b"[<img ") && c.ends_with(b")") {
-            return true;
-        }
-
-        if c.starts_with(b"[![") && c.ends_with(b")") {
-            return true;
-        }
-
-        if c.starts_with(b"<a href") && c.ends_with(b"</a>") {
-            return true;
-        }
-
-        false
-    }
-
-    pub const fn trim_ascii(bytes: &[u8]) -> &[u8] {
-        trim_ascii_end(trim_ascii_start(bytes))
-    }
-
-    pub const fn trim_ascii_start(mut bytes: &[u8]) -> &[u8] {
-        while let [first, rest @ ..] = bytes {
-            if first.is_ascii_whitespace() {
-                bytes = rest;
-            } else {
-                break;
-            }
-        }
-
-        bytes
-    }
-
-    pub const fn trim_ascii_end(mut bytes: &[u8]) -> &[u8] {
-        while let [rest @ .., last] = bytes {
-            if last.is_ascii_whitespace() {
-                bytes = rest;
-            } else {
-                break;
-            }
-        }
-
-        bytes
-    }
-
-    #[derive(Serialize)]
-    struct BadgeParams {
-        html: Option<String>,
-        markdown: Option<String>,
-    }
-
-    #[derive(Serialize)]
-    struct HeaderParams<'a> {
-        badges: &'a [BadgeParams],
-        is_more: bool,
-        #[serde(flatten)]
-        params: ModuleParams<'a>,
-    }
-
-    let source = File::read(readme.entry.to_path(cx.root))?;
+    rm: &Readme<'_, '_>,
+    badges: &[BadgeParams],
+) -> Result<(Arc<File>, Arc<File>, File)> {
+    let source = File::read(rm.entry.to_path(cx.root))?;
     let mut new_file = File::new();
 
-    let mut badges = Vec::new();
-
-    for badge in cx.config.badges(&readme.module.path) {
-        badges.push(BadgeParams {
-            markdown: badge.markdown(readme.params)?,
-            html: badge.html(readme.params)?,
-        });
-    }
-
     let mut source_lines = source.lines().peekable();
+    let mut header_marker = None;
 
-    if let Some(header) = cx.config.header(&readme.module.path) {
-        let mut found_marker = false;
-
+    let rest = if let Some(lib) = cx.config.lib(&rm.module.path) {
         while let Some(line) = source_lines.peek().and_then(|line| line.as_rust_comment()) {
-            let line = trim_ascii_start(line);
-
-            if line.starts_with(b"#") {
+            if line.starts_with("#") {
                 break;
             }
 
-            if line == HEADER_MARKER.as_bytes() {
-                found_marker = true;
+            if line == HEADER_MARKER {
+                header_marker = Some(HEADER_MARKER);
                 source_lines.next();
                 break;
             }
@@ -231,31 +211,39 @@ fn process_lib_rs(
             source_lines.next();
         }
 
-        let header = header.render(&HeaderParams {
-            badges: &badges,
-            is_more: source_lines.peek().is_some(),
-            params: readme.params,
+        let raw: File = source_lines.collect();
+        let rest: File = raw
+            .lines()
+            .flat_map(|line| line.as_rust_comment())
+            .collect();
+
+        let lib = lib.render(&TemplateParams {
+            badges,
+            params: rm.params,
+            header_marker,
+            rest: rest.as_non_empty_str(),
         })?;
 
-        for string in header.split('\n') {
+        for string in lib.trim().lines() {
             if string.is_empty() {
-                new_file.push(b"//!");
+                new_file.line("//!");
             } else {
-                new_file.push(format!("//! {string}").as_bytes());
+                new_file.line(format_args!("//! {string}"));
             }
         }
 
-        // Add a header marker in case an existing marker was found and
-        // there is nothing more in the header.
-        if found_marker
-            && source_lines
-                .peek()
-                .and_then(|line| line.as_rust_comment())
-                .is_some()
-        {
-            new_file.push(format!("//! {HEADER_MARKER}").as_bytes());
+        for line in raw.lines() {
+            if line.as_rust_comment().is_some() {
+                continue;
+            }
+
+            new_file.line(line);
         }
+
+        rest
     } else {
+        let mut rest = File::new();
+
         while let Some(line) = source_lines.peek().and_then(|line| line.as_rust_comment()) {
             if !is_badge_comment(line) {
                 break;
@@ -266,23 +254,28 @@ fn process_lib_rs(
 
         for badge in badges {
             if let Some(markdown) = &badge.markdown {
-                new_file.push(format!("//! {markdown}").as_bytes());
+                new_file.line(format_args!("//! {markdown}"));
             }
         }
-    }
 
-    for line in source_lines {
-        let bytes = line.as_bytes();
-        let bytes = trim_ascii_end(bytes);
-        new_file.push(bytes);
-    }
+        for line in source_lines {
+            new_file.line(line.as_ref().trim_end());
 
-    Ok((Arc::new(source), Arc::new(new_file)))
+            if let Some(line) = line.as_rust_comment() {
+                rest.line(line.trim_end());
+            }
+        }
+
+        rest
+    };
+
+    new_file.ensure_trailing_newline();
+    Ok((Arc::new(source), Arc::new(new_file), rest))
 }
 
 /// Test if the specified file has toplevel headings.
 fn markdown_checks(readme: &mut Readme<'_, '_>, file: &Arc<File>) -> Result<MarkdownChecks> {
-    let mut comment = Vec::new();
+    let mut comment = File::new();
 
     let mut initial = true;
     let mut checks = MarkdownChecks::default();
@@ -293,17 +286,16 @@ fn markdown_checks(readme: &mut Readme<'_, '_>, file: &Arc<File>) -> Result<Mark
         }
 
         if let Some(line) = line.as_rust_comment() {
-            comment.push(std::str::from_utf8(line)?);
+            comment.line(line);
             initial = false;
         }
     }
 
-    let comment = comment.join("\n");
-    let file = Arc::new(File::from_vec(comment.as_bytes().to_vec()));
+    let file = Arc::new(comment.clone());
 
     let opts = Options::empty();
 
-    let parser = Parser::new_with_broken_link_callback(&comment, opts, None);
+    let parser = Parser::new_with_broken_link_callback(comment.as_str(), opts, None);
     let mut preceeding_newline = false;
 
     for (event, range) in parser.into_offset_iter() {
@@ -391,32 +383,20 @@ fn visit_url(
 fn readme_from_lib_rs(
     cx: &Ctxt<'_>,
     rm: &mut Readme<'_, '_>,
-    file: &File,
-    params: ModuleParams<'_>,
+    full: &File,
+    rest: &File,
+    badges: &[BadgeParams],
 ) -> Result<File> {
-    #[derive(Serialize)]
-    struct ReadmeParams<'a> {
-        body: &'a str,
-        #[serde(flatten)]
-        params: ModuleParams<'a>,
-    }
-
     let mut body = File::new();
 
     let mut in_code_block = None::<bool>;
 
-    for line in file.lines() {
+    for line in full.lines() {
         let comment = match line.as_rust_comment() {
-            Some(comment) => std::str::from_utf8(comment)?,
+            Some(comment) => comment,
             None => {
                 continue;
             }
-        };
-
-        let comment = if let Some(" ") = comment.get(..1) {
-            comment.get(1..).unwrap_or_default()
-        } else {
-            comment
         };
 
         if in_code_block == Some(true) && comment.trim_start().starts_with("# ") {
@@ -426,7 +406,7 @@ fn readme_from_lib_rs(
         if comment.starts_with("```") {
             if in_code_block.is_none() {
                 let (parts, specs) = filter_code_block(comment);
-                body.push(format!("```{parts}").as_bytes());
+                body.line(format_args!("```{parts}"));
                 in_code_block = Some(specs.contains("rust"));
                 continue;
             }
@@ -434,28 +414,31 @@ fn readme_from_lib_rs(
             in_code_block = None;
         }
 
-        body.push(comment.as_bytes());
+        body.line(comment);
     }
 
     let mut readme = if let Some(readme) = cx.config.readme(&rm.module.path) {
-        let body = std::str::from_utf8(body.as_bytes())?;
-
-        let output = readme.render(&ReadmeParams { body, params })?;
+        let output = readme.render(&ReadmeParams {
+            full: full.as_non_empty_str(),
+            rest: rest.as_non_empty_str(),
+            badges: &badges[..],
+            params: rm.params,
+        })?;
 
         let mut readme = File::new();
 
-        for line in output.lines() {
-            readme.push(line.as_bytes());
+        for line in output.trim().lines() {
+            readme.line(line);
         }
 
         readme
     } else {
         let mut readme = File::new();
-        readme.push(format!("# {name}", name = params.crate_name()).as_bytes());
-        readme.push(b"");
+        readme.line(format!("# {name}", name = rm.params.crate_name()));
+        readme.line("");
 
         for line in body.lines() {
-            readme.push(line.as_bytes());
+            readme.line(line);
         }
 
         readme

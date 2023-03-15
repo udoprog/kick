@@ -152,7 +152,7 @@ fn validate(
         Validation::MismatchedLibRs { path, new_file } => {
             if fix {
                 println!("{path}: Fixing lib.rs");
-                std::fs::write(path.to_path(cx.root), new_file.as_bytes())?;
+                std::fs::write(path.to_path(cx.root), new_file.as_str())?;
             } else {
                 println!("{path}: Mismatched lib.rs");
             }
@@ -160,7 +160,7 @@ fn validate(
         Validation::BadReadme { path, new_file } => {
             if fix {
                 println!("{path}: Fixing README.md");
-                std::fs::write(path.to_path(cx.root), new_file.as_bytes())?;
+                std::fs::write(path.to_path(cx.root), new_file.as_str())?;
             } else {
                 println!("{path}: Bad README.md");
             }

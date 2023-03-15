@@ -1,3 +1,4 @@
+use core::fmt;
 use std::io;
 use std::path::Path;
 
@@ -12,7 +13,7 @@ pub(crate) struct LineColumn {
 /// A file loaded into memory.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct File {
-    data: Vec<u8>,
+    data: String,
     line_starts: Vec<usize>,
 }
 
@@ -20,7 +21,7 @@ impl File {
     /// Construct a new empty file.
     pub(crate) fn new() -> Self {
         Self {
-            data: Vec::new(),
+            data: String::new(),
             line_starts: vec![0],
         }
     }
@@ -30,44 +31,54 @@ impl File {
     where
         P: AsRef<Path>,
     {
-        let bytes = std::fs::read(path)?;
-        Ok(Self::from_vec(bytes))
+        let string = std::fs::read_to_string(path)?;
+        Ok(Self::from_string(string))
     }
 
     /// Construct a new rust file wrapper.
-    pub(crate) fn from_vec(data: Vec<u8>) -> Self {
-        Self {
-            data: data.to_vec(),
-            line_starts: line_starts(&data),
-        }
+    pub(crate) fn from_string(data: String) -> Self {
+        let line_starts = line_starts(&data);
+
+        Self { data, line_starts }
     }
 
-    /// Get bytes of the file.
-    pub(crate) fn as_bytes(&self) -> &[u8] {
+    /// Get string of the file.
+    pub(crate) fn as_str(&self) -> &str {
         &self.data
+    }
+
+    /// Try to coerce file into a non-empty string.
+    pub(crate) fn as_non_empty_str(&self) -> Option<&str> {
+        if self.data.is_empty() {
+            return None;
+        }
+
+        Some(&self.data)
     }
 
     /// Iterate over comments.
     pub(crate) fn lines(&self) -> Lines<'_> {
         Lines {
-            iter: self.data.split(|b| *b == b'\n'),
+            iter: self.data.lines(),
         }
     }
 
     /// Push a line onto the file.
-    pub(crate) fn push(&mut self, line: &[u8]) {
+    pub(crate) fn line(&mut self, line: impl fmt::Display) {
+        use std::fmt::Write;
+
         if !self.data.is_empty() {
-            self.data.push(b'\n');
+            self.data.push('\n');
             self.line_starts.push(self.data.len());
         }
 
-        self.data.extend(line);
+        write!(self.data, "{line}").unwrap();
     }
 
     /// Ensure that file has a trailing newline.
     pub(crate) fn ensure_trailing_newline(&mut self) {
-        if !self.data.is_empty() && !self.data.ends_with(b"\n") {
-            self.data.push(b'\n');
+        if !self.data.is_empty() && !self.data.ends_with('\n') {
+            self.data.push('\n');
             self.line_starts.push(self.data.len());
         }
     }
@@ -87,8 +98,8 @@ impl File {
         let line_start = self.line_starts[line];
 
         let rest = match self.line_starts.get(line + 1) {
-            Some(next) => std::str::from_utf8(&self.data[line_start..*next])?.trim_end(),
-            None => std::str::from_utf8(&self.data[line_start..])?.trim_end(),
+            Some(next) => self.data[line_start..*next].trim_end(),
+            None => self.data[line_start..].trim_end(),
         };
 
         let column = offset.saturating_sub(line_start);
@@ -96,8 +107,24 @@ impl File {
     }
 }
 
+impl<S> FromIterator<S> for File
+where
+    S: AsRef<str>,
+{
+    #[inline]
+    fn from_iter<T: IntoIterator<Item = S>>(iter: T) -> Self {
+        let mut file = File::new();
+
+        for line in iter {
+            file.line(line.as_ref());
+        }
+
+        file
+    }
+}
+
 pub(crate) struct Lines<'a> {
-    iter: core::slice::Split<'a, u8, fn(&u8) -> bool>,
+    iter: core::str::Lines<'a>,
 }
 
 impl<'a> Iterator for Lines<'a> {
@@ -111,30 +138,45 @@ impl<'a> Iterator for Lines<'a> {
 }
 
 pub(crate) struct Line<'a> {
-    line: &'a [u8],
+    line: &'a str,
 }
 
 impl<'a> Line<'a> {
-    /// Get underlying bytes for the line.
-    pub(crate) fn as_bytes(&self) -> &[u8] {
-        self.line
-    }
-
     /// Get the comment.
-    pub(crate) fn as_rust_comment(&self) -> Option<&'a [u8]> {
-        if self.line.get(..3) == Some(&b"//!"[..]) {
-            return self.line.get(3..);
+    pub(crate) fn as_rust_comment(&self) -> Option<&'a str> {
+        if self.line.get(..3) == Some("//!") {
+            let line = self.line.get(3..)?;
+
+            return if let Some(" ") = line.get(..1) {
+                line.get(1..)
+            } else {
+                Some(line)
+            };
         }
 
         None
     }
 }
 
-fn line_starts(source: &[u8]) -> Vec<usize> {
+impl AsRef<str> for Line<'_> {
+    #[inline]
+    fn as_ref(&self) -> &str {
+        self.line
+    }
+}
+
+impl fmt::Display for Line<'_> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.line.fmt(f)
+    }
+}
+
+fn line_starts(source: &str) -> Vec<usize> {
     let mut output = vec![0];
 
-    for (index, n) in source.iter().enumerate() {
-        if *n == b'\n' {
+    for (index, n) in source.bytes().enumerate() {
+        if n == b'\n' {
             output.push(index + 1);
         }
     }
