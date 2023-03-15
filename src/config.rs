@@ -5,11 +5,10 @@ use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
 use relative_path::{RelativePath, RelativePathBuf};
-use serde::Serialize;
 
 use crate::ctxt::Ctxt;
-use crate::model::{CrateParams, Module};
-use crate::rust_version::{self, RustVersion};
+use crate::model::{CrateParams, Module, ModuleParams, RenderRustVersions};
+use crate::rust_version::{self};
 use crate::templates::{Template, Templating};
 use crate::KICK_TOML;
 
@@ -17,25 +16,6 @@ use crate::KICK_TOML;
 const DEFAULT_JOB_NAME: &str = "CI";
 /// Default license to use in configuration.
 const DEFAULT_LICENSE: &str = "MIT/Apache-2.0";
-
-#[derive(Debug, Clone, Copy, Serialize)]
-pub(crate) struct RenderRustVersions {
-    rustc: Option<RustVersion>,
-    edition_2018: RustVersion,
-    edition_2021: RustVersion,
-}
-
-#[derive(Debug, Clone, Copy, Serialize)]
-pub(crate) struct PerCrateRender<'a> {
-    #[serde(rename = "crate")]
-    pub(crate) crate_params: CrateParams<'a>,
-    /// Current job name.
-    job_name: &'a str,
-    /// Globally known rust versions in use.
-    rust_versions: RenderRustVersions,
-    #[serde(flatten)]
-    variables: &'a toml::Table,
-}
 
 #[derive(Default)]
 pub(crate) struct Repo {
@@ -50,6 +30,8 @@ pub(crate) struct Repo {
     pub(crate) documentation: Option<Template>,
     /// Custom header template.
     pub(crate) header: Option<Template>,
+    /// Custom readme template.
+    pub(crate) readme: Option<Template>,
     /// Custom badges for a specific project.
     pub(crate) badges: Vec<ConfigBadge>,
     /// Override crate to use.
@@ -108,7 +90,7 @@ impl Config {
     pub(crate) fn workflow(
         &self,
         module: &Module,
-        params: PerCrateRender<'_>,
+        params: ModuleParams<'_>,
     ) -> Result<Option<String>> {
         let Some(template) = &self.repos.get(module.path.as_ref()).and_then(|r|r.workflow.as_ref()).or(self.base.workflow.as_ref())  else {
             return Ok(None);
@@ -124,8 +106,8 @@ impl Config {
         module: &Module,
         crate_params: CrateParams<'a>,
         variables: &'a toml::Table,
-    ) -> PerCrateRender<'a> {
-        PerCrateRender {
+    ) -> ModuleParams<'a> {
+        ModuleParams {
             crate_params,
             job_name: self.job_name(module),
             rust_versions: RenderRustVersions {
@@ -228,6 +210,15 @@ impl Config {
         self.base.header.as_ref()
     }
 
+    /// Get readme template for the given module.
+    pub(crate) fn readme(&self, path: &RelativePath) -> Option<&Template> {
+        if let Some(readme) = self.repos.get(path).and_then(|r| r.readme.as_ref()) {
+            return Some(readme);
+        }
+
+        self.base.readme.as_ref()
+    }
+
     /// Get crate for the given repo.
     pub(crate) fn crate_for<'a>(&'a self, path: &RelativePath) -> Option<&'a str> {
         if let Some(krate) = self.repos.get(path).and_then(|r| r.krate.as_deref()) {
@@ -264,7 +255,7 @@ pub(crate) struct ConfigBadge {
 }
 
 impl ConfigBadge {
-    pub(crate) fn markdown(&self, params: PerCrateRender<'_>) -> Result<Option<String>> {
+    pub(crate) fn markdown(&self, params: ModuleParams<'_>) -> Result<Option<String>> {
         let Some(template) = self.markdown.as_ref() else {
             return Ok(None);
         };
@@ -272,7 +263,7 @@ impl ConfigBadge {
         Ok(Some(template.render(&params)?))
     }
 
-    pub(crate) fn html(&self, params: PerCrateRender<'_>) -> Result<Option<String>> {
+    pub(crate) fn html(&self, params: ModuleParams<'_>) -> Result<Option<String>> {
         let Some(template) = self.html.as_ref() else {
             return Ok(None);
         };
@@ -577,6 +568,13 @@ impl<'a> ConfigCtxt<'a> {
             cx.compile(&template)
         })?;
 
+        let readme = self.in_string(config, "readme", |cx, string| {
+            let path = cx.path.join(string);
+            let template =
+                std::fs::read_to_string(path.to_path(cx.root)).with_context(|| path.to_owned())?;
+            cx.compile(&template)
+        })?;
+
         let badges = self.badges(config)?.unwrap_or_default();
         let _ = self
             .as_boolean(config, "center_badges")?
@@ -606,6 +604,7 @@ impl<'a> ConfigCtxt<'a> {
             authors,
             documentation,
             header,
+            readme,
             badges,
             krate,
             cargo_toml,

@@ -3,10 +3,9 @@ use std::io::Write;
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use crate::config::PerCrateRender;
 use crate::ctxt::Ctxt;
 use crate::file::{File, LineColumn};
-use crate::model::Module;
+use crate::model::{Module, ModuleParams};
 use crate::urls::UrlError;
 use crate::urls::Urls;
 use crate::validation::Validation;
@@ -88,7 +87,7 @@ fn validate(
     cx: &Ctxt<'_>,
     module: &Module,
     error: &Validation,
-    primary_crate_params: PerCrateRender<'_>,
+    primary_crate_params: ModuleParams<'_>,
     fix: bool,
 ) -> Result<()> {
     match error {

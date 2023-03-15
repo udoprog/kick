@@ -10,13 +10,41 @@ use url::Url;
 use crate::gitmodules;
 use crate::rust_version::RustVersion;
 
-/// Badge building parameters.
+/// Parameters particular to a given crate.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub(crate) struct CrateParams<'a> {
-    pub(crate) repo: Option<ModuleRepo<'a>>,
     pub(crate) name: &'a str,
+    pub(crate) repo: Option<ModuleRepo<'a>>,
     pub(crate) description: Option<&'a str>,
     pub(crate) rust_version: Option<RustVersion>,
+}
+
+/// Global version parameters.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub(crate) struct RenderRustVersions {
+    pub(crate) rustc: Option<RustVersion>,
+    pub(crate) edition_2018: RustVersion,
+    pub(crate) edition_2021: RustVersion,
+}
+
+/// Parameters particular to a specific module.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub(crate) struct ModuleParams<'a> {
+    #[serde(rename = "crate")]
+    pub(crate) crate_params: CrateParams<'a>,
+    /// Current job name.
+    pub(crate) job_name: &'a str,
+    /// Globally known rust versions in use.
+    pub(crate) rust_versions: RenderRustVersions,
+    #[serde(flatten)]
+    pub(crate) variables: &'a toml::Table,
+}
+
+impl ModuleParams<'_> {
+    /// Get the current crate name.
+    pub(crate) fn crate_name(&self) -> &str {
+        self.crate_params.name
+    }
 }
 
 /// Update parameters.

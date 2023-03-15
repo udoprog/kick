@@ -8,10 +8,9 @@ use relative_path::RelativePath;
 use reqwest::Url;
 use serde::Serialize;
 
-use crate::config::PerCrateRender;
 use crate::ctxt::Ctxt;
 use crate::file::File;
-use crate::model::Module;
+use crate::model::{Module, ModuleParams};
 use crate::urls::Urls;
 use crate::validation::Validation;
 use crate::workspace::Package;
@@ -26,7 +25,7 @@ struct Readme<'a, 'outer> {
     module: &'a Module,
     readme_path: &'a RelativePath,
     entry: &'a RelativePath,
-    params: PerCrateRender<'a>,
+    params: ModuleParams<'a>,
     validation: &'outer mut Vec<Validation>,
     urls: &'outer mut Urls,
 }
@@ -37,7 +36,7 @@ pub(crate) fn build(
     manifest_dir: &RelativePath,
     module: &Module,
     package: &Package,
-    params: PerCrateRender<'_>,
+    params: ModuleParams<'_>,
     validation: &mut Vec<Validation>,
     urls: &mut Urls,
 ) -> Result<()> {
@@ -103,7 +102,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
             });
         }
 
-        let readme_from_lib_rs = readme_from_lib_rs(&new_file, rm.params)?;
+        let readme_from_lib_rs = readme_from_lib_rs(cx, rm, &new_file, rm.params)?;
 
         if *file != *new_file {
             rm.validation.push(Validation::MismatchedLibRs {
@@ -196,7 +195,7 @@ fn process_lib_rs(
         badges: &'a [BadgeParams],
         is_more: bool,
         #[serde(flatten)]
-        params: PerCrateRender<'a>,
+        params: ModuleParams<'a>,
     }
 
     let source = File::read(readme.entry.to_path(cx.root))?;
@@ -389,14 +388,22 @@ fn visit_url(
 }
 
 /// Generate a readme.
-fn readme_from_lib_rs(file: &File, params: PerCrateRender<'_>) -> Result<File> {
-    let mut readme = File::new();
+fn readme_from_lib_rs(
+    cx: &Ctxt<'_>,
+    rm: &mut Readme<'_, '_>,
+    file: &File,
+    params: ModuleParams<'_>,
+) -> Result<File> {
+    #[derive(Serialize)]
+    struct ReadmeParams<'a> {
+        body: &'a str,
+        #[serde(flatten)]
+        params: ModuleParams<'a>,
+    }
+
+    let mut body = File::new();
 
     let mut in_code_block = None::<bool>;
-    let name = params.crate_params.name;
-
-    readme.push(format!("# {name}").as_bytes());
-    readme.push(b"");
 
     for line in file.lines() {
         let comment = match line.as_rust_comment() {
@@ -419,7 +426,7 @@ fn readme_from_lib_rs(file: &File, params: PerCrateRender<'_>) -> Result<File> {
         if comment.starts_with("```") {
             if in_code_block.is_none() {
                 let (parts, specs) = filter_code_block(comment);
-                readme.push(format!("```{parts}").as_bytes());
+                body.push(format!("```{parts}").as_bytes());
                 in_code_block = Some(specs.contains("rust"));
                 continue;
             }
@@ -427,8 +434,32 @@ fn readme_from_lib_rs(file: &File, params: PerCrateRender<'_>) -> Result<File> {
             in_code_block = None;
         }
 
-        readme.push(comment.as_bytes());
+        body.push(comment.as_bytes());
     }
+
+    let mut readme = if let Some(readme) = cx.config.readme(&rm.module.path) {
+        let body = std::str::from_utf8(body.as_bytes())?;
+
+        let output = readme.render(&ReadmeParams { body, params })?;
+
+        let mut readme = File::new();
+
+        for line in output.lines() {
+            readme.push(line.as_bytes());
+        }
+
+        readme
+    } else {
+        let mut readme = File::new();
+        readme.push(format!("# {name}", name = params.crate_name()).as_bytes());
+        readme.push(b"");
+
+        for line in body.lines() {
+            readme.push(line.as_bytes());
+        }
+
+        readme
+    };
 
     readme.ensure_trailing_newline();
     Ok(readme)

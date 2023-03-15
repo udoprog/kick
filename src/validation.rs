@@ -10,11 +10,10 @@ use relative_path::RelativePathBuf;
 
 use self::cargo::CargoIssue;
 use self::ci::ActionExpected;
-use crate::config::PerCrateRender;
 use crate::ctxt::Ctxt;
 use crate::file::File;
 use crate::manifest::Manifest;
-use crate::model::{Module, UpdateParams};
+use crate::model::{Module, ModuleParams, UpdateParams};
 use crate::urls::Urls;
 use crate::workspace::{Package, Workspace};
 
@@ -115,7 +114,7 @@ pub(crate) fn build(
     module: &Module,
     workspace: &Workspace,
     primary_crate: &Package,
-    primary_crate_params: PerCrateRender<'_>,
+    primary_crate_params: ModuleParams<'_>,
     validation: &mut Vec<Validation>,
     urls: &mut Urls,
 ) -> Result<()> {
