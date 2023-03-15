@@ -76,11 +76,11 @@ pub(crate) fn build(
         validation,
     };
 
-    validate(cx, &mut ci, primary_crate, module)
+    validate(cx, &mut ci, module)
 }
 
 /// Validate the current model.
-fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, package: &Package, module: &Module) -> Result<()> {
+fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, module: &Module) -> Result<()> {
     let deprecated_yml = ci.path.join("rust.yml");
     let expected_path = ci.path.join("ci.yml");
 
@@ -96,7 +96,6 @@ fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, package: &Package, module: &Module) 
         ci.validation.push(Validation::MissingWorkflow {
             path: expected_path,
             candidates: candidates.clone(),
-            crate_params: package.crate_params(module)?.into_owned(),
         });
 
         match path {
@@ -122,11 +121,11 @@ fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, package: &Package, module: &Module) 
         .and_then(|name| name.as_str())
         .ok_or_else(|| anyhow!("{path}: missing .name"))?;
 
-    if name != cx.config.job_name() {
+    if name != cx.config.job_name(module) {
         ci.validation.push(Validation::WrongWorkflowName {
             path: path.clone(),
             actual: name.to_owned(),
-            expected: cx.config.job_name().to_owned(),
+            expected: cx.config.job_name(module).to_owned(),
         });
     }
 

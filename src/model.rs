@@ -19,27 +19,6 @@ pub(crate) struct CrateParams<'a> {
     pub(crate) rust_version: Option<RustVersion>,
 }
 
-impl CrateParams<'_> {
-    /// Coerce into owned.
-    pub(crate) fn into_owned(self) -> OwnedCrateParams {
-        OwnedCrateParams {
-            repo: self.repo.map(ModuleRepo::into_owned),
-            name: self.name.to_owned(),
-            description: self.description.map(str::to_owned),
-            rust_version: self.rust_version,
-        }
-    }
-}
-
-/// Owned crate parameters.
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct OwnedCrateParams {
-    pub(crate) repo: Option<OwnedModuleRepo>,
-    pub(crate) name: String,
-    pub(crate) description: Option<String>,
-    pub(crate) rust_version: Option<RustVersion>,
-}
-
 /// Update parameters.
 pub(crate) struct UpdateParams<'a> {
     pub(crate) license: Option<&'a str>,
@@ -47,23 +26,13 @@ pub(crate) struct UpdateParams<'a> {
     pub(crate) repository: Option<&'a str>,
     pub(crate) homepage: Option<&'a str>,
     pub(crate) documentation: Option<&'a str>,
-    pub(crate) authors: &'a [String],
+    pub(crate) authors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ModuleRepo<'a> {
     pub(crate) owner: &'a str,
     pub(crate) name: &'a str,
-}
-
-impl ModuleRepo<'_> {
-    /// Coerce into owned variant.
-    pub(crate) fn into_owned(self) -> OwnedModuleRepo {
-        OwnedModuleRepo {
-            owner: self.owner.into(),
-            name: self.name.into(),
-        }
-    }
 }
 
 impl fmt::Display for ModuleRepo<'_> {
@@ -73,27 +42,6 @@ impl fmt::Display for ModuleRepo<'_> {
 }
 
 impl Serialize for ModuleRepo<'_> {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.collect_str(self)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct OwnedModuleRepo {
-    pub(crate) owner: Box<str>,
-    pub(crate) name: Box<str>,
-}
-
-impl fmt::Display for OwnedModuleRepo {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}/{}", self.owner, self.name)
-    }
-}
-
-impl Serialize for OwnedModuleRepo {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: Serializer,

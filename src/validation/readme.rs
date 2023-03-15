@@ -8,9 +8,10 @@ use relative_path::RelativePath;
 use reqwest::Url;
 use serde::Serialize;
 
+use crate::config::PerCrateRender;
 use crate::ctxt::Ctxt;
 use crate::file::File;
-use crate::model::{CrateParams, Module};
+use crate::model::Module;
 use crate::urls::Urls;
 use crate::validation::Validation;
 use crate::workspace::Package;
@@ -25,7 +26,7 @@ struct Readme<'a, 'outer> {
     module: &'a Module,
     readme_path: &'a RelativePath,
     entry: &'a RelativePath,
-    params: CrateParams<'a>,
+    params: PerCrateRender<'a>,
     validation: &'outer mut Vec<Validation>,
     urls: &'outer mut Urls,
 }
@@ -36,7 +37,7 @@ pub(crate) fn build(
     manifest_dir: &RelativePath,
     module: &Module,
     package: &Package,
-    params: CrateParams<'_>,
+    params: PerCrateRender<'_>,
     validation: &mut Vec<Validation>,
     urls: &mut Urls,
 ) -> Result<()> {
@@ -193,8 +194,9 @@ fn process_lib_rs(
     #[derive(Serialize)]
     struct HeaderParams<'a> {
         badges: &'a [BadgeParams],
-        description: Option<&'a str>,
         is_more: bool,
+        #[serde(flatten)]
+        params: PerCrateRender<'a>,
     }
 
     let source = File::read(readme.entry.to_path(cx.root))?;
@@ -204,8 +206,8 @@ fn process_lib_rs(
 
     for badge in cx.config.badges(&readme.module.path) {
         badges.push(BadgeParams {
-            markdown: badge.markdown(cx, &readme.params)?,
-            html: badge.html(cx, &readme.params)?,
+            markdown: badge.markdown(readme.params)?,
+            html: badge.html(readme.params)?,
         });
     }
 
@@ -232,8 +234,8 @@ fn process_lib_rs(
 
         let header = header.render(&HeaderParams {
             badges: &badges,
-            description: readme.params.description.map(str::trim),
             is_more: source_lines.peek().is_some(),
+            params: readme.params,
         })?;
 
         for string in header.split('\n') {
@@ -387,39 +389,11 @@ fn visit_url(
 }
 
 /// Generate a readme.
-fn readme_from_lib_rs(file: &File, params: CrateParams<'_>) -> Result<File> {
-    /// Filter code block fragments.
-    fn filter_code_block(comment: &str) -> (String, BTreeSet<String>) {
-        let parts = comment.get(3..).unwrap_or_default();
-        let mut out = BTreeSet::new();
-
-        for part in parts.split(',') {
-            let part = part.trim();
-
-            match part {
-                "" => continue,
-                "no_run" => continue,
-                "should_panic" => continue,
-                "ignore" => continue,
-                "edition2018" => continue,
-                "edition2021" => continue,
-                _ => {}
-            }
-
-            out.insert(part.to_owned());
-        }
-
-        if out.is_empty() {
-            out.insert(String::from("rust"));
-        }
-
-        (out.iter().cloned().collect::<Vec<_>>().join(","), out)
-    }
-
+fn readme_from_lib_rs(file: &File, params: PerCrateRender<'_>) -> Result<File> {
     let mut readme = File::new();
 
     let mut in_code_block = None::<bool>;
-    let name = params.name;
+    let name = params.crate_params.name;
 
     readme.push(format!("# {name}").as_bytes());
     readme.push(b"");
@@ -458,4 +432,32 @@ fn readme_from_lib_rs(file: &File, params: CrateParams<'_>) -> Result<File> {
 
     readme.ensure_trailing_newline();
     Ok(readme)
+}
+
+/// Filter code block fragments.
+fn filter_code_block(comment: &str) -> (String, BTreeSet<String>) {
+    let parts = comment.get(3..).unwrap_or_default();
+    let mut out = BTreeSet::new();
+
+    for part in parts.split(',') {
+        let part = part.trim();
+
+        match part {
+            "" => continue,
+            "no_run" => continue,
+            "should_panic" => continue,
+            "ignore" => continue,
+            "edition2018" => continue,
+            "edition2021" => continue,
+            _ => {}
+        }
+
+        out.insert(part.to_owned());
+    }
+
+    if out.is_empty() {
+        out.insert(String::from("rust"));
+    }
+
+    (out.iter().cloned().collect::<Vec<_>>().join(","), out)
 }

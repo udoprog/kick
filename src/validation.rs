@@ -10,12 +10,13 @@ use relative_path::RelativePathBuf;
 
 use self::cargo::CargoIssue;
 use self::ci::ActionExpected;
+use crate::config::PerCrateRender;
 use crate::ctxt::Ctxt;
 use crate::file::File;
 use crate::manifest::Manifest;
-use crate::model::{Module, OwnedCrateParams, UpdateParams};
+use crate::model::{Module, UpdateParams};
 use crate::urls::Urls;
-use crate::workspace;
+use crate::workspace::{Package, Workspace};
 
 pub(crate) enum Validation {
     DeprecatedWorkflow {
@@ -24,7 +25,6 @@ pub(crate) enum Validation {
     MissingWorkflow {
         path: RelativePathBuf,
         candidates: Box<[RelativePathBuf]>,
-        crate_params: OwnedCrateParams,
     },
     WrongWorkflowName {
         path: RelativePathBuf,
@@ -113,21 +113,13 @@ pub(crate) enum Validation {
 pub(crate) fn build(
     cx: &Ctxt<'_>,
     module: &Module,
+    workspace: &Workspace,
+    primary_crate: &Package,
+    params: PerCrateRender<'_>,
     validation: &mut Vec<Validation>,
     urls: &mut Urls,
 ) -> Result<()> {
-    let Some(workspace) = workspace::open(cx, module)? else {
-        tracing::warn!(source = ?module.source, module = module.path.as_str(), "missing workspace for module");
-        return Ok(());
-    };
-
-    let primary_crate = workspace.primary_crate()?;
-
-    let params = cx
-        .config
-        .per_crate_render(cx, primary_crate.crate_params(module)?);
-
-    let documentation = match &cx.config.documentation {
+    let documentation = match &cx.config.documentation(module) {
         Some(documentation) => Some(documentation.render(&params)?),
         None => None,
     };
@@ -135,12 +127,12 @@ pub(crate) fn build(
     let module_url = module.url.to_string();
 
     let update_params = UpdateParams {
-        license: Some(cx.config.license()),
+        license: Some(cx.config.license(module)),
         readme: Some(readme::README_MD),
         repository: Some(&module_url),
         homepage: Some(&module_url),
         documentation: documentation.as_deref(),
-        authors: &cx.config.authors,
+        authors: cx.config.authors(module),
     };
 
     for package in workspace.packages() {
@@ -151,7 +143,7 @@ pub(crate) fn build(
 
     if cx.config.is_enabled(&module.path, "ci") {
         ci::build(cx, primary_crate, module, &workspace, validation)
-            .with_context(|| anyhow!("ci validation: {}", cx.config.job_name()))?;
+            .with_context(|| anyhow!("ci validation: {}", cx.config.job_name(module)))?;
     }
 
     if cx.config.is_enabled(&module.path, "readme") {
@@ -160,21 +152,23 @@ pub(crate) fn build(
             &module.path,
             module,
             primary_crate,
-            params.crate_params,
+            params,
             validation,
             urls,
         )?;
 
         for package in workspace.packages() {
             if package.manifest_dir != *module.path && package.manifest.is_publish()? {
-                let crate_params = package.crate_params(module)?;
+                let params = cx
+                    .config
+                    .per_crate_render(cx, module, package.crate_params(module)?);
 
                 readme::build(
                     cx,
                     &package.manifest_dir,
                     module,
                     package,
-                    crate_params,
+                    params,
                     validation,
                     urls,
                 )?;

@@ -3,11 +3,14 @@ use std::io::Write;
 use anyhow::{Context, Result};
 use clap::Parser;
 
+use crate::config::PerCrateRender;
 use crate::ctxt::Ctxt;
 use crate::file::{File, LineColumn};
+use crate::model::Module;
 use crate::urls::UrlError;
 use crate::urls::Urls;
 use crate::validation::Validation;
+use crate::workspace;
 
 #[derive(Default, Parser)]
 pub(crate) struct Opts {
@@ -22,16 +25,36 @@ pub(crate) struct Opts {
 /// Entrypoint to run action.
 #[tracing::instrument(skip(cx, opts))]
 pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts, fix: bool) -> Result<()> {
-    let mut validation = Vec::new();
     let mut urls = Urls::default();
 
     for module in cx.modules(&opts.modules) {
-        crate::validation::build(cx, module, &mut validation, &mut urls)
-            .with_context(|| module.path.to_owned())?;
-    }
+        let mut validation = Vec::new();
 
-    for validation in &validation {
-        validate(cx, validation, fix)?;
+        let Some(workspace) = workspace::open(cx, module)? else {
+            tracing::warn!(source = ?module.source, module = module.path.as_str(), "missing workspace for module");
+            return Ok(());
+        };
+
+        let primary_crate = workspace.primary_crate()?;
+
+        let params = cx
+            .config
+            .per_crate_render(cx, module, primary_crate.crate_params(module)?);
+
+        crate::validation::build(
+            cx,
+            module,
+            &workspace,
+            &primary_crate,
+            params,
+            &mut validation,
+            &mut urls,
+        )
+        .with_context(|| module.path.to_owned())?;
+
+        for validation in &validation {
+            validate(cx, module, validation, params, fix)?;
+        }
     }
 
     let o = std::io::stdout();
@@ -59,13 +82,15 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts, fix: bool) -> Result<()> {
 }
 
 /// Report and apply a asingle validation.
-fn validate(cx: &Ctxt<'_>, error: &Validation, fix: bool) -> Result<()> {
+fn validate(
+    cx: &Ctxt<'_>,
+    module: &Module,
+    error: &Validation,
+    primary_crate_params: PerCrateRender<'_>,
+    fix: bool,
+) -> Result<()> {
     match error {
-        Validation::MissingWorkflow {
-            path,
-            candidates,
-            crate_params,
-        } => {
+        Validation::MissingWorkflow { path, candidates } => {
             println!("{path}: Missing workflow");
 
             for candidate in candidates.iter() {
@@ -85,7 +110,7 @@ fn validate(cx: &Ctxt<'_>, error: &Validation, fix: bool) -> Result<()> {
                         }
                     }
 
-                    let Some(string) = cx.config.default_workflow(cx, crate_params)? else {
+                    let Some(string) = cx.config.workflow(module, primary_crate_params)? else {
                         println!("  Missing default workflow!");
                         return Ok(());
                     };

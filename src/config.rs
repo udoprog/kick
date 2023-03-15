@@ -3,7 +3,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use relative_path::{RelativePath, RelativePathBuf};
 use serde::Serialize;
 
@@ -25,10 +25,10 @@ pub(crate) struct RenderRustVersions {
     edition_2021: RustVersion,
 }
 
-#[derive(Serialize)]
-pub(crate) struct PerCrateRender<'a, T: 'a> {
+#[derive(Debug, Clone, Copy, Serialize)]
+pub(crate) struct PerCrateRender<'a> {
     #[serde(rename = "crate")]
-    pub(crate) crate_params: T,
+    pub(crate) crate_params: CrateParams<'a>,
     /// Current job name.
     job_name: &'a str,
     /// Globally known rust versions in use.
@@ -38,6 +38,15 @@ pub(crate) struct PerCrateRender<'a, T: 'a> {
 }
 
 pub(crate) struct Repo {
+    pub(crate) workflow: Option<Template>,
+    /// The name of the actions job.
+    pub(crate) job_name: Option<String>,
+    /// License of the project.
+    pub(crate) license: Option<String>,
+    /// Authors of the project.
+    pub(crate) authors: Vec<String>,
+    /// Documentation link of the project.
+    pub(crate) documentation: Option<Template>,
     /// Custom header template.
     pub(crate) header: Option<Template>,
     /// Custom badges for a specific project.
@@ -70,44 +79,35 @@ impl Repo {
 }
 
 pub(crate) struct Config {
-    default_workflow: Option<Template>,
-    pub(crate) job_name: Option<String>,
-    pub(crate) license: Option<String>,
-    pub(crate) authors: Vec<String>,
-    pub(crate) documentation: Option<Template>,
-    pub(crate) badges: Vec<ConfigBadge>,
+    pub(crate) base: Repo,
     pub(crate) repos: HashMap<RelativePathBuf, Repo>,
     pub(crate) extra: HashMap<String, toml::Value>,
 }
 
 impl Config {
     /// Generate a default workflow.
-    pub(crate) fn default_workflow<T>(
+    pub(crate) fn workflow(
         &self,
-        cx: &Ctxt<'_>,
-        crate_params: T,
-    ) -> Result<Option<String>>
-    where
-        T: Serialize,
-    {
-        let Some(template) = &self.default_workflow  else {
+        module: &Module,
+        params: PerCrateRender<'_>,
+    ) -> Result<Option<String>> {
+        let Some(template) = &self.repos.get(module.path.as_ref()).and_then(|r|r.workflow.as_ref()).or(self.base.workflow.as_ref())  else {
             return Ok(None);
         };
 
-        Ok(Some(
-            template.render(&self.per_crate_render(cx, crate_params))?,
-        ))
+        Ok(Some(template.render(&params)?))
     }
 
     /// Set up render parameters.
-    pub(crate) fn per_crate_render<'a, T: 'a>(
+    pub(crate) fn per_crate_render<'a>(
         &'a self,
         cx: &Ctxt<'_>,
-        crate_params: T,
-    ) -> PerCrateRender<'a, T> {
+        module: &Module,
+        crate_params: CrateParams<'a>,
+    ) -> PerCrateRender<'a> {
         PerCrateRender {
             crate_params,
-            job_name: self.job_name(),
+            job_name: self.job_name(module),
             rust_versions: RenderRustVersions {
                 rustc: cx.rustc_version,
                 edition_2018: rust_version::EDITION_2018,
@@ -117,12 +117,60 @@ impl Config {
         }
     }
 
-    pub(crate) fn job_name(&self) -> &str {
-        self.job_name.as_deref().unwrap_or(DEFAULT_JOB_NAME)
+    /// Get the current job name.
+    pub(crate) fn job_name(&self, module: &Module) -> &str {
+        if let Some(name) = self
+            .repos
+            .get(module.path.as_ref())
+            .and_then(|r| r.job_name.as_deref())
+        {
+            return name;
+        }
+
+        self.base.job_name.as_deref().unwrap_or(DEFAULT_JOB_NAME)
     }
 
-    pub(crate) fn license(&self) -> &str {
-        self.license.as_deref().unwrap_or(DEFAULT_LICENSE)
+    /// Get the current documentation template.
+    pub(crate) fn documentation(&self, module: &Module) -> Option<&Template> {
+        if let Some(template) = self
+            .repos
+            .get(module.path.as_ref())
+            .and_then(|r| r.documentation.as_ref())
+        {
+            return Some(template);
+        }
+
+        self.base.documentation.as_ref()
+    }
+
+    /// Get the current license template.
+    pub(crate) fn license(&self, module: &Module) -> &str {
+        if let Some(template) = self
+            .repos
+            .get(module.path.as_ref())
+            .and_then(|r| r.license.as_deref())
+        {
+            return template;
+        }
+
+        self.base.license.as_deref().unwrap_or(DEFAULT_LICENSE)
+    }
+
+    /// Get the current license template.
+    pub(crate) fn authors(&self, module: &Module) -> Vec<String> {
+        let mut authors = Vec::new();
+
+        for author in self
+            .repos
+            .get(module.path.as_ref())
+            .into_iter()
+            .flat_map(|r| r.authors.iter())
+        {
+            authors.push(author.to_owned());
+        }
+
+        authors.extend(self.base.authors.iter().cloned());
+        authors
     }
 
     /// Iterator over badges for the given repo.
@@ -130,28 +178,41 @@ impl Config {
         let repo = self.repos.get(path);
         let repos = repo.into_iter().flat_map(|repo| repo.badges.iter());
 
-        self.badges
+        self.base
+            .badges
             .iter()
+            .chain(repos)
             .filter(move |b| match repo {
                 Some(repo) => repo.wants_badge(b),
                 None => b.enabled,
             })
-            .chain(repos)
     }
 
     /// Get the header for the given repo.
     pub(crate) fn header(&self, path: &RelativePath) -> Option<&Template> {
-        self.repos.get(path)?.header.as_ref()
+        if let Some(header) = self.repos.get(path).and_then(|r| r.header.as_ref()) {
+            return Some(header);
+        }
+
+        self.base.header.as_ref()
     }
 
     /// Get crate for the given repo.
     pub(crate) fn crate_for<'a>(&'a self, path: &RelativePath) -> Option<&'a str> {
-        self.repos.get(path)?.krate.as_deref()
+        if let Some(krate) = self.repos.get(path).and_then(|r| r.krate.as_deref()) {
+            return Some(krate);
+        }
+
+        self.base.krate.as_deref()
     }
 
     /// Get Cargo.toml path for the given module.
     pub(crate) fn cargo_toml<'a>(&'a self, path: &RelativePath) -> Option<&'a RelativePath> {
-        self.repos.get(path)?.cargo_toml.as_deref()
+        if let Some(cargo_toml) = self.repos.get(path).and_then(|r| r.cargo_toml.as_deref()) {
+            return Some(cargo_toml);
+        }
+
+        self.base.cargo_toml.as_deref()
     }
 
     /// Get Cargo.toml path for the given module.
@@ -172,28 +233,20 @@ pub(crate) struct ConfigBadge {
 }
 
 impl ConfigBadge {
-    pub(crate) fn markdown(
-        &self,
-        cx: &Ctxt<'_>,
-        params: &CrateParams<'_>,
-    ) -> Result<Option<String>> {
-        let data = cx.config.per_crate_render(cx, params);
-
+    pub(crate) fn markdown(&self, params: PerCrateRender<'_>) -> Result<Option<String>> {
         let Some(template) = self.markdown.as_ref() else {
             return Ok(None);
         };
 
-        Ok(Some(template.render(&data)?))
+        Ok(Some(template.render(&params)?))
     }
 
-    pub(crate) fn html(&self, cx: &Ctxt<'_>, params: &CrateParams<'_>) -> Result<Option<String>> {
-        let data = cx.config.per_crate_render(cx, params);
-
+    pub(crate) fn html(&self, params: PerCrateRender<'_>) -> Result<Option<String>> {
         let Some(template) = self.html.as_ref() else {
             return Ok(None);
         };
 
-        Ok(Some(template.render(&data)?))
+        Ok(Some(template.render(&params)?))
     }
 }
 
@@ -217,31 +270,51 @@ impl fmt::Display for Part {
 
 /// Context used when parsing configuration.
 struct ConfigCtxt<'a> {
-    path: Vec<Part>,
+    root: &'a Path,
+    path: &'a RelativePath,
+    kick_path: RelativePathBuf,
+    parts: Vec<Part>,
     templating: &'a Templating,
 }
 
 impl<'a> ConfigCtxt<'a> {
-    fn new(templating: &'a Templating) -> Self {
+    fn new(root: &'a Path, path: &'a RelativePath, templating: &'a Templating) -> Self {
+        let kick_path = path.join(KICK_TOML);
+
         Self {
-            path: Vec::new(),
+            root,
+            path,
+            kick_path,
+            parts: Vec::new(),
             templating,
         }
     }
 
-    fn key(&mut self, key: &str) {
-        self.path.push(Part::Key(key.to_owned()));
+    /// Load the kick config.
+    fn kick_config(&self) -> Result<Option<toml::Value>> {
+        let string = match std::fs::read_to_string(self.kick_path.to_path(self.root)) {
+            Ok(string) => string,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| self.kick_path.to_owned()),
+        };
+
+        let config = toml::from_str(&string).with_context(|| self.kick_path.to_owned())?;
+        Ok(Some(config))
     }
 
-    fn format_path(&self) -> String {
+    fn key(&mut self, key: &str) {
+        self.parts.push(Part::Key(key.to_owned()));
+    }
+
+    fn format_parts(&self) -> String {
         use std::fmt::Write;
 
-        if self.path.is_empty() {
+        if self.parts.is_empty() {
             return ".".to_string();
         }
 
         let mut out = String::new();
-        let mut it = self.path.iter();
+        let mut it = self.parts.iter();
 
         if let Some(p) = it.next() {
             write!(out, "{p}").unwrap();
@@ -259,8 +332,8 @@ impl<'a> ConfigCtxt<'a> {
     }
 
     fn bail(&self, args: impl fmt::Display) -> anyhow::Error {
-        let path = self.format_path();
-        anyhow::Error::msg(format!("{path}: {args}"))
+        let parts = self.format_parts();
+        anyhow::Error::msg(format!("{path}: {parts}: {args}", path = self.kick_path))
     }
 
     /// Ensure table is empty.
@@ -323,12 +396,12 @@ impl<'a> ConfigCtxt<'a> {
         let mut out = Vec::with_capacity(array.len());
 
         for (index, item) in array.into_iter().enumerate() {
-            self.path.push(Part::Index(index));
+            self.parts.push(Part::Index(index));
             out.push(f(self, item)?);
-            self.path.pop();
+            self.parts.pop();
         }
 
-        self.path.pop();
+        self.parts.pop();
         Ok(Some(out))
     }
 
@@ -351,13 +424,13 @@ impl<'a> ConfigCtxt<'a> {
         let mut out = HashMap::with_capacity(table.len());
 
         for (key, item) in table {
-            self.path.push(Part::Key(key.clone()));
+            self.parts.push(Part::Key(key.clone()));
             let (key, value) = f(self, key, item)?;
             out.insert(key, value);
-            self.path.pop();
+            self.parts.pop();
         }
 
-        self.path.pop();
+        self.parts.pop();
         Ok(Some(out))
     }
 
@@ -379,7 +452,7 @@ impl<'a> ConfigCtxt<'a> {
             }
         };
 
-        self.path.pop();
+        self.parts.pop();
         Ok(Some(out))
     }
 
@@ -394,7 +467,7 @@ impl<'a> ConfigCtxt<'a> {
 
         self.key(key);
         let out = self.boolean(value)?;
-        self.path.pop();
+        self.parts.pop();
         Ok(Some(out))
     }
 
@@ -440,35 +513,57 @@ impl<'a> ConfigCtxt<'a> {
         Ok(badges)
     }
 
-    fn repo(&mut self, config: toml::Value) -> Result<Repo> {
-        let mut config = self.table(config)?;
+    fn repo_table(&mut self, config: &mut toml::Table) -> Result<Repo> {
+        let workflow = self.in_string(config, "workflow", |cx, string| {
+            let path = cx.path.join(string);
+            let template =
+                std::fs::read_to_string(path.to_path(cx.root)).with_context(|| path.to_owned())?;
+            cx.compile(&template)
+        })?;
 
-        let header = self.in_string(&mut config, "header", |cx, string| cx.compile(&string))?;
+        let job_name = self.in_string(config, "job_name", |_, string| Ok(string))?;
+        let license = self.in_string(config, "license", |_, string| Ok(string))?;
 
-        let badges = self.badges(&mut config)?.unwrap_or_default();
-        let _ = self
-            .as_boolean(&mut config, "center_badges")?
+        let authors = self
+            .in_array(config, "authors", |cx, item| cx.string(item))?
             .unwrap_or_default();
-        let krate = self.as_string(&mut config, "crate")?;
 
-        let cargo_toml = self.in_string(&mut config, "cargo_toml", |_, string| {
+        let documentation =
+            self.in_string(config, "documentation", |cx, source| cx.compile(&source))?;
+
+        let header = self.in_string(config, "header", |cx, string| {
+            let path = cx.path.join(string);
+            let template =
+                std::fs::read_to_string(path.to_path(cx.root)).with_context(|| path.to_owned())?;
+            cx.compile(&template)
+        })?;
+
+        let badges = self.badges(config)?.unwrap_or_default();
+        let _ = self
+            .as_boolean(config, "center_badges")?
+            .unwrap_or_default();
+        let krate = self.as_string(config, "crate")?;
+
+        let cargo_toml = self.in_string(config, "cargo_toml", |_, string| {
             Ok(RelativePathBuf::from(string))
         })?;
 
-        let disabled = self.in_array(&mut config, "disabled", |cx, item| cx.string(item))?;
+        let disabled = self.in_array(config, "disabled", |cx, item| cx.string(item))?;
         let disabled = disabled.unwrap_or_default().into_iter().collect();
 
         let disabled_badges =
-            self.in_array(&mut config, "disabled_badges", |cx, item| cx.string(item))?;
+            self.in_array(config, "disabled_badges", |cx, item| cx.string(item))?;
         let disabled_badges = disabled_badges.unwrap_or_default().into_iter().collect();
 
-        let enabled_badges =
-            self.in_array(&mut config, "enabled_badges", |cx, item| cx.string(item))?;
+        let enabled_badges = self.in_array(config, "enabled_badges", |cx, item| cx.string(item))?;
         let enabled_badges = enabled_badges.unwrap_or_default().into_iter().collect();
 
-        self.ensure_empty(config)?;
-
         Ok(Repo {
+            workflow,
+            job_name,
+            license,
+            authors,
+            documentation,
             header,
             badges,
             krate,
@@ -478,44 +573,30 @@ impl<'a> ConfigCtxt<'a> {
             disabled_badges,
         })
     }
+
+    fn repo(&mut self, config: toml::Value) -> Result<Repo> {
+        let mut config = self.table(config)?;
+        let repo = self.repo_table(&mut config)?;
+        self.ensure_empty(config)?;
+        Ok(repo)
+    }
 }
 
 /// Load a configuration from the given path.
 pub(crate) fn load(
     root: &Path,
-    root_path: &RelativePath,
+    path: &RelativePath,
     templating: &Templating,
     modules: &[Module],
 ) -> Result<Config> {
-    let mut cx = ConfigCtxt::new(templating);
-    let kick_path = root_path.join(KICK_TOML);
+    let mut cx = ConfigCtxt::new(root, path, templating);
 
-    let mut config: toml::Table = {
-        let string = std::fs::read_to_string(kick_path.to_path(root))
-            .with_context(|| kick_path.to_owned())?;
-        let config = toml::from_str(&string)?;
-        cx.table(config)?
+    let Some(config) = cx.kick_config()? else {
+        return Err(anyhow!("{}: missing file", cx.kick_path));
     };
 
-    let default_workflow = cx.in_string(&mut config, "default_workflow", |cx, string| {
-        let path = root_path.join(string);
-        let string =
-            std::fs::read_to_string(path.to_path(root)).with_context(|| path.to_owned())?;
-        cx.compile(&string)
-    })?;
-
-    let job_name = cx.in_string(&mut config, "job_name", |_, string| Ok(string))?;
-    let license = cx.in_string(&mut config, "license", |_, string| Ok(string))?;
-
-    let badges = cx.badges(&mut config)?.unwrap_or_default();
-
-    let authors = cx
-        .in_array(&mut config, "authors", |cx, item| cx.string(item))?
-        .unwrap_or_default();
-
-    let documentation = cx.in_string(&mut config, "documentation", |cx, source| {
-        cx.compile(&source)
-    })?;
+    let mut config = cx.table(config)?;
+    let base = cx.repo_table(&mut config)?;
 
     let extra = cx
         .in_table(&mut config, "extra", |_, key, value| Ok((key, value)))?
@@ -523,14 +604,12 @@ pub(crate) fn load(
 
     let mut repos = cx
         .in_table(&mut config, "repos", |cx, id, value| {
-            Ok((root_path.join(id), cx.repo(value)?))
+            Ok((path.join(id), cx.repo(value)?))
         })?
         .unwrap_or_default();
 
     for module in modules {
-        let kick_path = module.path.join(KICK_TOML);
-
-        let Some(repo) = load_repo(root, &kick_path, templating).with_context(|| kick_path.clone())? else {
+        let Some(repo) = load_repo(root, module, templating).with_context(|| module.path.clone())? else {
             continue;
         };
 
@@ -538,28 +617,16 @@ pub(crate) fn load(
     }
 
     cx.ensure_empty(config)?;
-
-    Ok(Config {
-        default_workflow,
-        job_name,
-        license,
-        authors,
-        documentation,
-        badges,
-        repos,
-        extra,
-    })
+    Ok(Config { base, repos, extra })
 }
 
-fn load_repo(root: &Path, path: &RelativePath, templating: &Templating) -> Result<Option<Repo>> {
-    let string = match std::fs::read_to_string(path.to_path(root)) {
-        Ok(string) => string,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e).with_context(|| path.to_owned())?,
+fn load_repo(root: &Path, module: &Module, templating: &Templating) -> Result<Option<Repo>> {
+    let mut cx = ConfigCtxt::new(root, &module.path, templating);
+
+    let Some(config) = cx.kick_config()? else {
+        return Ok(None);
     };
 
-    let config = toml::from_str(&string)?;
-    let mut cx = ConfigCtxt::new(templating);
     let repo = cx.repo(config)?;
     Ok(Some(repo))
 }
