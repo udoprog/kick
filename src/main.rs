@@ -153,16 +153,23 @@ async fn entry() -> Result<()> {
 fn find_root(root: &Path) -> Result<RelativePathBuf> {
     let mut current = root.to_owned();
     let mut path = RelativePathBuf::new();
+    let mut last = None;
 
     loop {
         if current.join(KICK_TOML).is_file() {
-            return Ok(path);
+            last = Some(path.clone());
         }
 
         if !current.pop() {
-            return Err(anyhow!("missing projects directory"));
+            break;
         }
 
         path.push("..");
     }
+
+    let Some(last) = last else {
+        return Err(anyhow!("missing projects directory"));
+    };
+
+    Ok(last)
 }

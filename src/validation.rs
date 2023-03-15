@@ -115,12 +115,12 @@ pub(crate) fn build(
     module: &Module,
     workspace: &Workspace,
     primary_crate: &Package,
-    params: PerCrateRender<'_>,
+    primary_crate_params: PerCrateRender<'_>,
     validation: &mut Vec<Validation>,
     urls: &mut Urls,
 ) -> Result<()> {
     let documentation = match &cx.config.documentation(module) {
-        Some(documentation) => Some(documentation.render(&params)?),
+        Some(documentation) => Some(documentation.render(&primary_crate_params)?),
         None => None,
     };
 
@@ -152,16 +152,21 @@ pub(crate) fn build(
             &module.path,
             module,
             primary_crate,
-            params,
+            primary_crate_params,
             validation,
             urls,
         )?;
 
         for package in workspace.packages() {
             if package.manifest_dir != *module.path && package.manifest.is_publish()? {
-                let params = cx
-                    .config
-                    .per_crate_render(cx, module, package.crate_params(module)?);
+                let variables = cx.config.variables(module);
+
+                let params = cx.config.per_crate_render(
+                    cx,
+                    module,
+                    package.crate_params(module)?,
+                    &variables,
+                );
 
                 readme::build(
                     cx,

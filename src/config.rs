@@ -34,9 +34,10 @@ pub(crate) struct PerCrateRender<'a> {
     /// Globally known rust versions in use.
     rust_versions: RenderRustVersions,
     #[serde(flatten)]
-    extra: &'a HashMap<String, toml::Value>,
+    variables: &'a HashMap<String, toml::Value>,
 }
 
+#[derive(Default)]
 pub(crate) struct Repo {
     pub(crate) workflow: Option<Template>,
     /// The name of the actions job.
@@ -61,9 +62,28 @@ pub(crate) struct Repo {
     pub(crate) enabled_badges: HashSet<String>,
     /// Explicit blocklist for badges to enabled.
     pub(crate) disabled_badges: HashSet<String>,
+    /// Variables that can be used verbatim in templates.
+    pub(crate) variables: HashMap<String, toml::Value>,
 }
 
 impl Repo {
+    /// Merge this config with another.
+    pub(crate) fn merge_with(&mut self, mut other: Self) {
+        self.workflow = other.workflow.or(self.workflow.take());
+        self.job_name = other.job_name.or(self.job_name.take());
+        self.license = other.license.or(self.license.take());
+        self.authors.append(&mut other.authors);
+        self.documentation = other.documentation.or(self.documentation.take());
+        self.header = other.header.or(self.header.take());
+        self.badges.append(&mut other.badges);
+        self.krate = other.krate.or(self.krate.take());
+        self.cargo_toml = other.cargo_toml.or(self.cargo_toml.take());
+        self.disabled.extend(other.disabled);
+        self.enabled_badges.extend(other.enabled_badges);
+        self.disabled_badges.extend(other.disabled_badges);
+        self.variables.extend(other.variables);
+    }
+
     /// Test if this repo wants the specified badge.
     pub(crate) fn wants_badge(&self, b: &ConfigBadge) -> bool {
         let Some(id) = &b.id else {
@@ -81,7 +101,6 @@ impl Repo {
 pub(crate) struct Config {
     pub(crate) base: Repo,
     pub(crate) repos: HashMap<RelativePathBuf, Repo>,
-    pub(crate) extra: HashMap<String, toml::Value>,
 }
 
 impl Config {
@@ -104,6 +123,7 @@ impl Config {
         cx: &Ctxt<'_>,
         module: &Module,
         crate_params: CrateParams<'a>,
+        variables: &'a HashMap<String, toml::Value>,
     ) -> PerCrateRender<'a> {
         PerCrateRender {
             crate_params,
@@ -113,7 +133,7 @@ impl Config {
                 edition_2018: rust_version::EDITION_2018,
                 edition_2021: rust_version::EDITION_2021,
             },
-            extra: &self.extra,
+            variables,
         }
     }
 
@@ -171,6 +191,22 @@ impl Config {
 
         authors.extend(self.base.authors.iter().cloned());
         authors
+    }
+
+    /// Get the current license template.
+    pub(crate) fn variables(&self, module: &Module) -> HashMap<String, toml::Value> {
+        let mut variables = self.base.variables.clone();
+
+        for (key, value) in self
+            .repos
+            .get(module.path.as_ref())
+            .into_iter()
+            .flat_map(|r| r.variables.iter())
+        {
+            variables.insert(key.to_owned(), value.to_owned());
+        }
+
+        variables
     }
 
     /// Iterator over badges for the given repo.
@@ -558,6 +594,10 @@ impl<'a> ConfigCtxt<'a> {
         let enabled_badges = self.in_array(config, "enabled_badges", |cx, item| cx.string(item))?;
         let enabled_badges = enabled_badges.unwrap_or_default().into_iter().collect();
 
+        let variables = self
+            .in_table(config, "variables", |_, key, value| Ok((key, value)))?
+            .unwrap_or_default();
+
         Ok(Repo {
             workflow,
             job_name,
@@ -571,6 +611,7 @@ impl<'a> ConfigCtxt<'a> {
             disabled,
             enabled_badges,
             disabled_badges,
+            variables,
         })
     }
 
@@ -598,10 +639,6 @@ pub(crate) fn load(
     let mut config = cx.table(config)?;
     let base = cx.repo_table(&mut config)?;
 
-    let extra = cx
-        .in_table(&mut config, "extra", |_, key, value| Ok((key, value)))?
-        .unwrap_or_default();
-
     let mut repos = cx
         .in_table(&mut config, "repos", |cx, id, value| {
             Ok((path.join(id), cx.repo(value)?))
@@ -613,11 +650,14 @@ pub(crate) fn load(
             continue;
         };
 
-        repos.insert(RelativePathBuf::from(module.path.as_ref()), repo);
+        let original = repos
+            .entry(RelativePathBuf::from(module.path.as_ref()))
+            .or_default();
+        original.merge_with(repo);
     }
 
     cx.ensure_empty(config)?;
-    Ok(Config { base, repos, extra })
+    Ok(Config { base, repos })
 }
 
 fn load_repo(root: &Path, module: &Module, templating: &Templating) -> Result<Option<Repo>> {

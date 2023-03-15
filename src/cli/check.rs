@@ -37,9 +37,11 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts, fix: bool) -> Result<()> {
 
         let primary_crate = workspace.primary_crate()?;
 
-        let params = cx
-            .config
-            .per_crate_render(cx, module, primary_crate.crate_params(module)?);
+        let variables = cx.config.variables(module);
+
+        let params =
+            cx.config
+                .per_crate_render(cx, module, primary_crate.crate_params(module)?, &variables);
 
         crate::validation::build(
             cx,
