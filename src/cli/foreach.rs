@@ -28,11 +28,7 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
             continue;
         }
 
-        let Some(path) = module.path else {
-            continue;
-        };
-
-        let current_dir = path.to_path(&cx.root);
+        let current_dir = module.path.to_path(cx.root);
 
         if opts.cached {
             let status = Command::new("git")
@@ -46,12 +42,16 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
             }
         }
 
-        tracing::info!("{path}: {}", CommandRepr::new(&opts.command));
+        tracing::info!(
+            path = module.path.as_str(),
+            "{}",
+            CommandRepr::new(&opts.command)
+        );
         let status = Command::new(command)
             .args(args)
             .current_dir(&current_dir)
             .status()?;
-        tracing::info!("{status}");
+        tracing::info!(?status);
     }
 
     Ok(())

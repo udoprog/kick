@@ -62,7 +62,7 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts, fix: bool) -> Result<()> {
 
 /// Report and apply a asingle validation.
 fn validate(cx: &Ctxt<'_>, error: &Validation, fix: bool) -> Result<()> {
-    Ok(match error {
+    match error {
         Validation::MissingWorkflow {
             path,
             candidates,
@@ -83,7 +83,7 @@ fn validate(cx: &Ctxt<'_>, error: &Validation, fix: bool) -> Result<()> {
 
                     if let Some(parent) = path.parent() {
                         if !parent.is_dir() {
-                            std::fs::create_dir_all(&parent)?;
+                            std::fs::create_dir_all(parent)?;
                         }
                     }
 
@@ -147,7 +147,7 @@ fn validate(cx: &Ctxt<'_>, error: &Validation, fix: bool) -> Result<()> {
             range,
             line_offset,
         } => {
-            let (line, column, string) = temporary_line_fix(&file, range.start, *line_offset)?;
+            let (line, column, string) = temporary_line_fix(file, range.start, *line_offset)?;
             println!("{path}:{line}:{column}: doc comment has toplevel headings");
             println!("{string}");
         }
@@ -157,7 +157,7 @@ fn validate(cx: &Ctxt<'_>, error: &Validation, fix: bool) -> Result<()> {
             range,
             line_offset,
         } => {
-            let (line, column, string) = temporary_line_fix(&file, range.start, *line_offset)?;
+            let (line, column, string) = temporary_line_fix(file, range.start, *line_offset)?;
             println!("{path}:{line}:{column}: missing preceeding <br>");
             println!("{string}");
         }
@@ -214,7 +214,8 @@ fn validate(cx: &Ctxt<'_>, error: &Validation, fix: bool) -> Result<()> {
         Validation::ActionExpectedEmptyMapping { path, key } => {
             println!("{path}: {key}: action expected empty mapping");
         }
-    })
+    };
+    Ok(())
 }
 
 /// Perform url checks.

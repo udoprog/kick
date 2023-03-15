@@ -1,7 +1,7 @@
 use core::fmt;
 use std::io::Write;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use chrono::{DateTime, Local, TimeZone, Utc};
 use clap::Parser;
 use reqwest::{header, Client, IntoUrl, Method, RequestBuilder};
@@ -70,13 +70,12 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
             continue;
         }
 
-        let (Some(path), Some(repo)) = (module.path, module.repo()) else {
+        let Some(repo) = module.repo() else {
             continue;
         };
 
-        let current_dir = path.to_path(cx.root);
-        let sha =
-            git::rev_parse(&current_dir, "HEAD").with_context(|| anyhow!("{}", module.name))?;
+        let current_dir = module.path.to_path(cx.root);
+        let sha = git::rev_parse(&current_dir, "HEAD").with_context(|| module.path.clone())?;
         let sha = sha.trim();
 
         let url = format!(
@@ -88,7 +87,7 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
         let req = build_request(cx, &client, url)
             .query(&[("exclude_pull_requests", "true"), ("per_page", &limit)]);
 
-        println!("{}: {}", module.name, module.url);
+        println!("{}: {}", module.path, module.url);
 
         let res = req.send().await?;
 

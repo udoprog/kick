@@ -56,7 +56,7 @@ pub(crate) struct Config {
     pub(crate) extra: toml::Value,
     pub(crate) documentation: Option<Template>,
     pub(crate) badges: Vec<ConfigBadge>,
-    pub(crate) repos: HashMap<String, Repo>,
+    pub(crate) repos: HashMap<RelativePathBuf, Repo>,
 }
 
 impl Config {
@@ -105,33 +105,33 @@ impl Config {
     }
 
     /// Iterator over badges for the given repo.
-    pub(crate) fn badges(&self, repo: &str) -> impl Iterator<Item = &'_ ConfigBadge> {
+    pub(crate) fn badges(&self, path: &RelativePath) -> impl Iterator<Item = &'_ ConfigBadge> {
         let repos = self
             .repos
-            .get(repo)
+            .get(path)
             .into_iter()
             .flat_map(|repo| repo.badges.iter());
         self.badges.iter().chain(repos)
     }
 
     /// Get the header for the given repo.
-    pub(crate) fn header(&self, repo: &str) -> Option<&Template> {
-        self.repos.get(repo)?.header.as_ref()
+    pub(crate) fn header(&self, path: &RelativePath) -> Option<&Template> {
+        self.repos.get(path)?.header.as_ref()
     }
 
     /// Get crate for the given repo.
-    pub(crate) fn crate_for<'a>(&'a self, name: &str) -> Option<&'a str> {
-        self.repos.get(name)?.krate.as_deref()
+    pub(crate) fn crate_for<'a>(&'a self, path: &RelativePath) -> Option<&'a str> {
+        self.repos.get(path)?.krate.as_deref()
     }
 
     /// Get Cargo.toml path for the given module.
-    pub(crate) fn cargo_toml<'a>(&'a self, name: &str) -> Option<&'a RelativePath> {
-        self.repos.get(name)?.cargo_toml.as_deref()
+    pub(crate) fn cargo_toml<'a>(&'a self, path: &RelativePath) -> Option<&'a RelativePath> {
+        self.repos.get(path)?.cargo_toml.as_deref()
     }
 
     /// Get Cargo.toml path for the given module.
-    pub(crate) fn is_enabled<'a>(&'a self, name: &str, feature: &str) -> bool {
-        let Some(repo) = self.repos.get(name) else {
+    pub(crate) fn is_enabled(&self, path: &RelativePath, feature: &str) -> bool {
+        let Some(repo) = self.repos.get(path) else {
             return true;
         };
 
@@ -214,7 +214,7 @@ where
             use std::fmt::Write;
 
             if self.path.is_empty() {
-                return format!(".");
+                return ".".to_string();
             }
 
             let mut out = String::new();
@@ -425,7 +425,7 @@ where
         let path = RelativePathBuf::from(string).to_path(parent);
         let string =
             std::fs::read_to_string(&path).with_context(|| anyhow!("{}", path.display()))?;
-        Ok(cx.templating.compile(&string)?)
+        cx.templating.compile(&string)
     })?;
 
     let job_name = cx.in_string(&mut config, "job_name", |_, string| Ok(string))?;
@@ -438,7 +438,7 @@ where
         .unwrap_or_default();
 
     let documentation = cx.in_string(&mut config, "documentation", |cx, string| {
-        Ok(cx.templating.compile(&string)?)
+        cx.templating.compile(&string)
     })?;
 
     let extra = config
@@ -452,7 +452,7 @@ where
 
         for (id, value) in cx.table(config)? {
             cx.key(&id);
-            repos.insert(id.to_owned(), cx.repo(value)?);
+            repos.insert(RelativePathBuf::from(id), cx.repo(value)?);
             cx.path.pop();
         }
 

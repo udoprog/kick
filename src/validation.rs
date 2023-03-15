@@ -112,12 +112,12 @@ pub(crate) enum Validation {
 #[tracing::instrument(skip_all)]
 pub(crate) fn build(
     cx: &Ctxt<'_>,
-    module: &Module<'_>,
+    module: &Module,
     validation: &mut Vec<Validation>,
     urls: &mut Urls,
 ) -> Result<()> {
     let Some(workspace) = workspace::open(cx, module)? else {
-        tracing::warn!(source = ?module.source, module = module.name, "missing workspace for module");
+        tracing::warn!(source = ?module.source, module = module.path.as_str(), "missing workspace for module");
         return Ok(());
     };
 
@@ -157,16 +157,16 @@ pub(crate) fn build(
         }
     }
 
-    if cx.config.is_enabled(module.name, "ci") {
-        ci::build(&cx, &primary_crate, module, &workspace, validation)
+    if cx.config.is_enabled(&module.path, "ci") {
+        ci::build(cx, primary_crate, module, &workspace, validation)
             .with_context(|| anyhow!("ci validation: {}", cx.config.job_name()))?;
     }
 
-    if cx.config.is_enabled(module.name, "readme") {
+    if cx.config.is_enabled(&module.path, "readme") {
         readme::build(
             cx,
             workspace.path(),
-            module.name,
+            module,
             primary_crate,
             params.crate_params,
             validation,
@@ -174,20 +174,18 @@ pub(crate) fn build(
         )?;
 
         for package in workspace.packages() {
-            if package.manifest_dir != workspace.path() {
-                if package.manifest.is_publish()? {
-                    let crate_params = package.crate_params(module)?;
+            if package.manifest_dir != workspace.path() && package.manifest.is_publish()? {
+                let crate_params = package.crate_params(module)?;
 
-                    readme::build(
-                        cx,
-                        &package.manifest_dir,
-                        module.name,
-                        package,
-                        crate_params,
-                        validation,
-                        urls,
-                    )?;
-                }
+                readme::build(
+                    cx,
+                    &package.manifest_dir,
+                    module,
+                    package,
+                    crate_params,
+                    validation,
+                    urls,
+                )?;
             }
         }
     }

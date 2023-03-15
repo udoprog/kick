@@ -72,7 +72,7 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
         }
 
         let Some(mut workspace) = workspace::open(cx, module)? else {
-            tracing::warn!(source = ?module.source, module = module.name, "missing workspace for module");
+            tracing::warn!(source = ?module.source, module = module.path.as_str(), "missing workspace for module");
             continue;
         };
 

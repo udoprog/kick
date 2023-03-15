@@ -11,17 +11,15 @@ use relative_path::{RelativePath, RelativePathBuf};
 pub(crate) const CARGO_TOML: &str = "Cargo.toml";
 
 /// Load a workspace starting at the given path.
-pub(crate) fn open(cx: &Ctxt<'_>, module: &Module<'_>) -> Result<Option<Workspace>> {
-    let path = module.path.ok_or_else(|| anyhow!("missing module path"))?;
-
-    let manifest_path = match cx.config.cargo_toml(module.name) {
-        Some(cargo_toml) => path.join(cargo_toml),
-        None => path.join(CARGO_TOML),
+pub(crate) fn open(cx: &Ctxt<'_>, module: &Module) -> Result<Option<Workspace>> {
+    let manifest_path = match cx.config.cargo_toml(&module.path) {
+        Some(cargo_toml) => module.path.join(cargo_toml),
+        None => module.path.join(CARGO_TOML),
     };
 
     let primary_crate = cx
         .config
-        .crate_for(module.name)
+        .crate_for(&module.path)
         .or(module.repo().map(|repo| repo.name));
 
     let Some(manifest) = manifest::open(manifest_path.to_path(cx.root))? else {
@@ -67,7 +65,7 @@ pub(crate) fn open(cx: &Ctxt<'_>, module: &Module<'_>) -> Result<Option<Workspac
     }
 
     Ok(Some(Workspace {
-        path: path.into(),
+        path: module.path.clone(),
         primary_crate: primary_crate.map(Box::from),
         packages,
     }))
@@ -142,7 +140,7 @@ impl Package {
     }
 
     /// Construct crate parameters.
-    pub(crate) fn crate_params<'a>(&'a self, module: &'a Module<'_>) -> Result<CrateParams<'a>> {
+    pub(crate) fn crate_params<'a>(&'a self, module: &'a Module) -> Result<CrateParams<'a>> {
         Ok(CrateParams {
             repo: module.repo(),
             name: self.manifest.crate_name()?,

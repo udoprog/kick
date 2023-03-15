@@ -10,7 +10,7 @@ pub(crate) struct Ctxt<'a> {
     pub(crate) root: &'a Path,
     pub(crate) config: &'a Config,
     pub(crate) actions: &'a Actions<'a>,
-    pub(crate) modules: Vec<Module<'a>>,
+    pub(crate) modules: Vec<Module>,
     pub(crate) github_auth: Option<String>,
     pub(crate) rustc_version: Option<RustVersion>,
 }

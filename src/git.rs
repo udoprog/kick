@@ -8,7 +8,7 @@ pub(crate) fn rev_parse(current_dir: &Path, rev: &str) -> Result<String> {
     let output = Command::new("git")
         .args(["rev-parse", rev])
         .stdout(Stdio::piped())
-        .current_dir(&current_dir)
+        .current_dir(current_dir)
         .output()?;
 
     if !output.status.success() {

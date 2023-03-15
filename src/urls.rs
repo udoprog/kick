@@ -11,9 +11,9 @@ use url::Url;
 use crate::file::File;
 
 /// Fake user agent to hopefully have crates.io and others hate us less.
-const USER_AGENT: header::HeaderValue =
+static USER_AGENT: header::HeaderValue =
     header::HeaderValue::from_static("UdoprogProjectChecker/0.0");
-const ACCEPT: header::HeaderValue = header::HeaderValue::from_static("text/html");
+static ACCEPT: header::HeaderValue = header::HeaderValue::from_static("text/html");
 
 /// Url testing errors.
 pub(crate) struct UrlError {
@@ -52,7 +52,7 @@ impl Urls {
     }
 
     /// Bad URLs.
-    pub(crate) fn bad_urls<'a>(&'a self) -> impl Iterator<Item = (&'a str, &'a Test)> + 'a {
+    pub(crate) fn bad_urls(&self) -> impl Iterator<Item = (&'_ str, &'_ Test)> {
         self.bad_urls.iter().flat_map(|(key, values)| {
             values
                 .iter()
@@ -139,8 +139,8 @@ impl Urls {
     ) -> Result<Result<(Url, StatusCode), UrlError>> {
         let req = client
             .head(url.clone())
-            .header(header::USER_AGENT, USER_AGENT)
-            .header(header::ACCEPT, ACCEPT)
+            .header(header::USER_AGENT, USER_AGENT.clone())
+            .header(header::ACCEPT, ACCEPT.clone())
             .build()?;
 
         let status = client.execute(req).await?.status();

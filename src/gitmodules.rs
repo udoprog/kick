@@ -3,12 +3,14 @@
 use thiserror::Error;
 
 pub(crate) struct SectionParser<'a, 'p> {
+    #[allow(unused)]
     name: &'p str,
     parser: &'a mut Parser<'p>,
 }
 
 impl<'a, 'p> SectionParser<'a, 'p> {
     /// Get the name of the section.
+    #[allow(unused)]
     pub(crate) fn name(&self) -> &'p str {
         self.name
     }

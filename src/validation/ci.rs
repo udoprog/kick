@@ -63,7 +63,7 @@ enum CargoFeatures {
 pub(crate) fn build(
     cx: &Ctxt<'_>,
     primary_crate: &Package,
-    module: &Module<'_>,
+    module: &Module,
     workspace: &Workspace,
     validation: &mut Vec<Validation>,
 ) -> Result<()> {
@@ -80,12 +80,7 @@ pub(crate) fn build(
 }
 
 /// Validate the current model.
-fn validate<'b>(
-    cx: &Ctxt<'_>,
-    ci: &mut Ci<'_>,
-    package: &Package,
-    module: &Module<'_>,
-) -> Result<()> {
+fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, package: &Package, module: &Module) -> Result<()> {
     let deprecated_yml = ci.path.join("rust.yml");
     let expected_path = ci.path.join("ci.yml");
 
@@ -144,7 +139,7 @@ fn candidates(cx: &Ctxt<'_>, ci: &Ci<'_>) -> std::io::Result<Box<[RelativePathBu
     let dir = match std::fs::read_dir(ci.path.to_path(cx.root)) {
         Ok(dir) => dir,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Box::from([])),
-        Err(e) => return Err(e.into()),
+        Err(e) => return Err(e),
     };
 
     let mut paths = Vec::new();
@@ -206,7 +201,7 @@ fn validate_jobs(
                                 ci.validation.push(Validation::CustomActionsCheck {
                                     path: path.to_owned(),
                                     name: name.into(),
-                                    reason: reason.into(),
+                                    reason,
                                 });
                             }
                         }
@@ -295,27 +290,21 @@ fn verify_single_project_build(ci: &mut Ci<'_>, path: &RelativePath, job: &serde
         .into_iter()
         .flatten()
     {
-        match step.get("run").and_then(|v| v.as_str()) {
-            Some(command) => {
-                let identity = identify_command(command, &features);
+        if let Some(command) = step.get("run").and_then(|v| v.as_str()) {
+            let identity = identify_command(command, &features);
 
-                match identity {
-                    RunIdentity::Cargo(cargo) => {
-                        for feature in &cargo.missing_features {
-                            ci.validation.push(Validation::MissingFeature {
-                                path: path.to_owned(),
-                                feature: feature.clone(),
-                            });
-                        }
+            if let RunIdentity::Cargo(cargo) = identity {
+                for feature in &cargo.missing_features {
+                    ci.validation.push(Validation::MissingFeature {
+                        path: path.to_owned(),
+                        feature: feature.clone(),
+                    });
+                }
 
-                        if matches!(cargo.kind, CargoKind::Build) {
-                            cargo_combos.push(cargo);
-                        }
-                    }
-                    _ => {}
+                if matches!(cargo.kind, CargoKind::Build) {
+                    cargo_combos.push(cargo);
                 }
             }
-            _ => {}
         }
     }
 

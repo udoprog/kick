@@ -102,8 +102,7 @@ async fn entry() -> Result<()> {
         "using `run` is less verbose and faster",
     );
 
-    let mut buf = Vec::new();
-    let modules = model::load_gitmodules(&root, &mut buf)?;
+    let modules = model::load_modules(&root)?;
 
     let cx = ctxt::Ctxt {
         root: &root,
@@ -136,8 +135,11 @@ async fn entry() -> Result<()> {
 }
 
 /// Test if module should be skipped.
-fn should_skip(filters: &[String], module: &Module<'_>) -> bool {
-    !filters.is_empty() && !filters.iter().all(|filter| module.name.contains(filter))
+fn should_skip(filters: &[String], module: &Module) -> bool {
+    !filters.is_empty()
+        && !filters
+            .iter()
+            .all(|filter| module.path.as_str().contains(filter))
 }
 
 /// Find root path to use.

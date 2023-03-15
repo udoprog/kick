@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use crate::ctxt::Ctxt;
 use crate::file::File;
-use crate::model::CrateParams;
+use crate::model::{CrateParams, Module};
 use crate::urls::Urls;
 use crate::validation::Validation;
 use crate::workspace::Package;
@@ -22,8 +22,8 @@ pub(crate) const README_MD: &str = "README.md";
 const HEADER_MARKER: &str = "<!--- header -->";
 
 struct Readme<'a, 'outer> {
-    name: &'a str,
-    path: &'a RelativePath,
+    module: &'a Module,
+    readme_path: &'a RelativePath,
     entry: &'a RelativePath,
     params: CrateParams<'a>,
     validation: &'outer mut Vec<Validation>,
@@ -33,14 +33,14 @@ struct Readme<'a, 'outer> {
 /// Perform readme validation.
 pub(crate) fn build(
     cx: &Ctxt<'_>,
-    path: &RelativePath,
-    name: &str,
+    manifest_dir: &RelativePath,
+    module: &Module,
     package: &Package,
     params: CrateParams<'_>,
     validation: &mut Vec<Validation>,
     urls: &mut Urls,
 ) -> Result<()> {
-    let readme_path = path.join(README_MD);
+    let readme_path = manifest_dir.join(README_MD);
 
     let entry = 'entry: {
         for entry in package.entries() {
@@ -49,12 +49,12 @@ pub(crate) fn build(
             }
         }
 
-        bail!("{name}: missing existing entrypoint")
+        bail!("{manifest_dir}: missing existing entrypoint")
     };
 
     let mut readme = Readme {
-        name,
-        path: &readme_path,
+        module,
+        readme_path: &readme_path,
         entry: &entry,
         params,
         validation,
@@ -74,9 +74,9 @@ struct MarkdownChecks {
 
 /// Validate the current model.
 fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
-    if !rm.path.to_path(cx.root).is_file() {
+    if !rm.readme_path.to_path(cx.root).is_file() {
         rm.validation.push(Validation::MissingReadme {
-            path: rm.path.to_owned(),
+            path: rm.readme_path.to_owned(),
         });
     }
 
@@ -107,11 +107,11 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
         if *file != *new_file {
             rm.validation.push(Validation::MismatchedLibRs {
                 path: rm.entry.to_owned(),
-                new_file: new_file.clone(),
+                new_file,
             });
         }
 
-        let readme = match File::read(rm.path.to_path(cx.root)) {
+        let readme = match File::read(rm.readme_path.to_path(cx.root)) {
             Ok(file) => file,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => File::new(),
             Err(e) => return Err(e.into()),
@@ -119,7 +119,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
 
         if readme != readme_from_lib_rs {
             rm.validation.push(Validation::BadReadme {
-                path: rm.path.to_owned(),
+                path: rm.readme_path.to_owned(),
                 new_file: Arc::new(readme_from_lib_rs),
             });
         }
@@ -202,7 +202,7 @@ fn process_lib_rs(
 
     let mut badges = Vec::new();
 
-    for badge in cx.config.badges(readme.name) {
+    for badge in cx.config.badges(&readme.module.path) {
         badges.push(BadgeParams {
             markdown: badge.markdown(cx, &readme.params)?,
             html: badge.html(cx, &readme.params)?,
@@ -211,7 +211,7 @@ fn process_lib_rs(
 
     let mut source_lines = source.lines().peekable();
 
-    if let Some(header) = cx.config.header(readme.name) {
+    if let Some(header) = cx.config.header(&readme.module.path) {
         let mut found_marker = false;
 
         while let Some(line) = source_lines.peek().and_then(|line| line.as_rust_comment()) {

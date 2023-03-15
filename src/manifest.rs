@@ -112,7 +112,7 @@ impl Manifest {
         }
 
         package.insert("authors", Item::Value(Value::Array(array)));
-        return Ok(());
+        Ok(())
     }
 
     /// Get categories.
