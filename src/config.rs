@@ -1,5 +1,5 @@
-use core::fmt;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fmt;
 use std::hash::Hash;
 use std::path::Path;
 
@@ -34,7 +34,7 @@ pub(crate) struct PerCrateRender<'a> {
     /// Globally known rust versions in use.
     rust_versions: RenderRustVersions,
     #[serde(flatten)]
-    variables: &'a HashMap<String, toml::Value>,
+    variables: &'a toml::Table,
 }
 
 #[derive(Default)]
@@ -63,7 +63,7 @@ pub(crate) struct Repo {
     /// Explicit blocklist for badges to enabled.
     pub(crate) disabled_badges: HashSet<String>,
     /// Variables that can be used verbatim in templates.
-    pub(crate) variables: HashMap<String, toml::Value>,
+    pub(crate) variables: toml::Table,
 }
 
 impl Repo {
@@ -81,7 +81,7 @@ impl Repo {
         self.disabled.extend(other.disabled);
         self.enabled_badges.extend(other.enabled_badges);
         self.disabled_badges.extend(other.disabled_badges);
-        self.variables.extend(other.variables);
+        merge_map(&mut self.variables, other.variables);
     }
 
     /// Test if this repo wants the specified badge.
@@ -123,7 +123,7 @@ impl Config {
         cx: &Ctxt<'_>,
         module: &Module,
         crate_params: CrateParams<'a>,
-        variables: &'a HashMap<String, toml::Value>,
+        variables: &'a toml::Table,
     ) -> PerCrateRender<'a> {
         PerCrateRender {
             crate_params,
@@ -194,16 +194,11 @@ impl Config {
     }
 
     /// Get the current license template.
-    pub(crate) fn variables(&self, module: &Module) -> HashMap<String, toml::Value> {
+    pub(crate) fn variables(&self, module: &Module) -> toml::Table {
         let mut variables = self.base.variables.clone();
 
-        for (key, value) in self
-            .repos
-            .get(module.path.as_ref())
-            .into_iter()
-            .flat_map(|r| r.variables.iter())
-        {
-            variables.insert(key.to_owned(), value.to_owned());
+        if let Some(source) = self.repos.get(module.path.as_ref()).map(|r| &r.variables) {
+            merge_map(&mut variables, source.clone());
         }
 
         variables
@@ -470,6 +465,14 @@ impl<'a> ConfigCtxt<'a> {
         Ok(Some(out))
     }
 
+    fn as_table(&mut self, config: &mut toml::Table, key: &str) -> Result<Option<toml::Table>> {
+        let Some(value) = config.remove(key) else {
+            return Ok(None);
+        };
+
+        Ok(Some(self.table(value)?))
+    }
+
     fn in_string<F, O>(&mut self, config: &mut toml::Table, key: &str, f: F) -> Result<Option<O>>
     where
         F: FnOnce(&mut Self, String) -> Result<O>,
@@ -594,9 +597,7 @@ impl<'a> ConfigCtxt<'a> {
         let enabled_badges = self.in_array(config, "enabled_badges", |cx, item| cx.string(item))?;
         let enabled_badges = enabled_badges.unwrap_or_default().into_iter().collect();
 
-        let variables = self
-            .in_table(config, "variables", |_, key, value| Ok((key, value)))?
-            .unwrap_or_default();
+        let variables = self.as_table(config, "variables")?.unwrap_or_default();
 
         Ok(Repo {
             workflow,
@@ -686,5 +687,26 @@ where
         }
 
         Ok(())
+    }
+}
+
+fn merge_map(target: &mut toml::Table, source: toml::Table) {
+    for (key, value) in source {
+        match target.entry(key) {
+            toml::map::Entry::Vacant(e) => {
+                e.insert(value);
+            }
+            toml::map::Entry::Occupied(e) => match (e.into_mut(), value) {
+                (toml::Value::Table(target), toml::Value::Table(source)) => {
+                    merge_map(target, source);
+                }
+                (toml::Value::Array(target), toml::Value::Array(source)) => {
+                    target.extend(source);
+                }
+                (target, source) => {
+                    *target = source;
+                }
+            },
+        }
     }
 }
