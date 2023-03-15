@@ -34,8 +34,8 @@ macro_rules! dependencies {
             self.doc.get($field).and_then(|table| table.as_table())
         }
 
-        pub(crate) fn $remove(&mut self) {
-            self.doc.remove($field);
+        pub(crate) fn $remove(&mut self) -> bool {
+            self.doc.remove($field).is_some()
         }
     };
 }

@@ -18,7 +18,7 @@ const EARLIEST: RustVersion = RUST_VERSION_SUPPORTED;
 /// Final fallback version to use if *nothing* else can be figured out.
 const LATEST: RustVersion = RustVersion::new(1, 68);
 /// Default command to build.
-const DEFAULT_COMMAND: [&str; 3] = ["cargo", "build", "--all-targets"];
+const DEFAULT_COMMAND: [&str; 2] = ["cargo", "build"];
 
 #[derive(Default, Parser)]
 pub(crate) struct Opts {
@@ -36,6 +36,9 @@ pub(crate) struct Opts {
     /// Don't save the new MSRV in project `Cargo.toml` files.
     #[arg(long)]
     no_save: bool,
+    /// Do not remove [dev-dependencies].
+    #[arg(long)]
+    no_remove_dev_dependencies: bool,
     /// Earliest minor version to test. Default: 2021.
     ///
     /// Supports the following special values, apart from minor version numbers:
@@ -133,7 +136,13 @@ fn build(cx: &Ctxt<'_>, workspace: &mut Workspace, module: &Module, opts: &Opts)
             let original_path = original.to_path(cx.root);
             let manifest_path = p.manifest_path.to_path(cx.root);
 
-            let save = if current < RUST_VERSION_SUPPORTED {
+            let mut save = if opts.no_remove_dev_dependencies {
+                false
+            } else {
+                p.manifest.remove_dev_dependencies()
+            };
+
+            save |= if current < RUST_VERSION_SUPPORTED {
                 p.manifest.set_rust_version(&version)?;
                 true
             } else {
