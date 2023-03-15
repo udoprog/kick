@@ -1,5 +1,5 @@
 use core::fmt;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -47,6 +47,19 @@ pub(crate) struct Repo {
     pub(crate) cargo_toml: Option<RelativePathBuf>,
     /// Disabled modules.
     pub(crate) disabled: BTreeSet<String>,
+    /// Explicit allowlist for badges to enabled.
+    pub(crate) disabled_badges: HashSet<String>,
+}
+
+impl Repo {
+    /// Test if this repo wants the specified badge.
+    pub(crate) fn wants_badge(&self, b: &ConfigBadge) -> bool {
+        if let Some(id) = &b.id {
+            !self.disabled_badges.contains(id)
+        } else {
+            true
+        }
+    }
 }
 
 pub(crate) struct Config {
@@ -107,12 +120,17 @@ impl Config {
 
     /// Iterator over badges for the given repo.
     pub(crate) fn badges(&self, path: &RelativePath) -> impl Iterator<Item = &'_ ConfigBadge> {
-        let repos = self
-            .repos
-            .get(path)
-            .into_iter()
-            .flat_map(|repo| repo.badges.iter());
-        self.badges.iter().chain(repos)
+        let repo = self.repos.get(path);
+
+        let repos = repo.into_iter().flat_map(|repo| repo.badges.iter());
+
+        self.badges
+            .iter()
+            .filter(move |b| match repo {
+                Some(repo) => repo.wants_badge(b),
+                None => true,
+            })
+            .chain(repos)
     }
 
     /// Get the header for the given repo.
@@ -141,6 +159,7 @@ impl Config {
 }
 
 pub(crate) struct ConfigBadge {
+    id: Option<String>,
     markdown: Option<Template>,
     html: Option<Template>,
 }
@@ -344,6 +363,8 @@ impl<'a> ConfigCtxt<'a> {
     ) -> Result<Option<Vec<ConfigBadge>>, anyhow::Error> {
         let badges = self.in_array(config, "badges", |cx, value| {
             let mut value = cx.table(value)?;
+
+            let id = cx.as_string(&mut value, "id")?;
             let alt = cx.as_string(&mut value, "alt")?;
             let src = cx.as_string(&mut value, "src")?;
             let href = cx.as_string(&mut value, "href")?;
@@ -365,7 +386,7 @@ impl<'a> ConfigCtxt<'a> {
                 };
 
             cx.ensure_empty(value)?;
-            Ok(ConfigBadge { markdown, html })
+            Ok(ConfigBadge { id, markdown, html })
         })?;
 
         Ok(badges)
@@ -389,8 +410,11 @@ impl<'a> ConfigCtxt<'a> {
         })?;
 
         let disabled = self.in_array(&mut config, "disabled", |cx, item| cx.string(item))?;
-
         let disabled = disabled.unwrap_or_default().into_iter().collect();
+
+        let disabled_badges =
+            self.in_array(&mut config, "disabled_badges", |cx, item| cx.string(item))?;
+        let disabled_badges = disabled_badges.unwrap_or_default().into_iter().collect();
         self.ensure_empty(config)?;
 
         Ok(Repo {
@@ -399,6 +423,7 @@ impl<'a> ConfigCtxt<'a> {
             krate,
             cargo_toml,
             disabled,
+            disabled_badges,
         })
     }
 }
