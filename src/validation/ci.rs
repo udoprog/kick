@@ -67,7 +67,7 @@ pub(crate) fn build(
     workspace: &Workspace,
     validation: &mut Vec<Validation>,
 ) -> Result<()> {
-    let path = workspace.path().join(".github").join("workflows");
+    let path = module.path.join(".github").join("workflows");
 
     let mut ci = Ci {
         path: &path,

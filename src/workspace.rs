@@ -65,7 +65,6 @@ pub(crate) fn open(cx: &Ctxt<'_>, module: &Module) -> Result<Option<Workspace>> 
     }
 
     Ok(Some(Workspace {
-        path: module.path.clone(),
         primary_crate: primary_crate.map(Box::from),
         packages,
     }))
@@ -159,17 +158,11 @@ impl Package {
 }
 
 pub(crate) struct Workspace {
-    path: Box<RelativePath>,
     primary_crate: Option<Box<str>>,
     packages: Vec<Package>,
 }
 
 impl Workspace {
-    /// Get the workspace path.
-    pub(crate) fn path(&self) -> &RelativePath {
-        &self.path
-    }
-
     /// Test if this is a single crate workspace.
     pub(crate) fn is_single_crate(&self) -> bool {
         self.packages.len() == 1

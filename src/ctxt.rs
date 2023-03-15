@@ -10,9 +10,23 @@ pub(crate) struct Ctxt<'a> {
     pub(crate) root: &'a Path,
     pub(crate) config: &'a Config,
     pub(crate) actions: &'a Actions<'a>,
-    pub(crate) modules: Vec<Module>,
+    pub(crate) modules: &'a [Module],
     pub(crate) github_auth: Option<String>,
     pub(crate) rustc_version: Option<RustVersion>,
+}
+
+impl<'a> Ctxt<'a> {
+    pub(crate) fn modules(&self, modules: &'a [String]) -> impl Iterator<Item = &'a Module> + '_ {
+        /// Test if module should be skipped.
+        fn should_keep(filters: &[String], module: &Module) -> bool {
+            filters.is_empty()
+                || filters
+                    .iter()
+                    .all(|filter| module.path.as_str().contains(filter))
+        }
+
+        self.modules.iter().filter(move |m| should_keep(modules, m))
+    }
 }
 
 /// Minor version from rustc.

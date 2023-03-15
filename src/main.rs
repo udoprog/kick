@@ -22,7 +22,6 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
-use model::Module;
 
 use actions::Actions;
 use tracing::metadata::LevelFilter;
@@ -112,7 +111,7 @@ async fn entry() -> Result<()> {
         root: &root,
         config: &config,
         actions: &actions,
-        modules,
+        modules: &modules,
         github_auth,
         rustc_version: ctxt::rustc_version(),
     };
@@ -136,14 +135,6 @@ async fn entry() -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Test if module should be skipped.
-fn should_skip(filters: &[String], module: &Module) -> bool {
-    !filters.is_empty()
-        && !filters
-            .iter()
-            .all(|filter| module.path.as_str().contains(filter))
 }
 
 /// Find root path to use.

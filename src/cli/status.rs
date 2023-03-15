@@ -64,11 +64,7 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     let today = Local::now();
     let limit = opts.limit.unwrap_or(1).max(1).to_string();
 
-    for module in &cx.modules {
-        if crate::should_skip(&opts.modules, module) {
-            continue;
-        }
-
+    for module in cx.modules(&opts.modules) {
         if let Err(e) = build(cx, opts, module, today, &client, &limit).await {
             tracing::error!(module = module.path.as_str(), "{}", e);
         }

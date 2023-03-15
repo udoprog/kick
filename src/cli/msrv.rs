@@ -6,6 +6,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 
 use crate::ctxt::Ctxt;
+use crate::model::Module;
 use crate::rust_version::{self, RustVersion};
 use crate::utils::CommandRepr;
 use crate::workspace::{self, Workspace};
@@ -66,30 +67,28 @@ pub(crate) struct Opts {
 
 #[tracing::instrument(skip_all)]
 pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
-    for module in &cx.modules {
-        if crate::should_skip(&opts.modules, module) {
-            continue;
-        }
+    for module in cx.modules(&opts.modules) {
+        let span =
+            tracing::info_span!("build", source = ?module.source, module = module.path.as_str());
+        let _enter = span.enter();
 
         let Some(mut workspace) = workspace::open(cx, module)? else {
             tracing::warn!(source = ?module.source, module = module.path.as_str(), "missing workspace for module");
             continue;
         };
 
-        let span = tracing::info_span!("build", path = ?workspace.path());
-        let _enter = span.enter();
-        build(cx, &mut workspace, opts).with_context(|| workspace.path().to_owned())?;
+        build(cx, &mut workspace, module, opts).with_context(|| module.path.to_owned())?;
     }
 
     Ok(())
 }
 
-fn build(cx: &Ctxt<'_>, workspace: &mut Workspace, opts: &Opts) -> Result<()> {
+fn build(cx: &Ctxt<'_>, workspace: &mut Workspace, module: &Module, opts: &Opts) -> Result<()> {
     let primary = workspace
         .primary_crate()?
         .context("missing primary crate")?;
 
-    let current_dir = workspace.path().to_path(cx.root);
+    let current_dir = module.path.to_path(cx.root);
     let rust_version = primary.rust_version()?;
 
     let opts_earliest = parse_minor_version(cx, opts.earliest.as_deref(), rust_version.as_ref())?;
@@ -117,14 +116,14 @@ fn build(cx: &Ctxt<'_>, workspace: &mut Workspace, opts: &Opts) -> Result<()> {
             .output()?;
 
         if !output.status.success() {
-            tracing::info!("installing rust {version}");
+            tracing::info!("Installing rust {version}");
 
             let status = Command::new("rustup")
                 .args(["toolchain", "install", "--profile", "minimal", &version])
                 .status()?;
 
             if !status.success() {
-                bail!("failed to install {version}");
+                bail!("failed to install Rust {version}");
             }
         }
 

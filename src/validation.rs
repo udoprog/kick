@@ -123,12 +123,7 @@ pub(crate) fn build(
 
     let primary_crate = match workspace.primary_crate()? {
         Some(primary_crate) => primary_crate,
-        None => {
-            return Err(anyhow!(
-                "{}: cannot determine primary crate",
-                workspace.path()
-            ))
-        }
+        None => return Err(anyhow!("cannot determine primary crate",)),
     };
 
     let params = cx
@@ -165,7 +160,7 @@ pub(crate) fn build(
     if cx.config.is_enabled(&module.path, "readme") {
         readme::build(
             cx,
-            workspace.path(),
+            &module.path,
             module,
             primary_crate,
             params.crate_params,
@@ -174,7 +169,7 @@ pub(crate) fn build(
         )?;
 
         for package in workspace.packages() {
-            if package.manifest_dir != workspace.path() && package.manifest.is_publish()? {
+            if package.manifest_dir != *module.path && package.manifest.is_publish()? {
                 let crate_params = package.crate_params(module)?;
 
                 readme::build(

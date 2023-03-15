@@ -24,11 +24,7 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts, fix: bool) -> Result<()> {
     let mut validation = Vec::new();
     let mut urls = Urls::default();
 
-    for module in &cx.modules {
-        if crate::should_skip(&opts.modules, module) {
-            return Ok(());
-        }
-
+    for module in cx.modules(&opts.modules) {
         crate::validation::build(cx, module, &mut validation, &mut urls)?;
     }
 

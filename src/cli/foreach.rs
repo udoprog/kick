@@ -23,11 +23,7 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
         return Err(anyhow!("missing command"));
     };
 
-    for module in &cx.modules {
-        if crate::should_skip(&opts.modules, module) {
-            continue;
-        }
-
+    for module in cx.modules(&opts.modules) {
         let current_dir = module.path.to_path(cx.root);
 
         if opts.cached {
