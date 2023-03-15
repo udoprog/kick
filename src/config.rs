@@ -2,14 +2,15 @@ use core::fmt;
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use relative_path::{RelativePath, RelativePathBuf};
 use serde::Serialize;
 
 use crate::ctxt::Ctxt;
-use crate::model::CrateParams;
+use crate::model::{CrateParams, Module};
 use crate::rust_version::{self, RustVersion};
 use crate::templates::{Template, Templating};
+use crate::KICK_TOML;
 
 /// Default job name.
 const DEFAULT_JOB_NAME: &str = "CI";
@@ -170,261 +171,253 @@ impl ConfigBadge {
     }
 }
 
+enum Part {
+    Key(String),
+    Index(usize),
+}
+
+impl fmt::Display for Part {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Part::Key(key) => {
+                write!(f, "{key}")
+            }
+            Part::Index(index) => {
+                write!(f, "[{index}]")
+            }
+        }
+    }
+}
+
+/// Context used when parsing configuration.
+struct ConfigCtxt<'a> {
+    path: Vec<Part>,
+    templating: &'a Templating,
+}
+
+impl<'a> ConfigCtxt<'a> {
+    fn new(templating: &'a Templating) -> Self {
+        Self {
+            path: Vec::new(),
+            templating,
+        }
+    }
+
+    fn key(&mut self, key: &str) {
+        self.path.push(Part::Key(key.to_owned()));
+    }
+
+    fn format_path(&self) -> String {
+        use std::fmt::Write;
+
+        if self.path.is_empty() {
+            return ".".to_string();
+        }
+
+        let mut out = String::new();
+        let mut it = self.path.iter();
+
+        if let Some(p) = it.next() {
+            write!(out, "{p}").unwrap();
+        }
+
+        for p in it {
+            if let Part::Key(..) = p {
+                out.push('.');
+            }
+
+            write!(out, "{p}").unwrap();
+        }
+
+        out
+    }
+
+    fn bail(&self, args: impl fmt::Display) -> anyhow::Error {
+        let path = self.format_path();
+        anyhow::Error::msg(format!("{path}: {args}"))
+    }
+
+    /// Ensure table is empty.
+    fn ensure_empty(&self, table: toml::Table) -> Result<()> {
+        if let Some((key, value)) = table.into_iter().next() {
+            return Err(self.bail(format_args!("got unsupported key `{key}`: {value}")));
+        }
+
+        Ok(())
+    }
+
+    fn table(&mut self, config: toml::Value) -> Result<toml::Table> {
+        match config {
+            toml::Value::Table(table) => Ok(table),
+            other => return Err(self.bail(format_args!("expected table, got {other}"))),
+        }
+    }
+
+    fn string(&mut self, value: toml::Value) -> Result<String> {
+        match value {
+            toml::Value::String(string) => Ok(string),
+            other => Err(self.bail(format_args!("expected string, got {other}"))),
+        }
+    }
+
+    fn boolean(&mut self, value: toml::Value) -> Result<bool> {
+        match value {
+            toml::Value::Boolean(value) => Ok(value),
+            other => Err(self.bail(format_args!("expected boolean, got {other}"))),
+        }
+    }
+
+    fn array(&mut self, value: toml::Value) -> Result<Vec<toml::Value>> {
+        match value {
+            toml::Value::Array(array) => Ok(array),
+            other => Err(self.bail(format_args!("expected array, got {other}"))),
+        }
+    }
+
+    fn in_string<F, O>(&mut self, config: &mut toml::Table, key: &str, f: F) -> Result<Option<O>>
+    where
+        F: FnOnce(&mut Self, String) -> Result<O>,
+    {
+        let Some(value) = config.remove(key) else {
+            return Ok(None);
+        };
+
+        self.key(key);
+        let out = self.string(value)?;
+
+        let out = match f(self, out) {
+            Ok(out) => out,
+            Err(e) => {
+                return Err(e.context(self.bail(format_args!("failed to process string"))));
+            }
+        };
+
+        self.path.pop();
+        Ok(Some(out))
+    }
+
+    fn as_string(&mut self, config: &mut toml::Table, key: &str) -> Result<Option<String>> {
+        self.in_string(config, key, |_, string| Ok(string))
+    }
+
+    fn in_boolean(&mut self, config: &mut toml::Table, key: &str) -> Result<Option<bool>> {
+        let Some(value) = config.remove(key) else {
+            return Ok(None);
+        };
+
+        self.key(key);
+        let out = self.boolean(value)?;
+        self.path.pop();
+        Ok(Some(out))
+    }
+
+    fn in_array<F, O>(
+        &mut self,
+        config: &mut toml::Table,
+        key: &str,
+        mut f: F,
+    ) -> Result<Option<Vec<O>>>
+    where
+        F: FnMut(&mut Self, toml::Value) -> Result<O>,
+    {
+        let Some(value) = config.remove(key) else {
+            return Ok(None);
+        };
+
+        self.key(key);
+        let array = self.array(value)?;
+        let mut out = Vec::with_capacity(array.len());
+
+        for (index, item) in array.into_iter().enumerate() {
+            self.path.push(Part::Index(index));
+            out.push(f(self, item)?);
+            self.path.pop();
+        }
+
+        self.path.pop();
+        Ok(Some(out))
+    }
+
+    fn badges(
+        &mut self,
+        config: &mut toml::Table,
+    ) -> Result<Option<Vec<ConfigBadge>>, anyhow::Error> {
+        let badges = self.in_array(config, "badges", |cx, value| {
+            let mut value = cx.table(value)?;
+            let alt = cx.as_string(&mut value, "alt")?;
+            let src = cx.as_string(&mut value, "src")?;
+            let href = cx.as_string(&mut value, "href")?;
+            let height = cx.as_string(&mut value, "height")?;
+
+            let alt = FormatOptional(alt.as_ref(), |f, alt| write!(f, " alt=\"{alt}\""));
+
+            let (markdown, html) =
+                if let (Some(src), Some(href), Some(height)) = (src, href, height) {
+                    let markdown = cx.templating.compile(&format!(
+                        "[<img{alt} src=\"{src}\" height=\"{height}\">]({href})"
+                    ))?;
+                    let html = cx.templating.compile(&format!(
+                        "<a href=\"{href}\"><img{alt} src=\"{src}\" height=\"{height}\"></a>"
+                    ))?;
+                    (Some(markdown), Some(html))
+                } else {
+                    (None, None)
+                };
+
+            Ok(ConfigBadge { markdown, html })
+        })?;
+
+        Ok(badges)
+    }
+
+    fn repo(&mut self, config: toml::Value) -> Result<Repo> {
+        let mut config = self.table(config)?;
+
+        let header = self.in_string(&mut config, "header", |cx, string| {
+            cx.templating.compile(&string)
+        })?;
+
+        let badges = self.badges(&mut config)?.unwrap_or_default();
+        let _ = self
+            .in_boolean(&mut config, "center_badges")?
+            .unwrap_or_default();
+        let krate = self.as_string(&mut config, "crate")?;
+
+        let cargo_toml = self.in_string(&mut config, "cargo_toml", |_, string| {
+            Ok(RelativePathBuf::from(string))
+        })?;
+
+        let disabled = self.in_array(&mut config, "disabled", |cx, item| cx.string(item))?;
+
+        let disabled = disabled.unwrap_or_default().into_iter().collect();
+        self.ensure_empty(config)?;
+
+        Ok(Repo {
+            header,
+            badges,
+            krate,
+            cargo_toml,
+            disabled,
+        })
+    }
+}
+
 /// Load a configuration from the given path.
-pub(crate) fn load<P>(path: P, templating: &Templating) -> Result<Config>
-where
-    P: AsRef<Path>,
-{
-    enum Part {
-        Key(String),
-        Index(usize),
-    }
-
-    impl fmt::Display for Part {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            match self {
-                Part::Key(key) => {
-                    write!(f, "{key}")
-                }
-                Part::Index(index) => {
-                    write!(f, "[{index}]")
-                }
-            }
-        }
-    }
-
-    struct Ctxt<'a> {
-        path: Vec<Part>,
-        templating: &'a Templating,
-    }
-
-    impl<'a> Ctxt<'a> {
-        fn new(templating: &'a Templating) -> Self {
-            Self {
-                path: Vec::new(),
-                templating,
-            }
-        }
-
-        fn key(&mut self, key: &str) {
-            self.path.push(Part::Key(key.to_owned()));
-        }
-
-        fn format_path(&self) -> String {
-            use std::fmt::Write;
-
-            if self.path.is_empty() {
-                return ".".to_string();
-            }
-
-            let mut out = String::new();
-            let mut it = self.path.iter();
-
-            if let Some(p) = it.next() {
-                write!(out, "{p}").unwrap();
-            }
-
-            for p in it {
-                if let Part::Key(..) = p {
-                    out.push('.');
-                }
-
-                write!(out, "{p}").unwrap();
-            }
-
-            out
-        }
-
-        fn bail(&self, args: impl fmt::Display) -> anyhow::Error {
-            let path = self.format_path();
-            anyhow::Error::msg(format!("{path}: {args}"))
-        }
-
-        /// Ensure table is empty.
-        fn ensure_empty(&self, table: toml::Table) -> Result<()> {
-            if let Some((key, value)) = table.into_iter().next() {
-                return Err(self.bail(format_args!("got unsupported key `{key}`: {value}")));
-            }
-
-            Ok(())
-        }
-
-        fn table(&mut self, config: toml::Value) -> Result<toml::Table> {
-            match config {
-                toml::Value::Table(table) => Ok(table),
-                other => return Err(self.bail(format_args!("expected table, got {other}"))),
-            }
-        }
-
-        fn string(&mut self, value: toml::Value) -> Result<String> {
-            match value {
-                toml::Value::String(string) => Ok(string),
-                other => Err(self.bail(format_args!("expected string, got {other}"))),
-            }
-        }
-
-        fn boolean(&mut self, value: toml::Value) -> Result<bool> {
-            match value {
-                toml::Value::Boolean(value) => Ok(value),
-                other => Err(self.bail(format_args!("expected boolean, got {other}"))),
-            }
-        }
-
-        fn array(&mut self, value: toml::Value) -> Result<Vec<toml::Value>> {
-            match value {
-                toml::Value::Array(array) => Ok(array),
-                other => Err(self.bail(format_args!("expected array, got {other}"))),
-            }
-        }
-
-        fn in_string<F, O>(
-            &mut self,
-            config: &mut toml::Table,
-            key: &str,
-            f: F,
-        ) -> Result<Option<O>>
-        where
-            F: FnOnce(&mut Self, String) -> Result<O>,
-        {
-            let Some(value) = config.remove(key) else {
-                return Ok(None);
-            };
-
-            self.key(key);
-            let out = self.string(value)?;
-
-            let out = match f(self, out) {
-                Ok(out) => out,
-                Err(e) => {
-                    return Err(e.context(self.bail(format_args!("failed to process string"))));
-                }
-            };
-
-            self.path.pop();
-            Ok(Some(out))
-        }
-
-        fn as_string(&mut self, config: &mut toml::Table, key: &str) -> Result<Option<String>> {
-            self.in_string(config, key, |_, string| Ok(string))
-        }
-
-        fn in_boolean(&mut self, config: &mut toml::Table, key: &str) -> Result<Option<bool>> {
-            let Some(value) = config.remove(key) else {
-                return Ok(None);
-            };
-
-            self.key(key);
-            let out = self.boolean(value)?;
-            self.path.pop();
-            Ok(Some(out))
-        }
-
-        fn in_array<F, O>(
-            &mut self,
-            config: &mut toml::Table,
-            key: &str,
-            mut f: F,
-        ) -> Result<Option<Vec<O>>>
-        where
-            F: FnMut(&mut Self, toml::Value) -> Result<O>,
-        {
-            let Some(value) = config.remove(key) else {
-                return Ok(None);
-            };
-
-            self.key(key);
-            let array = self.array(value)?;
-            let mut out = Vec::with_capacity(array.len());
-
-            for (index, item) in array.into_iter().enumerate() {
-                self.path.push(Part::Index(index));
-                out.push(f(self, item)?);
-                self.path.pop();
-            }
-
-            self.path.pop();
-            Ok(Some(out))
-        }
-
-        fn badges(
-            &mut self,
-            config: &mut toml::Table,
-        ) -> Result<Option<Vec<ConfigBadge>>, anyhow::Error> {
-            let badges = self.in_array(config, "badges", |cx, value| {
-                let mut value = cx.table(value)?;
-                let alt = cx.as_string(&mut value, "alt")?;
-                let src = cx.as_string(&mut value, "src")?;
-                let href = cx.as_string(&mut value, "href")?;
-                let height = cx.as_string(&mut value, "height")?;
-
-                let alt = FormatOptional(alt.as_ref(), |f, alt| write!(f, " alt=\"{alt}\""));
-
-                let (markdown, html) =
-                    if let (Some(src), Some(href), Some(height)) = (src, href, height) {
-                        let markdown = cx.templating.compile(&format!(
-                            "[<img{alt} src=\"{src}\" height=\"{height}\">]({href})"
-                        ))?;
-                        let html = cx.templating.compile(&format!(
-                            "<a href=\"{href}\"><img{alt} src=\"{src}\" height=\"{height}\"></a>"
-                        ))?;
-                        (Some(markdown), Some(html))
-                    } else {
-                        (None, None)
-                    };
-
-                Ok(ConfigBadge { markdown, html })
-            })?;
-
-            Ok(badges)
-        }
-
-        fn repo(&mut self, config: toml::Value) -> Result<Repo> {
-            let mut config = self.table(config)?;
-
-            let header = self.in_string(&mut config, "header", |cx, string| {
-                cx.templating.compile(&string)
-            })?;
-
-            let badges = self.badges(&mut config)?.unwrap_or_default();
-            let _ = self
-                .in_boolean(&mut config, "center_badges")?
-                .unwrap_or_default();
-            let krate = self.as_string(&mut config, "crate")?;
-
-            let cargo_toml = self.in_string(&mut config, "cargo_toml", |_, string| {
-                Ok(RelativePathBuf::from(string))
-            })?;
-
-            let disabled = self.in_array(&mut config, "disabled", |cx, item| cx.string(item))?;
-
-            let disabled = disabled.unwrap_or_default().into_iter().collect();
-            self.ensure_empty(config)?;
-
-            Ok(Repo {
-                header,
-                badges,
-                krate,
-                cargo_toml,
-                disabled,
-            })
-        }
-    }
-
-    let path = path.as_ref();
-    let mut cx = Ctxt::new(templating);
+pub(crate) fn load(root: &Path, templating: &Templating, modules: &[Module]) -> Result<Config> {
+    let mut cx = ConfigCtxt::new(templating);
+    let kick_path = RelativePath::new(KICK_TOML);
 
     let mut config: toml::Table = {
-        let string = std::fs::read_to_string(path)?;
+        let string = std::fs::read_to_string(kick_path.to_path(root))
+            .with_context(|| kick_path.to_owned())?;
         let config = toml::from_str(&string)?;
         cx.table(config)?
     };
 
-    let parent = path.parent().unwrap_or(path);
-
     let default_workflow = cx.in_string(&mut config, "default_workflow", |cx, string| {
-        let path = RelativePathBuf::from(string).to_path(parent);
+        let path = RelativePath::new(&string);
         let string =
-            std::fs::read_to_string(&path).with_context(|| anyhow!("{}", path.display()))?;
+            std::fs::read_to_string(path.to_path(root)).with_context(|| path.to_owned())?;
         cx.templating.compile(&string)
     })?;
 
@@ -459,6 +452,16 @@ where
         cx.path.pop();
     }
 
+    for module in modules {
+        let kick_path = module.path.join(KICK_TOML);
+
+        let Some(repo) = load_repo(root, &kick_path, templating).with_context(|| kick_path.clone())? else {
+            continue;
+        };
+
+        repos.insert(RelativePathBuf::from(module.path.as_ref()), repo);
+    }
+
     cx.ensure_empty(config)?;
 
     Ok(Config {
@@ -471,6 +474,19 @@ where
         badges,
         repos,
     })
+}
+
+fn load_repo(root: &Path, path: &RelativePath, templating: &Templating) -> Result<Option<Repo>> {
+    let string = match std::fs::read_to_string(path.to_path(root)) {
+        Ok(string) => string,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| path.to_owned())?,
+    };
+
+    let config = toml::from_str(&string)?;
+    let mut cx = ConfigCtxt::new(templating);
+    let repo = cx.repo(config)?;
+    Ok(Some(repo))
 }
 
 struct FormatOptional<T, F>(Option<T>, F)

@@ -37,6 +37,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 
 use actions::Actions;
+use relative_path::RelativePathBuf;
 use tracing::metadata::LevelFilter;
 
 /// Name of project configuration files.
@@ -85,7 +86,7 @@ async fn main() -> Result<()> {
 }
 
 async fn entry() -> Result<()> {
-    let root = find_root()?;
+    let (root, root_path) = find_root()?;
 
     let github_auth = match std::fs::read_to_string(root.join(".github-auth")) {
         Ok(auth) => Some(auth.trim().to_owned()),
@@ -97,12 +98,10 @@ async fn entry() -> Result<()> {
     };
 
     let templating = templates::Templating::new()?;
+    let modules = model::load_modules(&root)?;
 
-    let config = {
-        let config_path = root.join(KICK_TOML);
-        config::load(&config_path, &templating)
-            .with_context(|| config_path.to_string_lossy().into_owned())?
-    };
+    let config =
+        { config::load(&root, &templating, &modules).with_context(|| root_path.to_owned())? };
 
     let opts = Opts::try_parse()?;
 
@@ -117,8 +116,6 @@ async fn entry() -> Result<()> {
         "actions-rs/toolchain",
         "using `run` is less verbose and faster",
     );
-
-    let modules = model::load_modules(&root)?;
 
     let cx = ctxt::Ctxt {
         root: &root,
@@ -151,16 +148,20 @@ async fn entry() -> Result<()> {
 }
 
 /// Find root path to use.
-fn find_root() -> Result<PathBuf> {
+fn find_root() -> Result<(PathBuf, RelativePathBuf)> {
     let mut current = std::env::current_dir()?;
+    let mut path = RelativePathBuf::new();
 
     loop {
         if current.join(KICK_TOML).is_file() {
-            return Ok(current);
+            path.push(KICK_TOML);
+            return Ok((current, path));
         }
 
         if !current.pop() {
             return Err(anyhow!("missing projects directory"));
         }
+
+        path.push("..");
     }
 }
