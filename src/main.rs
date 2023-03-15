@@ -31,7 +31,7 @@ mod utils;
 mod validation;
 mod workspace;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
@@ -45,15 +45,15 @@ const KICK_TOML: &str = "Kick.toml";
 
 #[derive(Subcommand)]
 enum Action {
-    /// Run checks for each repo.
+    /// Run checks non destructively for each module (default action).
     Check(cli::check::Opts),
-    /// Fix repo.
+    /// Try to fix anything that can be fixed automatically for each module.
     Fix(cli::check::Opts),
-    /// Run a command for each repo.
+    /// Run a command for each module.
     For(cli::foreach::Opts),
-    /// Get the build status for each repo.
+    /// Fetch github actions build status for each module.
     Status(cli::status::Opts),
-    /// Find the minimum supported rust version through bisection.
+    /// Find the minimum supported rust version for each module.
     Msrv(cli::msrv::Opts),
 }
 
@@ -61,7 +61,11 @@ enum Action {
 #[command(author, version, about, long_about = None)]
 #[command(propagate_version = true)]
 struct Opts {
-    #[command(subcommand)]
+    /// Specify custom root folder for project hierarchy.
+    #[arg(long, name = "path")]
+    root: Option<PathBuf>,
+    /// Action to perform. Defaults to `check`.
+    #[command(subcommand, name = "action")]
     action: Option<Action>,
 }
 
@@ -86,8 +90,34 @@ async fn main() -> Result<()> {
 }
 
 async fn entry() -> Result<()> {
-    let root = std::env::current_dir()?;
-    let root_path = find_root(&root)?;
+    let opts = match Opts::try_parse() {
+        Ok(opts) => opts,
+        Err(error) => {
+            match error.kind() {
+                clap::error::ErrorKind::DisplayHelp => {
+                    print!("{error}");
+                }
+                _ => {
+                    return Err(error.into());
+                }
+            }
+
+            return Ok(());
+        }
+    };
+
+    let (root, root_path) = match opts.root {
+        Some(root) => match RelativePathBuf::from_path(&root) {
+            Ok(root_path) => (PathBuf::new(), root_path),
+            Err(..) => (root, RelativePathBuf::new()),
+        },
+        None => {
+            let root = std::env::current_dir()?;
+            let root_path = find_root(&root)?;
+            (root, root_path)
+        }
+    };
+
     let github_auth = root_path.join(".github-auth");
 
     let github_auth = match std::fs::read_to_string(github_auth.to_path(&root)) {
@@ -104,8 +134,6 @@ async fn entry() -> Result<()> {
 
     let config = config::load(&root, &root_path, &templating, &modules)
         .with_context(|| root_path.to_owned())?;
-
-    let opts = Opts::try_parse()?;
 
     let mut actions = Actions::default();
     actions.latest("actions/checkout", "v3");
