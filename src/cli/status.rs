@@ -8,7 +8,7 @@ use reqwest::{header, Client, IntoUrl, Method, RequestBuilder};
 use serde::{de::IntoDeserializer, Deserialize};
 use url::Url;
 
-use crate::{ctxt::Ctxt, git};
+use crate::{ctxt::Ctxt, git, model::Module};
 
 #[derive(Default, Parser)]
 pub(crate) struct Opts {
@@ -62,7 +62,6 @@ struct WorkflowRuns {
 pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     let client = Client::builder().build()?;
     let today = Local::now();
-
     let limit = opts.limit.unwrap_or(1).max(1).to_string();
 
     for module in &cx.modules {
@@ -70,92 +69,105 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
             continue;
         }
 
-        let Some(repo) = module.repo() else {
-            continue;
-        };
+        if let Err(e) = build(cx, &opts, module, today, &client, &limit).await {
+            tracing::error!(module = module.path.as_str(), "{}", e);
+        }
+    }
 
-        let current_dir = module.path.to_path(cx.root);
-        let sha = git::rev_parse(&current_dir, "HEAD").with_context(|| module.path.clone())?;
-        let sha = sha.trim();
+    Ok(())
+}
 
-        let url = format!(
-            "https://api.github.com/repos/{owner}/{name}/actions/workflows/ci.yml/runs",
-            owner = repo.owner,
-            name = repo.name
+async fn build(
+    cx: &Ctxt<'_>,
+    opts: &Opts,
+    module: &Module,
+    today: DateTime<Local>,
+    client: &Client,
+    limit: &str,
+) -> Result<()> {
+    let Some(repo) = module.repo() else {
+        return Ok(());
+    };
+
+    let current_dir = module.path.to_path(cx.root);
+
+    let sha = git::rev_parse(&current_dir, "HEAD").with_context(|| module.path.clone())?;
+    let sha = sha.trim();
+
+    let url = format!(
+        "https://api.github.com/repos/{owner}/{name}/actions/workflows/ci.yml/runs",
+        owner = repo.owner,
+        name = repo.name
+    );
+
+    let req = build_request(cx, &client, url)
+        .query(&[("exclude_pull_requests", "true"), ("per_page", limit)]);
+
+    println!("{}: {}", module.path, module.url);
+
+    let res = req.send().await?;
+
+    tracing::trace!("  {:?}", res.headers());
+
+    if !res.status().is_success() {
+        println!("  {}", res.text().await?);
+        return Ok(());
+    }
+
+    let runs: serde_json::Value = res.json().await?;
+
+    if opts.raw_json {
+        let mut out = std::io::stdout();
+        serde_json::to_writer_pretty(&mut out, &runs)?;
+        writeln!(out)?;
+    }
+
+    let runs: WorkflowRuns = WorkflowRuns::deserialize(runs.into_deserializer())?;
+
+    for run in runs.workflow_runs {
+        let updated_at = FormatTime::new(today, Some(run.updated_at.with_timezone(&Local)));
+
+        let head = if sha == run.head_sha { "* " } else { "  " };
+
+        println!(
+            " {head}{sha} {branch}: {updated_at}: status: {}, conclusion: {}",
+            run.status,
+            run.conclusion.as_deref().unwrap_or("*in progress*"),
+            branch = run.head_branch,
+            sha = short(&run.head_sha),
         );
 
-        let req = build_request(cx, &client, url)
-            .query(&[("exclude_pull_requests", "true"), ("per_page", &limit)]);
+        let failure = run.conclusion.as_deref() == Some("failure");
 
-        println!("{}: {}", module.path, module.url);
+        if opts.jobs || failure {
+            if let Some(jobs_url) = &run.jobs_url {
+                let res = build_request(cx, &client, jobs_url.clone()).send().await?;
 
-        let res = req.send().await?;
+                if !res.status().is_success() {
+                    println!("  {}", res.text().await?);
+                    continue;
+                }
 
-        tracing::trace!("  {:?}", res.headers());
+                let jobs: Jobs = res.json().await?;
 
-        if !res.status().is_success() {
-            println!("  {}", res.text().await?);
-            continue;
-        }
+                for job in jobs.jobs {
+                    println!(
+                        "   {name}: {html_url}",
+                        name = job.name,
+                        html_url = job.html_url
+                    );
 
-        let runs: serde_json::Value = res.json().await?;
+                    println!(
+                        "     status: {status}, conclusion: {conclusion}",
+                        status = job.status,
+                        conclusion = job.conclusion.as_deref().unwrap_or("*in progress*"),
+                    );
 
-        if opts.raw_json {
-            let mut out = std::io::stdout();
-            serde_json::to_writer_pretty(&mut out, &runs)?;
-            writeln!(out)?;
-        }
-
-        let runs: WorkflowRuns = WorkflowRuns::deserialize(runs.into_deserializer())?;
-
-        for run in runs.workflow_runs {
-            let updated_at = FormatTime::new(today, Some(run.updated_at.with_timezone(&Local)));
-
-            let head = if sha == run.head_sha { "* " } else { "  " };
-
-            println!(
-                " {head}{sha} {branch}: {updated_at}: status: {}, conclusion: {}",
-                run.status,
-                run.conclusion.as_deref().unwrap_or("*in progress*"),
-                branch = run.head_branch,
-                sha = short(&run.head_sha),
-            );
-
-            let failure = run.conclusion.as_deref() == Some("failure");
-
-            if opts.jobs || failure {
-                if let Some(jobs_url) = &run.jobs_url {
-                    let res = build_request(cx, &client, jobs_url.clone()).send().await?;
-
-                    if !res.status().is_success() {
-                        println!("  {}", res.text().await?);
-                        continue;
-                    }
-
-                    let jobs: Jobs = res.json().await?;
-
-                    for job in jobs.jobs {
-                        println!(
-                            "   {name}: {html_url}",
-                            name = job.name,
-                            html_url = job.html_url
-                        );
-
-                        println!(
-                            "     status: {status}, conclusion: {conclusion}",
-                            status = job.status,
-                            conclusion = job.conclusion.as_deref().unwrap_or("*in progress*"),
-                        );
-
-                        println!(
-                            "     time: {} - {}",
-                            FormatTime::new(today, job.started_at.map(|d| d.with_timezone(&Local))),
-                            FormatTime::new(
-                                today,
-                                job.completed_at.map(|d| d.with_timezone(&Local))
-                            )
-                        );
-                    }
+                    println!(
+                        "     time: {} - {}",
+                        FormatTime::new(today, job.started_at.map(|d| d.with_timezone(&Local))),
+                        FormatTime::new(today, job.completed_at.map(|d| d.with_timezone(&Local)))
+                    );
                 }
             }
         }
