@@ -364,6 +364,7 @@ impl<'a> ConfigCtxt<'a> {
                     (None, None)
                 };
 
+            cx.ensure_empty(value)?;
             Ok(ConfigBadge { markdown, html })
         })?;
 
@@ -403,9 +404,14 @@ impl<'a> ConfigCtxt<'a> {
 }
 
 /// Load a configuration from the given path.
-pub(crate) fn load(root: &Path, templating: &Templating, modules: &[Module]) -> Result<Config> {
+pub(crate) fn load(
+    root: &Path,
+    root_path: &RelativePath,
+    templating: &Templating,
+    modules: &[Module],
+) -> Result<Config> {
     let mut cx = ConfigCtxt::new(templating);
-    let kick_path = RelativePath::new(KICK_TOML);
+    let kick_path = root_path.join(KICK_TOML);
 
     let mut config: toml::Table = {
         let string = std::fs::read_to_string(kick_path.to_path(root))
@@ -415,7 +421,7 @@ pub(crate) fn load(root: &Path, templating: &Templating, modules: &[Module]) -> 
     };
 
     let default_workflow = cx.in_string(&mut config, "default_workflow", |cx, string| {
-        let path = RelativePath::new(&string);
+        let path = root_path.join(&string);
         let string =
             std::fs::read_to_string(path.to_path(root)).with_context(|| path.to_owned())?;
         cx.templating.compile(&string)
@@ -445,7 +451,7 @@ pub(crate) fn load(root: &Path, templating: &Templating, modules: &[Module]) -> 
 
         for (id, value) in cx.table(config)? {
             cx.key(&id);
-            repos.insert(RelativePathBuf::from(id), cx.repo(value)?);
+            repos.insert(root_path.join(&id), cx.repo(value)?);
             cx.path.pop();
         }
 

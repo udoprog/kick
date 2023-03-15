@@ -31,7 +31,7 @@ mod utils;
 mod validation;
 mod workspace;
 
-use std::path::PathBuf;
+use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
@@ -86,22 +86,24 @@ async fn main() -> Result<()> {
 }
 
 async fn entry() -> Result<()> {
-    let (root, root_path) = find_root()?;
+    let root = std::env::current_dir()?;
+    let root_path = find_root(&root)?;
+    let github_auth = root_path.join(".github-auth");
 
-    let github_auth = match std::fs::read_to_string(root.join(".github-auth")) {
+    let github_auth = match std::fs::read_to_string(github_auth.to_path(&root)) {
         Ok(auth) => Some(auth.trim().to_owned()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             tracing::warn!("no .github-auth found, heavy rate limiting will apply");
             None
         }
-        Err(e) => return Err(anyhow::Error::from(e)).with_context(|| anyhow!(".github-auth")),
+        Err(e) => return Err(anyhow::Error::from(e)).with_context(|| github_auth.clone()),
     };
 
     let templating = templates::Templating::new()?;
-    let modules = model::load_modules(&root)?;
+    let modules = model::load_modules(&root, &root_path)?;
 
-    let config =
-        { config::load(&root, &templating, &modules).with_context(|| root_path.to_owned())? };
+    let config = config::load(&root, &root_path, &templating, &modules)
+        .with_context(|| root_path.to_owned())?;
 
     let opts = Opts::try_parse()?;
 
@@ -148,14 +150,13 @@ async fn entry() -> Result<()> {
 }
 
 /// Find root path to use.
-fn find_root() -> Result<(PathBuf, RelativePathBuf)> {
-    let mut current = std::env::current_dir()?;
+fn find_root(root: &Path) -> Result<RelativePathBuf> {
+    let mut current = root.to_owned();
     let mut path = RelativePathBuf::new();
 
     loop {
         if current.join(KICK_TOML).is_file() {
-            path.push(KICK_TOML);
-            return Ok((current, path));
+            return Ok(path);
         }
 
         if !current.pop() {

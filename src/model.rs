@@ -2,7 +2,7 @@ use core::fmt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Serialize, Serializer};
 use url::Url;
@@ -132,34 +132,35 @@ impl Module {
 }
 
 /// Load git modules.
-pub(crate) fn load_modules(root: &Path) -> Result<Vec<Module>> {
-    let gitmodules_path = root.join(".gitmodules");
-    let git_path = root.join(".git");
+pub(crate) fn load_modules(root: &Path, path: &RelativePath) -> Result<Vec<Module>> {
+    let gitmodules_path = path.join(".gitmodules");
+    let git_path = path.join(".git");
 
     let mut modules = Vec::new();
 
-    match std::fs::read(root.join(&gitmodules_path)) {
+    match std::fs::read(gitmodules_path.to_path(root)) {
         Ok(buf) => {
-            modules.extend(
-                parse_git_modules(&buf)
-                    .with_context(|| anyhow!("{}", gitmodules_path.display()))?,
-            );
+            modules
+                .extend(parse_git_modules(path, &buf).with_context(|| gitmodules_path.to_owned())?);
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
     }
 
-    if git_path.is_dir() {
-        modules.extend(module_from_git(root)?);
+    if git_path.to_path(root).is_dir() {
+        modules.extend(module_from_git(path.to_path(root)).with_context(|| path.to_owned())?);
     }
 
     Ok(modules)
 }
 
 /// Parse a git module.
-pub(crate) fn parse_git_module(parser: &mut gitmodules::Parser<'_>) -> Result<Option<Module>> {
-    let mut path = None;
-    let mut url = None;
+pub(crate) fn parse_git_module(
+    path: &RelativePath,
+    parser: &mut gitmodules::Parser<'_>,
+) -> Result<Option<Module>> {
+    let mut parsed_path = None;
+    let mut parsed_url = None;
 
     let mut section = match parser.parse_section()? {
         Some(section) => section,
@@ -170,34 +171,34 @@ pub(crate) fn parse_git_module(parser: &mut gitmodules::Parser<'_>) -> Result<Op
         match key {
             "path" => {
                 let string = std::str::from_utf8(value)?;
-                path = Some(RelativePath::new(string));
+                parsed_path = Some(path.join(string).into());
             }
             "url" => {
                 let string = std::str::from_utf8(value)?;
-                url = Some(str::parse::<Url>(string)?);
+                parsed_url = Some(str::parse::<Url>(string)?);
             }
             _ => {}
         }
     }
 
-    let (Some(url), Some(path)) = (url, path) else {
+    let (Some(url), Some(path)) = (parsed_url, parsed_path) else {
         return Ok(None);
     };
 
     Ok(Some(Module {
         source: ModuleSource::Gitmodules,
-        path: path.into(),
+        path,
         url,
     }))
 }
 
 /// Parse gitmodules from the given input.
-pub(crate) fn parse_git_modules(input: &[u8]) -> Result<Vec<Module>> {
+pub(crate) fn parse_git_modules(path: &RelativePath, input: &[u8]) -> Result<Vec<Module>> {
     let mut parser = gitmodules::Parser::new(input);
 
     let mut modules = Vec::new();
 
-    while let Some(module) = parse_git_module(&mut parser)? {
+    while let Some(module) = parse_git_module(path, &mut parser)? {
         modules.push(module);
     }
 
@@ -205,7 +206,10 @@ pub(crate) fn parse_git_modules(input: &[u8]) -> Result<Vec<Module>> {
 }
 
 /// Process module information from a git repository.
-fn module_from_git(root: &Path) -> Result<Option<Module>> {
+fn module_from_git<P>(root: P) -> Result<Option<Module>>
+where
+    P: AsRef<Path>,
+{
     let output = Command::new("git")
         .args(["git", "remote", "get-url", "origin"])
         .current_dir(root)
@@ -213,7 +217,7 @@ fn module_from_git(root: &Path) -> Result<Option<Module>> {
         .output()?;
 
     if !output.status.success() {
-        tracing::trace!("failed to get git remote `origin`: {}", root.display());
+        tracing::trace!("failed to get git remote `origin`");
         return Ok(None);
     }
 
