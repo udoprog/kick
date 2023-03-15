@@ -121,10 +121,7 @@ pub(crate) fn build(
         return Ok(());
     };
 
-    let primary_crate = match workspace.primary_crate()? {
-        Some(primary_crate) => primary_crate,
-        None => return Err(anyhow!("cannot determine primary crate",)),
-    };
+    let primary_crate = workspace.primary_crate()?;
 
     let params = cx
         .config

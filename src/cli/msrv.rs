@@ -84,9 +84,7 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
 }
 
 fn build(cx: &Ctxt<'_>, workspace: &mut Workspace, module: &Module, opts: &Opts) -> Result<()> {
-    let primary = workspace
-        .primary_crate()?
-        .context("missing primary crate")?;
+    let primary = workspace.primary_crate()?;
 
     let current_dir = module.path.to_path(cx.root);
     let rust_version = primary.rust_version()?;

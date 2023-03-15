@@ -179,21 +179,30 @@ impl Workspace {
     }
 
     /// Find the primary crate in the workspace.
-    pub(crate) fn primary_crate(&self) -> Result<Option<&Package>> {
+    pub(crate) fn primary_crate(&self) -> Result<&Package> {
         // Single package, easy to determine primary crate.
         if let [package] = &self.packages[..] {
-            return Ok(Some(package));
+            return Ok(package);
         }
 
         // Find a package which matches the name of the project.
         if let Some(name) = &self.primary_crate {
             for package in &self.packages {
                 if package.manifest.crate_name()? == name.as_ref() {
-                    return Ok(Some(package));
+                    return Ok(package);
                 }
             }
         }
 
-        Ok(None)
+        let mut names = Vec::with_capacity(self.packages.len());
+
+        for package in &self.packages {
+            names.push(package.manifest.crate_name()?);
+        }
+
+        Err(anyhow!(
+            "Cannot determine primary crate, candidates are: {candidates}",
+            candidates = names.join(", ")
+        ))
     }
 }

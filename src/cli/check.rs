@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 
 use crate::ctxt::Ctxt;
@@ -20,12 +20,14 @@ pub(crate) struct Opts {
 }
 
 /// Entrypoint to run action.
+#[tracing::instrument(skip(cx, opts))]
 pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts, fix: bool) -> Result<()> {
     let mut validation = Vec::new();
     let mut urls = Urls::default();
 
     for module in cx.modules(&opts.modules) {
-        crate::validation::build(cx, module, &mut validation, &mut urls)?;
+        crate::validation::build(cx, module, &mut validation, &mut urls)
+            .with_context(|| module.path.to_owned())?;
     }
 
     for validation in &validation {
