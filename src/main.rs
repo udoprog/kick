@@ -31,7 +31,7 @@ mod utils;
 mod validation;
 mod workspace;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
@@ -112,8 +112,8 @@ async fn entry() -> Result<()> {
             Err(..) => (root, RelativePathBuf::new()),
         },
         None => {
-            let root = std::env::current_dir()?;
-            let root_path = find_root(&root)?;
+            let root = PathBuf::new();
+            let root_path = find_root()?;
             (root, root_path)
         }
     };
@@ -147,6 +147,8 @@ async fn entry() -> Result<()> {
         "using `run` is less verbose and faster",
     );
 
+    let git = git::Git::find()?;
+
     let cx = ctxt::Ctxt {
         root: &root,
         config: &config,
@@ -154,6 +156,7 @@ async fn entry() -> Result<()> {
         modules: &modules,
         github_auth,
         rustc_version: ctxt::rustc_version(),
+        git,
     };
 
     match opts.action.unwrap_or_default() {
@@ -178,25 +181,22 @@ async fn entry() -> Result<()> {
 }
 
 /// Find root path to use.
-fn find_root(root: &Path) -> Result<RelativePathBuf> {
-    let mut current = root.to_owned();
+fn find_root() -> Result<RelativePathBuf> {
+    let mut current = PathBuf::from("");
     let mut path = RelativePathBuf::new();
     let mut last = None;
 
-    loop {
+    while current.as_os_str().is_empty() || current.is_dir() {
         if current.join(KICK_TOML).is_file() {
             last = Some(path.clone());
         }
 
-        if !current.pop() {
-            break;
-        }
-
+        current.push("..");
         path.push("..");
     }
 
     let Some(last) = last else {
-        return Err(anyhow!("missing projects directory"));
+        return Err(anyhow!("missing project directory"));
     };
 
     Ok(last)

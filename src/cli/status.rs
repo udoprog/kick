@@ -8,7 +8,8 @@ use reqwest::{header, Client, IntoUrl, Method, RequestBuilder};
 use serde::{de::IntoDeserializer, Deserialize};
 use url::Url;
 
-use crate::{ctxt::Ctxt, git, model::Module};
+use crate::ctxt::Ctxt;
+use crate::model::Module;
 
 #[derive(Default, Parser)]
 pub(crate) struct Opts {
@@ -89,9 +90,17 @@ async fn build(
     };
 
     let current_dir = module.path.to_path(cx.root);
+    let sha;
 
-    let sha = git::rev_parse(&current_dir, "HEAD").context("git rev-parse HEAD")?;
-    let sha = sha.trim();
+    let sha = match &cx.git {
+        Some(git) => {
+            sha = git
+                .rev_parse(&current_dir, "HEAD")
+                .context("git rev-parse HEAD")?;
+            Some(sha.trim())
+        }
+        None => None,
+    };
 
     let url = format!(
         "https://api.github.com/repos/{owner}/{name}/actions/workflows/ci.yml/runs",
@@ -126,7 +135,11 @@ async fn build(
     for run in runs.workflow_runs {
         let updated_at = FormatTime::new(today, Some(run.updated_at.with_timezone(&Local)));
 
-        let head = if sha == run.head_sha { "* " } else { "  " };
+        let head = if sha == Some(&run.head_sha) {
+            "* "
+        } else {
+            "  "
+        };
 
         println!(
             " {head}{sha} {branch}: {updated_at}: status: {}, conclusion: {}",
