@@ -141,7 +141,7 @@ pub(crate) fn build(
     }
 
     if cx.config.is_enabled(&module.path, "ci") {
-        ci::build(cx, primary_crate, module, &workspace, validation)
+        ci::build(cx, primary_crate, module, workspace, validation)
             .with_context(|| anyhow!("ci validation: {}", cx.config.job_name(module)))?;
     }
 

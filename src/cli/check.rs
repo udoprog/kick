@@ -46,7 +46,7 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts, fix: bool) -> Result<()> {
             cx,
             module,
             &workspace,
-            &primary_crate,
+            primary_crate,
             params,
             &mut validation,
             &mut urls,

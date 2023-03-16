@@ -154,11 +154,11 @@ fn is_badge_comment(c: &str) -> bool {
         return true;
     }
 
-    if c.starts_with("[<img ") && c.ends_with(")") {
+    if c.starts_with("[<img ") && c.ends_with(')') {
         return true;
     }
 
-    if c.starts_with("[![") && c.ends_with(")") {
+    if c.starts_with("[![") && c.ends_with(')') {
         return true;
     }
 
@@ -207,7 +207,7 @@ fn process_lib_rs(
 
     let rest = if let Some(lib) = cx.config.lib(&rm.module.path) {
         while let Some(line) = source_lines.peek().and_then(|line| line.as_rust_comment()) {
-            if line.starts_with("#") {
+            if line.starts_with('#') {
                 break;
             }
 
@@ -430,7 +430,7 @@ fn readme_from_lib_rs(
         let output = readme.render(&ReadmeParams {
             full: full.as_non_empty_str(),
             rest: rest.as_non_empty_str(),
-            badges: &badges[..],
+            badges,
             params: rm.params,
         })?;
 

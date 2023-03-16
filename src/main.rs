@@ -5,6 +5,8 @@
 //!
 //! Give your projects a good 🦶!
 
+#![allow(clippy::too_many_arguments)]
+
 macro_rules! error {
     ($error:ident, $($tt:tt)*) => {
         tracing::error!($($tt)*, error = $error);
