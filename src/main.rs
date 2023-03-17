@@ -120,6 +120,8 @@ async fn entry() -> Result<()> {
         }
     };
 
+    tracing::trace!(?root, ?root_path, "found project roots");
+
     let github_auth = root_path.join(".github-auth");
 
     let github_auth = match std::fs::read_to_string(github_auth.to_path(&root)) {
@@ -133,6 +135,8 @@ async fn entry() -> Result<()> {
 
     let templating = templates::Templating::new()?;
     let modules = model::load_modules(&root, &root_path)?;
+
+    tracing::trace!(?modules, "loaded modules");
 
     let config = config::load(&root, &root_path, &templating, &modules)
         .with_context(|| root_path.to_owned())?;

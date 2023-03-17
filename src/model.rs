@@ -2,7 +2,7 @@ use core::fmt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use anyhow::{Context, Result};
+use anyhow::{Error, Context, Result};
 use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Serialize, Serializer};
 use url::Url;
@@ -114,17 +114,20 @@ pub(crate) fn load_modules(root: &Path, path: &RelativePath) -> Result<Vec<Modul
 
     let mut modules = Vec::new();
 
-    match std::fs::read(gitmodules_path.to_path(root)) {
+    let result = match std::fs::read(gitmodules_path.to_path(root)) {
         Ok(buf) => {
             modules
-                .extend(parse_git_modules(path, &buf).with_context(|| gitmodules_path.to_owned())?);
+                .extend(parse_git_modules(path, &buf)?);
+            Ok(())
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e.into()),
-    }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(Error::from(e)),
+    };
+
+    result.with_context(|| gitmodules_path.to_owned())?;
 
     if git_path.to_path(root).is_dir() {
-        modules.extend(module_from_git(path.to_path(root)).with_context(|| path.to_owned())?);
+        modules.extend(module_from_git(git_path.to_path(root)).with_context(|| git_path.to_owned())?);
     }
 
     Ok(modules)
