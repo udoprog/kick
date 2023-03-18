@@ -18,6 +18,19 @@ use crate::model::{Module, ModuleParams, UpdateParams};
 use crate::urls::Urls;
 use crate::workspace::{Package, Workspace};
 
+pub(crate) enum WorkflowValidation {
+    /// Oudated version of an action.
+    OutdatedAction {
+        actual: String,
+        expected: String,
+        uses: yaml::ValueId,
+    },
+    /// Deny use of the specific action.
+    DeniedAction { name: String, reason: String },
+    /// Actions check failed.
+    CustomActionsCheck { name: String, reason: String },
+}
+
 pub(crate) enum Validation {
     DeprecatedWorkflow {
         path: RelativePathBuf,
@@ -31,24 +44,10 @@ pub(crate) enum Validation {
         actual: String,
         expected: String,
     },
-    /// Oudated version of an action.
-    OutdatedAction {
+    BadWorkflow {
         path: RelativePathBuf,
-        name: String,
-        actual: String,
-        expected: String,
-    },
-    /// Deny use of the specific action.
-    DeniedAction {
-        path: RelativePathBuf,
-        name: String,
-        reason: String,
-    },
-    /// Actions check failed.
-    CustomActionsCheck {
-        path: RelativePathBuf,
-        name: String,
-        reason: String,
+        doc: yaml::Document,
+        validation: Vec<WorkflowValidation>,
     },
     MissingReadme {
         path: RelativePathBuf,

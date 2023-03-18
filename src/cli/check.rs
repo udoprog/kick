@@ -8,7 +8,7 @@ use crate::file::{File, LineColumn};
 use crate::model::{Module, ModuleParams};
 use crate::urls::UrlError;
 use crate::urls::Urls;
-use crate::validation::Validation;
+use crate::validation::{Validation, WorkflowValidation};
 use crate::workspace;
 
 #[derive(Default, Parser)]
@@ -130,21 +130,43 @@ fn validate(
         } => {
             println!("{path}: Wrong workflow name: {actual} (actual) != {expected} (expected)");
         }
-        Validation::OutdatedAction {
+        Validation::BadWorkflow {
             path,
-            name,
-            actual,
-            expected,
+            doc,
+            validation,
         } => {
-            println!(
-                "{path}: Outdated action `{name}`: {actual} (actual) != {expected} (expected)"
-            );
-        }
-        Validation::DeniedAction { path, name, reason } => {
-            println!("{path}: Denied action `{name}`: {reason}");
-        }
-        Validation::CustomActionsCheck { path, name, reason } => {
-            println!("{path}: Action validation failed `{name}`: {reason}");
+            let mut doc = doc.clone();
+            let mut edited = false;
+
+            for validation in validation {
+                match validation {
+                    WorkflowValidation::OutdatedAction {
+                        actual,
+                        expected,
+                        uses,
+                    } => {
+                        println!(
+                            "{path}: Outdated action: got `{actual}` but expected `{expected}`"
+                        );
+
+                        if fix {
+                            doc.value_mut(*uses).set_string(expected);
+                            edited = true;
+                        }
+                    }
+                    WorkflowValidation::DeniedAction { name, reason } => {
+                        println!("{path}: Denied action `{name}`: {reason}");
+                    }
+                    WorkflowValidation::CustomActionsCheck { name, reason } => {
+                        println!("{path}: Action validation failed `{name}`: {reason}");
+                    }
+                }
+            }
+
+            if edited {
+                println!("{path}: Fixing");
+                std::fs::write(path.to_path(cx.root), doc.to_string())?;
+            }
         }
         Validation::MissingReadme { path } => {
             println!("{path}: Missing README");

@@ -11,6 +11,8 @@ use crate::model::Module;
 use crate::validation::Validation;
 use crate::workspace::{Package, Workspace};
 
+use super::WorkflowValidation;
+
 pub(crate) struct Ci<'a> {
     path: &'a RelativePath,
     manifest: &'a Manifest,
@@ -169,6 +171,8 @@ fn validate_jobs(
         validate_on(ci, doc, value, path);
     }
 
+    let mut validation = Vec::new();
+
     if let Some(jobs) = table.get("jobs").and_then(|v| v.as_mapping()) {
         for (_, job) in jobs {
             for action in job
@@ -178,32 +182,31 @@ fn validate_jobs(
                 .flatten()
                 .flat_map(|v| v.as_mapping())
             {
-                if let Some(uses) = action.get("uses").and_then(|v| v.as_str()) {
-                    if let Some((name, version)) = uses.split_once('@') {
-                        if let Some(expected) = cx.actions.get_latest(name) {
+                if let Some((uses, name)) =
+                    action.get("uses").and_then(|v| Some((v.id(), v.as_str()?)))
+                {
+                    if let Some((base, version)) = name.split_once('@') {
+                        if let Some(expected) = cx.actions.get_latest(base) {
                             if expected != version {
-                                ci.validation.push(Validation::OutdatedAction {
-                                    path: path.to_owned(),
-                                    name: name.into(),
-                                    actual: version.into(),
-                                    expected: expected.into(),
+                                validation.push(WorkflowValidation::OutdatedAction {
+                                    actual: name.to_string(),
+                                    expected: format!("{base}@{expected}"),
+                                    uses,
                                 });
                             }
                         }
 
-                        if let Some(reason) = cx.actions.get_deny(name) {
-                            ci.validation.push(Validation::DeniedAction {
-                                path: path.to_owned(),
-                                name: name.into(),
+                        if let Some(reason) = cx.actions.get_deny(base) {
+                            validation.push(WorkflowValidation::DeniedAction {
+                                name: name.to_owned(),
                                 reason: reason.into(),
                             });
                         }
 
-                        if let Some(check) = cx.actions.get_check(name) {
+                        if let Some(check) = cx.actions.get_check(base) {
                             if let Err(reason) = check.check(action) {
-                                ci.validation.push(Validation::CustomActionsCheck {
-                                    path: path.to_owned(),
-                                    name: name.into(),
+                                validation.push(WorkflowValidation::CustomActionsCheck {
+                                    name: name.to_owned(),
                                     reason,
                                 });
                             }
@@ -216,6 +219,14 @@ fn validate_jobs(
                 verify_single_project_build(ci, path, job);
             }
         }
+    }
+
+    if !validation.is_empty() {
+        ci.validation.push(Validation::BadWorkflow {
+            path: path.to_owned(),
+            doc: doc.clone(),
+            validation,
+        });
     }
 
     Ok(())
