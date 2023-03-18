@@ -145,6 +145,7 @@ fn validate(
                         string,
                         uses,
                         remove_keys,
+                        set_keys,
                     } => {
                         println!("{path}: {reason}");
 
@@ -153,10 +154,25 @@ fn validate(
 
                             for (id, key) in remove_keys {
                                 if let Some(mut m) = doc.value_mut(*id).into_mapping_mut() {
-                                    if m.remove(key) {
+                                    if !m.remove(key) {
                                         bail!("{path}: failed to remove key `{key}`");
                                     }
                                 }
+                            }
+
+                            for (id, key, value) in set_keys {
+                                let mut m = doc.value(*id);
+
+                                for step in key.split('.') {
+                                    let Some(next) = m.as_mapping().and_then(|m| m.get(step)) else {
+                                        bail!("{path}: missing step `{step}` in key `{key}`");
+                                    };
+
+                                    m = next;
+                                }
+
+                                let id = m.id();
+                                doc.value_mut(id).set_string(value);
                             }
 
                             edited = true;

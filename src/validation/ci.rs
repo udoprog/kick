@@ -195,6 +195,7 @@ fn validate_jobs(
                                     string: format!("{base}@{expected}"),
                                     uses,
                                     remove_keys: vec![],
+                                    set_keys: vec![],
                                 });
                             }
                         }

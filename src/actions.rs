@@ -78,11 +78,27 @@ impl ActionsCheck for ActionsRsToolchainActionsCheck {
             "stable"
         };
 
+        let mut remove_keys = Vec::new();
+        let mut set_keys = Vec::new();
+
+        let toolchain = if !toolchain.starts_with("${{") {
+            remove_keys.push((mapping.id(), String::from("with")));
+            toolchain
+        } else {
+            set_keys.push((
+                mapping.id(),
+                String::from("with.toolchain"),
+                toolchain.to_string(),
+            ));
+            "master"
+        };
+
         validation.push(WorkflowValidation::ReplaceString {
             reason: String::from("actions-rs/toolchain has better alternatives"),
             string: format!("dtolnay/rust-toolchain@{toolchain}"),
             uses: uses.id(),
-            remove_keys: vec![(mapping.id(), String::from("with"))],
+            remove_keys,
+            set_keys,
         });
 
         Ok(())

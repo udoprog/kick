@@ -25,6 +25,7 @@ pub(crate) enum WorkflowValidation {
         string: String,
         uses: yaml::ValueId,
         remove_keys: Vec<(yaml::ValueId, String)>,
+        set_keys: Vec<(yaml::ValueId, String, String)>,
     },
     /// Deny use of the specific action.
     Error { name: String, reason: String },
