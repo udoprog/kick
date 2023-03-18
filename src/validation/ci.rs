@@ -2,8 +2,8 @@ use core::fmt;
 use std::collections::HashSet;
 
 use anyhow::{anyhow, Context, Result};
+use nondestructive::yaml;
 use relative_path::{RelativePath, RelativePathBuf};
-use serde_yaml::Value;
 
 use crate::ctxt::Ctxt;
 use crate::manifest::Manifest;
@@ -113,12 +113,12 @@ fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, module: &Module) -> Result<()> {
     }
 
     let bytes = std::fs::read(path.to_path(cx.root))?;
-    let value: serde_yaml::Value =
-        serde_yaml::from_slice(&bytes).with_context(|| anyhow!("{path}"))?;
+    let value = yaml::from_bytes(&bytes).with_context(|| anyhow!("{path}"))?;
 
     let name = value
-        .get("name")
-        .and_then(|name| name.as_str())
+        .root()
+        .as_mapping()
+        .and_then(|m| m.get("name")?.as_str())
         .ok_or_else(|| anyhow!("{path}: missing .name"))?;
 
     if name != cx.config.job_name(module) {
@@ -159,17 +159,21 @@ fn validate_jobs(
     cx: &Ctxt<'_>,
     ci: &mut Ci<'_>,
     path: &RelativePath,
-    value: &serde_yaml::Value,
+    doc: &yaml::Document,
 ) -> Result<()> {
-    if let Some(value) = value.get("on") {
-        validate_on(ci, value, path);
+    let Some(table) = doc.root().as_mapping() else {
+        return Ok(());
+    };
+
+    if let Some(value) = table.get("on") {
+        validate_on(ci, doc, value, path);
     }
 
-    if let Some(jobs) = value.get("jobs").and_then(|v| v.as_mapping()) {
+    if let Some(jobs) = table.get("jobs").and_then(|v| v.as_mapping()) {
         for (_, job) in jobs {
             for action in job
-                .get("steps")
-                .and_then(|v| v.as_sequence())
+                .as_mapping()
+                .and_then(|m| m.get("steps")?.as_sequence())
                 .into_iter()
                 .flatten()
                 .flat_map(|v| v.as_mapping())
@@ -217,20 +221,21 @@ fn validate_jobs(
     Ok(())
 }
 
-fn validate_on(ci: &mut Ci<'_>, value: &Value, path: &RelativePath) {
-    let Value::Mapping(m) = value else {
+fn validate_on(ci: &mut Ci<'_>, doc: &yaml::Document, value: yaml::Value<'_>, path: &RelativePath) {
+    let Some(m) = value.as_mapping() else {
         ci.validation.push(Validation::ActionMissingKey {
             path: path.to_owned(),
             key: Box::from("on"),
             expected: ActionExpected::Mapping,
-            actual: Some(value.clone()),
+            doc: doc.clone(),
+            actual: Some(value.id()),
         });
 
         return;
     };
 
-    match m.get("pull_request") {
-        Some(Value::Mapping(m)) => {
+    match m.get("pull_request").map(yaml::Value::into_any) {
+        Some(yaml::Any::Mapping(m)) => {
             if !m.is_empty() {
                 ci.validation.push(Validation::ActionExpectedEmptyMapping {
                     path: path.to_owned(),
@@ -243,14 +248,15 @@ fn validate_on(ci: &mut Ci<'_>, value: &Value, path: &RelativePath) {
                 path: path.to_owned(),
                 key: Box::from("on.pull_request"),
                 expected: ActionExpected::Mapping,
-                actual: value.cloned(),
+                doc: doc.clone(),
+                actual: value.map(|v| v.id()),
             });
         }
     }
 
-    match m.get("push") {
-        Some(Value::Mapping(m)) => match m.get("branches") {
-            Some(Value::Sequence(s)) => {
+    match m.get("push").map(yaml::Value::into_any) {
+        Some(yaml::Any::Mapping(m)) => match m.get("branches").map(yaml::Value::into_any) {
+            Some(yaml::Any::Sequence(s)) => {
                 if !s.iter().flat_map(|v| v.as_str()).any(|b| b == "main") {
                     ci.validation.push(Validation::ActionOnMissingBranch {
                         path: path.to_owned(),
@@ -264,7 +270,8 @@ fn validate_on(ci: &mut Ci<'_>, value: &Value, path: &RelativePath) {
                     path: path.to_owned(),
                     key: Box::from("on.push.branches"),
                     expected: ActionExpected::Sequence,
-                    actual: value.cloned(),
+                    doc: doc.clone(),
+                    actual: value.map(|v| v.id()),
                 });
             }
         },
@@ -273,21 +280,23 @@ fn validate_on(ci: &mut Ci<'_>, value: &Value, path: &RelativePath) {
                 path: path.to_owned(),
                 key: Box::from("on.push"),
                 expected: ActionExpected::Mapping,
-                actual: value.cloned(),
+                doc: doc.clone(),
+                actual: value.map(|v| v.id()),
             });
         }
     }
 }
 
-fn verify_single_project_build(ci: &mut Ci<'_>, path: &RelativePath, job: &serde_yaml::Value) {
+fn verify_single_project_build(ci: &mut Ci<'_>, path: &RelativePath, job: yaml::Value<'_>) {
     let mut cargo_combos = Vec::new();
     let features = ci.manifest.features();
 
     for step in job
-        .get("steps")
-        .and_then(|v| v.as_sequence())
+        .as_mapping()
+        .and_then(|v| v.get("steps")?.as_sequence())
         .into_iter()
         .flatten()
+        .flat_map(|v| v.as_mapping())
     {
         if let Some(command) = step.get("run").and_then(|v| v.as_str()) {
             let identity = identify_command(command, &features);

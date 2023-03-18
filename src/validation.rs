@@ -6,6 +6,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
+use nondestructive::yaml;
 use relative_path::RelativePathBuf;
 
 use self::cargo::CargoIssue;
@@ -94,7 +95,8 @@ pub(crate) enum Validation {
         path: RelativePathBuf,
         key: Box<str>,
         expected: ActionExpected,
-        actual: Option<serde_yaml::Value>,
+        doc: yaml::Document,
+        actual: Option<yaml::ValueId>,
     },
     ActionOnMissingBranch {
         path: RelativePathBuf,

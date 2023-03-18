@@ -2,7 +2,7 @@ use core::fmt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use anyhow::{Error, Context, Result};
+use anyhow::{Context, Error, Result};
 use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Serialize, Serializer};
 use url::Url;
@@ -116,8 +116,7 @@ pub(crate) fn load_modules(root: &Path, path: &RelativePath) -> Result<Vec<Modul
 
     let result = match std::fs::read(gitmodules_path.to_path(root)) {
         Ok(buf) => {
-            modules
-                .extend(parse_git_modules(path, &buf)?);
+            modules.extend(parse_git_modules(path, &buf)?);
             Ok(())
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -127,7 +126,8 @@ pub(crate) fn load_modules(root: &Path, path: &RelativePath) -> Result<Vec<Modul
     result.with_context(|| gitmodules_path.to_owned())?;
 
     if git_path.to_path(root).is_dir() {
-        modules.extend(module_from_git(git_path.to_path(root)).with_context(|| git_path.to_owned())?);
+        modules
+            .extend(module_from_git(git_path.to_path(root)).with_context(|| git_path.to_owned())?);
     }
 
     Ok(modules)

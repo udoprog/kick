@@ -224,6 +224,7 @@ fn validate(
             path,
             key,
             expected,
+            doc,
             actual,
         } => {
             println!("{path}: {key}: action missing key, expected {expected}");
@@ -231,7 +232,8 @@ fn validate(
             match actual {
                 Some(value) => {
                     println!("  actual:");
-                    serde_yaml::to_writer(std::io::stdout(), value)?;
+                    let value = doc.value(*value);
+                    print!("{value}");
                 }
                 None => {
                     println!("  actual: *missing value*");
