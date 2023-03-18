@@ -20,15 +20,14 @@ use crate::workspace::{Package, Workspace};
 
 pub(crate) enum WorkflowValidation {
     /// Oudated version of an action.
-    OutdatedAction {
-        actual: String,
-        expected: String,
+    ReplaceString {
+        reason: String,
+        string: String,
         uses: yaml::ValueId,
+        remove_keys: Vec<(yaml::ValueId, String)>,
     },
     /// Deny use of the specific action.
-    DeniedAction { name: String, reason: String },
-    /// Actions check failed.
-    CustomActionsCheck { name: String, reason: String },
+    Error { name: String, reason: String },
 }
 
 pub(crate) enum Validation {

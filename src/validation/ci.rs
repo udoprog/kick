@@ -188,28 +188,26 @@ fn validate_jobs(
                     if let Some((base, version)) = name.split_once('@') {
                         if let Some(expected) = cx.actions.get_latest(base) {
                             if expected != version {
-                                validation.push(WorkflowValidation::OutdatedAction {
-                                    actual: name.to_string(),
-                                    expected: format!("{base}@{expected}"),
+                                validation.push(WorkflowValidation::ReplaceString {
+                                    reason: format!(
+                                        "Outdated action: got `{version}` but expected `{expected}`"
+                                    ),
+                                    string: format!("{base}@{expected}"),
                                     uses,
+                                    remove_keys: vec![],
                                 });
                             }
                         }
 
                         if let Some(reason) = cx.actions.get_deny(base) {
-                            validation.push(WorkflowValidation::DeniedAction {
+                            validation.push(WorkflowValidation::Error {
                                 name: name.to_owned(),
                                 reason: reason.into(),
                             });
                         }
 
                         if let Some(check) = cx.actions.get_check(base) {
-                            if let Err(reason) = check.check(action) {
-                                validation.push(WorkflowValidation::CustomActionsCheck {
-                                    name: name.to_owned(),
-                                    reason,
-                                });
-                            }
+                            check.check(name, action, &mut validation)?;
                         }
                     }
                 }

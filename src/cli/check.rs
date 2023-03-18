@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 
 use crate::ctxt::Ctxt;
@@ -140,25 +140,30 @@ fn validate(
 
             for validation in validation {
                 match validation {
-                    WorkflowValidation::OutdatedAction {
-                        actual,
-                        expected,
+                    WorkflowValidation::ReplaceString {
+                        reason,
+                        string,
                         uses,
+                        remove_keys,
                     } => {
-                        println!(
-                            "{path}: Outdated action: got `{actual}` but expected `{expected}`"
-                        );
+                        println!("{path}: {reason}");
 
                         if fix {
-                            doc.value_mut(*uses).set_string(expected);
+                            doc.value_mut(*uses).set_string(string);
+
+                            for (id, key) in remove_keys {
+                                if let Some(mut m) = doc.value_mut(*id).into_mapping_mut() {
+                                    if m.remove(key) {
+                                        bail!("{path}: failed to remove key `{key}`");
+                                    }
+                                }
+                            }
+
                             edited = true;
                         }
                     }
-                    WorkflowValidation::DeniedAction { name, reason } => {
-                        println!("{path}: Denied action `{name}`: {reason}");
-                    }
-                    WorkflowValidation::CustomActionsCheck { name, reason } => {
-                        println!("{path}: Action validation failed `{name}`: {reason}");
+                    WorkflowValidation::Error { name, reason } => {
+                        println!("{path}: {name}: {reason}");
                     }
                 }
             }

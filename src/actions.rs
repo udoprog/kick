@@ -1,10 +1,18 @@
 use std::collections::HashMap;
 
+use anyhow::Result;
 use nondestructive::yaml;
+
+use crate::validation::WorkflowValidation;
 
 /// A single actions check.
 pub(crate) trait ActionsCheck {
-    fn check(&self, action: yaml::Mapping<'_>) -> Result<(), String>;
+    fn check(
+        &self,
+        name: &str,
+        action: yaml::Mapping<'_>,
+        validation: &mut Vec<WorkflowValidation>,
+    ) -> Result<()>;
 }
 
 /// A collection of supported uses.
@@ -50,15 +58,32 @@ impl<'a> Actions<'a> {
 pub(crate) struct ActionsRsToolchainActionsCheck;
 
 impl ActionsCheck for ActionsRsToolchainActionsCheck {
-    fn check(&self, mapping: yaml::Mapping<'_>) -> Result<(), String> {
-        let with = match mapping.get("with").and_then(|v| v.as_mapping()) {
-            Some(with) => with,
-            None => return Err(String::from("missing with")),
+    fn check(
+        &self,
+        name: &str,
+        mapping: yaml::Mapping<'_>,
+        validation: &mut Vec<WorkflowValidation>,
+    ) -> Result<()> {
+        let Some(uses) = mapping.get("uses") else {
+            validation.push(WorkflowValidation::Error { name: name.to_string(), reason: String::from("there are better alternatives") });
+            return Ok(());
         };
 
-        if with.get("toolchain").and_then(|v| v.as_str()).is_none() {
-            return Err(String::from("missing toolchain"));
-        }
+        let toolchain = if let Some(toolchain) = mapping
+            .get("with")
+            .and_then(|v| v.as_mapping()?.get("toolchain")?.as_str())
+        {
+            toolchain
+        } else {
+            "stable"
+        };
+
+        validation.push(WorkflowValidation::ReplaceString {
+            reason: String::from("actions-rs/toolchain has better alternatives"),
+            string: format!("dtolnay/rust-toolchain@{toolchain}"),
+            uses: uses.id(),
+            remove_keys: vec![(mapping.id(), String::from("with"))],
+        });
 
         Ok(())
     }
