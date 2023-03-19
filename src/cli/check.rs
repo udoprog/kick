@@ -161,18 +161,17 @@ fn validate(
                             }
 
                             for (id, key, value) in set_keys {
-                                let mut m = doc.value(*id);
+                                let mut m = doc.value_mut(*id);
 
                                 for step in key.split('.') {
-                                    let Some(next) = m.as_mapping().and_then(|m| m.get(step)) else {
+                                    let Some(next) = m.into_mapping_mut().and_then(|m| m.get_into_mut(step)) else {
                                         bail!("{path}: missing step `{step}` in key `{key}`");
                                     };
 
                                     m = next;
                                 }
 
-                                let id = m.id();
-                                doc.value_mut(id).set_string(value);
+                                m.set_string(value);
                             }
 
                             edited = true;
