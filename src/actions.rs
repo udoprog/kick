@@ -96,7 +96,7 @@ impl ActionsCheck for ActionsRsToolchainActionsCheck {
         validation.push(WorkflowValidation::ReplaceString {
             reason: String::from("actions-rs/toolchain has better alternatives"),
             string: format!("dtolnay/rust-toolchain@{toolchain}"),
-            uses: uses.id(),
+            value: uses.id(),
             remove_keys,
             set_keys,
         });

@@ -23,7 +23,7 @@ pub(crate) enum WorkflowValidation {
     ReplaceString {
         reason: String,
         string: String,
-        uses: yaml::ValueId,
+        value: yaml::ValueId,
         remove_keys: Vec<(yaml::ValueId, String)>,
         set_keys: Vec<(yaml::ValueId, String, String)>,
     },

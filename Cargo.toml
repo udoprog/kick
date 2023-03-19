@@ -15,6 +15,7 @@ categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0.70"
+bstr = "1.4.0"
 chrono = { version = "0.4.24", features = ["serde"] }
 clap = { version = "4.1.11", features = ["derive"] }
 handlebars = "4.3.6"

@@ -2,12 +2,14 @@ use core::fmt;
 use std::collections::HashSet;
 
 use anyhow::{anyhow, Context, Result};
+use bstr::ByteSlice;
 use nondestructive::yaml;
 use relative_path::{RelativePath, RelativePathBuf};
 
 use crate::ctxt::Ctxt;
 use crate::manifest::Manifest;
 use crate::model::Module;
+use crate::rust_version::RustVersion;
 use crate::validation::Validation;
 use crate::workspace::{Package, Workspace};
 
@@ -115,7 +117,7 @@ fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, module: &Module) -> Result<()> {
     }
 
     let bytes = std::fs::read(path.to_path(cx.root))?;
-    let value = yaml::from_bytes(&bytes).with_context(|| anyhow!("{path}"))?;
+    let value = yaml::from_bytes(bytes).with_context(|| anyhow!("{path}"))?;
 
     let name = value
         .root()
@@ -174,45 +176,16 @@ fn validate_jobs(
     let mut validation = Vec::new();
 
     if let Some(jobs) = table.get("jobs").and_then(|v| v.as_mapping()) {
-        for (_, job) in jobs {
-            for action in job
-                .as_mapping()
-                .and_then(|m| m.get("steps")?.as_sequence())
-                .into_iter()
-                .flatten()
-                .flat_map(|v| v.as_mapping())
-            {
-                if let Some((uses, name)) =
-                    action.get("uses").and_then(|v| Some((v.id(), v.as_str()?)))
-                {
-                    if let Some((base, version)) = name.split_once('@') {
-                        if let Some(expected) = cx.actions.get_latest(base) {
-                            if expected != version {
-                                validation.push(WorkflowValidation::ReplaceString {
-                                    reason: format!(
-                                        "Outdated action: got `{version}` but expected `{expected}`"
-                                    ),
-                                    string: format!("{base}@{expected}"),
-                                    uses,
-                                    remove_keys: vec![],
-                                    set_keys: vec![],
-                                });
-                            }
-                        }
+        for (job_name, job) in jobs {
+            let Some(job) = job.as_mapping() else {
+                continue
+            };
 
-                        if let Some(reason) = cx.actions.get_deny(base) {
-                            validation.push(WorkflowValidation::Error {
-                                name: name.to_owned(),
-                                reason: reason.into(),
-                            });
-                        }
-
-                        if let Some(check) = cx.actions.get_check(base) {
-                            check.check(name, action, &mut validation)?;
-                        }
-                    }
-                }
+            if matches!(job_name.to_str(), Ok("test" | "build")) {
+                check_strategy_rust_version(ci, &job, &mut validation);
             }
+
+            check_actions(&job, cx, &mut validation)?;
 
             if !ci.workspace {
                 verify_single_project_build(ci, path, job);
@@ -229,6 +202,109 @@ fn validate_jobs(
     }
 
     Ok(())
+}
+
+fn check_actions(
+    job: &yaml::Mapping,
+    cx: &Ctxt,
+    validation: &mut Vec<WorkflowValidation>,
+) -> Result<()> {
+    for action in job
+        .get("steps")
+        .and_then(|v| v.as_sequence())
+        .into_iter()
+        .flatten()
+        .flat_map(|v| v.as_mapping())
+    {
+        let Some((uses, name)) = action.get("uses").and_then(|v| Some((v.id(), v.as_str()?))) else {
+            continue;
+        };
+
+        let Some((base, version)) = name.split_once('@') else {
+            continue;
+        };
+
+        if let Some(expected) = cx.actions.get_latest(base) {
+            if expected != version {
+                validation.push(WorkflowValidation::ReplaceString {
+                    reason: format!("Outdated action: got `{version}` but expected `{expected}`"),
+                    string: format!("{base}@{expected}"),
+                    value: uses,
+                    remove_keys: vec![],
+                    set_keys: vec![],
+                });
+            }
+        }
+
+        if let Some(reason) = cx.actions.get_deny(base) {
+            validation.push(WorkflowValidation::Error {
+                name: name.to_owned(),
+                reason: reason.into(),
+            });
+        }
+
+        if let Some(check) = cx.actions.get_check(base) {
+            check.check(name, action, validation)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Check that the correct rust-version is used in a job.
+fn check_strategy_rust_version(
+    ci: &mut Ci,
+    job: &yaml::Mapping,
+    validation: &mut Vec<WorkflowValidation>,
+) {
+    let Some(rust_version) = ci
+        .manifest
+        .rust_version()
+        .ok()
+        .flatten()
+        .and_then(RustVersion::parse) else
+    {
+        return;
+    };
+
+    if let Some(matrix) = job
+        .get("strategy")
+        .and_then(|v| v.as_mapping()?.get("matrix")?.as_mapping())
+    {
+        for value in matrix
+            .get("rust")
+            .and_then(|v| v.as_sequence())
+            .into_iter()
+            .flatten()
+        {
+            let Some(string) = value.as_str() else {
+                continue;
+            };
+
+            let version = match string {
+                "stable" => continue,
+                "beta" => continue,
+                "nightly" => continue,
+                version => RustVersion::parse(version),
+            };
+
+            let Some(version) = version else {
+                continue;
+            };
+
+            if rust_version != version {
+                validation.push(WorkflowValidation::ReplaceString {
+                    reason: format!(
+                        "Wrong rust version: got `{version}` but expected `{rust_version}`"
+                    ),
+                    string: rust_version.to_string(),
+                    value: value.id(),
+                    remove_keys: vec![],
+                    set_keys: vec![],
+                });
+            }
+        }
+    }
 }
 
 fn validate_on(ci: &mut Ci<'_>, doc: &yaml::Document, value: yaml::Value<'_>, path: &RelativePath) {
@@ -297,13 +373,13 @@ fn validate_on(ci: &mut Ci<'_>, doc: &yaml::Document, value: yaml::Value<'_>, pa
     }
 }
 
-fn verify_single_project_build(ci: &mut Ci<'_>, path: &RelativePath, job: yaml::Value<'_>) {
+fn verify_single_project_build(ci: &mut Ci<'_>, path: &RelativePath, job: yaml::Mapping<'_>) {
     let mut cargo_combos = Vec::new();
     let features = ci.manifest.features();
 
     for step in job
-        .as_mapping()
-        .and_then(|v| v.get("steps")?.as_sequence())
+        .get("steps")
+        .and_then(|v| v.as_sequence())
         .into_iter()
         .flatten()
         .flat_map(|v| v.as_mapping())

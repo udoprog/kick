@@ -609,6 +609,7 @@ name = "kick"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "bstr",
  "chrono",
  "clap",
  "handlebars",

@@ -143,7 +143,7 @@ fn validate(
                     WorkflowValidation::ReplaceString {
                         reason,
                         string,
-                        uses,
+                        value: uses,
                         remove_keys,
                         set_keys,
                     } => {
