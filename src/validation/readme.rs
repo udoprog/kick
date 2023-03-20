@@ -409,20 +409,13 @@ fn readme_from_lib_rs(
     let mut in_code_block = None::<bool>;
 
     for line in comments.lines() {
-        let comment = match line.as_rust_comment() {
-            Some(comment) => comment,
-            None => {
-                continue;
-            }
-        };
-
-        if in_code_block == Some(true) && comment.trim_start().starts_with("# ") {
+        if in_code_block == Some(true) && line.as_ref().trim_start().starts_with("# ") {
             continue;
         }
 
-        if comment.starts_with("```") {
+        if line.as_ref().starts_with("```") {
             if in_code_block.is_none() {
-                let (parts, specs) = filter_code_block(comment);
+                let (parts, specs) = filter_code_block(line.as_ref());
                 body.line(format_args!("```{parts}"));
                 in_code_block = Some(specs.contains("rust"));
                 continue;
@@ -431,12 +424,12 @@ fn readme_from_lib_rs(
             in_code_block = None;
         }
 
-        body.line(comment);
+        body.line(line);
     }
 
     let mut readme = if let Some(readme) = cx.config.readme(&rm.module.path) {
         let output = readme.render(&ReadmeParams {
-            body: comments.as_non_empty_str(),
+            body: body.as_non_empty_str(),
             badges,
             params: rm.params,
         })?;
@@ -452,17 +445,19 @@ fn readme_from_lib_rs(
         let mut readme = File::new();
         readme.line(format!("# {name}", name = rm.params.crate_name()));
 
-        for badge in badges {
-            if let Some(markdown) = &badge.markdown {
-                readme.line(format_args!("{markdown}"));
-            }
-        }
-
         if !badges.is_empty() {
+            readme.line("");
+
+            for badge in badges {
+                if let Some(markdown) = &badge.markdown {
+                    readme.line(format_args!("{markdown}"));
+                }
+            }
+
             readme.line("");
         }
 
-        for line in comments.lines() {
+        for line in body.lines() {
             readme.line(line);
         }
 
