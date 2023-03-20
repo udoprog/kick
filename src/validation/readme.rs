@@ -104,7 +104,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
     if rm.do_lib && *file != *lib_rs {
         rm.validation.push(Validation::UpdateLib {
             path: rm.entry.to_owned(),
-            lib: lib_rs.clone(),
+            lib: lib_rs,
         });
     }
 

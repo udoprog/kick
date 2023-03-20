@@ -272,13 +272,7 @@ impl Config {
 
         self.base.badges.iter().chain(repos).filter(move |b| {
             let enabled = filter(&self.base, b, b.enabled);
-
-            let enabled = match repo {
-                Some(repo) => filter(repo, b, enabled),
-                None => enabled,
-            };
-
-            enabled
+            repo.map(|repo| filter(repo, b, enabled)).unwrap_or(enabled)
         })
     }
 
