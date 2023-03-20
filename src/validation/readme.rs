@@ -458,6 +458,10 @@ fn readme_from_lib_rs(
             }
         }
 
+        if !badges.is_empty() {
+            readme.line("");
+        }
+
         for line in comments.lines() {
             readme.line(line);
         }
