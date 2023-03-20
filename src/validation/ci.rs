@@ -117,10 +117,10 @@ fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, module: &Module) -> Result<()> {
     }
 
     let bytes = std::fs::read(path.to_path(cx.root))?;
-    let value = yaml::from_bytes(bytes).with_context(|| anyhow!("{path}"))?;
+    let value = yaml::from_slice(bytes).with_context(|| anyhow!("{path}"))?;
 
     let name = value
-        .root()
+        .as_ref()
         .as_mapping()
         .and_then(|m| m.get("name")?.as_str())
         .ok_or_else(|| anyhow!("{path}: missing .name"))?;
@@ -165,7 +165,7 @@ fn validate_jobs(
     path: &RelativePath,
     doc: &yaml::Document,
 ) -> Result<()> {
-    let Some(table) = doc.root().as_mapping() else {
+    let Some(table) = doc.as_ref().as_mapping() else {
         return Ok(());
     };
 

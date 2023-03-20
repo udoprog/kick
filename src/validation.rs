@@ -23,9 +23,9 @@ pub(crate) enum WorkflowValidation {
     ReplaceString {
         reason: String,
         string: String,
-        value: yaml::ValueId,
-        remove_keys: Vec<(yaml::ValueId, String)>,
-        set_keys: Vec<(yaml::ValueId, String, String)>,
+        value: yaml::Id,
+        remove_keys: Vec<(yaml::Id, String)>,
+        set_keys: Vec<(yaml::Id, String, String)>,
     },
     /// Deny use of the specific action.
     Error { name: String, reason: String },
@@ -95,7 +95,7 @@ pub(crate) enum Validation {
         key: Box<str>,
         expected: ActionExpected,
         doc: yaml::Document,
-        actual: Option<yaml::ValueId>,
+        actual: Option<yaml::Id>,
     },
     ActionOnMissingBranch {
         path: RelativePathBuf,
