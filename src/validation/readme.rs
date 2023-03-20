@@ -90,16 +90,25 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
         return Ok(());
     }
 
-    let mut badges = Vec::new();
+    let mut lib_badges = Vec::new();
 
-    for badge in cx.config.badges(&rm.module.path) {
-        badges.push(BadgeParams {
+    for badge in cx.config.lib_badges(&rm.module.path) {
+        lib_badges.push(BadgeParams {
             markdown: badge.markdown(rm.params)?,
             html: badge.html(rm.params)?,
         });
     }
 
-    let (file, full, rest) = process_lib_rs(cx, rm, &badges)?;
+    let mut readme_badges = Vec::new();
+
+    for badge in cx.config.readme_badges(&rm.module.path) {
+        readme_badges.push(BadgeParams {
+            markdown: badge.markdown(rm.params)?,
+            html: badge.html(rm.params)?,
+        });
+    }
+
+    let (file, full, rest) = process_lib_rs(cx, rm, &lib_badges)?;
 
     if rm.do_lib && *file != *full {
         rm.validation.push(Validation::UpdateLib {
@@ -128,7 +137,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
         });
     }
 
-    let readme_from_lib_rs = readme_from_lib_rs(cx, rm, &full, &rest, &badges)?;
+    let readme_from_lib_rs = readme_from_lib_rs(cx, rm, &full, &rest, &readme_badges)?;
 
     let readme = match File::read(rm.readme_path.to_path(cx.root)) {
         Ok(file) => file,

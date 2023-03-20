@@ -40,10 +40,10 @@ pub(crate) struct Repo {
     pub(crate) cargo_toml: Option<RelativePathBuf>,
     /// Disabled modules.
     pub(crate) disabled: BTreeSet<String>,
-    /// Explicit allowlist for badges to enabled which are already disabled.
-    pub(crate) enabled_badges: HashSet<String>,
-    /// Explicit blocklist for badges to enabled.
-    pub(crate) disabled_badges: HashSet<String>,
+    /// Badges used in lib file.
+    pub(crate) lib_badges: IdSet,
+    /// Badges used in readmes.
+    pub(crate) readme_badges: IdSet,
     /// Variables that can be used verbatim in templates.
     pub(crate) variables: toml::Table,
 }
@@ -61,22 +61,99 @@ impl Repo {
         self.krate = other.krate.or(self.krate.take());
         self.cargo_toml = other.cargo_toml.or(self.cargo_toml.take());
         self.disabled.extend(other.disabled);
-        self.enabled_badges.extend(other.enabled_badges);
-        self.disabled_badges.extend(other.disabled_badges);
+        self.lib_badges.merge_with(other.lib_badges);
+        self.readme_badges.merge_with(other.readme_badges);
         merge_map(&mut self.variables, other.variables);
     }
 
-    /// Test if this repo wants the specified badge.
-    pub(crate) fn wants_badge(&self, b: &ConfigBadge) -> bool {
+    /// Test if this repo wants the specified readme badge.
+    pub(crate) fn wants_lib_badge(&self, b: &ConfigBadge) -> bool {
         let Some(id) = &b.id else {
             return b.enabled;
         };
 
-        if b.enabled {
-            !self.disabled_badges.contains(id)
-        } else {
-            self.enabled_badges.contains(id)
+        self.lib_badges.is_enabled(id, b.enabled)
+    }
+
+    /// Test if this repo wants the specified lib badge.
+    pub(crate) fn wants_readme_badge(&self, b: &ConfigBadge) -> bool {
+        let Some(id) = &b.id else {
+            return b.enabled;
+        };
+
+        self.readme_badges.is_enabled(id, b.enabled)
+    }
+}
+
+/// A badge configuration.
+pub(crate) enum Id {
+    /// An enabled badge.
+    Enabled(String),
+    /// A disabled badge.
+    Disabled(String),
+}
+
+impl Id {
+    /// Parse a single badge.
+    fn parse<S>(item: S) -> Result<Self>
+    where
+        S: AsRef<str>,
+    {
+        let item = item.as_ref();
+        let mut chars = item.chars();
+
+        match (chars.next(), chars.as_str()) {
+            (Some('-'), rest) => Ok(Id::Disabled(rest.to_owned())),
+            (Some('+'), rest) => Ok(Id::Enabled(rest.to_owned())),
+            _ => Err(anyhow!("expected `+` and `-` in badge, but got `{item}`")),
         }
+    }
+}
+
+/// Set of identifers.
+#[derive(Default)]
+pub(crate) struct IdSet {
+    /// Explicit allowlist for badges to enabled which are already disabled.
+    enabled: HashSet<String>,
+    /// Explicit blocklist for badges to enabled.
+    disabled: HashSet<String>,
+}
+
+impl IdSet {
+    /// Merge with another set.
+    pub(crate) fn merge_with(&mut self, other: Self) {
+        self.enabled.extend(other.enabled);
+        self.disabled.extend(other.disabled);
+    }
+
+    /// Test if id is enabled.
+    pub(crate) fn is_enabled(&self, badge: &str, enabled: bool) -> bool {
+        if !enabled {
+            self.enabled.contains(badge)
+        } else {
+            self.disabled.contains(badge)
+        }
+    }
+}
+
+impl FromIterator<Id> for IdSet {
+    #[inline]
+    fn from_iter<T: IntoIterator<Item = Id>>(iter: T) -> Self {
+        let mut enabled = HashSet::new();
+        let mut disabled = HashSet::new();
+
+        for badge in iter {
+            match badge {
+                Id::Enabled(badge) => {
+                    enabled.insert(badge);
+                }
+                Id::Disabled(badge) => {
+                    disabled.insert(badge);
+                }
+            }
+        }
+
+        Self { enabled, disabled }
     }
 }
 
@@ -186,8 +263,10 @@ impl Config {
         variables
     }
 
-    /// Iterator over badges for the given repo.
-    pub(crate) fn badges(&self, path: &RelativePath) -> impl Iterator<Item = &'_ ConfigBadge> {
+    fn badges<F>(&self, path: &RelativePath, mut filter: F) -> impl Iterator<Item = &'_ ConfigBadge>
+    where
+        F: FnMut(&Repo, &ConfigBadge) -> bool,
+    {
         let repo = self.repos.get(path);
         let repos = repo.into_iter().flat_map(|repo| repo.badges.iter());
 
@@ -196,9 +275,22 @@ impl Config {
             .iter()
             .chain(repos)
             .filter(move |b| match repo {
-                Some(repo) => repo.wants_badge(b),
+                Some(repo) => filter(repo, b),
                 None => b.enabled,
             })
+    }
+
+    /// Iterator over lib badges for the given repo.
+    pub(crate) fn lib_badges(&self, path: &RelativePath) -> impl Iterator<Item = &'_ ConfigBadge> {
+        self.badges(path, |repo, b| repo.wants_lib_badge(b))
+    }
+
+    /// Iterator over readme badges for the given repo.
+    pub(crate) fn readme_badges(
+        &self,
+        path: &RelativePath,
+    ) -> impl Iterator<Item = &'_ ConfigBadge> {
+        self.badges(path, |repo, b| repo.wants_readme_badge(b))
     }
 
     /// Get the header for the given repo.
@@ -588,12 +680,16 @@ impl<'a> ConfigCtxt<'a> {
         let disabled = self.in_array(config, "disabled", |cx, item| cx.string(item))?;
         let disabled = disabled.unwrap_or_default().into_iter().collect();
 
-        let disabled_badges =
-            self.in_array(config, "disabled_badges", |cx, item| cx.string(item))?;
-        let disabled_badges = disabled_badges.unwrap_or_default().into_iter().collect();
+        let lib_badges =
+            self.in_array(config, "lib_badges", |cx, item| Id::parse(cx.string(item)?))?;
 
-        let enabled_badges = self.in_array(config, "enabled_badges", |cx, item| cx.string(item))?;
-        let enabled_badges = enabled_badges.unwrap_or_default().into_iter().collect();
+        let lib_badges = lib_badges.unwrap_or_default().into_iter().collect();
+
+        let readme_badges = self.in_array(config, "readme_badges", |cx, item| {
+            Id::parse(cx.string(item)?)
+        })?;
+
+        let readme_badges = readme_badges.unwrap_or_default().into_iter().collect();
 
         let variables = self.as_table(config, "variables")?.unwrap_or_default();
 
@@ -609,8 +705,8 @@ impl<'a> ConfigCtxt<'a> {
             krate,
             cargo_toml,
             disabled,
-            enabled_badges,
-            disabled_badges,
+            lib_badges,
+            readme_badges,
             variables,
         })
     }
