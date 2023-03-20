@@ -67,21 +67,21 @@ impl Repo {
     }
 
     /// Test if this repo wants the specified readme badge.
-    pub(crate) fn wants_lib_badge(&self, b: &ConfigBadge) -> bool {
+    pub(crate) fn wants_lib_badge(&self, b: &ConfigBadge, enabled: bool) -> bool {
         let Some(id) = &b.id else {
-            return b.enabled;
+            return enabled;
         };
 
-        self.lib_badges.is_enabled(id, b.enabled)
+        self.lib_badges.is_enabled(id, enabled)
     }
 
     /// Test if this repo wants the specified lib badge.
-    pub(crate) fn wants_readme_badge(&self, b: &ConfigBadge) -> bool {
+    pub(crate) fn wants_readme_badge(&self, b: &ConfigBadge, enabled: bool) -> bool {
         let Some(id) = &b.id else {
-            return b.enabled;
+            return enabled;
         };
 
-        self.readme_badges.is_enabled(id, b.enabled)
+        self.readme_badges.is_enabled(id, enabled)
     }
 }
 
@@ -111,7 +111,7 @@ impl Id {
 }
 
 /// Set of identifers.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct IdSet {
     /// Explicit allowlist for badges to enabled which are already disabled.
     enabled: HashSet<String>,
@@ -127,11 +127,11 @@ impl IdSet {
     }
 
     /// Test if id is enabled.
-    pub(crate) fn is_enabled(&self, badge: &str, enabled: bool) -> bool {
+    pub(crate) fn is_enabled(&self, id: &str, enabled: bool) -> bool {
         if !enabled {
-            self.enabled.contains(badge)
+            self.enabled.contains(id)
         } else {
-            self.disabled.contains(badge)
+            !self.disabled.contains(id)
         }
     }
 }
@@ -265,24 +265,26 @@ impl Config {
 
     fn badges<F>(&self, path: &RelativePath, mut filter: F) -> impl Iterator<Item = &'_ ConfigBadge>
     where
-        F: FnMut(&Repo, &ConfigBadge) -> bool,
+        F: FnMut(&Repo, &ConfigBadge, bool) -> bool,
     {
         let repo = self.repos.get(path);
         let repos = repo.into_iter().flat_map(|repo| repo.badges.iter());
 
-        self.base
-            .badges
-            .iter()
-            .chain(repos)
-            .filter(move |b| match repo {
-                Some(repo) => filter(repo, b),
-                None => b.enabled,
-            })
+        self.base.badges.iter().chain(repos).filter(move |b| {
+            let enabled = filter(&self.base, b, b.enabled);
+
+            let enabled = match repo {
+                Some(repo) => filter(repo, b, enabled),
+                None => enabled,
+            };
+
+            enabled
+        })
     }
 
     /// Iterator over lib badges for the given repo.
     pub(crate) fn lib_badges(&self, path: &RelativePath) -> impl Iterator<Item = &'_ ConfigBadge> {
-        self.badges(path, |repo, b| repo.wants_lib_badge(b))
+        self.badges(path, |repo, b, enabled| repo.wants_lib_badge(b, enabled))
     }
 
     /// Iterator over readme badges for the given repo.
@@ -290,7 +292,7 @@ impl Config {
         &self,
         path: &RelativePath,
     ) -> impl Iterator<Item = &'_ ConfigBadge> {
-        self.badges(path, |repo, b| repo.wants_readme_badge(b))
+        self.badges(path, |repo, b, enabled| repo.wants_readme_badge(b, enabled))
     }
 
     /// Get the header for the given repo.
@@ -340,7 +342,7 @@ impl Config {
 }
 
 pub(crate) struct ConfigBadge {
-    id: Option<String>,
+    pub(crate) id: Option<String>,
     enabled: bool,
     markdown: Option<Template>,
     html: Option<Template>,

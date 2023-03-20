@@ -99,21 +99,12 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
         });
     }
 
-    let mut readme_badges = Vec::new();
+    let (file, lib_rs, comments) = process_lib_rs(cx, rm, &lib_badges)?;
 
-    for badge in cx.config.readme_badges(&rm.module.path) {
-        readme_badges.push(BadgeParams {
-            markdown: badge.markdown(rm.params)?,
-            html: badge.html(rm.params)?,
-        });
-    }
-
-    let (file, full, rest) = process_lib_rs(cx, rm, &lib_badges)?;
-
-    if rm.do_lib && *file != *full {
+    if rm.do_lib && *file != *lib_rs {
         rm.validation.push(Validation::UpdateLib {
             path: rm.entry.to_owned(),
-            lib: full.clone(),
+            lib: lib_rs.clone(),
         });
     }
 
@@ -137,7 +128,16 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
         });
     }
 
-    let readme_from_lib_rs = readme_from_lib_rs(cx, rm, &full, &rest, &readme_badges)?;
+    let mut readme_badges = Vec::new();
+
+    for badge in cx.config.readme_badges(&rm.module.path) {
+        readme_badges.push(BadgeParams {
+            markdown: badge.markdown(rm.params)?,
+            html: badge.html(rm.params)?,
+        });
+    }
+
+    let readme_from_lib_rs = readme_from_lib_rs(cx, rm, &comments, &readme_badges)?;
 
     let readme = match File::read(rm.readme_path.to_path(cx.root)) {
         Ok(file) => file,
@@ -187,7 +187,7 @@ struct BadgeParams {
 #[derive(Serialize)]
 struct TemplateParams<'a> {
     badges: &'a [BadgeParams],
-    rest: Option<&'a str>,
+    body: Option<&'a str>,
     header_marker: Option<&'a str>,
     #[serde(flatten)]
     params: ModuleParams<'a>,
@@ -195,8 +195,7 @@ struct TemplateParams<'a> {
 
 #[derive(Serialize)]
 struct ReadmeParams<'a> {
-    full: Option<&'a str>,
-    rest: Option<&'a str>,
+    body: Option<&'a str>,
     badges: &'a [BadgeParams],
     #[serde(flatten)]
     params: ModuleParams<'a>,
@@ -209,12 +208,12 @@ fn process_lib_rs(
     badges: &[BadgeParams],
 ) -> Result<(Arc<File>, Arc<File>, File)> {
     let source = File::read(rm.entry.to_path(cx.root))?;
-    let mut new_file = File::new();
+    let mut lib_rs = File::new();
 
     let mut source_lines = source.lines().peekable();
     let mut header_marker = None;
 
-    let rest = if let Some(lib) = cx.config.lib(&rm.module.path) {
+    let comments = if let Some(lib) = cx.config.lib(&rm.module.path) {
         while let Some(line) = source_lines.peek().and_then(|line| line.as_rust_comment()) {
             if line.starts_with('#') {
                 break;
@@ -230,7 +229,8 @@ fn process_lib_rs(
         }
 
         let raw: File = source_lines.collect();
-        let rest: File = raw
+
+        let comments: File = raw
             .lines()
             .flat_map(|line| line.as_rust_comment())
             .collect();
@@ -239,14 +239,14 @@ fn process_lib_rs(
             badges,
             params: rm.params,
             header_marker,
-            rest: rest.as_non_empty_str(),
+            body: comments.as_non_empty_str(),
         })?;
 
         for string in lib.trim().lines() {
             if string.is_empty() {
-                new_file.line("//!");
+                lib_rs.line("//!");
             } else {
-                new_file.line(format_args!("//! {string}"));
+                lib_rs.line(format_args!("//! {string}"));
             }
         }
 
@@ -255,12 +255,12 @@ fn process_lib_rs(
                 continue;
             }
 
-            new_file.line(line);
+            lib_rs.line(line);
         }
 
-        rest
+        comments
     } else {
-        let mut rest = File::new();
+        let mut comments = File::new();
 
         while let Some(line) = source_lines.peek().and_then(|line| line.as_rust_comment()) {
             if !is_badge_comment(line) {
@@ -272,23 +272,23 @@ fn process_lib_rs(
 
         for badge in badges {
             if let Some(markdown) = &badge.markdown {
-                new_file.line(format_args!("//! {markdown}"));
+                lib_rs.line(format_args!("//! {markdown}"));
             }
         }
 
         for line in source_lines {
-            new_file.line(line.as_ref().trim_end());
+            lib_rs.line(line.as_ref().trim_end());
 
             if let Some(line) = line.as_rust_comment() {
-                rest.line(line.trim_end());
+                comments.line(line.trim_end());
             }
         }
 
-        rest
+        comments
     };
 
-    new_file.ensure_trailing_newline();
-    Ok((Arc::new(source), Arc::new(new_file), rest))
+    lib_rs.ensure_trailing_newline();
+    Ok((Arc::new(source), Arc::new(lib_rs), comments))
 }
 
 /// Test if the specified file has toplevel headings.
@@ -401,15 +401,14 @@ fn visit_url(
 fn readme_from_lib_rs(
     cx: &Ctxt<'_>,
     rm: &mut Readme<'_, '_>,
-    full: &File,
-    rest: &File,
+    comments: &File,
     badges: &[BadgeParams],
 ) -> Result<File> {
     let mut body = File::new();
 
     let mut in_code_block = None::<bool>;
 
-    for line in full.lines() {
+    for line in comments.lines() {
         let comment = match line.as_rust_comment() {
             Some(comment) => comment,
             None => {
@@ -437,8 +436,7 @@ fn readme_from_lib_rs(
 
     let mut readme = if let Some(readme) = cx.config.readme(&rm.module.path) {
         let output = readme.render(&ReadmeParams {
-            full: full.as_non_empty_str(),
-            rest: rest.as_non_empty_str(),
+            body: comments.as_non_empty_str(),
             badges,
             params: rm.params,
         })?;
@@ -453,9 +451,14 @@ fn readme_from_lib_rs(
     } else {
         let mut readme = File::new();
         readme.line(format!("# {name}", name = rm.params.crate_name()));
-        readme.line("");
 
-        for line in body.lines() {
+        for badge in badges {
+            if let Some(markdown) = &badge.markdown {
+                readme.line(format_args!("{markdown}"));
+            }
+        }
+
+        for line in comments.lines() {
             readme.line(line);
         }
 
