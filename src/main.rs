@@ -32,7 +32,7 @@ mod utils;
 mod validation;
 mod workspace;
 
-use std::path::PathBuf;
+use std::path::{Component, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
@@ -69,6 +69,10 @@ struct Opts {
     /// Specify custom root folder for project hierarchy.
     #[arg(long, name = "path")]
     root: Option<PathBuf>,
+    /// Force processing of all repos, even if the root is currently inside of
+    /// an existing repo.
+    #[arg(long)]
+    all: bool,
     /// Action to perform. Defaults to `check`.
     #[command(subcommand, name = "action")]
     action: Option<Action>,
@@ -111,15 +115,17 @@ async fn entry() -> Result<()> {
         }
     };
 
-    let (root, current) = match opts.root {
-        Some(root) => (root, None),
-        None => {
-            let (root, current_path) = find_root()?;
-            (root, Some(current_path))
-        }
+    let current_dir = match opts.root {
+        Some(root) => root,
+        None => std::env::current_dir()?,
     };
 
-    tracing::trace!(?root, ?current, "found project roots");
+    let (root, current_path) = find_root(current_dir)?;
+    tracing::trace!(
+        root = root.display().to_string(),
+        ?current_path,
+        "found project roots"
+    );
 
     let github_auth = root.join(".github-auth");
 
@@ -145,8 +151,7 @@ async fn entry() -> Result<()> {
         "loaded modules"
     );
 
-    let config =
-        config::load(&root, &templating, &modules).with_context(|| root.display().to_string())?;
+    let config = config::load(&root, &templating, &modules)?;
 
     let mut actions = Actions::default();
     actions.latest("actions/checkout", "v3");
@@ -162,11 +167,10 @@ async fn entry() -> Result<()> {
 
     let git = git::Git::find()?;
 
-    let current_path = match current.as_deref() {
-        Some(current_path) if modules.iter().any(|m| m.path.as_ref() == current_path) => {
-            Some(current_path)
-        }
-        _ => None,
+    let current_path = if !opts.all && modules.iter().any(|m| m.path.as_ref() == current_path) {
+        Some(current_path.as_ref())
+    } else {
+        None
     };
 
     let cx = ctxt::Ctxt {
@@ -177,7 +181,7 @@ async fn entry() -> Result<()> {
         github_auth,
         rustc_version: ctxt::rustc_version(),
         git,
-        current_path: current_path.as_deref(),
+        current_path,
     };
 
     match opts.action.unwrap_or_default() {
@@ -208,12 +212,14 @@ async fn entry() -> Result<()> {
 }
 
 /// Find root path to use.
-fn find_root() -> Result<(PathBuf, RelativePathBuf)> {
-    let mut current = PathBuf::from("");
+fn find_root(mut current_dir: PathBuf) -> Result<(PathBuf, RelativePathBuf)> {
+    let mut current = current_dir.clone();
     let mut last = None;
-
-    let mut current_dir = std::env::current_dir()?;
     let mut current_path = RelativePathBuf::new();
+
+    if !current_dir.is_absolute() {
+        current_dir = current_dir.canonicalize()?;
+    }
 
     while current.components().next().is_none() || current.is_dir() {
         if current.join(KICK_TOML).is_file() {
@@ -225,7 +231,11 @@ fn find_root() -> Result<(PathBuf, RelativePathBuf)> {
             current_dir.pop();
         }
 
-        current.push("..");
+        if matches!(current.components().last(), Some(Component::Normal(..))) {
+            current.pop();
+        } else {
+            current.push("..");
+        }
     }
 
     let Some((relative, current)) = last else {

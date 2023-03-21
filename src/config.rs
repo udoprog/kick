@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::hash::Hash;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use relative_path::{RelativePath, RelativePathBuf};
@@ -381,7 +381,7 @@ impl fmt::Display for Part {
 /// Context used when parsing configuration.
 struct ConfigCtxt<'a> {
     root: &'a Path,
-    kick_path: RelativePathBuf,
+    kick_path: PathBuf,
     parts: Vec<Part>,
     templating: &'a Templating,
 }
@@ -390,7 +390,7 @@ impl<'a> ConfigCtxt<'a> {
     fn new(root: &'a Path, templating: &'a Templating) -> Self {
         Self {
             root,
-            kick_path: RelativePath::new(KICK_TOML).to_owned(),
+            kick_path: root.join(KICK_TOML),
             parts: Vec::new(),
             templating,
         }
@@ -398,13 +398,14 @@ impl<'a> ConfigCtxt<'a> {
 
     /// Load the kick config.
     fn kick_config(&self) -> Result<Option<toml::Value>> {
-        let string = match std::fs::read_to_string(self.kick_path.to_path(self.root)) {
+        let string = match std::fs::read_to_string(&self.kick_path) {
             Ok(string) => string,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e).with_context(|| self.kick_path.to_owned()),
+            Err(e) => return Err(e).with_context(|| self.kick_path.display().to_string()),
         };
 
-        let config = toml::from_str(&string).with_context(|| self.kick_path.to_owned())?;
+        let config =
+            toml::from_str(&string).with_context(|| self.kick_path.display().to_string())?;
         Ok(Some(config))
     }
 
@@ -439,7 +440,10 @@ impl<'a> ConfigCtxt<'a> {
 
     fn bail(&self, args: impl fmt::Display) -> anyhow::Error {
         let parts = self.format_parts();
-        anyhow::Error::msg(format!("{path}: {parts}: {args}", path = self.kick_path))
+        anyhow::Error::msg(format!(
+            "{path}: {parts}: {args}",
+            path = self.kick_path.display()
+        ))
     }
 
     /// Ensure table is empty.
@@ -716,9 +720,19 @@ pub(crate) fn load(root: &Path, templating: &Templating, modules: &[Module]) -> 
     let mut cx = ConfigCtxt::new(root, templating);
 
     let Some(config) = cx.kick_config()? else {
-        return Err(anyhow!("{}: missing file", cx.kick_path));
+        return Err(anyhow!("{}: missing configuration file", cx.kick_path.display()));
     };
 
+    load_base(&mut cx, templating, modules, config)
+        .with_context(|| cx.kick_path.display().to_string())
+}
+
+fn load_base(
+    cx: &mut ConfigCtxt<'_>,
+    templating: &Templating,
+    modules: &[Module],
+    config: toml::Value,
+) -> Result<Config> {
     let mut config = cx.table(config)?;
     let base = cx.repo_table(&mut config)?;
 
@@ -729,7 +743,7 @@ pub(crate) fn load(root: &Path, templating: &Templating, modules: &[Module]) -> 
         .unwrap_or_default();
 
     for module in modules {
-        let Some(repo) = load_repo(root, module, templating).with_context(|| module.path.clone())? else {
+        let Some(repo) = load_repo(cx.root, module, templating).with_context(|| module.path.clone())? else {
             continue;
         };
 
