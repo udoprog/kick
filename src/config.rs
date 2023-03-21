@@ -752,6 +752,7 @@ fn load_base(
         let original = repos
             .entry(RelativePathBuf::from(module.path.as_ref()))
             .or_default();
+
         original.merge_with(repo);
     }
 

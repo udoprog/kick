@@ -110,31 +110,30 @@ impl Module {
 /// Load git modules.
 pub(crate) fn load_modules(root: &Path, git: Option<&Git>) -> Result<Vec<Module>> {
     let gitmodules_path = root.join(".gitmodules");
-    let git_path = root.join(".git");
 
-    let mut modules = Vec::new();
-
-    let result = match std::fs::read(&gitmodules_path) {
+    match std::fs::read(&gitmodules_path) {
         Ok(buf) => {
-            modules.extend(parse_git_modules(&buf)?);
-            Ok(())
+            return parse_git_modules(&buf).with_context(|| gitmodules_path.display().to_string());
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(Error::from(e)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(Error::from(e)).context(gitmodules_path.display().to_string()),
     };
 
-    result.with_context(|| gitmodules_path.display().to_string())?;
+    let Some(git) = git else {
+        return Ok(Vec::new());
+    };
 
-    if let Some(git) = git {
-        if git_path.is_dir() {
-            tracing::trace!("{}: found .git", git_path.display());
-            modules.extend(
-                module_from_git(git, &git_path).with_context(|| git_path.display().to_string())?,
-            );
-        }
+    let git_path = root.join(".git");
+
+    if git_path.is_dir() {
+        tracing::trace!("{}: using .git", git_path.display());
+
+        return Ok(vec![
+            module_from_git(git, &git_path).with_context(|| git_path.display().to_string())?
+        ]);
     }
 
-    Ok(modules)
+    Ok(Vec::new())
 }
 
 /// Parse a git module.
@@ -186,21 +185,15 @@ pub(crate) fn parse_git_modules(input: &[u8]) -> Result<Vec<Module>> {
 }
 
 /// Process module information from a git repository.
-fn module_from_git<P>(git: &Git, root: &P) -> Result<Option<Module>>
+fn module_from_git<P>(git: &Git, root: &P) -> Result<Module>
 where
     P: ?Sized + AsRef<Path>,
 {
-    let url = match git.get_url(root, "origin") {
-        Ok(url) => url,
-        Err(error) => {
-            tracing::trace!("{error}");
-            return Ok(None);
-        }
-    };
+    let url = git.get_url(root, "origin")?;
 
-    Ok(Some(Module {
+    Ok(Module {
         source: ModuleSource::Git,
-        path: RelativePathBuf::default().into(),
+        path: RelativePathBuf::new().into(),
         url,
-    }))
+    })
 }
