@@ -92,6 +92,6 @@ fn foreach(
         .status()
         .with_context(|| Error::msg(CommandRepr::new(&opts.command).to_string()))?;
 
-    tracing::info!(?status);
+    tracing::trace!(?status);
     Ok(())
 }

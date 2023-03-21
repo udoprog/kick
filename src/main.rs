@@ -111,38 +111,42 @@ async fn entry() -> Result<()> {
         }
     };
 
-    let (root, root_path, current_path) = match opts.root {
-        Some(root) => match RelativePathBuf::from_path(&root) {
-            Ok(root_path) => (PathBuf::new(), root_path, None),
-            Err(..) => (root, RelativePathBuf::new(), None),
-        },
+    let (root, current) = match opts.root {
+        Some(root) => (root, None),
         None => {
-            let root = PathBuf::new();
-            let (root_path, current_path) = find_root()?;
-            (root, root_path, Some(current_path))
+            let (root, current_path) = find_root()?;
+            (root, Some(current_path))
         }
     };
 
-    tracing::trace!(?root, ?root_path, ?current_path, "found project roots");
+    tracing::trace!(?root, ?current, "found project roots");
 
-    let github_auth = root_path.join(".github-auth");
+    let github_auth = root.join(".github-auth");
 
-    let github_auth = match std::fs::read_to_string(github_auth.to_path(&root)) {
+    let github_auth = match std::fs::read_to_string(&github_auth) {
         Ok(auth) => Some(auth.trim().to_owned()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             tracing::warn!("no .github-auth found, heavy rate limiting will apply");
             None
         }
-        Err(e) => return Err(anyhow::Error::from(e)).with_context(|| github_auth.clone()),
+        Err(e) => {
+            return Err(anyhow::Error::from(e)).with_context(|| github_auth.display().to_string())
+        }
     };
 
     let templating = templates::Templating::new()?;
-    let modules = model::load_modules(&root, &root_path)?;
+    let modules = model::load_modules(&root)?;
+    tracing::trace!(
+        modules = modules
+            .iter()
+            .map(|m| m.path.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        "loaded modules"
+    );
 
-    tracing::trace!(?modules, "loaded modules");
-
-    let config = config::load(&root, &root_path, &templating, &modules)
-        .with_context(|| root_path.to_owned())?;
+    let config =
+        config::load(&root, &templating, &modules).with_context(|| root.display().to_string())?;
 
     let mut actions = Actions::default();
     actions.latest("actions/checkout", "v3");
@@ -157,6 +161,13 @@ async fn entry() -> Result<()> {
     );
 
     let git = git::Git::find()?;
+
+    let current_path = match current.as_deref() {
+        Some(current_path) if modules.iter().any(|m| m.path.as_ref() == current_path) => {
+            Some(current_path)
+        }
+        _ => None,
+    };
 
     let cx = ctxt::Ctxt {
         root: &root,
@@ -197,9 +208,8 @@ async fn entry() -> Result<()> {
 }
 
 /// Find root path to use.
-fn find_root() -> Result<(RelativePathBuf, RelativePathBuf)> {
+fn find_root() -> Result<(PathBuf, RelativePathBuf)> {
     let mut current = PathBuf::from("");
-    let mut path = RelativePathBuf::new();
     let mut last = None;
 
     let mut current_dir = std::env::current_dir()?;
@@ -207,12 +217,7 @@ fn find_root() -> Result<(RelativePathBuf, RelativePathBuf)> {
 
     while current.components().next().is_none() || current.is_dir() {
         if current.join(KICK_TOML).is_file() {
-            last = Some((
-                path.clone(),
-                path.components()
-                    .chain(current_path.components().rev())
-                    .collect(),
-            ));
+            last = Some((current.clone(), current_path.components().rev().collect()));
         }
 
         if let Some(c) = current_dir.components().next_back() {
@@ -221,12 +226,11 @@ fn find_root() -> Result<(RelativePathBuf, RelativePathBuf)> {
         }
 
         current.push("..");
-        path.push("..");
     }
 
-    let Some((last, path)) = last else {
+    let Some((relative, current)) = last else {
         return Err(anyhow!("missing project directory"));
     };
 
-    Ok((last, path))
+    Ok((relative, current))
 }

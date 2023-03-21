@@ -381,20 +381,16 @@ impl fmt::Display for Part {
 /// Context used when parsing configuration.
 struct ConfigCtxt<'a> {
     root: &'a Path,
-    path: &'a RelativePath,
     kick_path: RelativePathBuf,
     parts: Vec<Part>,
     templating: &'a Templating,
 }
 
 impl<'a> ConfigCtxt<'a> {
-    fn new(root: &'a Path, path: &'a RelativePath, templating: &'a Templating) -> Self {
-        let kick_path = path.join(KICK_TOML);
-
+    fn new(root: &'a Path, templating: &'a Templating) -> Self {
         Self {
             root,
-            path,
-            kick_path,
+            kick_path: RelativePath::new(KICK_TOML).to_owned(),
             parts: Vec::new(),
             templating,
         }
@@ -633,9 +629,9 @@ impl<'a> ConfigCtxt<'a> {
 
     fn repo_table(&mut self, config: &mut toml::Table) -> Result<Repo> {
         let workflow = self.in_string(config, "workflow", |cx, string| {
-            let path = cx.path.join(string);
+            let path = cx.root.join(string);
             let template =
-                std::fs::read_to_string(path.to_path(cx.root)).with_context(|| path.to_owned())?;
+                std::fs::read_to_string(&path).with_context(|| path.display().to_string())?;
             cx.compile(&template)
         })?;
 
@@ -650,16 +646,16 @@ impl<'a> ConfigCtxt<'a> {
             self.in_string(config, "documentation", |cx, source| cx.compile(&source))?;
 
         let lib = self.in_string(config, "lib", |cx, string| {
-            let path = cx.path.join(string);
+            let path = cx.root.join(string);
             let template =
-                std::fs::read_to_string(path.to_path(cx.root)).with_context(|| path.to_owned())?;
+                std::fs::read_to_string(&path).with_context(|| path.display().to_string())?;
             cx.compile(&template)
         })?;
 
         let readme = self.in_string(config, "readme", |cx, string| {
-            let path = cx.path.join(string);
+            let path = cx.root.join(string);
             let template =
-                std::fs::read_to_string(path.to_path(cx.root)).with_context(|| path.to_owned())?;
+                std::fs::read_to_string(&path).with_context(|| path.display().to_string())?;
             cx.compile(&template)
         })?;
 
@@ -716,13 +712,8 @@ impl<'a> ConfigCtxt<'a> {
 }
 
 /// Load a configuration from the given path.
-pub(crate) fn load(
-    root: &Path,
-    path: &RelativePath,
-    templating: &Templating,
-    modules: &[Module],
-) -> Result<Config> {
-    let mut cx = ConfigCtxt::new(root, path, templating);
+pub(crate) fn load(root: &Path, templating: &Templating, modules: &[Module]) -> Result<Config> {
+    let mut cx = ConfigCtxt::new(root, templating);
 
     let Some(config) = cx.kick_config()? else {
         return Err(anyhow!("{}: missing file", cx.kick_path));
@@ -733,7 +724,7 @@ pub(crate) fn load(
 
     let mut repos = cx
         .in_table(&mut config, "repos", |cx, id, value| {
-            Ok((path.join(id), cx.repo(value)?))
+            Ok((RelativePathBuf::from(id), cx.repo(value)?))
         })?
         .unwrap_or_default();
 
@@ -753,7 +744,8 @@ pub(crate) fn load(
 }
 
 fn load_repo(root: &Path, module: &Module, templating: &Templating) -> Result<Option<Repo>> {
-    let mut cx = ConfigCtxt::new(root, &module.path, templating);
+    let root = module.path.to_path(root);
+    let mut cx = ConfigCtxt::new(&root, templating);
 
     let Some(config) = cx.kick_config()? else {
         return Ok(None);

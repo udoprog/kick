@@ -108,36 +108,32 @@ impl Module {
 }
 
 /// Load git modules.
-pub(crate) fn load_modules(root: &Path, path: &RelativePath) -> Result<Vec<Module>> {
-    let gitmodules_path = path.join(".gitmodules");
-    let git_path = path.join(".git");
+pub(crate) fn load_modules(root: &Path) -> Result<Vec<Module>> {
+    let gitmodules_path = root.join(".gitmodules");
+    let git_path = root.join(".git");
 
     let mut modules = Vec::new();
 
-    let result = match std::fs::read(gitmodules_path.to_path(root)) {
+    let result = match std::fs::read(&gitmodules_path) {
         Ok(buf) => {
-            modules.extend(parse_git_modules(path, &buf)?);
+            modules.extend(parse_git_modules(&buf)?);
             Ok(())
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(Error::from(e)),
     };
 
-    result.with_context(|| gitmodules_path.to_owned())?;
+    result.with_context(|| gitmodules_path.display().to_string())?;
 
-    if git_path.to_path(root).is_dir() {
-        modules
-            .extend(module_from_git(git_path.to_path(root)).with_context(|| git_path.to_owned())?);
+    if git_path.is_dir() {
+        modules.extend(module_from_git(&git_path).with_context(|| git_path.display().to_string())?);
     }
 
     Ok(modules)
 }
 
 /// Parse a git module.
-pub(crate) fn parse_git_module(
-    path: &RelativePath,
-    parser: &mut gitmodules::Parser<'_>,
-) -> Result<Option<Module>> {
+pub(crate) fn parse_git_module(parser: &mut gitmodules::Parser<'_>) -> Result<Option<Module>> {
     let mut parsed_path = None;
     let mut parsed_url = None;
 
@@ -150,7 +146,7 @@ pub(crate) fn parse_git_module(
         match key {
             "path" => {
                 let string = std::str::from_utf8(value)?;
-                parsed_path = Some(path.join(string).into());
+                parsed_path = Some(RelativePath::new(string).into());
             }
             "url" => {
                 let string = std::str::from_utf8(value)?;
@@ -172,12 +168,12 @@ pub(crate) fn parse_git_module(
 }
 
 /// Parse gitmodules from the given input.
-pub(crate) fn parse_git_modules(path: &RelativePath, input: &[u8]) -> Result<Vec<Module>> {
+pub(crate) fn parse_git_modules(input: &[u8]) -> Result<Vec<Module>> {
     let mut parser = gitmodules::Parser::new(input);
 
     let mut modules = Vec::new();
 
-    while let Some(module) = parse_git_module(path, &mut parser)? {
+    while let Some(module) = parse_git_module(&mut parser)? {
         modules.push(module);
     }
 
