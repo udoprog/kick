@@ -51,6 +51,7 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     let mut version_set = VersionSet {
         major: opts.major,
         minor: opts.minor,
+        patch: opts.patch,
         pre: match &opts.pre {
             Some(pre) => Prerelease::new(pre).with_context(|| pre.to_owned())?,
             None => Prerelease::EMPTY,
@@ -96,11 +97,26 @@ fn version(cx: &Ctxt<'_>, module: &Module, version_set: &VersionSet) -> Result<(
             if let Some(version) = package.manifest.version()? {
                 let from = Version::parse(version)?;
                 let mut to = from.clone();
-                to.major += u64::from(version_set.major);
-                to.minor += u64::from(version_set.minor);
-                to.patch += u64::from(version_set.patch);
+
+                if version_set.major {
+                    to.major += 1;
+                    to.minor = 0;
+                    to.patch = 0;
+                } else if version_set.minor {
+                    to.minor += 1;
+                    to.patch = 0;
+                } else if version_set.patch {
+                    to.patch += 1;
+                }
+
                 to.pre = version_set.pre.clone();
-                tracing::info!(?name, ?from, ?to, ?name, "bump version");
+                tracing::info!(
+                    ?name,
+                    from = from.to_string(),
+                    to = to.to_string(),
+                    ?name,
+                    "bump version"
+                );
                 new_versions.insert(name.to_string(), to);
             }
         }

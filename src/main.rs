@@ -58,7 +58,7 @@ enum Action {
     Msrv(cli::msrv::Opts),
     /// Update package version.
     Version(cli::version::Opts),
-    /// Publish packages.
+    /// Publish packages in reverse order of dependencies.
     Publish(cli::publish::Opts),
 }
 

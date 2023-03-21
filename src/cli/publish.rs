@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::process::Command;
+use std::ffi::OsString;
+use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
@@ -17,6 +18,15 @@ pub(crate) struct Opts {
     /// Filter by the specified modules.
     #[arg(long = "module", short = 'm', name = "module")]
     modules: Vec<String>,
+    /// Provide a list of crates which we do not verify locally by adding
+    /// `--no-verify` to cargo publish.
+    #[arg(long = "no-verify", name = "crate")]
+    no_verify: Vec<String>,
+    /// Perform a dry run by passing `--dry-run` to cargo publish.
+    #[arg(long)]
+    dry_run: bool,
+    /// Options passed to `cargo publish`.
+    cargo_publish: Vec<OsString>,
 }
 
 pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
@@ -32,6 +42,8 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module) -> Result<()> {
     let Some(workspace) = workspace::open(cx, module)? else {
         bail!("not a workspace");
     };
+
+    let no_verify = opts.no_verify.iter().cloned().collect::<HashSet<_>>();
 
     let mut packages = Vec::new();
     let mut deps = HashMap::<_, Vec<_>>::new();
@@ -104,10 +116,25 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module) -> Result<()> {
         }
 
         tracing::info!("{}: publishing: {}", package.manifest_dir, name);
-        let status = Command::new("cargo")
-            .args(["publish"])
-            .current_dir(package.manifest_dir.to_path(cx.root))
-            .status()?;
+
+        let mut command = Command::new("cargo");
+
+        command.args(["publish"]);
+
+        if no_verify.contains(name) {
+            command.arg("--no-verify");
+        }
+
+        if opts.dry_run {
+            command.arg("--dry-run");
+        }
+
+        command
+            .args(&opts.cargo_publish)
+            .stdin(Stdio::null())
+            .current_dir(package.manifest_dir.to_path(cx.root));
+
+        let status = command.status()?;
 
         if !status.success() {
             bail!("{}: failed to publish: {status}", package.manifest_dir);
