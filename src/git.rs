@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
 use anyhow::{anyhow, Context, Result};
+use reqwest::Url;
 
 #[cfg(windows)]
 const PATH_SEP: char = ';';
@@ -103,6 +104,26 @@ impl Git {
         }
 
         Ok(String::from_utf8(output.stdout)?)
+    }
+
+    /// Get remote url.
+    pub(crate) fn get_url<P>(&self, dir: &P, remote: &str) -> Result<Url>
+    where
+        P: ?Sized + AsRef<Path>,
+    {
+        let output = Command::new(&self.command)
+            .args(["remote", "get-url", remote])
+            .current_dir(dir)
+            .stdout(Stdio::piped())
+            .output()?;
+
+        anyhow::ensure!(
+            output.status.success(),
+            "failed to get git remote `{remote}`"
+        );
+
+        let url = String::from_utf8(output.stdout)?;
+        Ok(Url::parse(url.trim())?)
     }
 }
 

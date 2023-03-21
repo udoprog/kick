@@ -34,7 +34,7 @@ mod workspace;
 
 use std::path::{Component, PathBuf};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use actions::Actions;
@@ -117,10 +117,15 @@ async fn entry() -> Result<()> {
 
     let current_dir = match opts.root {
         Some(root) => root,
-        None => PathBuf::from(""),
+        None => PathBuf::new(),
     };
 
-    let (root, current_path) = find_root(current_dir)?;
+    let (root, current_path) = if let Some((root, current_path)) = find_root(current_dir.clone())? {
+        (root, current_path)
+    } else {
+        (current_dir, RelativePathBuf::new())
+    };
+
     tracing::trace!(
         root = root.display().to_string(),
         ?current_path,
@@ -140,8 +145,11 @@ async fn entry() -> Result<()> {
         }
     };
 
+    let git = git::Git::find()?;
+
     let templating = templates::Templating::new()?;
-    let modules = model::load_modules(&root)?;
+    let modules = model::load_modules(&root, git.as_ref())?;
+
     tracing::trace!(
         modules = modules
             .iter()
@@ -164,8 +172,6 @@ async fn entry() -> Result<()> {
         "actions-rs/toolchain",
         "using `run` is less verbose and faster",
     );
-
-    let git = git::Git::find()?;
 
     let current_path = if !opts.all && modules.iter().any(|m| m.path.as_ref() == current_path) {
         Some(current_path.as_ref())
@@ -212,13 +218,13 @@ async fn entry() -> Result<()> {
 }
 
 /// Find root path to use.
-fn find_root(mut current_dir: PathBuf) -> Result<(PathBuf, RelativePathBuf)> {
+fn find_root(mut current_dir: PathBuf) -> Result<Option<(PathBuf, RelativePathBuf)>> {
     let mut current = current_dir.clone();
     let mut last = None;
     let mut current_path = RelativePathBuf::new();
 
     if !current_dir.is_absolute() {
-        if current_dir.components().next().is_none() {
+        if current.components().next().is_none() {
             current_dir = std::env::current_dir()?;
         } else {
             current_dir = current_dir.canonicalize()?;
@@ -230,21 +236,22 @@ fn find_root(mut current_dir: PathBuf) -> Result<(PathBuf, RelativePathBuf)> {
             last = Some((current.clone(), current_path.components().rev().collect()));
         }
 
-        if let Some(c) = current_dir.components().next_back() {
-            current_path.push(c.as_os_str().to_string_lossy().as_ref());
+        if let Some(c) = current_dir.file_name() {
+            current_path.push(c.to_string_lossy().as_ref());
             current_dir.pop();
         }
 
-        if matches!(current.components().last(), Some(Component::Normal(..))) {
+        if current.file_name().is_some() {
             current.pop();
         } else {
-            current.push("..");
+            current.push(Component::ParentDir);
         }
     }
 
     let Some((relative, current)) = last else {
-        return Err(anyhow!("missing project directory"));
+        tracing::trace!("no {KICK_TOML} found in hierarchy");
+        return Ok(None);
     };
 
-    Ok((relative, current))
+    Ok(Some((relative, current)))
 }

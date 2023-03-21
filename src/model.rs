@@ -1,12 +1,12 @@
 use core::fmt;
 use std::path::Path;
-use std::process::{Command, Stdio};
 
 use anyhow::{Context, Error, Result};
 use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Serialize, Serializer};
 use url::Url;
 
+use crate::git::Git;
 use crate::gitmodules;
 use crate::rust_version::RustVersion;
 
@@ -108,7 +108,7 @@ impl Module {
 }
 
 /// Load git modules.
-pub(crate) fn load_modules(root: &Path) -> Result<Vec<Module>> {
+pub(crate) fn load_modules(root: &Path, git: Option<&Git>) -> Result<Vec<Module>> {
     let gitmodules_path = root.join(".gitmodules");
     let git_path = root.join(".git");
 
@@ -125,8 +125,13 @@ pub(crate) fn load_modules(root: &Path) -> Result<Vec<Module>> {
 
     result.with_context(|| gitmodules_path.display().to_string())?;
 
-    if git_path.is_dir() {
-        modules.extend(module_from_git(&git_path).with_context(|| git_path.display().to_string())?);
+    if let Some(git) = git {
+        if git_path.is_dir() {
+            tracing::trace!("{}: found .git", git_path.display());
+            modules.extend(
+                module_from_git(git, &git_path).with_context(|| git_path.display().to_string())?,
+            );
+        }
     }
 
     Ok(modules)
@@ -181,23 +186,17 @@ pub(crate) fn parse_git_modules(input: &[u8]) -> Result<Vec<Module>> {
 }
 
 /// Process module information from a git repository.
-fn module_from_git<P>(root: P) -> Result<Option<Module>>
+fn module_from_git<P>(git: &Git, root: &P) -> Result<Option<Module>>
 where
-    P: AsRef<Path>,
+    P: ?Sized + AsRef<Path>,
 {
-    let output = Command::new("git")
-        .args(["git", "remote", "get-url", "origin"])
-        .current_dir(root)
-        .stdout(Stdio::piped())
-        .output()?;
-
-    if !output.status.success() {
-        tracing::trace!("failed to get git remote `origin`");
-        return Ok(None);
-    }
-
-    let remote = String::from_utf8(output.stdout)?;
-    let url = Url::parse(remote.trim())?;
+    let url = match git.get_url(root, "origin") {
+        Ok(url) => url,
+        Err(error) => {
+            tracing::trace!("{error}");
+            return Ok(None);
+        }
+    };
 
     Ok(Some(Module {
         source: ModuleSource::Git,

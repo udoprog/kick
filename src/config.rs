@@ -157,6 +157,7 @@ impl FromIterator<Id> for IdSet {
     }
 }
 
+#[derive(Default)]
 pub(crate) struct Config {
     pub(crate) base: Repo,
     pub(crate) repos: HashMap<RelativePathBuf, Repo>,
@@ -720,7 +721,8 @@ pub(crate) fn load(root: &Path, templating: &Templating, modules: &[Module]) -> 
     let mut cx = ConfigCtxt::new(root, templating);
 
     let Some(config) = cx.kick_config()? else {
-        return Err(anyhow!("{}: missing configuration file", cx.kick_path.display()));
+        tracing::trace!("{}: missing configuration file", cx.kick_path.display());
+        return Ok(Config::default());
     };
 
     load_base(&mut cx, templating, modules, config)
