@@ -117,7 +117,7 @@ async fn entry() -> Result<()> {
 
     let current_dir = match opts.root {
         Some(root) => root,
-        None => std::env::current_dir()?,
+        None => PathBuf::from(""),
     };
 
     let (root, current_path) = find_root(current_dir)?;
@@ -218,7 +218,11 @@ fn find_root(mut current_dir: PathBuf) -> Result<(PathBuf, RelativePathBuf)> {
     let mut current_path = RelativePathBuf::new();
 
     if !current_dir.is_absolute() {
-        current_dir = current_dir.canonicalize()?;
+        if current_dir.components().next().is_none() {
+            current_dir = std::env::current_dir()?;
+        } else {
+            current_dir = current_dir.canonicalize()?;
+        }
     }
 
     while current.components().next().is_none() || current.is_dir() {
