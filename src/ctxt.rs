@@ -2,6 +2,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
+use relative_path::RelativePath;
 
 use crate::actions::Actions;
 use crate::config::Config;
@@ -17,19 +18,33 @@ pub(crate) struct Ctxt<'a> {
     pub(crate) github_auth: Option<String>,
     pub(crate) rustc_version: Option<RustVersion>,
     pub(crate) git: Option<Git>,
+    pub(crate) current_path: Option<&'a RelativePath>,
 }
 
 impl<'a> Ctxt<'a> {
     pub(crate) fn modules(&self, modules: &'a [String]) -> impl Iterator<Item = &'a Module> + '_ {
         /// Test if module should be skipped.
-        fn should_keep(filters: &[String], module: &Module) -> bool {
-            filters.is_empty()
-                || filters
-                    .iter()
-                    .all(|filter| module.path.as_str().contains(filter))
+        fn should_keep(
+            filters: &[String],
+            current_path: Option<&RelativePath>,
+            module: &Module,
+        ) -> bool {
+            if filters.is_empty() {
+                if let Some(path) = current_path {
+                    return path == module.path.as_ref();
+                }
+
+                return true;
+            }
+
+            filters
+                .iter()
+                .all(|filter| module.path.as_str().contains(filter))
         }
 
-        self.modules.iter().filter(move |m| should_keep(modules, m))
+        self.modules
+            .iter()
+            .filter(move |m| should_keep(modules, self.current_path, m))
     }
 
     /// Require a working git command.

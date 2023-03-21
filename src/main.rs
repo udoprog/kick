@@ -56,6 +56,8 @@ enum Action {
     Status(cli::status::Opts),
     /// Find the minimum supported rust version for each module.
     Msrv(cli::msrv::Opts),
+    /// Update package version.
+    Version(cli::version::Opts),
 }
 
 #[derive(Default, Parser)]
@@ -107,19 +109,19 @@ async fn entry() -> Result<()> {
         }
     };
 
-    let (root, root_path) = match opts.root {
+    let (root, root_path, current_path) = match opts.root {
         Some(root) => match RelativePathBuf::from_path(&root) {
-            Ok(root_path) => (PathBuf::new(), root_path),
-            Err(..) => (root, RelativePathBuf::new()),
+            Ok(root_path) => (PathBuf::new(), root_path, None),
+            Err(..) => (root, RelativePathBuf::new(), None),
         },
         None => {
             let root = PathBuf::new();
-            let root_path = find_root()?;
-            (root, root_path)
+            let (root_path, current_path) = find_root()?;
+            (root, root_path, Some(current_path))
         }
     };
 
-    tracing::trace!(?root, ?root_path, "found project roots");
+    tracing::trace!(?root, ?root_path, ?current_path, "found project roots");
 
     let github_auth = root_path.join(".github-auth");
 
@@ -162,6 +164,7 @@ async fn entry() -> Result<()> {
         github_auth,
         rustc_version: ctxt::rustc_version(),
         git,
+        current_path: current_path.as_deref(),
     };
 
     match opts.action.unwrap_or_default() {
@@ -180,29 +183,45 @@ async fn entry() -> Result<()> {
         Action::Msrv(opts) => {
             cli::msrv::entry(&cx, &opts)?;
         }
+        Action::Version(opts) => {
+            cli::version::entry(&cx, &opts)?;
+        }
     }
 
     Ok(())
 }
 
 /// Find root path to use.
-fn find_root() -> Result<RelativePathBuf> {
+fn find_root() -> Result<(RelativePathBuf, RelativePathBuf)> {
     let mut current = PathBuf::from("");
     let mut path = RelativePathBuf::new();
     let mut last = None;
 
-    while current.as_os_str().is_empty() || current.is_dir() {
+    let mut current_dir = std::env::current_dir()?;
+    let mut current_path = RelativePathBuf::new();
+
+    while current.components().next().is_none() || current.is_dir() {
         if current.join(KICK_TOML).is_file() {
-            last = Some(path.clone());
+            last = Some((
+                path.clone(),
+                path.components()
+                    .chain(current_path.components().rev())
+                    .collect(),
+            ));
+        }
+
+        if let Some(c) = current_dir.components().next_back() {
+            current_path.push(c.as_os_str().to_string_lossy().as_ref());
+            current_dir.pop();
         }
 
         current.push("..");
         path.push("..");
     }
 
-    let Some(last) = last else {
+    let Some((last, path)) = last else {
         return Err(anyhow!("missing project directory"));
     };
 
-    Ok(last)
+    Ok((last, path))
 }

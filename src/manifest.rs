@@ -29,9 +29,15 @@ macro_rules! field {
 }
 
 macro_rules! dependencies {
-    ($get:ident, $remove:ident, $field:literal) => {
+    ($get:ident, $get_mut:ident, $remove:ident, $field:literal) => {
         pub(crate) fn $get(&self) -> Option<&Table> {
             self.doc.get($field).and_then(|table| table.as_table())
+        }
+
+        pub(crate) fn $get_mut(&mut self) -> Option<&mut Table> {
+            self.doc
+                .get_mut($field)
+                .and_then(|table| table.as_table_mut())
         }
 
         pub(crate) fn $remove(&mut self) -> bool {
@@ -269,19 +275,27 @@ impl Manifest {
         Ok(self.ensure_package()?.get(name).and_then(map))
     }
 
+    field!(version, insert_version, "version");
     field!(license, insert_license, "license");
     field!(readme, insert_readme, "readme");
     field!(repository, insert_repository, "repository");
     field!(homepage, insert_homepage, "homepage");
     field!(documentation, insert_documentation, "documentation");
-    dependencies!(dependencies, remove_dependencies, "dependencies");
+    dependencies!(
+        dependencies,
+        dependencies_mut,
+        remove_dependencies,
+        "dependencies"
+    );
     dependencies!(
         dev_dependencies,
+        dev_dependencies_mut,
         remove_dev_dependencies,
         "dev-dependencies"
     );
     dependencies!(
         build_dependencies,
+        build_dependencies_mut,
         remove_build_dependencies,
         "build-dependencies"
     );

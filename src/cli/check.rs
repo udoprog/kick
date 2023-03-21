@@ -27,6 +27,12 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts, fix: bool) -> Result<()> {
     let mut urls = Urls::default();
 
     for module in cx.modules(&opts.modules) {
+        if fix {
+            tracing::info!("fixing: {}", module.path);
+        } else {
+            tracing::info!("checking: {}", module.path);
+        }
+
         let mut validation = Vec::new();
 
         let Some(workspace) = workspace::open(cx, module)? else {
