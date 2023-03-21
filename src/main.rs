@@ -58,6 +58,8 @@ enum Action {
     Msrv(cli::msrv::Opts),
     /// Update package version.
     Version(cli::version::Opts),
+    /// Publish packages.
+    Publish(cli::publish::Opts),
 }
 
 #[derive(Default, Parser)]
@@ -185,6 +187,9 @@ async fn entry() -> Result<()> {
         }
         Action::Version(opts) => {
             cli::version::entry(&cx, &opts)?;
+        }
+        Action::Publish(opts) => {
+            cli::publish::entry(&cx, &opts)?;
         }
     }
 

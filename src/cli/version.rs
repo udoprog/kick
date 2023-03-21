@@ -48,14 +48,14 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
-    let mut version_set = VersionSet::default();
-
-    version_set.major = opts.major;
-    version_set.minor = opts.minor;
-    version_set.patch = opts.patch;
-    version_set.pre = match &opts.pre {
-        Some(pre) => Prerelease::new(pre).with_context(|| pre.to_owned())?,
-        None => Prerelease::EMPTY,
+    let mut version_set = VersionSet {
+        major: opts.major,
+        minor: opts.minor,
+        pre: match &opts.pre {
+            Some(pre) => Prerelease::new(pre).with_context(|| pre.to_owned())?,
+            None => Prerelease::EMPTY,
+        },
+        ..VersionSet::default()
     };
 
     // Parse explicit version upgrades.
@@ -169,49 +169,43 @@ fn modify_dependencies(deps: &mut Table, new_versions: &HashMap<String, Version>
     for (key, dep) in deps.iter_mut() {
         let name = package_name(key.get(), dep);
 
-        let Some(version) = new_versions.get(name) else {
+        let (Some(version), Some(existing)) = (new_versions.get(name), find_version_mut(dep)) else {
             continue;
         };
 
-        match dep {
-            Item::Value(value) => match value {
-                Value::String(string) => {
-                    let req = string.value();
-                    let req = modify_version_req(req, version)?;
-                    *string = Formatted::new(req);
-                    changed = true;
-                }
-                Value::InlineTable(table) => {
-                    let Some(value) = table.get_mut("version") else {
-                        continue;
-                    };
+        let existing_string = existing
+            .as_str()
+            .context("found version was not a string")?
+            .to_owned();
 
-                    let req = value.as_str().context("missing value")?;
-                    let req = modify_version_req(req, version)?;
-                    *value = Value::String(Formatted::new(req));
-                    changed = true;
-                }
-                _ => {
-                    continue;
-                }
-            },
-            Item::Table(table) => {
-                let Some(value) = table.get_mut("version") else {
-                    continue;
-                };
+        let new = modify_version_req(&existing_string, version)?;
 
-                let req = value.as_str().context("missing value")?;
-                let req = modify_version_req(req, version)?;
-                *value = Item::Value(Value::String(Formatted::new(req)));
-                changed = true;
-            }
-            _ => {
-                continue;
-            }
+        if existing_string != new {
+            *existing = Value::String(Formatted::new(new));
+            changed = true;
         }
     }
 
     Ok(changed)
+}
+
+/// Find the value corresponding to the version in use.
+fn find_version_mut(item: &mut Item) -> Option<&mut Value> {
+    match item {
+        Item::Value(value) => match value {
+            value @ Value::String(..) => Some(value),
+            Value::InlineTable(table) => table.get_mut("version"),
+            _ => None,
+        },
+        Item::Table(table) => {
+            if let Item::Value(value) = table.get_mut("version")? {
+                Some(value)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Parse and return a modified version requirement.
