@@ -34,8 +34,8 @@ pub(crate) fn open(cx: &Ctxt<'_>, module: &Module) -> Result<Option<Workspace>> 
     let mut queue = VecDeque::new();
 
     queue.push_back(Package {
-        manifest_dir: manifest_dir.to_owned(),
-        manifest_path: manifest_path.to_owned(),
+        manifest_dir: manifest_dir.into(),
+        manifest_path: manifest_path.clone(),
         manifest,
     });
 
@@ -79,7 +79,10 @@ fn expand_members<'a>(
     let mut output = Vec::new();
 
     for path in iter {
-        for path in Glob::new(cx.root, package.manifest_dir.join(path)) {
+        let manifest_dir = package.manifest_dir.join(path);
+        let glob = Glob::new(cx.root, &manifest_dir);
+
+        for path in glob.matcher() {
             output.push(path?);
         }
     }
@@ -101,7 +104,7 @@ impl Package {
         if let Some(path) = self
             .manifest
             .lib()
-            .and_then(|lib| lib.get("path").and_then(|p| p.as_str()))
+            .and_then(|lib| lib.get("path").and_then(toml_edit::Item::as_str))
         {
             vec![self.manifest_dir.join(path)]
         } else {

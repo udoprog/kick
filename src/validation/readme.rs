@@ -477,12 +477,7 @@ fn filter_code_block(comment: &str) -> (String, BTreeSet<String>) {
         let part = part.trim();
 
         match part {
-            "" => continue,
-            "no_run" => continue,
-            "should_panic" => continue,
-            "ignore" => continue,
-            "edition2018" => continue,
-            "edition2021" => continue,
+            "" | "no_run" | "should_panic" | "ignore" | "edition2018" | "edition2021" => continue,
             _ => {}
         }
 
