@@ -1,12 +1,17 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
+use std::fs;
 use std::hash::Hash;
+use std::io::{self, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Error, Result};
 use relative_path::{RelativePath, RelativePathBuf};
+use tempfile::NamedTempFile;
 
 use crate::ctxt::Ctxt;
+use crate::glob::Glob;
 use crate::model::{CrateParams, Module, ModuleParams, RenderRustVersions};
 use crate::rust_version::{self};
 use crate::templates::{Template, Templating};
@@ -16,6 +21,115 @@ use crate::KICK_TOML;
 const DEFAULT_JOB_NAME: &str = "CI";
 /// Default license to use in configuration.
 const DEFAULT_LICENSE: &str = "MIT/Apache-2.0";
+
+pub(crate) struct Replaced {
+    path: PathBuf,
+    content: Vec<u8>,
+    replacement: Box<str>,
+    ranges: Vec<Range<usize>>,
+}
+
+impl Replaced {
+    /// Get the path to replace.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Get replacement string.
+    pub(crate) fn replacement(&self) -> &str {
+        &self.replacement
+    }
+
+    fn write_ranges<O>(&self, mut out: O) -> io::Result<()>
+    where
+        O: Write,
+    {
+        let mut last = 0;
+
+        for range in &self.ranges {
+            out.write_all(&self.content[last..range.start])?;
+            out.write_all(self.replacement.as_bytes())?;
+            last = range.end;
+        }
+
+        out.write_all(&self.content[last..])?;
+        Ok(())
+    }
+
+    /// Perform the given write.
+    pub(crate) fn save(self) -> Result<()> {
+        tracing::info!(
+            "{path}: writing (replaced: {replacement})",
+            path = self.path.display(),
+            replacement = self.replacement,
+        );
+
+        let Some(parent) = self.path.parent() else {
+            bail!("{}: missing parent directory", self.path.display());
+        };
+
+        let mut file = NamedTempFile::new_in(parent)?;
+        self.write_ranges(&mut file)
+            .with_context(|| self.path.display().to_string())?;
+        let (mut file, path) = file.keep()?;
+        file.flush()?;
+        drop(file);
+        fs::rename(path, &self.path)?;
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct Replacement {
+    /// Replacements to perform in a given crate.
+    pub(crate) crate_name: Option<String>,
+    /// Replacement path.
+    pub(crate) path: RelativePathBuf,
+    /// A regular expression pattern to replace.
+    pub(crate) pattern: regex::bytes::Regex,
+}
+
+impl Replacement {
+    /// Find and perform replacements in the given root path.
+    pub(crate) fn replace_in(&self, root: &Path, replacement: &str) -> Result<Vec<Replaced>> {
+        let mut output = Vec::new();
+
+        let glob = Glob::new(root, &self.path);
+
+        for path in glob.matcher() {
+            let path = path?;
+            let output_path = path.to_path(root);
+
+            let content = match fs::read(&output_path) {
+                Ok(content) => content,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    tracing::warn!("{path}: failed to read");
+                    continue;
+                }
+                Err(e) => return Err(Error::from(e)).context(path),
+            };
+
+            let mut ranges = Vec::new();
+
+            for cap in self.pattern.captures_iter(&content) {
+                if let Some(m) = cap.get(1) {
+                    ranges.push(m.range());
+                }
+            }
+
+            if !ranges.is_empty() {
+                output.push(Replaced {
+                    path: output_path,
+                    content,
+                    replacement: replacement.into(),
+                    ranges,
+                });
+            }
+        }
+
+        Ok(output)
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct Repo {
@@ -46,6 +160,8 @@ pub(crate) struct Repo {
     pub(crate) readme_badges: IdSet,
     /// Variables that can be used verbatim in templates.
     pub(crate) variables: toml::Table,
+    /// Files to look for in replacements.
+    pub(crate) version: Vec<Replacement>,
 }
 
 impl Repo {
@@ -63,6 +179,7 @@ impl Repo {
         self.disabled.extend(other.disabled);
         self.lib_badges.merge_with(other.lib_badges);
         self.readme_badges.merge_with(other.readme_badges);
+        self.version.extend(other.version);
         merge_map(&mut self.variables, other.variables);
     }
 
@@ -333,6 +450,23 @@ impl Config {
         };
 
         !repo.disabled.contains(feature)
+    }
+
+    /// Get version replacements.
+    pub(crate) fn version<'a>(&'a self, module: &Module) -> Vec<&'a Replacement> {
+        let mut replacements = Vec::new();
+
+        for replacement in self
+            .repos
+            .get(module.path.as_ref())
+            .into_iter()
+            .flat_map(|r| r.version.iter())
+        {
+            replacements.push(replacement);
+        }
+
+        replacements.extend(self.base.version.iter());
+        replacements
     }
 }
 
@@ -690,6 +824,29 @@ impl<'a> ConfigCtxt<'a> {
 
         let variables = self.as_table(config, "variables")?.unwrap_or_default();
 
+        let version = self.in_array(config, "version", |cx, item| {
+            let mut config = cx.table(item)?;
+            let crate_name = cx.as_string(&mut config, "crate")?;
+
+            let path = cx
+                .as_string(&mut config, "path")?
+                .context("missing `path`")?;
+
+            let pattern = cx
+                .in_string(&mut config, "pattern", |_, pattern| {
+                    Ok(regex::bytes::Regex::new(&pattern)?)
+                })?
+                .context("missing `pattern`")?;
+
+            cx.ensure_empty(config)?;
+
+            Ok(Replacement {
+                crate_name,
+                path: path.into(),
+                pattern,
+            })
+        })?;
+
         Ok(Repo {
             workflow,
             job_name,
@@ -705,6 +862,7 @@ impl<'a> ConfigCtxt<'a> {
             lib_badges,
             readme_badges,
             variables,
+            version: version.unwrap_or_default(),
         })
     }
 

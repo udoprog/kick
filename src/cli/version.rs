@@ -27,6 +27,10 @@ impl VersionSet {
 
 #[derive(Default, Parser)]
 pub(crate) struct Opts {
+    /// Save changes to disk, without this the tool will only print the changes
+    /// it intends to do.
+    #[arg(long)]
+    save: bool,
     /// A version specification to set.
     #[arg(long = "set", short = 's', name = "[<crate>=]version")]
     set: Vec<String>,
@@ -71,14 +75,14 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     }
 
     for module in cx.modules(&opts.modules) {
-        version(cx, module, &version_set).with_context(|| module.path.clone())?;
+        version(cx, opts, module, &version_set).with_context(|| module.path.clone())?;
     }
 
     Ok(())
 }
 
-#[tracing::instrument(skip_all, fields(path = module.path.as_str()))]
-fn version(cx: &Ctxt<'_>, module: &Module, version_set: &VersionSet) -> Result<()> {
+// #[tracing::instrument(skip_all, fields(path = module.path.as_str()))]
+fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet) -> Result<()> {
     let Some(workspace) = workspace::open(cx, module)? else {
         bail!("not a workspace");
     };
@@ -93,9 +97,14 @@ fn version(cx: &Ctxt<'_>, module: &Module, version_set: &VersionSet) -> Result<(
 
         let name = package.manifest.crate_name()?;
 
+        let current_version = if let Some(version) = package.manifest.version()? {
+            Some(Version::parse(version)?)
+        } else {
+            None
+        };
+
         if version_set.is_bump() {
-            if let Some(version) = package.manifest.version()? {
-                let from = Version::parse(version)?;
+            if let Some(from) = &current_version {
                 let mut to = from.clone();
 
                 if version_set.major {
@@ -121,21 +130,33 @@ fn version(cx: &Ctxt<'_>, module: &Module, version_set: &VersionSet) -> Result<(
             }
         }
 
-        if let Some(version) = version_set.crates.get(name).or(version_set.base.as_ref()) {
-            tracing::info!(?name, ?version, ?name, "set version");
-            new_versions.insert(name.to_string(), version.clone());
+        if let Some(new_version) = version_set.crates.get(name).or(version_set.base.as_ref()) {
+            tracing::info!(?name, version = ?new_version.to_string(), ?name, "set version");
+            new_versions.insert(name.to_string(), new_version.clone());
         }
 
-        packages.push(package.clone());
+        packages.push((package.clone(), current_version));
     }
 
-    for package in &mut packages {
+    for (package, _) in &mut packages {
         let name = package.manifest.crate_name()?;
 
         let mut changed = false;
+        let mut replaced = Vec::new();
 
         if let Some(version) = new_versions.get(name) {
-            package.manifest.insert_version(&version.to_string())?;
+            let root = package.manifest_dir.to_path(cx.root);
+            let version_string = version.to_string();
+
+            for replacement in cx.config.version(module) {
+                if matches!(&replacement.crate_name, Some(id) if id != name) {
+                    continue;
+                }
+
+                replaced.extend(replacement.replace_in(&root, &version_string)?);
+            }
+
+            package.manifest.insert_version(&version_string)?;
             changed = true;
         }
 
@@ -157,10 +178,34 @@ fn version(cx: &Ctxt<'_>, module: &Module, version_set: &VersionSet) -> Result<(
             }
         }
 
-        if changed {
-            tracing::info!("Saving {}", package.manifest_path);
-            let out = package.manifest_path.to_path(cx.root);
-            package.manifest.save_to(out)?;
+        if opts.save {
+            if changed {
+                tracing::info!("Saving {}", package.manifest_path);
+                let out = package.manifest_path.to_path(cx.root);
+                package.manifest.save_to(out)?;
+            }
+
+            for replaced in replaced {
+                tracing::info!(
+                    "Saving {} (replacement: {})",
+                    replaced.path().display(),
+                    replaced.replacement()
+                );
+
+                replaced.save()?;
+            }
+        } else {
+            if changed {
+                tracing::info!("Would save {} (--save)", package.manifest_path);
+            }
+
+            for replaced in replaced {
+                tracing::info!(
+                    "Would save {} (replacement: {}) (--save)",
+                    replaced.path().display(),
+                    replaced.replacement()
+                );
+            }
         }
     }
 
