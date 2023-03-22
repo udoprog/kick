@@ -92,6 +92,8 @@ pub(crate) struct Module {
     pub(crate) source: ModuleSource,
     pub(crate) path: Box<RelativePath>,
     pub(crate) url: Url,
+    /// If the module has been disabled for some reason.
+    pub(crate) disabled: bool,
 }
 
 impl Module {
@@ -168,6 +170,7 @@ pub(crate) fn parse_git_module(parser: &mut gitmodules::Parser<'_>) -> Result<Op
         source: ModuleSource::Gitmodules,
         path,
         url,
+        disabled: false,
     }))
 }
 
@@ -195,5 +198,6 @@ where
         source: ModuleSource::Git,
         path: RelativePathBuf::new().into(),
         url,
+        disabled: false,
     })
 }

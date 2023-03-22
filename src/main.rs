@@ -33,16 +33,16 @@ mod utils;
 mod validation;
 mod workspace;
 
-use std::path::{Component, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use actions::Actions;
-use relative_path::RelativePathBuf;
+use relative_path::{RelativePath, RelativePathBuf};
 use tracing::metadata::LevelFilter;
 
-use crate::glob::Fragment;
+use crate::{glob::Fragment, model::Module};
 
 /// Name of project configuration files.
 const KICK_TOML: &str = "Kick.toml";
@@ -65,6 +65,12 @@ enum Action {
     Publish(cli::publish::Opts),
 }
 
+impl Default for Action {
+    fn default() -> Self {
+        Self::Check(cli::check::Opts::default())
+    }
+}
+
 #[derive(Default, Parser)]
 #[command(author, version, about, long_about = None)]
 #[command(propagate_version = true)]
@@ -79,14 +85,29 @@ struct Opts {
     /// Only run the specified set of modules.
     #[arg(long = "module", short = 'm', name = "module")]
     modules: Vec<String>,
+    /// Only run over dirty modules with changes that have not been staged in
+    /// cache.
+    #[arg(long)]
+    dirty: bool,
+    /// Only run over modules that have changes staged in cache.
+    #[arg(long)]
+    cached: bool,
+    /// Only run over modules that only have changes staged in cached and
+    /// nothing dirty.
+    #[arg(long)]
+    cached_only: bool,
+    /// Only go over repos with unreleased changes, or ones which are on a
+    /// commit that doesn't have a tag as determined by `git describe --tags`.
+    #[arg(long)]
+    unreleased: bool,
     /// Action to perform. Defaults to `check`.
     #[command(subcommand, name = "action")]
     action: Option<Action>,
 }
 
-impl Default for Action {
-    fn default() -> Self {
-        Self::Check(cli::check::Opts::default())
+impl Opts {
+    fn needs_git(&self) -> bool {
+        self.dirty || self.cached || self.cached_only || self.unreleased
     }
 }
 
@@ -121,8 +142,8 @@ async fn entry() -> Result<()> {
         }
     };
 
-    let current_dir = match opts.root {
-        Some(root) => root,
+    let current_dir = match &opts.root {
+        Some(root) => root.clone(),
         None => PathBuf::new(),
     };
 
@@ -154,7 +175,7 @@ async fn entry() -> Result<()> {
     let git = git::Git::find()?;
 
     let templating = templates::Templating::new()?;
-    let modules = model::load_modules(&root, git.as_ref())?;
+    let mut modules = model::load_modules(&root, git.as_ref())?;
 
     tracing::trace!(
         modules = modules
@@ -191,6 +212,15 @@ async fn entry() -> Result<()> {
         filters.push(Fragment::parse(module));
     }
 
+    filter_modules(
+        &root,
+        &opts,
+        git.as_ref(),
+        &mut modules,
+        &filters,
+        current_path,
+    )?;
+
     let cx = ctxt::Ctxt {
         root: &root,
         config: &config,
@@ -199,8 +229,6 @@ async fn entry() -> Result<()> {
         github_auth,
         rustc_version: ctxt::rustc_version(),
         git,
-        current_path,
-        filters: &filters,
     };
 
     match opts.action.unwrap_or_default() {
@@ -224,6 +252,80 @@ async fn entry() -> Result<()> {
         }
         Action::Publish(opts) => {
             cli::publish::entry(&cx, &opts)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Perform more advanced filtering over modules.
+fn filter_modules(
+    root: &Path,
+    opts: &Opts,
+    git: Option<&git::Git>,
+    modules: &mut [model::Module],
+    filters: &[Fragment<'_>],
+    current_path: Option<&RelativePath>,
+) -> Result<(), anyhow::Error> {
+    // Test if module should be skipped.
+    let should_disable = |module: &Module| -> bool {
+        if filters.is_empty() {
+            if let Some(path) = current_path {
+                return path != module.path.as_ref();
+            }
+
+            return false;
+        }
+
+        !filters
+            .iter()
+            .any(|filter| filter.is_match(module.path.as_str()))
+    };
+
+    for module in modules {
+        module.disabled = should_disable(module);
+
+        if module.disabled {
+            continue;
+        }
+
+        if opts.needs_git() {
+            let git = git.context("no working git command")?;
+            let module_path = module.path.to_path(root);
+
+            let cached = git.is_cached(&module_path)?;
+            let dirty = git.is_dirty(&module_path)?;
+
+            let span =
+                tracing::trace_span!("git", ?cached, ?dirty, module = module.path.to_string());
+            let _enter = span.enter();
+
+            if opts.dirty && !dirty {
+                tracing::trace!("directory is not dirty");
+                module.disabled = true;
+            }
+
+            if opts.cached && !cached {
+                tracing::trace!("directory has no cached changes");
+                module.disabled = true;
+            }
+
+            if opts.cached_only && (!cached || dirty) {
+                tracing::trace!("directory has no cached changes");
+                module.disabled = true;
+            }
+
+            if opts.unreleased {
+                if let Some((tag, offset)) = git.describe_tags(&module_path)? {
+                    if offset.is_none() {
+                        tracing::trace!("no offset detected (tag: {tag})");
+                        module.disabled = true;
+                    }
+                } else {
+                    tracing::trace!("no tags to describe");
+                    module.disabled = true;
+                }
+            }
         }
     }
 
