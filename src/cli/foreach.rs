@@ -20,6 +20,10 @@ pub(crate) struct Opts {
     /// nothing dirty.
     #[arg(long)]
     cached_only: bool,
+    /// Only go over repos with unreleased changes, or ones which are on a
+    /// commit that doesn't have a tag as determined by `git describe --tags`.
+    #[arg(long)]
+    unreleased: bool,
     /// Filter by the specified modules.
     #[arg(long = "module", short = 'm', name = "module")]
     modules: Vec<String>,
@@ -29,7 +33,7 @@ pub(crate) struct Opts {
 
 impl Opts {
     fn needs_git(&self) -> bool {
-        self.dirty || self.cached || self.cached_only
+        self.dirty || self.cached || self.cached_only || self.unreleased
     }
 }
 
@@ -77,6 +81,18 @@ fn foreach(
         if opts.cached_only && (!cached || dirty) {
             tracing::trace!("directory has no cached changes");
             return Ok(());
+        }
+
+        if opts.unreleased {
+            let Some((tag, offset)) = git.describe_tags(&current_dir)? else {
+                tracing::trace!("no tags to describe");
+                return Ok(());
+            };
+
+            if offset.is_none() {
+                tracing::trace!("no offset detected (tag: {tag})");
+                return Ok(());
+            }
         }
     }
 

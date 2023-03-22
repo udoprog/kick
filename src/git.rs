@@ -1,4 +1,6 @@
 use std::env::consts::EXE_EXTENSION;
+use std::ffi::OsStr;
+use std::fmt::Display;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -45,6 +47,82 @@ impl Git {
         }
 
         Ok(None)
+    }
+
+    /// Make a commit.
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command))]
+    pub(crate) fn add<P, A>(&self, dir: &P, args: A) -> Result<()>
+    where
+        P: ?Sized + AsRef<Path>,
+        A: IntoIterator,
+        A::Item: AsRef<OsStr>,
+    {
+        tracing::trace!("git add");
+
+        let output = Command::new(&self.command)
+            .arg("add")
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::null())
+            .current_dir(dir)
+            .output()?;
+
+        if !output.status.success() {
+            return Err(anyhow!("status: {}", output.status));
+        }
+
+        Ok(())
+    }
+
+    /// Make a commit.
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command))]
+    pub(crate) fn commit<P, M>(&self, dir: &P, message: M) -> Result<()>
+    where
+        P: ?Sized + AsRef<Path>,
+        M: Display,
+    {
+        tracing::trace!("git commit -m \"{message}\"");
+
+        let output = Command::new(&self.command)
+            .args(["commit", "-m"])
+            .arg(message.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::null())
+            .current_dir(dir)
+            .output()?;
+
+        if !output.status.success() {
+            return Err(anyhow!("status: {}", output.status));
+        }
+
+        Ok(())
+    }
+
+    /// Make a tag.
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command))]
+    pub(crate) fn tag<P, M>(&self, dir: &P, tag: M) -> Result<()>
+    where
+        P: ?Sized + AsRef<Path>,
+        M: Display,
+    {
+        tracing::trace!("git tag \"{tag}\"");
+
+        let output = Command::new(&self.command)
+            .args(["tag"])
+            .arg(tag.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::null())
+            .current_dir(dir)
+            .output()?;
+
+        if !output.status.success() {
+            return Err(anyhow!("status: {}", output.status));
+        }
+
+        Ok(())
     }
 
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command))]
@@ -104,6 +182,41 @@ impl Git {
         }
 
         Ok(String::from_utf8(output.stdout)?)
+    }
+
+    /// Get HEAD commit.
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command))]
+    pub(crate) fn describe_tags<P>(
+        &self,
+        dir: &P,
+    ) -> Result<Option<(String, Option<(usize, String)>)>>
+    where
+        P: ?Sized + AsRef<Path>,
+    {
+        tracing::trace!("git describe --tags");
+
+        let output = Command::new(&self.command)
+            .args(["describe", "--tags"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .current_dir(dir)
+            .output()?;
+
+        if !output.status.success() {
+            return Ok(None);
+        }
+
+        let string = std::str::from_utf8(&output.stdout)?.trim();
+
+        let Some(((tag, count), hash)) = string.rsplit_once('-').and_then(|(rest, hash)| Some((rest.rsplit_once('-')?, hash))) else {
+            return Ok(Some((string.to_string(), None)))
+        };
+
+        Ok(Some((
+            tag.to_string(),
+            Some((count.parse()?, hash.to_string())),
+        )))
     }
 
     /// Get remote url.

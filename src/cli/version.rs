@@ -9,22 +9,6 @@ use crate::ctxt::Ctxt;
 use crate::model::Module;
 use crate::workspace;
 
-#[derive(Debug, Default)]
-struct VersionSet {
-    base: Option<Version>,
-    crates: HashMap<String, Version>,
-    pre: Prerelease,
-    major: bool,
-    minor: bool,
-    patch: bool,
-}
-
-impl VersionSet {
-    fn is_bump(&self) -> bool {
-        self.major || self.minor || self.patch || !self.pre.is_empty()
-    }
-}
-
 #[derive(Default, Parser)]
 pub(crate) struct Opts {
     /// Save changes to disk, without this the tool will only print the changes
@@ -46,6 +30,9 @@ pub(crate) struct Opts {
     /// Set a prerelease string.
     #[arg(long)]
     pre: Option<String>,
+    /// Make a commit with the current version with the message `Release <version>`.
+    #[arg(long)]
+    commit: bool,
     /// Filter by the specified modules.
     #[arg(long = "module", short = 'm', name = "module")]
     modules: Vec<String>,
@@ -209,7 +196,44 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
         }
     }
 
+    if opts.commit {
+        let git = cx.require_git()?;
+        let primary = workspace.primary_crate()?;
+
+        let version = new_versions
+            .get(primary.manifest.crate_name()?)
+            .context("missing primary version")?;
+
+        if opts.save {
+            let path = primary.manifest_dir.to_path(cx.root);
+            tracing::info!("Making commit `Release {version}`");
+            git.add(&path, ["-u"])?;
+            git.commit(&path, format_args!("Release {version}"))?;
+            tracing::info!("Tagging `{version}`");
+            git.tag(&path, &version)?;
+        } else {
+            tracing::info!("Would make commit `Release {version}` (--save)");
+            tracing::info!("Would make tag `{version}` (--save)");
+        }
+    }
+
     Ok(())
+}
+
+#[derive(Debug, Default)]
+struct VersionSet {
+    base: Option<Version>,
+    crates: HashMap<String, Version>,
+    pre: Prerelease,
+    major: bool,
+    minor: bool,
+    patch: bool,
+}
+
+impl VersionSet {
+    fn is_bump(&self) -> bool {
+        self.major || self.minor || self.patch || !self.pre.is_empty()
+    }
 }
 
 /// Extract package name.
