@@ -58,9 +58,7 @@ impl<'a> Matcher<'a> {
             return Ok(());
         }
 
-        let dirs = fs::read_dir(path)?;
-
-        for e in dirs {
+        for e in fs::read_dir(path)? {
             let e = e?;
             let c = e.file_name();
             let c = c.to_string_lossy();
@@ -72,6 +70,33 @@ impl<'a> Matcher<'a> {
             let mut new = current.clone();
             new.push(c.as_ref());
             self.queue.push_back((new, rest));
+        }
+
+        Ok(())
+    }
+
+    /// Perform star star expansion.
+    fn walk(&mut self, current: &RelativePathBuf, rest: &'a [Component<'a>]) -> io::Result<()> {
+        let path = current.to_path(self.root);
+
+        self.queue.push_back((current.clone(), rest));
+
+        let mut queue = VecDeque::new();
+        queue.push_back((current.to_owned(), path));
+
+        while let Some((current, path)) = queue.pop_front() {
+            if !fs::metadata(&path)?.is_dir() {
+                return Ok(());
+            }
+
+            for e in fs::read_dir(path)? {
+                let e = e?;
+                let c = e.file_name();
+                let c = c.to_string_lossy();
+                let next = current.join(c.as_ref());
+                self.queue.push_back((next.clone(), rest));
+                queue.push_back((next, e.path()));
+            }
         }
 
         Ok(())
@@ -88,35 +113,52 @@ impl<'a> Iterator for Matcher<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         'outer: loop {
-            let (c, p) = self.queue.pop_front()?;
-            let mut iter = p.iter();
+            let (mut path, mut components) = self.queue.pop_front()?;
 
-            while let Some(component) = iter.next() {
-                match component {
-                    Component::CurDir => {}
-                    Component::ParentDir => {}
-                    Component::Normal(fragment) => {
-                        if let Err(e) = self
-                            .expand_filesystem(&c, iter.as_slice(), |name| fragment.is_match(name))
+            while let [first, rest @ ..] = components {
+                match first {
+                    Component::ParentDir => {
+                        path = path.join(relative_path::Component::ParentDir);
+                    }
+                    Component::Normal(normal) => {
+                        path = path.join(normal);
+                    }
+                    Component::Fragment(fragment) => {
+                        if let Err(e) =
+                            self.expand_filesystem(&path, rest, |name| fragment.is_match(name))
                         {
                             return Some(Err(e));
                         }
 
                         continue 'outer;
                     }
+                    Component::StarStar => {
+                        if let Err(e) = self.walk(&path, rest) {
+                            return Some(Err(e));
+                        }
+
+                        continue 'outer;
+                    }
                 }
+
+                components = rest;
             }
 
-            return Some(Ok(c));
+            return Some(Ok(path));
         }
     }
 }
 
 #[derive(Clone)]
 enum Component<'a> {
-    CurDir,
+    /// Parent directory.
     ParentDir,
-    Normal(Fragment<'a>),
+    /// A normal component.
+    Normal(&'a str),
+    /// Normal component, compiled into a fragment.
+    Fragment(Fragment<'a>),
+    /// `**` component, which keeps expanding.
+    StarStar,
 }
 
 fn compile_pattern<P>(pattern: &P) -> Vec<Component<'_>>
@@ -129,9 +171,18 @@ where
 
     for c in pattern.components() {
         output.push(match c {
-            relative_path::Component::CurDir => Component::CurDir,
+            relative_path::Component::CurDir => continue,
             relative_path::Component::ParentDir => Component::ParentDir,
-            relative_path::Component::Normal(normal) => Component::Normal(Fragment::parse(normal)),
+            relative_path::Component::Normal("**") => Component::StarStar,
+            relative_path::Component::Normal(normal) => {
+                let fragment = Fragment::parse(normal);
+
+                if let Some(normal) = fragment.as_literal() {
+                    Component::Normal(normal)
+                } else {
+                    Component::Fragment(fragment)
+                }
+            }
         });
     }
 
@@ -238,5 +289,14 @@ impl<'a> Fragment<'a> {
         }
 
         false
+    }
+
+    /// Treat the fragment as a single normal component.
+    fn as_literal(&self) -> Option<&'a str> {
+        if let [Part::Literal(one)] = self.parts.as_ref() {
+            Some(one)
+        } else {
+            None
+        }
     }
 }

@@ -85,7 +85,12 @@ pub(crate) struct Replacement {
 
 impl Replacement {
     /// Find and perform replacements in the given root path.
-    pub(crate) fn replace_in(&self, root: &Path, replacement: &str) -> Result<Vec<Replaced>> {
+    pub(crate) fn replace_in(
+        &self,
+        root: &Path,
+        group: &str,
+        replacement: &str,
+    ) -> Result<Vec<Replaced>> {
         let mut output = Vec::new();
 
         for path in &self.paths {
@@ -107,7 +112,7 @@ impl Replacement {
                 let mut ranges = Vec::new();
 
                 for cap in self.pattern.captures_iter(&content) {
-                    if let Some(m) = cap.get(1) {
+                    if let Some(m) = cap.name(group) {
                         ranges.push(m.range());
                     }
                 }

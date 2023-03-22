@@ -153,7 +153,7 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
                     continue;
                 }
 
-                replaced.extend(replacement.replace_in(&root, &version_string)?);
+                replaced.extend(replacement.replace_in(&root, "version", &version_string)?);
             }
 
             package.manifest.insert_version(&version_string)?;
