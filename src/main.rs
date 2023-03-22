@@ -23,6 +23,7 @@ mod ctxt;
 mod file;
 mod git;
 mod gitmodules;
+mod glob;
 mod manifest;
 mod model;
 mod rust_version;

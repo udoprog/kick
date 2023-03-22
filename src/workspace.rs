@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
 use crate::ctxt::Ctxt;
+use crate::glob::Glob;
 use crate::manifest::{self, Manifest};
 use crate::model::{CrateParams, Module};
 use crate::rust_version::RustVersion;
@@ -76,38 +77,11 @@ fn expand_members<'a>(
     iter: impl Iterator<Item = &'a RelativePath>,
 ) -> Result<Vec<RelativePathBuf>> {
     let mut output = Vec::new();
-    let mut queue = VecDeque::new();
 
     for path in iter {
-        queue.push_back(package.manifest_dir.join(path));
-    }
-
-    'outer: while let Some(p) = queue.pop_front() {
-        let mut current = RelativePathBuf::new();
-        let mut it = p.components();
-
-        while let Some(c) = it.next() {
-            if c.as_str() == "*" {
-                let dirs = std::fs::read_dir(current.to_path(cx.root))?;
-
-                for e in dirs {
-                    let e = e?;
-
-                    if let Some(c) = e.file_name().to_str() {
-                        let mut new = current.clone();
-                        new.push(c);
-                        new.push(it.as_relative_path());
-                        queue.push_back(new);
-                    }
-                }
-
-                continue 'outer;
-            }
-
-            current.push(c.as_str());
+        for path in Glob::new(cx.root, package.manifest_dir.join(path)) {
+            output.push(path?);
         }
-
-        output.push(current);
     }
 
     Ok(output)
