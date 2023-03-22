@@ -227,7 +227,7 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
             git.add(&path, ["-u"])?;
             git.commit(&path, format_args!("Release {version}"))?;
             tracing::info!("Tagging `{version}`");
-            git.tag(&path, &version)?;
+            git.tag(&path, version)?;
         } else {
             tracing::info!("Would make commit `Release {version}` (--save)");
             tracing::info!("Would make tag `{version}` (--save)");

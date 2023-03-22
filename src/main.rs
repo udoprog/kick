@@ -5,6 +5,7 @@
 //! Give your projects a good 🦶!
 
 #![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
 
 macro_rules! error {
     ($error:ident, $($tt:tt)*) => {
