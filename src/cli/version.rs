@@ -30,6 +30,9 @@ pub(crate) struct Opts {
     /// Set a prerelease string.
     #[arg(long)]
     pre: Option<String>,
+    /// Use the existing crate version just so that we can perform all checks.
+    #[arg(long = "existing")]
+    existing: bool,
     /// Make a commit with the current version with the message `Release <version>`.
     #[arg(long)]
     commit: bool,
@@ -41,9 +44,13 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
         minor: opts.minor,
         patch: opts.patch,
         pre: match &opts.pre {
-            Some(pre) => Prerelease::new(pre).with_context(|| pre.to_owned())?,
-            None => Prerelease::EMPTY,
+            Some(pre) if !pre.is_empty() => {
+                Some(Prerelease::new(pre).with_context(|| pre.to_owned())?)
+            }
+            Some(..) => Some(Prerelease::EMPTY),
+            _ => None,
         },
+        existing: opts.existing,
         ..VersionSet::default()
     };
 
@@ -71,7 +78,7 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
         bail!("not a workspace");
     };
 
-    let mut new_versions = HashMap::new();
+    let mut versions = HashMap::new();
     let mut packages = Vec::new();
 
     for package in workspace.packages() {
@@ -95,14 +102,20 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
                     to.major += 1;
                     to.minor = 0;
                     to.patch = 0;
+                    to.pre = Prerelease::default();
                 } else if version_set.minor {
                     to.minor += 1;
                     to.patch = 0;
+                    to.pre = Prerelease::default();
                 } else if version_set.patch {
                     to.patch += 1;
+                    to.pre = Prerelease::default();
                 }
 
-                to.pre = version_set.pre.clone();
+                if let Some(pre) = &version_set.pre {
+                    to.pre = pre.clone();
+                }
+
                 tracing::info!(
                     ?name,
                     from = from.to_string(),
@@ -110,13 +123,14 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
                     ?name,
                     "bump version"
                 );
-                new_versions.insert(name.to_string(), to);
+
+                versions.insert(name.to_string(), to);
             }
         }
 
-        if let Some(new_version) = version_set.crates.get(name).or(version_set.base.as_ref()) {
-            tracing::info!(?name, version = ?new_version.to_string(), ?name, "set version");
-            new_versions.insert(name.to_string(), new_version.clone());
+        if let Some(version) = version_set.crates.get(name).or(version_set.base.as_ref()) {
+            tracing::info!(?name, version = ?version.to_string(), ?name, "set version");
+            versions.insert(name.to_string(), version.clone());
         }
 
         packages.push((package.clone(), current_version));
@@ -128,7 +142,7 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
         let mut changed = false;
         let mut replaced = Vec::new();
 
-        if let Some(version) = new_versions.get(name) {
+        if let Some(version) = versions.get(name) {
             let root = package.manifest_dir.to_path(cx.root);
             let version_string = version.to_string();
 
@@ -145,19 +159,19 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
         }
 
         if let Some(deps) = package.manifest.dependencies_mut() {
-            if modify_dependencies(deps, &new_versions)? {
+            if modify_dependencies(deps, &versions)? {
                 changed = true;
             }
         }
 
         if let Some(deps) = package.manifest.dev_dependencies_mut() {
-            if modify_dependencies(deps, &new_versions)? {
+            if modify_dependencies(deps, &versions)? {
                 changed = true;
             }
         }
 
         if let Some(deps) = package.manifest.build_dependencies_mut() {
-            if modify_dependencies(deps, &new_versions)? {
+            if modify_dependencies(deps, &versions)? {
                 changed = true;
             }
         }
@@ -197,7 +211,7 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
         let git = cx.require_git()?;
         let primary = workspace.primary_crate()?;
 
-        let version = new_versions
+        let version = versions
             .get(primary.manifest.crate_name()?)
             .context("missing primary version")?;
 
@@ -221,15 +235,16 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
 struct VersionSet {
     base: Option<Version>,
     crates: HashMap<String, Version>,
-    pre: Prerelease,
     major: bool,
     minor: bool,
     patch: bool,
+    pre: Option<Prerelease>,
+    existing: bool,
 }
 
 impl VersionSet {
     fn is_bump(&self) -> bool {
-        self.major || self.minor || self.patch || !self.pre.is_empty()
+        self.major || self.minor || self.patch || self.pre.is_some() || self.existing
     }
 }
 
@@ -245,13 +260,13 @@ fn package_name<'a>(key: &'a str, dep: &'a Item) -> &'a str {
 }
 
 /// Modify dependencies in place.
-fn modify_dependencies(deps: &mut Table, new_versions: &HashMap<String, Version>) -> Result<bool> {
+fn modify_dependencies(deps: &mut Table, versions: &HashMap<String, Version>) -> Result<bool> {
     let mut changed = false;
 
     for (key, dep) in deps.iter_mut() {
         let name = package_name(key.get(), dep);
 
-        let (Some(version), Some(existing)) = (new_versions.get(name), find_version_mut(dep)) else {
+        let (Some(version), Some(existing)) = (versions.get(name), find_version_mut(dep)) else {
             continue;
         };
 
