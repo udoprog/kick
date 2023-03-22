@@ -2,6 +2,7 @@
 mod tests;
 
 use std::collections::VecDeque;
+use std::fs;
 use std::io;
 use std::mem;
 use std::path::Path;
@@ -51,7 +52,13 @@ impl<'a> Matcher<'a> {
     where
         M: FnMut(&str) -> bool,
     {
-        let dirs = std::fs::read_dir(current.to_path(self.root))?;
+        let path = current.to_path(self.root);
+
+        if !fs::metadata(&path)?.is_dir() {
+            return Ok(());
+        }
+
+        let dirs = fs::read_dir(path)?;
 
         for e in dirs {
             let e = e?;

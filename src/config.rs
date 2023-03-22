@@ -58,12 +58,6 @@ impl Replaced {
 
     /// Perform the given write.
     pub(crate) fn save(self) -> Result<()> {
-        tracing::info!(
-            "{path}: writing (replaced: {replacement})",
-            path = self.path.display(),
-            replacement = self.replacement,
-        );
-
         let Some(parent) = self.path.parent() else {
             bail!("{}: missing parent directory", self.path.display());
         };
@@ -84,7 +78,7 @@ pub(crate) struct Replacement {
     /// Replacements to perform in a given crate.
     pub(crate) crate_name: Option<String>,
     /// Replacement path.
-    pub(crate) path: RelativePathBuf,
+    pub(crate) paths: Vec<RelativePathBuf>,
     /// A regular expression pattern to replace.
     pub(crate) pattern: regex::bytes::Regex,
 }
@@ -94,36 +88,38 @@ impl Replacement {
     pub(crate) fn replace_in(&self, root: &Path, replacement: &str) -> Result<Vec<Replaced>> {
         let mut output = Vec::new();
 
-        let glob = Glob::new(root, &self.path);
+        for path in &self.paths {
+            let glob = Glob::new(root, path);
 
-        for path in glob.matcher() {
-            let path = path?;
-            let output_path = path.to_path(root);
+            for path in glob.matcher() {
+                let path = path?;
+                let output_path = path.to_path(root);
 
-            let content = match fs::read(&output_path) {
-                Ok(content) => content,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    tracing::warn!("{path}: failed to read");
-                    continue;
+                let content = match fs::read(&output_path) {
+                    Ok(content) => content,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                        tracing::warn!("{path}: failed to read");
+                        continue;
+                    }
+                    Err(e) => return Err(Error::from(e)).context(path),
+                };
+
+                let mut ranges = Vec::new();
+
+                for cap in self.pattern.captures_iter(&content) {
+                    if let Some(m) = cap.get(1) {
+                        ranges.push(m.range());
+                    }
                 }
-                Err(e) => return Err(Error::from(e)).context(path),
-            };
 
-            let mut ranges = Vec::new();
-
-            for cap in self.pattern.captures_iter(&content) {
-                if let Some(m) = cap.get(1) {
-                    ranges.push(m.range());
+                if !ranges.is_empty() {
+                    output.push(Replaced {
+                        path: output_path,
+                        content,
+                        replacement: replacement.into(),
+                        ranges,
+                    });
                 }
-            }
-
-            if !ranges.is_empty() {
-                output.push(Replaced {
-                    path: output_path,
-                    content,
-                    replacement: replacement.into(),
-                    ranges,
-                });
             }
         }
 
@@ -828,9 +824,11 @@ impl<'a> ConfigCtxt<'a> {
             let mut config = cx.table(item)?;
             let crate_name = cx.as_string(&mut config, "crate")?;
 
-            let path = cx
-                .as_string(&mut config, "path")?
-                .context("missing `path`")?;
+            let paths = cx
+                .in_array(&mut config, "paths", |cx, string| {
+                    Ok(RelativePathBuf::from(cx.string(string)?))
+                })?
+                .context("missing `paths`")?;
 
             let pattern = cx
                 .in_string(&mut config, "pattern", |_, pattern| {
@@ -842,7 +840,7 @@ impl<'a> ConfigCtxt<'a> {
 
             Ok(Replacement {
                 crate_name,
-                path: path.into(),
+                paths,
                 pattern,
             })
         })?;
