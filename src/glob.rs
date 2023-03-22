@@ -54,8 +54,16 @@ impl<'a> Matcher<'a> {
     {
         let path = current.to_path(self.root);
 
-        if !fs::metadata(&path)?.is_dir() {
-            return Ok(());
+        match fs::metadata(&path) {
+            Ok(m) => {
+                if !m.is_dir() {
+                    return Ok(());
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Ok(());
+            }
+            Err(e) => return Err(e),
         }
 
         for e in fs::read_dir(path)? {
@@ -85,8 +93,16 @@ impl<'a> Matcher<'a> {
         queue.push_back((current.to_owned(), path));
 
         while let Some((current, path)) = queue.pop_front() {
-            if !fs::metadata(&path)?.is_dir() {
-                return Ok(());
+            match fs::metadata(&path) {
+                Ok(m) => {
+                    if !m.is_dir() {
+                        return Ok(());
+                    }
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    continue;
+                }
+                Err(e) => return Err(e),
             }
 
             for e in fs::read_dir(path)? {

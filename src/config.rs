@@ -113,7 +113,9 @@ impl Replacement {
 
                 for cap in self.pattern.captures_iter(&content) {
                     if let Some(m) = cap.name(group) {
-                        ranges.push(m.range());
+                        if m.as_bytes() != replacement.as_bytes() {
+                            ranges.push(m.range());
+                        }
                     }
                 }
 

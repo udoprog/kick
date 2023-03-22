@@ -116,12 +116,12 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
                     to.pre = pre.clone();
                 }
 
-                tracing::info!(
+                tracing::trace!(
                     ?name,
                     from = from.to_string(),
                     to = to.to_string(),
                     ?name,
-                    "bump version"
+                    "Bump version"
                 );
 
                 versions.insert(name.to_string(), to);
@@ -129,7 +129,7 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
         }
 
         if let Some(version) = version_set.crates.get(name).or(version_set.base.as_ref()) {
-            tracing::info!(?name, version = ?version.to_string(), ?name, "set version");
+            tracing::info!(?name, version = ?version.to_string(), ?name, "Set version");
             versions.insert(name.to_string(), version.clone());
         }
 
@@ -139,7 +139,7 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
     for (package, _) in &mut packages {
         let name = package.manifest.crate_name()?;
 
-        let mut changed = false;
+        let mut changed_manifest = false;
         let mut replaced = Vec::new();
 
         if let Some(version) = versions.get(name) {
@@ -151,33 +151,39 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
                     continue;
                 }
 
-                replaced.extend(replacement.replace_in(&root, "version", &version_string)?);
+                replaced.extend(
+                    replacement
+                        .replace_in(&root, "version", &version_string)
+                        .context("Failed to replace version string")?,
+                );
             }
 
-            package.manifest.insert_version(&version_string)?;
-            changed = true;
+            if package.manifest.version()? != Some(version_string.as_str()) {
+                package.manifest.insert_version(&version_string)?;
+                changed_manifest = true;
+            }
         }
 
         if let Some(deps) = package.manifest.dependencies_mut() {
             if modify_dependencies(deps, &versions)? {
-                changed = true;
+                changed_manifest = true;
             }
         }
 
         if let Some(deps) = package.manifest.dev_dependencies_mut() {
             if modify_dependencies(deps, &versions)? {
-                changed = true;
+                changed_manifest = true;
             }
         }
 
         if let Some(deps) = package.manifest.build_dependencies_mut() {
             if modify_dependencies(deps, &versions)? {
-                changed = true;
+                changed_manifest = true;
             }
         }
 
         if opts.save {
-            if changed {
+            if changed_manifest {
                 tracing::info!("Saving {}", package.manifest_path);
                 let out = package.manifest_path.to_path(cx.root);
                 package.manifest.save_to(out)?;
@@ -193,7 +199,7 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
                 replaced.save()?;
             }
         } else {
-            if changed {
+            if changed_manifest {
                 tracing::info!("Would save {} (--save)", package.manifest_path);
             }
 
