@@ -42,6 +42,8 @@ use actions::Actions;
 use relative_path::RelativePathBuf;
 use tracing::metadata::LevelFilter;
 
+use crate::glob::Fragment;
+
 /// Name of project configuration files.
 const KICK_TOML: &str = "Kick.toml";
 
@@ -74,6 +76,9 @@ struct Opts {
     /// an existing repo.
     #[arg(long)]
     all: bool,
+    /// Only run the specified set of modules.
+    #[arg(long = "module", short = 'm', name = "module")]
+    modules: Vec<String>,
     /// Action to perform. Defaults to `check`.
     #[command(subcommand, name = "action")]
     action: Option<Action>,
@@ -180,6 +185,12 @@ async fn entry() -> Result<()> {
         None
     };
 
+    let mut filters = Vec::new();
+
+    for module in &opts.modules {
+        filters.push(Fragment::parse(module));
+    }
+
     let cx = ctxt::Ctxt {
         root: &root,
         config: &config,
@@ -189,6 +200,7 @@ async fn entry() -> Result<()> {
         rustc_version: ctxt::rustc_version(),
         git,
         current_path,
+        filters: &filters,
     };
 
     match opts.action.unwrap_or_default() {

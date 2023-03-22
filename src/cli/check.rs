@@ -16,9 +16,6 @@ pub(crate) struct Opts {
     /// Perform URL checks where we go out and try and fetch every references URL.
     #[arg(long)]
     url_checks: bool,
-    /// Filter by the specified modules.
-    #[arg(long = "module", short = 'm', name = "module")]
-    modules: Vec<String>,
 }
 
 /// Entrypoint to run action.
@@ -26,7 +23,7 @@ pub(crate) struct Opts {
 pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts, fix: bool) -> Result<()> {
     let mut urls = Urls::default();
 
-    for module in cx.modules(&opts.modules) {
+    for module in cx.modules() {
         if fix {
             tracing::info!("fixing: {}", module.path);
         } else {

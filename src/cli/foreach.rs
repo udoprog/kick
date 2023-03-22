@@ -24,9 +24,6 @@ pub(crate) struct Opts {
     /// commit that doesn't have a tag as determined by `git describe --tags`.
     #[arg(long)]
     unreleased: bool,
-    /// Filter by the specified modules.
-    #[arg(long = "module", short = 'm', name = "module")]
-    modules: Vec<String>,
     /// Command to run.
     command: Vec<String>,
 }
@@ -42,7 +39,7 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
         return Err(anyhow!("missing command"));
     };
 
-    for module in cx.modules(&opts.modules) {
+    for module in cx.modules() {
         foreach(cx, opts, module, command, args).with_context(|| module.path.clone())?;
     }
 

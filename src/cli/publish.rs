@@ -15,9 +15,6 @@ pub(crate) struct Opts {
     /// Actually publish packages, and don't just pretend.
     #[arg(long)]
     run: bool,
-    /// Filter by the specified modules.
-    #[arg(long = "module", short = 'm', name = "module")]
-    modules: Vec<String>,
     /// Provide a list of crates which we do not verify locally by adding
     /// `--no-verify` to cargo publish.
     #[arg(long = "no-verify", name = "crate")]
@@ -30,7 +27,7 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
-    for module in cx.modules(&opts.modules) {
+    for module in cx.modules() {
         version(cx, opts, module).with_context(|| module.path.clone())?;
     }
 

@@ -13,9 +13,6 @@ use crate::model::Module;
 
 #[derive(Default, Parser)]
 pub(crate) struct Opts {
-    /// Filter by the specified modules.
-    #[arg(long = "module", short = 'm', name = "module")]
-    modules: Vec<String>,
     /// Output raw JSON response.
     #[arg(long)]
     raw_json: bool,
@@ -65,7 +62,7 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     let today = Local::now();
     let limit = opts.limit.unwrap_or(1).max(1).to_string();
 
-    for module in cx.modules(&opts.modules) {
+    for module in cx.modules() {
         let span = tracing::info_span!("build", module = module.path.as_str());
         let _enter = span.enter();
 

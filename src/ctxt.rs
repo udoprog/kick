@@ -7,6 +7,7 @@ use relative_path::RelativePath;
 use crate::actions::Actions;
 use crate::config::Config;
 use crate::git::Git;
+use crate::glob::Fragment;
 use crate::model::Module;
 use crate::rust_version::RustVersion;
 
@@ -19,13 +20,14 @@ pub(crate) struct Ctxt<'a> {
     pub(crate) rustc_version: Option<RustVersion>,
     pub(crate) git: Option<Git>,
     pub(crate) current_path: Option<&'a RelativePath>,
+    pub(crate) filters: &'a [Fragment<'a>],
 }
 
 impl<'a> Ctxt<'a> {
-    pub(crate) fn modules(&self, modules: &'a [String]) -> impl Iterator<Item = &'a Module> + '_ {
+    pub(crate) fn modules(&self) -> impl Iterator<Item = &Module> + '_ {
         /// Test if module should be skipped.
         fn should_keep(
-            filters: &[String],
+            filters: &[Fragment<'_>],
             current_path: Option<&RelativePath>,
             module: &Module,
         ) -> bool {
@@ -39,12 +41,12 @@ impl<'a> Ctxt<'a> {
 
             filters
                 .iter()
-                .all(|filter| module.path.as_str().contains(filter))
+                .any(|filter| filter.is_match(module.path.as_str()))
         }
 
         self.modules
             .iter()
-            .filter(move |m| should_keep(modules, self.current_path, m))
+            .filter(move |m| should_keep(&self.filters, self.current_path, m))
     }
 
     /// Require a working git command.

@@ -197,12 +197,12 @@ enum Part<'a> {
 
 /// A match fragment.
 #[derive(Debug, Clone)]
-struct Fragment<'a> {
+pub(crate) struct Fragment<'a> {
     parts: Box<[Part<'a>]>,
 }
 
 impl<'a> Fragment<'a> {
-    fn parse(string: &'a str) -> Fragment<'a> {
+    pub(crate) fn parse(string: &'a str) -> Fragment<'a> {
         let mut literal = true;
         let mut parts = Vec::new();
         let mut start = None;
@@ -238,7 +238,7 @@ impl<'a> Fragment<'a> {
     }
 
     /// Test if the given string matches the current fragment.
-    fn is_match(&self, string: &str) -> bool {
+    pub(crate) fn is_match(&self, string: &str) -> bool {
         let mut backtrack = VecDeque::new();
         backtrack.push_back((self.parts.as_ref(), string));
 

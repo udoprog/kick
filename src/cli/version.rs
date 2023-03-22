@@ -33,9 +33,6 @@ pub(crate) struct Opts {
     /// Make a commit with the current version with the message `Release <version>`.
     #[arg(long)]
     commit: bool,
-    /// Filter by the specified modules.
-    #[arg(long = "module", short = 'm', name = "module")]
-    modules: Vec<String>,
 }
 
 pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
@@ -61,7 +58,7 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
         }
     }
 
-    for module in cx.modules(&opts.modules) {
+    for module in cx.modules() {
         version(cx, opts, module, &version_set).with_context(|| module.path.clone())?;
     }
 

@@ -22,9 +22,6 @@ const DEFAULT_COMMAND: [&str; 2] = ["cargo", "build"];
 
 #[derive(Default, Parser)]
 pub(crate) struct Opts {
-    /// Filter by the specified modules.
-    #[arg(long = "module", short = 'm', name = "module")]
-    modules: Vec<String>,
     /// Verbose output.
     #[arg(long)]
     verbose: bool,
@@ -70,7 +67,7 @@ pub(crate) struct Opts {
 
 #[tracing::instrument(skip_all)]
 pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
-    for module in cx.modules(&opts.modules) {
+    for module in cx.modules() {
         let span =
             tracing::info_span!("build", source = ?module.source, module = module.path.as_str());
         let _enter = span.enter();
