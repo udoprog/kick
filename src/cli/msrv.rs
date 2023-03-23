@@ -200,12 +200,12 @@ fn build(cx: &Ctxt<'_>, workspace: &Workspace, module: &Module, opts: &Opts) -> 
     };
 
     if version >= RUST_VERSION_SUPPORTED {
-        cx.validation(Change::SetRustVersion {
+        cx.change(Change::SetRustVersion {
             module: module.clone(),
             version,
         });
     } else {
-        cx.validation(Change::RemoveRustVersion {
+        cx.change(Change::RemoveRustVersion {
             module: module.clone(),
             version,
         });

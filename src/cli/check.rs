@@ -98,7 +98,7 @@ fn check(
 
     if cx.config.is_enabled(module.path(), "ci") {
         ci::build(cx, primary_crate, module, workspace)
-            .with_context(|| anyhow!("ci validation: {}", cx.config.job_name(module)))?;
+            .with_context(|| anyhow!("ci change: {}", cx.config.job_name(module)))?;
     }
 
     if cx.config.is_enabled(module.path(), "readme") {

@@ -31,7 +31,7 @@ struct Readme<'a, 'outer> {
     do_lib: bool,
 }
 
-/// Perform readme validation.
+/// Perform readme change.
 pub(crate) fn build(
     cx: &Ctxt<'_>,
     manifest_dir: &RelativePath,
@@ -64,7 +64,7 @@ pub(crate) fn build(
         do_lib,
     };
 
-    validate(cx, &mut readme).with_context(|| anyhow!("{readme_path}: readme validation"))?;
+    validate(cx, &mut readme).with_context(|| anyhow!("{readme_path}: readme change"))?;
     Ok(())
 }
 
@@ -78,7 +78,7 @@ struct MarkdownChecks {
 /// Validate the current model.
 fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
     if !rm.readme_path.to_path(cx.root).is_file() {
-        cx.validation(Change::MissingReadme {
+        cx.change(Change::MissingReadme {
             path: rm.readme_path.to_owned(),
         });
     }
@@ -99,7 +99,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
     let (file, lib_rs, comments) = process_lib_rs(cx, rm, &lib_badges)?;
 
     if rm.do_lib && *file != *lib_rs {
-        cx.validation(Change::UpdateLib {
+        cx.change(Change::UpdateLib {
             path: rm.entry.to_owned(),
             lib: lib_rs,
         });
@@ -108,7 +108,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
     let checks = markdown_checks(rm, &file)?;
 
     for (file, range) in checks.toplevel_headings {
-        cx.validation(Change::ToplevelHeadings {
+        cx.change(Change::ToplevelHeadings {
             path: rm.entry.to_owned(),
             file,
             range,
@@ -117,7 +117,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
     }
 
     for (file, range) in checks.missing_preceeding_br {
-        cx.validation(Change::MissingPreceedingBr {
+        cx.change(Change::MissingPreceedingBr {
             path: rm.entry.to_owned(),
             file,
             range,
@@ -143,7 +143,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
     };
 
     if rm.do_readme && readme != readme_from_lib_rs {
-        cx.validation(Change::UpdateReadme {
+        cx.change(Change::UpdateReadme {
             path: rm.readme_path.to_owned(),
             readme: Arc::new(readme_from_lib_rs),
         });

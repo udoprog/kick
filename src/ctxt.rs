@@ -20,7 +20,7 @@ pub(crate) struct Ctxt<'a> {
     pub(crate) github_auth: Option<String>,
     pub(crate) rustc_version: Option<RustVersion>,
     pub(crate) git: Option<Git>,
-    pub(crate) validation: RefCell<Vec<Change>>,
+    pub(crate) changes: RefCell<Vec<Change>>,
 }
 
 impl<'a> Ctxt<'a> {
@@ -47,22 +47,22 @@ impl<'a> Ctxt<'a> {
         self.git.as_ref().context("no working git command")
     }
 
-    /// Push a validation.
-    pub(crate) fn validation(&self, validation: Change) {
-        self.validation.borrow_mut().push(validation);
+    /// Push a change.
+    pub(crate) fn change(&self, change: Change) {
+        self.changes.borrow_mut().push(change);
     }
 
-    /// Take all proposed validations.
-    pub(crate) fn validations(&self) -> Ref<'_, [Change]> {
-        Ref::map(self.validation.borrow(), Vec::as_slice)
+    /// Get a list of proposed changes.
+    pub(crate) fn changes(&self) -> Ref<'_, [Change]> {
+        Ref::map(self.changes.borrow(), Vec::as_slice)
     }
 
-    /// Check if there's a validation we can save.
+    /// Check if there's a change we can save.
     pub(crate) fn can_save(&self) -> bool {
         let mut can_save = false;
 
-        for validation in self.validation.borrow().iter() {
-            can_save |= validation.has_changes();
+        for change in self.changes.borrow().iter() {
+            can_save |= change.has_changes();
         }
 
         can_save

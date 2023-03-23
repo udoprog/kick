@@ -59,7 +59,7 @@ cargo_issues! {
     }
 }
 
-/// A simple workflow validation.
+/// A simple workflow change.
 pub(crate) enum WorkflowChange {
     /// Oudated version of an action.
     ReplaceString {
@@ -73,7 +73,7 @@ pub(crate) enum WorkflowChange {
     Error { name: String, reason: String },
 }
 
-/// A single validation.
+/// A single change.
 pub(crate) enum Change {
     DeprecatedWorkflow {
         path: RelativePathBuf,
@@ -91,7 +91,7 @@ pub(crate) enum Change {
     BadWorkflow {
         path: RelativePathBuf,
         doc: yaml::Document,
-        validation: Vec<WorkflowChange>,
+        change: Vec<WorkflowChange>,
     },
     MissingReadme {
         path: RelativePathBuf,
@@ -177,13 +177,13 @@ pub(crate) enum Change {
     },
 }
 impl Change {
-    /// Check if validation can save something.
+    /// Check if change can save something.
     pub(crate) fn has_changes(&self) -> bool {
         match self {
             Change::DeprecatedWorkflow { .. } => false,
             Change::MissingWorkflow { .. } => true,
             Change::WrongWorkflowName { .. } => false,
-            Change::BadWorkflow { validation, .. } => !validation.is_empty(),
+            Change::BadWorkflow { change, .. } => !change.is_empty(),
             Change::MissingReadme { .. } => false,
             Change::UpdateLib { .. } => true,
             Change::UpdateReadme { .. } => true,
@@ -206,13 +206,13 @@ impl Change {
     }
 }
 
-/// Report and apply a asingle validation.
-pub(crate) fn apply(cx: &Ctxt<'_>, validation: &Change, save: bool) -> Result<()> {
+/// Report and apply a asingle change.
+pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
     if cx.can_save() && !save {
         tracing::warn!("Not writing changes since `--save` is not specified");
     }
 
-    match validation {
+    match change {
         Change::MissingWorkflow {
             path,
             module,
@@ -260,16 +260,12 @@ pub(crate) fn apply(cx: &Ctxt<'_>, validation: &Change, save: bool) -> Result<()
         } => {
             println!("{path}: Wrong workflow name: {actual} (actual) != {expected} (expected)");
         }
-        Change::BadWorkflow {
-            path,
-            doc,
-            validation,
-        } => {
+        Change::BadWorkflow { path, doc, change } => {
             let mut doc = doc.clone();
             let mut edited = false;
 
-            for validation in validation {
-                match validation {
+            for change in change {
+                match change {
                     WorkflowChange::ReplaceString {
                         reason,
                         string,

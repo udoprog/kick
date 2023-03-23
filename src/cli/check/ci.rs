@@ -61,7 +61,7 @@ enum CargoFeatures {
     AllFeatures,
 }
 
-/// Build ci validation.
+/// Build ci change.
 pub(crate) fn build(
     cx: &Ctxt<'_>,
     primary_crate: &Package,
@@ -93,7 +93,7 @@ fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, module: &Module) -> Result<()> {
             _ => None,
         };
 
-        cx.validation(Change::MissingWorkflow {
+        cx.change(Change::MissingWorkflow {
             path: expected_path,
             module: module.clone(),
             candidates: candidates.clone(),
@@ -108,7 +108,7 @@ fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, module: &Module) -> Result<()> {
     };
 
     if deprecated_yml.to_path(cx.root).is_file() && candidates.len() > 1 {
-        cx.validation(Change::DeprecatedWorkflow {
+        cx.change(Change::DeprecatedWorkflow {
             path: deprecated_yml,
         });
     }
@@ -123,7 +123,7 @@ fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, module: &Module) -> Result<()> {
         .ok_or_else(|| anyhow!("{path}: missing .name"))?;
 
     if name != cx.config.job_name(module) {
-        cx.validation(Change::WrongWorkflowName {
+        cx.change(Change::WrongWorkflowName {
             path: path.clone(),
             actual: name.to_owned(),
             expected: cx.config.job_name(module).to_owned(),
@@ -170,7 +170,7 @@ fn validate_jobs(
         validate_on(cx, doc, value, path);
     }
 
-    let mut validation = Vec::new();
+    let mut change = Vec::new();
 
     if let Some(jobs) = table.get("jobs").and_then(|v| v.as_mapping()) {
         for (job_name, job) in jobs {
@@ -179,10 +179,10 @@ fn validate_jobs(
             };
 
             if matches!(job_name.to_str(), Ok("test" | "build")) {
-                check_strategy_rust_version(ci, &job, &mut validation);
+                check_strategy_rust_version(ci, &job, &mut change);
             }
 
-            check_actions(cx, &job, &mut validation)?;
+            check_actions(cx, &job, &mut change)?;
 
             if !ci.workspace {
                 verify_single_project_build(cx, ci, path, job);
@@ -190,22 +190,18 @@ fn validate_jobs(
         }
     }
 
-    if !validation.is_empty() {
-        cx.validation(Change::BadWorkflow {
+    if !change.is_empty() {
+        cx.change(Change::BadWorkflow {
             path: path.to_owned(),
             doc: doc.clone(),
-            validation,
+            change,
         });
     }
 
     Ok(())
 }
 
-fn check_actions(
-    cx: &Ctxt,
-    job: &yaml::Mapping,
-    validation: &mut Vec<WorkflowChange>,
-) -> Result<()> {
+fn check_actions(cx: &Ctxt, job: &yaml::Mapping, change: &mut Vec<WorkflowChange>) -> Result<()> {
     for action in job
         .get("steps")
         .and_then(|v| v.as_sequence())
@@ -223,7 +219,7 @@ fn check_actions(
 
         if let Some(expected) = cx.actions.get_latest(base) {
             if expected != version {
-                validation.push(WorkflowChange::ReplaceString {
+                change.push(WorkflowChange::ReplaceString {
                     reason: format!("Outdated action: got `{version}` but expected `{expected}`"),
                     string: format!("{base}@{expected}"),
                     value: uses,
@@ -234,14 +230,14 @@ fn check_actions(
         }
 
         if let Some(reason) = cx.actions.get_deny(base) {
-            validation.push(WorkflowChange::Error {
+            change.push(WorkflowChange::Error {
                 name: name.to_owned(),
                 reason: reason.into(),
             });
         }
 
         if let Some(check) = cx.actions.get_check(base) {
-            check.check(name, action, validation)?;
+            check.check(name, action, change)?;
         }
     }
 
@@ -249,11 +245,7 @@ fn check_actions(
 }
 
 /// Check that the correct rust-version is used in a job.
-fn check_strategy_rust_version(
-    ci: &mut Ci,
-    job: &yaml::Mapping,
-    validation: &mut Vec<WorkflowChange>,
-) {
+fn check_strategy_rust_version(ci: &mut Ci, job: &yaml::Mapping, change: &mut Vec<WorkflowChange>) {
     let Some(rust_version) = ci
         .manifest
         .rust_version()
@@ -290,7 +282,7 @@ fn check_strategy_rust_version(
             };
 
             if rust_version != version {
-                validation.push(WorkflowChange::ReplaceString {
+                change.push(WorkflowChange::ReplaceString {
                     reason: format!(
                         "Wrong rust version: got `{version}` but expected `{rust_version}`"
                     ),
@@ -306,7 +298,7 @@ fn check_strategy_rust_version(
 
 fn validate_on(cx: &Ctxt<'_>, doc: &yaml::Document, value: yaml::Value<'_>, path: &RelativePath) {
     let Some(m) = value.as_mapping() else {
-        cx.validation(Change::ActionMissingKey {
+        cx.change(Change::ActionMissingKey {
             path: path.to_owned(),
             key: Box::from("on"),
             expected: ActionExpected::Mapping,
@@ -320,14 +312,14 @@ fn validate_on(cx: &Ctxt<'_>, doc: &yaml::Document, value: yaml::Value<'_>, path
     match m.get("pull_request").map(yaml::Value::into_any) {
         Some(yaml::Any::Mapping(m)) => {
             if !m.is_empty() {
-                cx.validation(Change::ActionExpectedEmptyMapping {
+                cx.change(Change::ActionExpectedEmptyMapping {
                     path: path.to_owned(),
                     key: Box::from("on.pull_request"),
                 });
             }
         }
         value => {
-            cx.validation(Change::ActionMissingKey {
+            cx.change(Change::ActionMissingKey {
                 path: path.to_owned(),
                 key: Box::from("on.pull_request"),
                 expected: ActionExpected::Mapping,
@@ -341,7 +333,7 @@ fn validate_on(cx: &Ctxt<'_>, doc: &yaml::Document, value: yaml::Value<'_>, path
         Some(yaml::Any::Mapping(m)) => match m.get("branches").map(yaml::Value::into_any) {
             Some(yaml::Any::Sequence(s)) => {
                 if !s.iter().flat_map(|v| v.as_str()).any(|b| b == "main") {
-                    cx.validation(Change::ActionOnMissingBranch {
+                    cx.change(Change::ActionOnMissingBranch {
                         path: path.to_owned(),
                         key: Box::from("on.push.branches"),
                         branch: Box::from("main"),
@@ -349,7 +341,7 @@ fn validate_on(cx: &Ctxt<'_>, doc: &yaml::Document, value: yaml::Value<'_>, path
                 }
             }
             value => {
-                cx.validation(Change::ActionMissingKey {
+                cx.change(Change::ActionMissingKey {
                     path: path.to_owned(),
                     key: Box::from("on.push.branches"),
                     expected: ActionExpected::Sequence,
@@ -359,7 +351,7 @@ fn validate_on(cx: &Ctxt<'_>, doc: &yaml::Document, value: yaml::Value<'_>, path
             }
         },
         value => {
-            cx.validation(Change::ActionMissingKey {
+            cx.change(Change::ActionMissingKey {
                 path: path.to_owned(),
                 key: Box::from("on.push"),
                 expected: ActionExpected::Mapping,
@@ -391,7 +383,7 @@ fn verify_single_project_build(
 
             if let RunIdentity::Cargo(cargo) = identity {
                 for feature in &cargo.missing_features {
-                    cx.validation(Change::MissingFeature {
+                    cx.change(Change::MissingFeature {
                         path: path.to_owned(),
                         feature: feature.clone(),
                     });
@@ -408,7 +400,7 @@ fn verify_single_project_build(
         if features.is_empty() {
             for build in &cargo_combos {
                 if !matches!(build.features, CargoFeatures::Default) {
-                    cx.validation(Change::NoFeatures {
+                    cx.change(Change::NoFeatures {
                         path: path.to_owned(),
                     });
                 }
@@ -439,13 +431,13 @@ fn ensure_feature_combo(cx: &Ctxt<'_>, path: &RelativePath, cargos: &[Cargo]) ->
     }
 
     if !empty_features {
-        cx.validation(Change::MissingEmptyFeatures {
+        cx.change(Change::MissingEmptyFeatures {
             path: path.to_owned(),
         });
     }
 
     if !all_features {
-        cx.validation(Change::MissingAllFeatures {
+        cx.change(Change::MissingAllFeatures {
             path: path.to_owned(),
         });
     }

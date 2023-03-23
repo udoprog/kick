@@ -227,7 +227,7 @@ async fn entry() -> Result<()> {
         github_auth,
         rustc_version: ctxt::rustc_version(),
         git,
-        validation: RefCell::new(Vec::new()),
+        changes: RefCell::new(Vec::new()),
     };
 
     match opts.action.unwrap_or_default() {
@@ -251,8 +251,8 @@ async fn entry() -> Result<()> {
         }
     }
 
-    for validation in cx.validations().iter() {
-        crate::changes::apply(&cx, validation, opts.save)?;
+    for change in cx.changes().iter() {
+        crate::changes::apply(&cx, change, opts.save)?;
     }
 
     Ok(())

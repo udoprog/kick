@@ -180,13 +180,13 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
         }
 
         if changed_manifest {
-            cx.validation(Change::SavePackage {
+            cx.change(Change::SavePackage {
                 package: package.clone(),
             });
         }
 
         for replaced in replaced {
-            cx.validation(Change::Replace { replaced });
+            cx.change(Change::Replace { replaced });
         }
     }
 
@@ -197,7 +197,7 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
             .get(primary.manifest.crate_name()?)
             .context("missing version for primary manifest")?;
 
-        cx.validation(Change::ReleaseCommit {
+        cx.change(Change::ReleaseCommit {
             path: primary.manifest_dir.clone(),
             version: version.clone(),
         });

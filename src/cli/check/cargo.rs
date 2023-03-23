@@ -211,7 +211,7 @@ pub(crate) fn work_cargo_toml(
     }
 
     if !issues.is_empty() {
-        cx.validation(Change::CargoTomlIssues {
+        cx.change(Change::CargoTomlIssues {
             path: package.manifest_path.clone(),
             cargo: changed.then_some(modified_manifest),
             issues,
