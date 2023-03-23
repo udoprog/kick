@@ -2,6 +2,7 @@ use core::fmt;
 
 use anyhow::Result;
 
+use crate::ctxt::Ctxt;
 use crate::model::UpdateParams;
 use crate::validation::Validation;
 use crate::workspace::Package;
@@ -92,8 +93,8 @@ cargo_keys! {
 
 /// Validate the main `Cargo.toml`.
 pub(crate) fn work_cargo_toml(
+    cx: &Ctxt<'_>,
     package: &Package,
-    validation: &mut Vec<Validation>,
     update: &UpdateParams<'_>,
 ) -> Result<()> {
     let mut modified_manifest = package.manifest.clone();
@@ -252,7 +253,7 @@ pub(crate) fn work_cargo_toml(
     }
 
     if !issues.is_empty() {
-        validation.push(Validation::CargoTomlIssues {
+        cx.validation(Validation::CargoTomlIssues {
             path: package.manifest_path.clone(),
             cargo: changed.then_some(modified_manifest),
             issues,

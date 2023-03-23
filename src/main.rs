@@ -34,7 +34,10 @@ mod utils;
 mod validation;
 mod workspace;
 
-use std::path::{Component, Path, PathBuf};
+use std::{
+    cell::RefCell,
+    path::{Component, Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -52,8 +55,6 @@ const KICK_TOML: &str = "Kick.toml";
 enum Action {
     /// Run checks non destructively for each module (default action).
     Check(cli::check::Opts),
-    /// Try to fix anything that can be fixed automatically for each module.
-    Fix(cli::check::Opts),
     /// Run a command for each module.
     For(cli::foreach::Opts),
     /// Fetch github actions build status for each module.
@@ -101,6 +102,9 @@ struct Opts {
     /// commit that doesn't have a tag as determined by `git describe --tags`.
     #[arg(long)]
     unreleased: bool,
+    /// Save any proposed changes.
+    #[arg(long)]
+    save: bool,
     /// Action to perform. Defaults to `check`.
     #[command(subcommand, name = "action")]
     action: Option<Action>,
@@ -176,12 +180,12 @@ async fn entry() -> Result<()> {
     let git = git::Git::find()?;
 
     let templating = templates::Templating::new()?;
-    let mut modules = model::load_modules(&root, git.as_ref())?;
+    let modules = model::load_modules(&root, git.as_ref())?;
 
     tracing::trace!(
         modules = modules
             .iter()
-            .map(|m| m.path.to_string())
+            .map(|m| m.path().to_string())
             .collect::<Vec<_>>()
             .join(", "),
         "loaded modules"
@@ -201,7 +205,7 @@ async fn entry() -> Result<()> {
         "using `run` is less verbose and faster",
     );
 
-    let current_path = if !opts.all && modules.iter().any(|m| m.path.as_ref() == current_path) {
+    let current_path = if !opts.all && modules.iter().any(|m| m.path() == current_path) {
         Some(current_path.as_ref())
     } else {
         None
@@ -213,16 +217,9 @@ async fn entry() -> Result<()> {
         filters.push(Fragment::parse(module));
     }
 
-    filter_modules(
-        &root,
-        &opts,
-        git.as_ref(),
-        &mut modules,
-        &filters,
-        current_path,
-    )?;
+    filter_modules(&root, &opts, git.as_ref(), &modules, &filters, current_path)?;
 
-    let cx = ctxt::Ctxt {
+    let mut cx = ctxt::Ctxt {
         root: &root,
         config: &config,
         actions: &actions,
@@ -230,14 +227,12 @@ async fn entry() -> Result<()> {
         github_auth,
         rustc_version: ctxt::rustc_version(),
         git,
+        validation: RefCell::new(Vec::new()),
     };
 
     match opts.action.unwrap_or_default() {
         Action::Check(opts) => {
-            cli::check::entry(&cx, &opts, false).await?;
-        }
-        Action::Fix(opts) => {
-            cli::check::entry(&cx, &opts, true).await?;
+            cli::check::entry(&cx, &opts).await?;
         }
         Action::For(opts) => {
             cli::foreach::entry(&cx, &opts)?;
@@ -256,6 +251,10 @@ async fn entry() -> Result<()> {
         }
     }
 
+    for validation in cx.validations() {
+        crate::validation::validate(&cx, &validation, opts.save)?;
+    }
+
     Ok(())
 }
 
@@ -264,7 +263,7 @@ fn filter_modules(
     root: &Path,
     opts: &Opts,
     git: Option<&git::Git>,
-    modules: &mut [model::Module],
+    modules: &[model::Module],
     filters: &[Fragment<'_>],
     current_path: Option<&RelativePath>,
 ) -> Result<(), anyhow::Error> {
@@ -272,7 +271,7 @@ fn filter_modules(
     let should_disable = |module: &Module| -> bool {
         if filters.is_empty() {
             if let Some(path) = current_path {
-                return path != module.path.as_ref();
+                return path != module.path();
             }
 
             return false;
@@ -280,51 +279,51 @@ fn filter_modules(
 
         !filters
             .iter()
-            .any(|filter| filter.is_match(module.path.as_str()))
+            .any(|filter| filter.is_match(module.path().as_str()))
     };
 
     for module in modules {
-        module.disabled = should_disable(module);
+        module.set_disabled(should_disable(module));
 
-        if module.disabled {
+        if module.is_disabled() {
             continue;
         }
 
         if opts.needs_git() {
             let git = git.context("no working git command")?;
-            let module_path = module.path.to_path(root);
+            let module_path = module.path().to_path(root);
 
             let cached = git.is_cached(&module_path)?;
             let dirty = git.is_dirty(&module_path)?;
 
             let span =
-                tracing::trace_span!("git", ?cached, ?dirty, module = module.path.to_string());
+                tracing::trace_span!("git", ?cached, ?dirty, module = module.path().to_string());
             let _enter = span.enter();
 
             if opts.dirty && !dirty {
                 tracing::trace!("directory is not dirty");
-                module.disabled = true;
+                module.set_disabled(true);
             }
 
             if opts.cached && !cached {
                 tracing::trace!("directory has no cached changes");
-                module.disabled = true;
+                module.set_disabled(true);
             }
 
             if opts.cached_only && (!cached || dirty) {
                 tracing::trace!("directory has no cached changes");
-                module.disabled = true;
+                module.set_disabled(true);
             }
 
             if opts.unreleased {
                 if let Some((tag, offset)) = git.describe_tags(&module_path)? {
                     if offset.is_none() {
                         tracing::trace!("no offset detected (tag: {tag})");
-                        module.disabled = true;
+                        module.set_disabled(true);
                     }
                 } else {
                     tracing::trace!("no tags to describe");
-                    module.disabled = true;
+                    module.set_disabled(true);
                 }
             }
         }

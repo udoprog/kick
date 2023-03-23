@@ -1,14 +1,18 @@
 use core::fmt;
+use std::cell::{Cell, Ref, RefCell};
 use std::path::Path;
+use std::rc::Rc;
 
-use anyhow::{Context, Error, Result};
+use anyhow::{bail, Context, Error, Result};
 use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Serialize, Serializer};
 use url::Url;
 
+use crate::ctxt::Ctxt;
 use crate::git::Git;
 use crate::gitmodules;
 use crate::rust_version::RustVersion;
+use crate::workspace::Workspace;
 
 /// Parameters particular to a given crate.
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -28,7 +32,7 @@ pub(crate) struct RenderRustVersions {
 }
 
 /// Parameters particular to a specific module.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct ModuleParams<'a> {
     #[serde(rename = "crate")]
     pub(crate) crate_params: CrateParams<'a>,
@@ -37,7 +41,7 @@ pub(crate) struct ModuleParams<'a> {
     /// Globally known rust versions in use.
     pub(crate) rust_versions: RenderRustVersions,
     #[serde(flatten)]
-    pub(crate) variables: &'a toml::Table,
+    pub(crate) variables: toml::Table,
 }
 
 impl ModuleParams<'_> {
@@ -86,26 +90,122 @@ pub(crate) enum ModuleSource {
     Git,
 }
 
-/// A git module.
-#[derive(Debug, Clone)]
-pub(crate) struct Module {
-    pub(crate) source: ModuleSource,
-    pub(crate) path: Box<RelativePath>,
-    pub(crate) url: Url,
+struct ModuleInner {
+    /// Source of module.
+    source: ModuleSource,
+    /// Path to module.
+    path: RelativePathBuf,
+    /// URL of module.
+    url: Url,
     /// If the module has been disabled for some reason.
-    pub(crate) disabled: bool,
+    disabled: Cell<bool>,
+    /// Whether we've tried to initialize the workspace.
+    init: Cell<bool>,
+    /// Initialized workspace.
+    workspace: RefCell<Option<Workspace>>,
+}
+
+/// A git module.
+#[derive(Clone)]
+pub(crate) struct Module {
+    inner: Rc<ModuleInner>,
+}
+
+impl fmt::Debug for Module {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Module")
+            .field("source", &self.inner.source)
+            .field("path", &self.inner.path)
+            .field("url", &self.inner.url)
+            .field("disabled", &self.inner.disabled)
+            .field("init", &self.inner.init)
+            .field("workspace", &self.inner.workspace)
+            .finish()
+    }
 }
 
 impl Module {
+    pub(crate) fn new(source: ModuleSource, path: RelativePathBuf, url: Url) -> Self {
+        Self {
+            inner: Rc::new(ModuleInner {
+                source,
+                path,
+                url,
+                disabled: Cell::new(false),
+                init: Cell::new(false),
+                workspace: RefCell::new(None),
+            }),
+        }
+    }
+
+    /// Test if module is disabled.
+    pub(crate) fn is_disabled(&self) -> bool {
+        self.inner.disabled.get()
+    }
+
+    /// Set if module is disabled.
+    pub(crate) fn set_disabled(&self, disabled: bool) {
+        self.inner.disabled.set(disabled);
+    }
+
+    /// Get the source of a module.
+    pub(crate) fn source(&self) -> &ModuleSource {
+        &self.inner.source
+    }
+
+    /// Get path of module.
+    pub(crate) fn path(&self) -> &RelativePath {
+        &self.inner.path
+    }
+
+    /// Get URL of module.
+    pub(crate) fn url(&self) -> &Url {
+        &self.inner.url
+    }
+
     /// Repo name.
     pub(crate) fn repo(&self) -> Option<ModuleRepo<'_>> {
-        let Some("github.com") = self.url.domain() else {
+        let Some("github.com") = self.inner.url.domain() else {
             return None;
         };
 
-        let path = self.url.path().trim_matches('/');
+        let path = self.inner.url.path().trim_matches('/');
         let (owner, name) = path.split_once('/')?;
         Some(ModuleRepo { owner, name })
+    }
+
+    /// Try to get a workspace, if one is present in the module.
+    #[tracing::instrument(skip_all, fields(source = ?self.inner.source, module = self.inner.path.as_str()))]
+    pub(crate) fn try_workspace(&self, cx: &Ctxt<'_>) -> Result<Option<Ref<'_, Workspace>>> {
+        self.init_workspace(cx)?;
+        Ok(Ref::filter_map(self.inner.workspace.borrow(), Option::as_ref).ok())
+    }
+
+    /// Try to get a workspace, if one is present in the module.
+    #[tracing::instrument(skip_all, fields(source = ?self.inner.source, module = self.inner.path.as_str()))]
+    pub(crate) fn workspace(&self, cx: &Ctxt<'_>) -> Result<Ref<'_, Workspace>> {
+        self.init_workspace(cx)?;
+
+        if let Ok(workspace) = Ref::filter_map(self.inner.workspace.borrow(), Option::as_ref) {
+            Ok(workspace)
+        } else {
+            bail!("missing workspace")
+        }
+    }
+
+    #[tracing::instrument(skip_all)]
+    fn init_workspace(&self, cx: &Ctxt<'_>) -> Result<()> {
+        if !self.inner.init.get() {
+            if let Some(workspace) = crate::workspace::open(cx, self)? {
+                *self.inner.workspace.borrow_mut() = Some(workspace);
+            } else {
+                tracing::warn!("missing workspace for module");
+            };
+
+            self.inner.init.set(true);
+        }
+
+        Ok(())
     }
 }
 
@@ -166,12 +266,7 @@ pub(crate) fn parse_git_module(parser: &mut gitmodules::Parser<'_>) -> Result<Op
         return Ok(None);
     };
 
-    Ok(Some(Module {
-        source: ModuleSource::Gitmodules,
-        path,
-        url,
-        disabled: false,
-    }))
+    Ok(Some(Module::new(ModuleSource::Gitmodules, path, url)))
 }
 
 /// Parse gitmodules from the given input.
@@ -194,10 +289,5 @@ where
 {
     let url = git.get_url(root, "origin")?;
 
-    Ok(Module {
-        source: ModuleSource::Git,
-        path: RelativePathBuf::new().into(),
-        url,
-        disabled: false,
-    })
+    Ok(Module::new(ModuleSource::Git, RelativePathBuf::new(), url))
 }

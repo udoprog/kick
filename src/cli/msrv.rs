@@ -9,7 +9,8 @@ use crate::ctxt::Ctxt;
 use crate::model::Module;
 use crate::rust_version::{self, RustVersion};
 use crate::utils::CommandRepr;
-use crate::workspace::{self, Workspace};
+use crate::validation::Validation;
+use crate::workspace::Workspace;
 
 /// Oldest version where rust-version was introduced.
 const RUST_VERSION_SUPPORTED: RustVersion = RustVersion::new(1, 56);
@@ -68,25 +69,19 @@ pub(crate) struct Opts {
 #[tracing::instrument(skip_all)]
 pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     for module in cx.modules() {
-        let span =
-            tracing::info_span!("build", source = ?module.source, module = module.path.as_str());
+        let span = tracing::info_span!("build", source = ?module.source(), module = module.path().as_str());
         let _enter = span.enter();
-
-        let Some(mut workspace) = workspace::open(cx, module)? else {
-            tracing::warn!(source = ?module.source, module = module.path.as_str(), "missing workspace for module");
-            continue;
-        };
-
-        build(cx, &mut workspace, module, opts).with_context(|| module.path.to_owned())?;
+        let workspace = module.workspace(cx)?;
+        build(cx, &workspace, module, opts).with_context(|| module.path().to_owned())?;
     }
 
     Ok(())
 }
 
-fn build(cx: &Ctxt<'_>, workspace: &mut Workspace, module: &Module, opts: &Opts) -> Result<()> {
+fn build(cx: &Ctxt<'_>, workspace: &Workspace, module: &Module, opts: &Opts) -> Result<()> {
     let primary = workspace.primary_crate()?;
 
-    let current_dir = module.path.to_path(cx.root);
+    let current_dir = module.path().to_path(cx.root);
     let rust_version = primary.rust_version()?;
 
     let opts_earliest = parse_minor_version(cx, opts.earliest.as_deref(), rust_version.as_ref())?;
@@ -212,27 +207,14 @@ fn build(cx: &Ctxt<'_>, workspace: &mut Workspace, module: &Module, opts: &Opts)
     tracing::info!("Saving MSRV: Rust {version}");
 
     if version >= RUST_VERSION_SUPPORTED {
-        for p in workspace.packages_mut() {
-            if p.manifest.is_publish()? {
-                tracing::info!(
-                    "Saving {} with rust-version = \"{version}\"",
-                    p.manifest_path
-                );
-                p.manifest.set_rust_version(&version.to_string())?;
-                p.manifest.sort_package_keys()?;
-                p.manifest.save_to(p.manifest_path.to_path(cx.root))?;
-            }
-        }
+        cx.validation(Validation::SetRustVersion {
+            module: module.clone(),
+            version,
+        });
     } else {
-        for p in workspace.packages_mut() {
-            if p.manifest.remove_rust_version() {
-                tracing::info!(
-                    "Saving {} without rust-version (target version outdates rust-version)",
-                    p.manifest_path
-                );
-                p.manifest.save_to(p.manifest_path.to_path(cx.root))?;
-            }
-        }
+        cx.validation(Validation::RemoveRustVersion {
+            module: module.clone(),
+        });
     }
 
     Ok(())

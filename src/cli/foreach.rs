@@ -19,13 +19,13 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     };
 
     for module in cx.modules() {
-        foreach(cx, opts, module, command, args).with_context(|| module.path.clone())?;
+        foreach(cx, opts, module, command, args).with_context(|| module.path().to_owned())?;
     }
 
     Ok(())
 }
 
-#[tracing::instrument(skip(cx, opts, module, command, args), fields(path = module.path.as_str()))]
+#[tracing::instrument(skip(cx, opts, module, command, args), fields(path = module.path().as_str()))]
 fn foreach(
     cx: &Ctxt<'_>,
     opts: &Opts,
@@ -33,7 +33,7 @@ fn foreach(
     command: &str,
     args: &[String],
 ) -> Result<()> {
-    let current_dir = module.path.to_path(cx.root);
+    let current_dir = module.path().to_path(cx.root);
     tracing::info!("{}", CommandRepr::new(&opts.command));
 
     let status = Command::new(command)

@@ -290,7 +290,7 @@ impl Config {
         module: &Module,
         params: ModuleParams<'_>,
     ) -> Result<Option<String>> {
-        let Some(template) = &self.repos.get(module.path.as_ref()).and_then(|r|r.workflow.as_ref()).or(self.base.workflow.as_ref())  else {
+        let Some(template) = &self.repos.get(module.path()).and_then(|r|r.workflow.as_ref()).or(self.base.workflow.as_ref())  else {
             return Ok(None);
         };
 
@@ -298,12 +298,12 @@ impl Config {
     }
 
     /// Set up render parameters.
-    pub(crate) fn per_crate_render<'a>(
+    pub(crate) fn module_params<'a>(
         &'a self,
         cx: &Ctxt<'_>,
         module: &Module,
         crate_params: CrateParams<'a>,
-        variables: &'a toml::Table,
+        variables: toml::Table,
     ) -> ModuleParams<'a> {
         ModuleParams {
             crate_params,
@@ -321,7 +321,7 @@ impl Config {
     pub(crate) fn job_name(&self, module: &Module) -> &str {
         if let Some(name) = self
             .repos
-            .get(module.path.as_ref())
+            .get(module.path())
             .and_then(|r| r.job_name.as_deref())
         {
             return name;
@@ -334,7 +334,7 @@ impl Config {
     pub(crate) fn documentation(&self, module: &Module) -> Option<&Template> {
         if let Some(template) = self
             .repos
-            .get(module.path.as_ref())
+            .get(module.path())
             .and_then(|r| r.documentation.as_ref())
         {
             return Some(template);
@@ -347,7 +347,7 @@ impl Config {
     pub(crate) fn license(&self, module: &Module) -> &str {
         if let Some(template) = self
             .repos
-            .get(module.path.as_ref())
+            .get(module.path())
             .and_then(|r| r.license.as_deref())
         {
             return template;
@@ -362,7 +362,7 @@ impl Config {
 
         for author in self
             .repos
-            .get(module.path.as_ref())
+            .get(module.path())
             .into_iter()
             .flat_map(|r| r.authors.iter())
         {
@@ -377,7 +377,7 @@ impl Config {
     pub(crate) fn variables(&self, module: &Module) -> toml::Table {
         let mut variables = self.base.variables.clone();
 
-        if let Some(source) = self.repos.get(module.path.as_ref()).map(|r| &r.variables) {
+        if let Some(source) = self.repos.get(module.path()).map(|r| &r.variables) {
             merge_map(&mut variables, source.clone());
         }
 
@@ -461,7 +461,7 @@ impl Config {
 
         for replacement in self
             .repos
-            .get(module.path.as_ref())
+            .get(module.path())
             .into_iter()
             .flat_map(|r| r.version.iter())
         {
@@ -481,20 +481,20 @@ pub(crate) struct ConfigBadge {
 }
 
 impl ConfigBadge {
-    pub(crate) fn markdown(&self, params: ModuleParams<'_>) -> Result<Option<String>> {
+    pub(crate) fn markdown(&self, params: &ModuleParams<'_>) -> Result<Option<String>> {
         let Some(template) = self.markdown.as_ref() else {
             return Ok(None);
         };
 
-        Ok(Some(template.render(&params)?))
+        Ok(Some(template.render(params)?))
     }
 
-    pub(crate) fn html(&self, params: ModuleParams<'_>) -> Result<Option<String>> {
+    pub(crate) fn html(&self, params: &ModuleParams<'_>) -> Result<Option<String>> {
         let Some(template) = self.html.as_ref() else {
             return Ok(None);
         };
 
-        Ok(Some(template.render(&params)?))
+        Ok(Some(template.render(params)?))
     }
 }
 
@@ -908,12 +908,12 @@ fn load_base(
         .unwrap_or_default();
 
     for module in modules {
-        let Some(repo) = load_repo(cx.root, module, templating).with_context(|| module.path.clone())? else {
+        let Some(repo) = load_repo(cx.root, module, templating).with_context(|| module.path().to_owned())? else {
             continue;
         };
 
         let original = repos
-            .entry(RelativePathBuf::from(module.path.as_ref()))
+            .entry(RelativePathBuf::from(module.path()))
             .or_default();
 
         original.merge_with(repo);
@@ -924,7 +924,7 @@ fn load_base(
 }
 
 fn load_repo(root: &Path, module: &Module, templating: &Templating) -> Result<Option<Repo>> {
-    let root = module.path.to_path(root);
+    let root = module.path().to_path(root);
     let mut cx = ConfigCtxt::new(&root, templating);
 
     let Some(config) = cx.kick_config()? else {

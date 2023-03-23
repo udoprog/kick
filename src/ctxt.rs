@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -6,8 +7,10 @@ use anyhow::{Context, Result};
 use crate::actions::Actions;
 use crate::config::Config;
 use crate::git::Git;
-use crate::model::Module;
+use crate::model::{Module, ModuleParams};
 use crate::rust_version::RustVersion;
+use crate::validation::Validation;
+use crate::workspace::Package;
 
 pub(crate) struct Ctxt<'a> {
     pub(crate) root: &'a Path,
@@ -17,17 +20,41 @@ pub(crate) struct Ctxt<'a> {
     pub(crate) github_auth: Option<String>,
     pub(crate) rustc_version: Option<RustVersion>,
     pub(crate) git: Option<Git>,
+    pub(crate) validation: RefCell<Vec<Validation>>,
 }
 
 impl<'a> Ctxt<'a> {
+    /// Get module parameters for the given package.
+    pub(crate) fn module_params<'m>(
+        &'m self,
+        package: &'m Package,
+        module: &'m Module,
+    ) -> Result<ModuleParams<'m>> {
+        let variables = self.config.variables(module);
+        let crate_params = package.crate_params(module)?;
+        Ok(self
+            .config
+            .module_params(self, module, crate_params, variables))
+    }
+
     /// Iterate over non-disabled modules.
     pub(crate) fn modules(&self) -> impl Iterator<Item = &Module> + '_ {
-        self.modules.iter().filter(move |m| !m.disabled)
+        self.modules.iter().filter(move |m| !m.is_disabled())
     }
 
     /// Require a working git command.
     pub(crate) fn require_git(&self) -> Result<&Git> {
         self.git.as_ref().context("no working git command")
+    }
+
+    /// Push a validation.
+    pub(crate) fn validation(&self, validation: Validation) {
+        self.validation.borrow_mut().push(validation);
+    }
+
+    /// Take all proposed validations.
+    pub(crate) fn validations(&mut self) -> Vec<Validation> {
+        std::mem::take(RefCell::get_mut(&mut self.validation))
     }
 }
 

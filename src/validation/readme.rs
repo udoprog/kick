@@ -25,8 +25,7 @@ struct Readme<'a, 'outer> {
     module: &'a Module,
     readme_path: &'a RelativePath,
     entry: &'a RelativePath,
-    params: ModuleParams<'a>,
-    validation: &'outer mut Vec<Validation>,
+    params: &'a ModuleParams<'a>,
     urls: &'outer mut Urls,
     do_readme: bool,
     do_lib: bool,
@@ -38,8 +37,7 @@ pub(crate) fn build(
     manifest_dir: &RelativePath,
     module: &Module,
     package: &Package,
-    params: ModuleParams<'_>,
-    validation: &mut Vec<Validation>,
+    params: &ModuleParams<'_>,
     urls: &mut Urls,
     do_readme: bool,
     do_lib: bool,
@@ -61,7 +59,6 @@ pub(crate) fn build(
         readme_path: &readme_path,
         entry: &entry,
         params,
-        validation,
         urls,
         do_readme,
         do_lib,
@@ -81,7 +78,7 @@ struct MarkdownChecks {
 /// Validate the current model.
 fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
     if !rm.readme_path.to_path(cx.root).is_file() {
-        rm.validation.push(Validation::MissingReadme {
+        cx.validation(Validation::MissingReadme {
             path: rm.readme_path.to_owned(),
         });
     }
@@ -92,7 +89,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
 
     let mut lib_badges = Vec::new();
 
-    for badge in cx.config.lib_badges(&rm.module.path) {
+    for badge in cx.config.lib_badges(rm.module.path()) {
         lib_badges.push(BadgeParams {
             markdown: badge.markdown(rm.params)?,
             html: badge.html(rm.params)?,
@@ -102,7 +99,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
     let (file, lib_rs, comments) = process_lib_rs(cx, rm, &lib_badges)?;
 
     if rm.do_lib && *file != *lib_rs {
-        rm.validation.push(Validation::UpdateLib {
+        cx.validation(Validation::UpdateLib {
             path: rm.entry.to_owned(),
             lib: lib_rs,
         });
@@ -111,7 +108,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
     let checks = markdown_checks(rm, &file)?;
 
     for (file, range) in checks.toplevel_headings {
-        rm.validation.push(Validation::ToplevelHeadings {
+        cx.validation(Validation::ToplevelHeadings {
             path: rm.entry.to_owned(),
             file,
             range,
@@ -120,7 +117,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
     }
 
     for (file, range) in checks.missing_preceeding_br {
-        rm.validation.push(Validation::MissingPreceedingBr {
+        cx.validation(Validation::MissingPreceedingBr {
             path: rm.entry.to_owned(),
             file,
             range,
@@ -130,7 +127,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
 
     let mut readme_badges = Vec::new();
 
-    for badge in cx.config.readme_badges(&rm.module.path) {
+    for badge in cx.config.readme_badges(rm.module.path()) {
         readme_badges.push(BadgeParams {
             markdown: badge.markdown(rm.params)?,
             html: badge.html(rm.params)?,
@@ -146,7 +143,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
     };
 
     if rm.do_readme && readme != readme_from_lib_rs {
-        rm.validation.push(Validation::UpdateReadme {
+        cx.validation(Validation::UpdateReadme {
             path: rm.readme_path.to_owned(),
             readme: Arc::new(readme_from_lib_rs),
         });
@@ -190,7 +187,7 @@ struct TemplateParams<'a> {
     body: Option<&'a str>,
     header_marker: Option<&'a str>,
     #[serde(flatten)]
-    params: ModuleParams<'a>,
+    params: &'a ModuleParams<'a>,
 }
 
 #[derive(Serialize)]
@@ -198,7 +195,7 @@ struct ReadmeParams<'a> {
     body: Option<&'a str>,
     badges: &'a [BadgeParams],
     #[serde(flatten)]
-    params: ModuleParams<'a>,
+    params: &'a ModuleParams<'a>,
 }
 
 /// Process the lib rs.
@@ -213,7 +210,7 @@ fn process_lib_rs(
     let mut source_lines = source.lines().peekable();
     let mut header_marker = None;
 
-    let comments = if let Some(lib) = cx.config.lib(&rm.module.path) {
+    let comments = if let Some(lib) = cx.config.lib(rm.module.path()) {
         while let Some(line) = source_lines.peek().and_then(|line| line.as_rust_comment()) {
             if line.starts_with('#') {
                 break;
@@ -427,7 +424,7 @@ fn readme_from_lib_rs(
         body.line(line);
     }
 
-    let mut readme = if let Some(readme) = cx.config.readme(&rm.module.path) {
+    let mut readme = if let Some(readme) = cx.config.readme(rm.module.path()) {
         let output = readme.render(&ReadmeParams {
             body: body.as_non_empty_str(),
             badges,

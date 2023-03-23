@@ -63,7 +63,7 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     let limit = opts.limit.unwrap_or(1).max(1).to_string();
 
     for module in cx.modules() {
-        let span = tracing::info_span!("build", module = module.path.as_str());
+        let span = tracing::info_span!("build", module = module.path().as_str());
         let _enter = span.enter();
 
         if let Err(e) = build(cx, opts, module, today, &client, &limit).await {
@@ -86,7 +86,7 @@ async fn build(
         return Ok(());
     };
 
-    let current_dir = module.path.to_path(cx.root);
+    let current_dir = module.path().to_path(cx.root);
     let sha;
 
     let sha = match &cx.git {
@@ -108,7 +108,7 @@ async fn build(
     let req = build_request(cx, client, url)
         .query(&[("exclude_pull_requests", "true"), ("per_page", limit)]);
 
-    println!("{}: {}", module.path, module.url);
+    println!("{}: {}", module.path(), module.url());
 
     let res = req.send().await?;
 

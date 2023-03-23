@@ -13,14 +13,14 @@ pub(crate) const CARGO_TOML: &str = "Cargo.toml";
 
 /// Load a workspace starting at the given path.
 pub(crate) fn open(cx: &Ctxt<'_>, module: &Module) -> Result<Option<Workspace>> {
-    let manifest_path = match cx.config.cargo_toml(&module.path) {
-        Some(cargo_toml) => module.path.join(cargo_toml),
-        None => module.path.join(CARGO_TOML),
+    let manifest_path = match cx.config.cargo_toml(module.path()) {
+        Some(cargo_toml) => module.path().join(cargo_toml),
+        None => module.path().join(CARGO_TOML),
     };
 
     let primary_crate = cx
         .config
-        .crate_for(&module.path)
+        .crate_for(module.path())
         .or(module.repo().map(|repo| repo.name));
 
     let Some(manifest) = manifest::open(manifest_path.to_path(cx.root))? else {
@@ -91,7 +91,7 @@ fn expand_members<'a>(
 }
 
 /// A single package in the workspace.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct Package {
     pub(crate) manifest_dir: RelativePathBuf,
     pub(crate) manifest_path: RelativePathBuf,
@@ -134,6 +134,7 @@ impl Package {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct Workspace {
     primary_crate: Option<Box<str>>,
     packages: Vec<Package>,
@@ -148,11 +149,6 @@ impl Workspace {
     /// Get list of packages.
     pub(crate) fn packages(&self) -> impl Iterator<Item = &Package> {
         self.packages.iter()
-    }
-
-    /// Mutable list of packages.
-    pub(crate) fn packages_mut(&mut self) -> impl Iterator<Item = &mut Package> {
-        self.packages.iter_mut()
     }
 
     /// Find the primary crate in the workspace.

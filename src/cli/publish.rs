@@ -28,13 +28,13 @@ pub(crate) struct Opts {
 
 pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     for module in cx.modules() {
-        version(cx, opts, module).with_context(|| module.path.clone())?;
+        version(cx, opts, module).with_context(|| module.path().to_owned())?;
     }
 
     Ok(())
 }
 
-// #[tracing::instrument(skip_all, fields(path = module.path.as_str()))]
+// #[tracing::instrument(skip_all, fields(path = module.path().as_str()))]
 fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module) -> Result<()> {
     let Some(workspace) = workspace::open(cx, module)? else {
         bail!("not a workspace");
