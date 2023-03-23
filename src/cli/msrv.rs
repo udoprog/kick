@@ -5,11 +5,11 @@ use std::process::{Command, Stdio};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 
+use crate::changes::Change;
 use crate::ctxt::Ctxt;
 use crate::model::Module;
 use crate::rust_version::{self, RustVersion};
 use crate::utils::CommandRepr;
-use crate::validation::Validation;
 use crate::workspace::Workspace;
 
 /// Oldest version where rust-version was introduced.
@@ -200,12 +200,12 @@ fn build(cx: &Ctxt<'_>, workspace: &Workspace, module: &Module, opts: &Opts) -> 
     };
 
     if version >= RUST_VERSION_SUPPORTED {
-        cx.validation(Validation::SetRustVersion {
+        cx.validation(Change::SetRustVersion {
             module: module.clone(),
             version,
         });
     } else {
-        cx.validation(Validation::RemoveRustVersion {
+        cx.validation(Change::RemoveRustVersion {
             module: module.clone(),
             version,
         });

@@ -5,11 +5,11 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result};
 
 use crate::actions::Actions;
+use crate::changes::Change;
 use crate::config::Config;
 use crate::git::Git;
 use crate::model::{Module, ModuleParams};
 use crate::rust_version::RustVersion;
-use crate::validation::Validation;
 use crate::workspace::Package;
 
 pub(crate) struct Ctxt<'a> {
@@ -20,7 +20,7 @@ pub(crate) struct Ctxt<'a> {
     pub(crate) github_auth: Option<String>,
     pub(crate) rustc_version: Option<RustVersion>,
     pub(crate) git: Option<Git>,
-    pub(crate) validation: RefCell<Vec<Validation>>,
+    pub(crate) validation: RefCell<Vec<Change>>,
 }
 
 impl<'a> Ctxt<'a> {
@@ -48,12 +48,12 @@ impl<'a> Ctxt<'a> {
     }
 
     /// Push a validation.
-    pub(crate) fn validation(&self, validation: Validation) {
+    pub(crate) fn validation(&self, validation: Change) {
         self.validation.borrow_mut().push(validation);
     }
 
     /// Take all proposed validations.
-    pub(crate) fn validations(&self) -> Ref<'_, [Validation]> {
+    pub(crate) fn validations(&self) -> Ref<'_, [Change]> {
         Ref::map(self.validation.borrow(), Vec::as_slice)
     }
 

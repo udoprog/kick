@@ -1,15 +1,19 @@
+pub(crate) mod cargo;
+pub(crate) mod ci;
+pub(crate) mod readme;
+
 use std::io::Write;
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 
+use crate::changes;
 use crate::ctxt::Ctxt;
 use crate::model::Module;
 use crate::model::ModuleParams;
 use crate::model::UpdateParams;
 use crate::urls::UrlError;
 use crate::urls::Urls;
-use crate::validation;
 use crate::workspace::Package;
 use crate::workspace::Workspace;
 
@@ -42,7 +46,7 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     for (url, test) in urls.bad_urls() {
         let path = &test.path;
         let (line, column, string) =
-            validation::temporary_line_fix(&test.file, test.range.start, test.line_offset)?;
+            changes::temporary_line_fix(&test.file, test.range.start, test.line_offset)?;
 
         if let Some(error) = &test.error {
             writeln!(o, "{path}:{line}:{column}: bad url: `{url}`: {error}")?;
@@ -79,7 +83,7 @@ fn check(
 
     let update_params = UpdateParams {
         license: Some(cx.config.license(module)),
-        readme: Some(validation::readme::README_MD),
+        readme: Some(readme::README_MD),
         repository: Some(&module_url),
         homepage: Some(&module_url),
         documentation: documentation.as_deref(),
@@ -88,17 +92,17 @@ fn check(
 
     for package in workspace.packages() {
         if package.manifest.is_publish()? {
-            validation::cargo::work_cargo_toml(cx, package, &update_params)?;
+            cargo::work_cargo_toml(cx, package, &update_params)?;
         }
     }
 
     if cx.config.is_enabled(module.path(), "ci") {
-        validation::ci::build(cx, primary_crate, module, workspace)
+        ci::build(cx, primary_crate, module, workspace)
             .with_context(|| anyhow!("ci validation: {}", cx.config.job_name(module)))?;
     }
 
     if cx.config.is_enabled(module.path(), "readme") {
-        validation::readme::build(
+        readme::build(
             cx,
             module.path(),
             module,
@@ -116,7 +120,7 @@ fn check(
 
             let params = cx.module_params(package, module)?;
 
-            validation::readme::build(
+            readme::build(
                 cx,
                 &package.manifest_dir,
                 module,
@@ -164,7 +168,7 @@ where
 
                         for test in tests {
                             let path = &test.path;
-                            let (line, column, string) = crate::validation::temporary_line_fix(&test.file, test.range.start, test.line_offset)?;
+                            let (line, column, string) = crate::changes::temporary_line_fix(&test.file, test.range.start, test.line_offset)?;
                             writeln!(o, "  {path}:{line}:{column}: {string}")?;
                         }
                     }

@@ -164,7 +164,7 @@ impl Manifest {
 
     /// Sort package keys.
     pub(crate) fn sort_package_keys(&mut self) -> Result<()> {
-        use crate::validation::cargo::CargoKey;
+        use crate::cli::check::cargo::CargoKey;
 
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
         enum SortKey<'a> {
@@ -175,10 +175,10 @@ impl Manifest {
         let package = self.ensure_package_mut()?;
 
         package.sort_values_by(|a, _, b, _| {
-            let a = crate::validation::cargo::cargo_key(a.to_string().trim())
+            let a = crate::cli::check::cargo::cargo_key(a.to_string().trim())
                 .map(SortKey::CargoKey)
                 .unwrap_or(SortKey::Other(a));
-            let b = crate::validation::cargo::cargo_key(b.to_string().trim())
+            let b = crate::cli::check::cargo::cargo_key(b.to_string().trim())
                 .map(SortKey::CargoKey)
                 .unwrap_or(SortKey::Other(b));
             a.cmp(&b)

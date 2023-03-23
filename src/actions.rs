@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 use nondestructive::yaml;
 
-use crate::validation::WorkflowValidation;
+use crate::changes::WorkflowChange;
 
 /// A single actions check.
 pub(crate) trait ActionsCheck {
@@ -11,7 +11,7 @@ pub(crate) trait ActionsCheck {
         &self,
         name: &str,
         action: yaml::Mapping<'_>,
-        validation: &mut Vec<WorkflowValidation>,
+        validation: &mut Vec<WorkflowChange>,
     ) -> Result<()>;
 }
 
@@ -62,10 +62,10 @@ impl ActionsCheck for ActionsRsToolchainActionsCheck {
         &self,
         name: &str,
         mapping: yaml::Mapping<'_>,
-        validation: &mut Vec<WorkflowValidation>,
+        validation: &mut Vec<WorkflowChange>,
     ) -> Result<()> {
         let Some(uses) = mapping.get("uses") else {
-            validation.push(WorkflowValidation::Error { name: name.to_string(), reason: String::from("there are better alternatives") });
+            validation.push(WorkflowChange::Error { name: name.to_string(), reason: String::from("there are better alternatives") });
             return Ok(());
         };
 
@@ -93,7 +93,7 @@ impl ActionsCheck for ActionsRsToolchainActionsCheck {
             "master"
         };
 
-        validation.push(WorkflowValidation::ReplaceString {
+        validation.push(WorkflowChange::ReplaceString {
             reason: String::from("actions-rs/toolchain has better alternatives"),
             string: format!("dtolnay/rust-toolchain@{toolchain}"),
             value: uses.id(),

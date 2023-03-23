@@ -5,9 +5,9 @@ use clap::Parser;
 use semver::{Comparator, Op, Prerelease, Version, VersionReq};
 use toml_edit::{Formatted, Item, Table, Value};
 
+use crate::changes::Change;
 use crate::ctxt::Ctxt;
 use crate::model::Module;
-use crate::validation::Validation;
 use crate::workspace;
 
 #[derive(Default, Parser)]
@@ -180,13 +180,13 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
         }
 
         if changed_manifest {
-            cx.validation(Validation::SavePackage {
+            cx.validation(Change::SavePackage {
                 package: package.clone(),
             });
         }
 
         for replaced in replaced {
-            cx.validation(Validation::Replace { replaced });
+            cx.validation(Change::Replace { replaced });
         }
     }
 
@@ -197,7 +197,7 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
             .get(primary.manifest.crate_name()?)
             .context("missing version for primary manifest")?;
 
-        cx.validation(Validation::ReleaseCommit {
+        cx.validation(Change::ReleaseCommit {
             path: primary.manifest_dir.clone(),
             version: version.clone(),
         });

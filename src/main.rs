@@ -18,6 +18,7 @@ macro_rules! error {
 }
 
 mod actions;
+mod changes;
 mod cli;
 mod config;
 mod ctxt;
@@ -31,7 +32,6 @@ mod rust_version;
 mod templates;
 mod urls;
 mod utils;
-mod validation;
 mod workspace;
 
 use std::{
@@ -252,7 +252,7 @@ async fn entry() -> Result<()> {
     }
 
     for validation in cx.validations().iter() {
-        crate::validation::validate(&cx, &validation, opts.save)?;
+        crate::changes::apply(&cx, validation, opts.save)?;
     }
 
     Ok(())

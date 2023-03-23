@@ -2,52 +2,10 @@ use core::fmt;
 
 use anyhow::Result;
 
+use crate::changes::{CargoIssue, Change};
 use crate::ctxt::Ctxt;
 use crate::model::UpdateParams;
-use crate::validation::Validation;
 use crate::workspace::Package;
-
-macro_rules! cargo_issues {
-    ($f:ident, $($issue:ident $({ $($field:ident: $ty:ty),* $(,)? })? => $description:expr),* $(,)?) => {
-        pub(crate) enum CargoIssue {
-            $($issue $({$($field: $ty),*})?,)*
-        }
-
-        impl fmt::Display for CargoIssue {
-            fn fmt(&self, $f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                match self {
-                    $(#[allow(unused_variables)] CargoIssue::$issue $({ $($field),* })? => $description,)*
-                }
-            }
-        }
-    }
-}
-
-cargo_issues! {
-    f,
-    MissingPackageLicense => write!(f, "package.license: missing"),
-    WrongPackageLicense => write!(f, "package.license: wrong"),
-    MissingPackageReadme => write!(f, "package.readme: missing"),
-    WrongPackageReadme => write!(f, "package.readme: wrong"),
-    MissingPackageRepository => write!(f, "package.repository: missing"),
-    WrongPackageRepository => write!(f, "package.repository: wrong"),
-    MissingPackageHomepage => write!(f, "package.homepage: missing"),
-    WrongPackageHomepage => write!(f, "package.homepage: wrong"),
-    MissingPackageDocumentation => write!(f, "package.documentation: missing"),
-    WrongPackageDocumentation => write!(f, "package.documentation: wrong"),
-    PackageDescription => write!(f, "package.description: missing"),
-    PackageCategories => write!(f, "package.categories: missing"),
-    PackageCategoriesNotSorted => write!(f, "package.categories: not sorted"),
-    PackageKeywords => write!(f, "package.keywords: missing"),
-    PackageKeywordsNotSorted => write!(f, "package.keywords: not sorted"),
-    PackageAuthorsEmpty => write!(f, "authors: empty"),
-    PackageDependenciesEmpty => write!(f, "dependencies: empty"),
-    PackageDevDependenciesEmpty => write!(f, "dev-dependencies: empty"),
-    PackageBuildDependenciesEmpty => write!(f, "build-dependencies: empty"),
-    KeysNotSorted { expected: Vec<CargoKey>, actual: Vec<CargoKey> } => {
-        write!(f, "[package] keys out-of-order, expected: {expected:?}")
-    }
-}
 
 macro_rules! cargo_keys {
     ($($ident:ident => $name:literal),* $(,)?) => {
@@ -253,7 +211,7 @@ pub(crate) fn work_cargo_toml(
     }
 
     if !issues.is_empty() {
-        cx.validation(Validation::CargoTomlIssues {
+        cx.validation(Change::CargoTomlIssues {
             path: package.manifest_path.clone(),
             cargo: changed.then_some(modified_manifest),
             issues,

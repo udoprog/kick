@@ -8,11 +8,11 @@ use relative_path::RelativePath;
 use reqwest::Url;
 use serde::Serialize;
 
+use crate::changes::Change;
 use crate::ctxt::Ctxt;
 use crate::file::File;
 use crate::model::{Module, ModuleParams};
 use crate::urls::Urls;
-use crate::validation::Validation;
 use crate::workspace::Package;
 
 /// Name of README to generate.
@@ -78,7 +78,7 @@ struct MarkdownChecks {
 /// Validate the current model.
 fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
     if !rm.readme_path.to_path(cx.root).is_file() {
-        cx.validation(Validation::MissingReadme {
+        cx.validation(Change::MissingReadme {
             path: rm.readme_path.to_owned(),
         });
     }
@@ -99,7 +99,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
     let (file, lib_rs, comments) = process_lib_rs(cx, rm, &lib_badges)?;
 
     if rm.do_lib && *file != *lib_rs {
-        cx.validation(Validation::UpdateLib {
+        cx.validation(Change::UpdateLib {
             path: rm.entry.to_owned(),
             lib: lib_rs,
         });
@@ -108,7 +108,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
     let checks = markdown_checks(rm, &file)?;
 
     for (file, range) in checks.toplevel_headings {
-        cx.validation(Validation::ToplevelHeadings {
+        cx.validation(Change::ToplevelHeadings {
             path: rm.entry.to_owned(),
             file,
             range,
@@ -117,7 +117,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
     }
 
     for (file, range) in checks.missing_preceeding_br {
-        cx.validation(Validation::MissingPreceedingBr {
+        cx.validation(Change::MissingPreceedingBr {
             path: rm.entry.to_owned(),
             file,
             range,
@@ -143,7 +143,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
     };
 
     if rm.do_readme && readme != readme_from_lib_rs {
-        cx.validation(Validation::UpdateReadme {
+        cx.validation(Change::UpdateReadme {
             path: rm.readme_path.to_owned(),
             readme: Arc::new(readme_from_lib_rs),
         });

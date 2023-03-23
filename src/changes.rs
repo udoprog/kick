@@ -1,7 +1,4 @@
-pub(crate) mod cargo;
-pub(crate) mod ci;
-pub(crate) mod readme;
-
+use std::fmt;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -10,8 +7,8 @@ use nondestructive::yaml;
 use relative_path::RelativePathBuf;
 use semver::Version;
 
-use self::cargo::CargoIssue;
-use self::ci::ActionExpected;
+use crate::cli::check::cargo::CargoKey;
+use crate::cli::check::ci::ActionExpected;
 use crate::config::Replaced;
 use crate::ctxt::Ctxt;
 use crate::file::{File, LineColumn};
@@ -20,8 +17,50 @@ use crate::model::Module;
 use crate::rust_version::RustVersion;
 use crate::workspace::Package;
 
+macro_rules! cargo_issues {
+    ($f:ident, $($issue:ident $({ $($field:ident: $ty:ty),* $(,)? })? => $description:expr),* $(,)?) => {
+        pub(crate) enum CargoIssue {
+            $($issue $({$($field: $ty),*})?,)*
+        }
+
+        impl fmt::Display for CargoIssue {
+            fn fmt(&self, $f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                match self {
+                    $(#[allow(unused_variables)] CargoIssue::$issue $({ $($field),* })? => $description,)*
+                }
+            }
+        }
+    }
+}
+
+cargo_issues! {
+    f,
+    MissingPackageLicense => write!(f, "package.license: missing"),
+    WrongPackageLicense => write!(f, "package.license: wrong"),
+    MissingPackageReadme => write!(f, "package.readme: missing"),
+    WrongPackageReadme => write!(f, "package.readme: wrong"),
+    MissingPackageRepository => write!(f, "package.repository: missing"),
+    WrongPackageRepository => write!(f, "package.repository: wrong"),
+    MissingPackageHomepage => write!(f, "package.homepage: missing"),
+    WrongPackageHomepage => write!(f, "package.homepage: wrong"),
+    MissingPackageDocumentation => write!(f, "package.documentation: missing"),
+    WrongPackageDocumentation => write!(f, "package.documentation: wrong"),
+    PackageDescription => write!(f, "package.description: missing"),
+    PackageCategories => write!(f, "package.categories: missing"),
+    PackageCategoriesNotSorted => write!(f, "package.categories: not sorted"),
+    PackageKeywords => write!(f, "package.keywords: missing"),
+    PackageKeywordsNotSorted => write!(f, "package.keywords: not sorted"),
+    PackageAuthorsEmpty => write!(f, "authors: empty"),
+    PackageDependenciesEmpty => write!(f, "dependencies: empty"),
+    PackageDevDependenciesEmpty => write!(f, "dev-dependencies: empty"),
+    PackageBuildDependenciesEmpty => write!(f, "build-dependencies: empty"),
+    KeysNotSorted { expected: Vec<CargoKey>, actual: Vec<CargoKey> } => {
+        write!(f, "[package] keys out-of-order, expected: {expected:?}")
+    }
+}
+
 /// A simple workflow validation.
-pub(crate) enum WorkflowValidation {
+pub(crate) enum WorkflowChange {
     /// Oudated version of an action.
     ReplaceString {
         reason: String,
@@ -35,7 +74,7 @@ pub(crate) enum WorkflowValidation {
 }
 
 /// A single validation.
-pub(crate) enum Validation {
+pub(crate) enum Change {
     DeprecatedWorkflow {
         path: RelativePathBuf,
     },
@@ -52,7 +91,7 @@ pub(crate) enum Validation {
     BadWorkflow {
         path: RelativePathBuf,
         doc: yaml::Document,
-        validation: Vec<WorkflowValidation>,
+        validation: Vec<WorkflowChange>,
     },
     MissingReadme {
         path: RelativePathBuf,
@@ -137,44 +176,44 @@ pub(crate) enum Validation {
         version: Version,
     },
 }
-impl Validation {
+impl Change {
     /// Check if validation can save something.
     pub(crate) fn has_changes(&self) -> bool {
         match self {
-            Validation::DeprecatedWorkflow { .. } => false,
-            Validation::MissingWorkflow { .. } => true,
-            Validation::WrongWorkflowName { .. } => false,
-            Validation::BadWorkflow { validation, .. } => !validation.is_empty(),
-            Validation::MissingReadme { .. } => false,
-            Validation::UpdateLib { .. } => true,
-            Validation::UpdateReadme { .. } => true,
-            Validation::ToplevelHeadings { .. } => false,
-            Validation::MissingPreceedingBr { .. } => false,
-            Validation::MissingFeature { .. } => false,
-            Validation::NoFeatures { .. } => false,
-            Validation::MissingEmptyFeatures { .. } => false,
-            Validation::MissingAllFeatures { .. } => false,
-            Validation::CargoTomlIssues { cargo, .. } => cargo.is_some(),
-            Validation::ActionMissingKey { .. } => false,
-            Validation::ActionOnMissingBranch { .. } => false,
-            Validation::ActionExpectedEmptyMapping { .. } => false,
-            Validation::SetRustVersion { .. } => true,
-            Validation::RemoveRustVersion { .. } => true,
-            Validation::SavePackage { .. } => true,
-            Validation::Replace { .. } => true,
-            Validation::ReleaseCommit { .. } => true,
+            Change::DeprecatedWorkflow { .. } => false,
+            Change::MissingWorkflow { .. } => true,
+            Change::WrongWorkflowName { .. } => false,
+            Change::BadWorkflow { validation, .. } => !validation.is_empty(),
+            Change::MissingReadme { .. } => false,
+            Change::UpdateLib { .. } => true,
+            Change::UpdateReadme { .. } => true,
+            Change::ToplevelHeadings { .. } => false,
+            Change::MissingPreceedingBr { .. } => false,
+            Change::MissingFeature { .. } => false,
+            Change::NoFeatures { .. } => false,
+            Change::MissingEmptyFeatures { .. } => false,
+            Change::MissingAllFeatures { .. } => false,
+            Change::CargoTomlIssues { cargo, .. } => cargo.is_some(),
+            Change::ActionMissingKey { .. } => false,
+            Change::ActionOnMissingBranch { .. } => false,
+            Change::ActionExpectedEmptyMapping { .. } => false,
+            Change::SetRustVersion { .. } => true,
+            Change::RemoveRustVersion { .. } => true,
+            Change::SavePackage { .. } => true,
+            Change::Replace { .. } => true,
+            Change::ReleaseCommit { .. } => true,
         }
     }
 }
 
 /// Report and apply a asingle validation.
-pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, save: bool) -> Result<()> {
+pub(crate) fn apply(cx: &Ctxt<'_>, validation: &Change, save: bool) -> Result<()> {
     if cx.can_save() && !save {
         tracing::warn!("Not writing changes since `--save` is not specified");
     }
 
     match validation {
-        Validation::MissingWorkflow {
+        Change::MissingWorkflow {
             path,
             module,
             candidates,
@@ -211,17 +250,17 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, save: bool) -> Re
                 }
             }
         }
-        Validation::DeprecatedWorkflow { path } => {
+        Change::DeprecatedWorkflow { path } => {
             println!("{path}: Reprecated Workflow");
         }
-        Validation::WrongWorkflowName {
+        Change::WrongWorkflowName {
             path,
             actual,
             expected,
         } => {
             println!("{path}: Wrong workflow name: {actual} (actual) != {expected} (expected)");
         }
-        Validation::BadWorkflow {
+        Change::BadWorkflow {
             path,
             doc,
             validation,
@@ -231,7 +270,7 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, save: bool) -> Re
 
             for validation in validation {
                 match validation {
-                    WorkflowValidation::ReplaceString {
+                    WorkflowChange::ReplaceString {
                         reason,
                         string,
                         value: uses,
@@ -268,7 +307,7 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, save: bool) -> Re
                             edited = true;
                         }
                     }
-                    WorkflowValidation::Error { name, reason } => {
+                    WorkflowChange::Error { name, reason } => {
                         println!("{path}: {name}: {reason}");
                     }
                 }
@@ -279,10 +318,10 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, save: bool) -> Re
                 std::fs::write(path.to_path(cx.root), doc.to_string())?;
             }
         }
-        Validation::MissingReadme { path } => {
+        Change::MissingReadme { path } => {
             println!("{path}: Missing README");
         }
-        Validation::UpdateLib {
+        Change::UpdateLib {
             path,
             lib: new_file,
         } => {
@@ -293,7 +332,7 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, save: bool) -> Re
                 println!("{path}: Needs update");
             }
         }
-        Validation::UpdateReadme {
+        Change::UpdateReadme {
             path,
             readme: new_file,
         } => {
@@ -304,7 +343,7 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, save: bool) -> Re
                 println!("{path}: Needs update");
             }
         }
-        Validation::ToplevelHeadings {
+        Change::ToplevelHeadings {
             path,
             file,
             range,
@@ -314,7 +353,7 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, save: bool) -> Re
             println!("{path}:{line}:{column}: doc comment has toplevel headings");
             println!("{string}");
         }
-        Validation::MissingPreceedingBr {
+        Change::MissingPreceedingBr {
             path,
             file,
             range,
@@ -324,19 +363,19 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, save: bool) -> Re
             println!("{path}:{line}:{column}: missing preceeding <br>");
             println!("{string}");
         }
-        Validation::MissingFeature { path, feature } => {
+        Change::MissingFeature { path, feature } => {
             println!("{path}: missing features `{feature}`");
         }
-        Validation::NoFeatures { path } => {
+        Change::NoFeatures { path } => {
             println!("{path}: trying featured build (--all-features, --no-default-features), but no features present");
         }
-        Validation::MissingEmptyFeatures { path } => {
+        Change::MissingEmptyFeatures { path } => {
             println!("{path}: missing empty features build");
         }
-        Validation::MissingAllFeatures { path } => {
+        Change::MissingAllFeatures { path } => {
             println!("{path}: missing all features build");
         }
-        Validation::CargoTomlIssues {
+        Change::CargoTomlIssues {
             path,
             cargo: modified_cargo,
             issues,
@@ -355,7 +394,7 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, save: bool) -> Re
                 }
             }
         }
-        Validation::ActionMissingKey {
+        Change::ActionMissingKey {
             path,
             key,
             expected,
@@ -375,13 +414,13 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, save: bool) -> Re
                 }
             }
         }
-        Validation::ActionOnMissingBranch { path, key, branch } => {
+        Change::ActionOnMissingBranch { path, key, branch } => {
             println!("{path}: {key}: action missing branch `{branch}`");
         }
-        Validation::ActionExpectedEmptyMapping { path, key } => {
+        Change::ActionExpectedEmptyMapping { path, key } => {
             println!("{path}: {key}: action expected empty mapping");
         }
-        Validation::SetRustVersion { module, version } => {
+        Change::SetRustVersion { module, version } => {
             if save {
                 tracing::info!("Setting rust version: Rust {version}");
             } else {
@@ -414,7 +453,7 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, save: bool) -> Re
                 }
             }
         }
-        Validation::RemoveRustVersion { module, version } => {
+        Change::RemoveRustVersion { module, version } => {
             if save {
                 tracing::info!("Clearing rust version: Rust {version}");
             } else {
@@ -442,7 +481,7 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, save: bool) -> Re
                 }
             }
         }
-        Validation::SavePackage { package } => {
+        Change::SavePackage { package } => {
             if save {
                 tracing::info!("Saving {}", package.manifest_path);
                 let out = package.manifest_path.to_path(cx.root);
@@ -451,7 +490,7 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, save: bool) -> Re
                 tracing::info!("Would save {}", package.manifest_path);
             }
         }
-        Validation::Replace { replaced } => {
+        Change::Replace { replaced } => {
             if save {
                 tracing::info!(
                     "Saving {} (replacement: {})",
@@ -468,7 +507,7 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, save: bool) -> Re
                 );
             }
         }
-        Validation::ReleaseCommit { path, version } => {
+        Change::ReleaseCommit { path, version } => {
             if save {
                 let git = cx.require_git()?;
                 let version = version.to_string();
