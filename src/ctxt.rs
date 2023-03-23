@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -53,8 +53,8 @@ impl<'a> Ctxt<'a> {
     }
 
     /// Take all proposed validations.
-    pub(crate) fn validations(&mut self) -> Vec<Validation> {
-        std::mem::take(RefCell::get_mut(&mut self.validation))
+    pub(crate) fn validations(&self) -> Ref<'_, [Validation]> {
+        Ref::map(self.validation.borrow(), Vec::as_slice)
     }
 
     /// Check if there's a validation we can save.
@@ -62,7 +62,7 @@ impl<'a> Ctxt<'a> {
         let mut can_save = false;
 
         for validation in self.validation.borrow().iter() {
-            can_save |= validation.can_save();
+            can_save |= validation.has_changes();
         }
 
         can_save

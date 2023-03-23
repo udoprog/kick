@@ -219,7 +219,7 @@ async fn entry() -> Result<()> {
 
     filter_modules(&root, &opts, git.as_ref(), &modules, &filters, current_path)?;
 
-    let mut cx = ctxt::Ctxt {
+    let cx = ctxt::Ctxt {
         root: &root,
         config: &config,
         actions: &actions,
@@ -251,7 +251,7 @@ async fn entry() -> Result<()> {
         }
     }
 
-    for validation in cx.validations() {
+    for validation in cx.validations().iter() {
         crate::validation::validate(&cx, &validation, opts.save)?;
     }
 

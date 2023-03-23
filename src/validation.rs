@@ -139,12 +139,12 @@ pub(crate) enum Validation {
 }
 impl Validation {
     /// Check if validation can save something.
-    pub(crate) fn can_save(&self) -> bool {
+    pub(crate) fn has_changes(&self) -> bool {
         match self {
             Validation::DeprecatedWorkflow { .. } => false,
             Validation::MissingWorkflow { .. } => true,
             Validation::WrongWorkflowName { .. } => false,
-            Validation::BadWorkflow { .. } => true,
+            Validation::BadWorkflow { validation, .. } => !validation.is_empty(),
             Validation::MissingReadme { .. } => false,
             Validation::UpdateLib { .. } => true,
             Validation::UpdateReadme { .. } => true,
