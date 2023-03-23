@@ -7,14 +7,11 @@ use toml_edit::{Formatted, Item, Table, Value};
 
 use crate::ctxt::Ctxt;
 use crate::model::Module;
+use crate::validation::Validation;
 use crate::workspace;
 
 #[derive(Default, Parser)]
 pub(crate) struct Opts {
-    /// Save changes to disk, without this the tool will only print the changes
-    /// it intends to do.
-    #[arg(long)]
-    save: bool,
     /// A version specification to set.
     #[arg(long = "set", short = 's', name = "[<crate>=]version")]
     set: Vec<String>,
@@ -182,56 +179,28 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
             }
         }
 
-        if opts.save {
-            if changed_manifest {
-                tracing::info!("Saving {}", package.manifest_path);
-                let out = package.manifest_path.to_path(cx.root);
-                package.manifest.save_to(out)?;
-            }
+        if changed_manifest {
+            cx.validation(Validation::SavePackage {
+                package: package.clone(),
+            });
+        }
 
-            for replaced in replaced {
-                tracing::info!(
-                    "Saving {} (replacement: {})",
-                    replaced.path().display(),
-                    replaced.replacement()
-                );
-
-                replaced.save()?;
-            }
-        } else {
-            if changed_manifest {
-                tracing::info!("Would save {} (--save)", package.manifest_path);
-            }
-
-            for replaced in replaced {
-                tracing::info!(
-                    "Would save {} (replacement: {}) (--save)",
-                    replaced.path().display(),
-                    replaced.replacement()
-                );
-            }
+        for replaced in replaced {
+            cx.validation(Validation::Replace { replaced });
         }
     }
 
     if opts.commit {
-        let git = cx.require_git()?;
         let primary = workspace.primary_crate()?;
 
         let version = versions
             .get(primary.manifest.crate_name()?)
-            .context("missing primary version")?;
+            .context("missing version for primary manifest")?;
 
-        if opts.save {
-            let path = primary.manifest_dir.to_path(cx.root);
-            tracing::info!("Making commit `Release {version}`");
-            git.add(&path, ["-u"])?;
-            git.commit(&path, format_args!("Release {version}"))?;
-            tracing::info!("Tagging `{version}`");
-            git.tag(&path, version)?;
-        } else {
-            tracing::info!("Would make commit `Release {version}` (--save)");
-            tracing::info!("Would make tag `{version}` (--save)");
-        }
+        cx.validation(Validation::ReleaseCommit {
+            path: primary.manifest_dir.clone(),
+            version: version.clone(),
+        });
     }
 
     Ok(())

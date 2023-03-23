@@ -57,7 +57,7 @@ impl Replaced {
     }
 
     /// Perform the given write.
-    pub(crate) fn save(self) -> Result<()> {
+    pub(crate) fn save(&self) -> Result<()> {
         let Some(parent) = self.path.parent() else {
             bail!("{}: missing parent directory", self.path.display());
         };

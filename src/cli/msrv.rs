@@ -199,13 +199,6 @@ fn build(cx: &Ctxt<'_>, workspace: &Workspace, module: &Module, opts: &Opts) -> 
         return Ok(());
     };
 
-    if opts.no_save {
-        tracing::warn!("Found MSRV Rust {version}, but not saving (--no-save)");
-        return Ok(());
-    }
-
-    tracing::info!("Saving MSRV: Rust {version}");
-
     if version >= RUST_VERSION_SUPPORTED {
         cx.validation(Validation::SetRustVersion {
             module: module.clone(),
@@ -214,6 +207,7 @@ fn build(cx: &Ctxt<'_>, workspace: &Workspace, module: &Module, opts: &Opts) -> 
     } else {
         cx.validation(Validation::RemoveRustVersion {
             module: module.clone(),
+            version,
         });
     }
 

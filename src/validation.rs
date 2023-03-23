@@ -1,23 +1,24 @@
 pub(crate) mod cargo;
-mod ci;
-mod readme;
+pub(crate) mod ci;
+pub(crate) mod readme;
 
 use std::ops::Range;
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Result};
 use nondestructive::yaml;
 use relative_path::RelativePathBuf;
+use semver::Version;
 
 use self::cargo::CargoIssue;
 use self::ci::ActionExpected;
+use crate::config::Replaced;
 use crate::ctxt::Ctxt;
 use crate::file::{File, LineColumn};
 use crate::manifest::Manifest;
-use crate::model::{Module, ModuleParams, UpdateParams};
+use crate::model::Module;
 use crate::rust_version::RustVersion;
-use crate::urls::Urls;
-use crate::workspace::{Package, Workspace};
+use crate::workspace::Package;
 
 pub(crate) enum WorkflowValidation {
     /// Oudated version of an action.
@@ -108,85 +109,31 @@ pub(crate) enum Validation {
         path: RelativePathBuf,
         key: Box<str>,
     },
+    /// Set rust version for the given module.
     SetRustVersion {
         module: Module,
         version: RustVersion,
     },
+    /// Remove rust version from the given module.
     RemoveRustVersion {
         module: Module,
+        version: RustVersion,
     },
-}
-
-/// Run a single module.
-#[tracing::instrument(skip_all)]
-pub(crate) fn build(
-    cx: &Ctxt<'_>,
-    module: &Module,
-    workspace: &Workspace,
-    primary_crate: &Package,
-    primary_crate_params: ModuleParams<'_>,
-    urls: &mut Urls,
-) -> Result<()> {
-    let documentation = match &cx.config.documentation(module) {
-        Some(documentation) => Some(documentation.render(&primary_crate_params)?),
-        None => None,
-    };
-
-    let module_url = module.url().to_string();
-
-    let update_params = UpdateParams {
-        license: Some(cx.config.license(module)),
-        readme: Some(readme::README_MD),
-        repository: Some(&module_url),
-        homepage: Some(&module_url),
-        documentation: documentation.as_deref(),
-        authors: cx.config.authors(module),
-    };
-
-    for package in workspace.packages() {
-        if package.manifest.is_publish()? {
-            cargo::work_cargo_toml(cx, package, &update_params)?;
-        }
-    }
-
-    if cx.config.is_enabled(module.path(), "ci") {
-        ci::build(cx, primary_crate, module, workspace)
-            .with_context(|| anyhow!("ci validation: {}", cx.config.job_name(module)))?;
-    }
-
-    if cx.config.is_enabled(module.path(), "readme") {
-        readme::build(
-            cx,
-            module.path(),
-            module,
-            primary_crate,
-            &primary_crate_params,
-            urls,
-            true,
-            false,
-        )?;
-
-        for package in workspace.packages() {
-            if !package.manifest.is_publish()? {
-                continue;
-            }
-
-            let params = cx.module_params(package, module)?;
-
-            readme::build(
-                cx,
-                &package.manifest_dir,
-                module,
-                package,
-                &params,
-                urls,
-                package.manifest_dir != *module.path(),
-                true,
-            )?;
-        }
-    }
-
-    Ok(())
+    /// Save a package.
+    SavePackage {
+        /// Save the given package.
+        package: Package,
+    },
+    Replace {
+        /// A cached replacement.
+        replaced: Replaced,
+    },
+    ReleaseCommit {
+        /// Perform a release commit.
+        path: RelativePathBuf,
+        /// Version to commit.
+        version: Version,
+    },
 }
 
 /// Report and apply a asingle validation.
@@ -398,37 +345,109 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, fix: bool) -> Res
             println!("{path}: {key}: action expected empty mapping");
         }
         Validation::SetRustVersion { module, version } => {
+            if fix {
+                tracing::info!("Setting rust version: Rust {version}");
+            } else {
+                tracing::info!("Would set rust version: Rust {version}");
+            }
+
             let workspace = module.workspace(cx)?;
 
             for p in workspace.packages() {
                 if p.manifest.is_publish()? {
-                    tracing::info!(
-                        "Saving {} with rust-version = \"{version}\"",
-                        p.manifest_path
-                    );
                     let mut p = p.clone();
-                    p.manifest.set_rust_version(&version.to_string())?;
-                    p.manifest.sort_package_keys()?;
-                    p.manifest.save_to(p.manifest_path.to_path(cx.root))?;
+                    let version = version.to_string();
+
+                    if p.manifest.rust_version()? != Some(version.as_str()) {
+                        if fix {
+                            tracing::info!(
+                                "Saving {} with rust-version = \"{version}\"",
+                                p.manifest_path
+                            );
+                            p.manifest.set_rust_version(&version)?;
+                            p.manifest.sort_package_keys()?;
+                            p.manifest.save_to(p.manifest_path.to_path(cx.root))?;
+                        } else {
+                            tracing::info!(
+                                "Would save {} with rust-version = \"{version}\"",
+                                p.manifest_path
+                            );
+                        }
+                    }
                 }
             }
         }
-        Validation::RemoveRustVersion { module } => {
+        Validation::RemoveRustVersion { module, version } => {
+            if fix {
+                tracing::info!("Clearing rust version: Rust {version}");
+            } else {
+                tracing::info!("Would clear rust version: Rust {version}");
+            }
+
             let workspace = module.workspace(cx)?;
 
             for p in workspace.packages() {
                 let mut p = p.clone();
 
                 if p.manifest.remove_rust_version() {
-                    tracing::info!(
-                        "Saving {} without rust-version (target version outdates rust-version)",
-                        p.manifest_path
-                    );
-                    p.manifest.save_to(p.manifest_path.to_path(cx.root))?;
+                    if fix {
+                        tracing::info!(
+                            "Saving {} without rust-version (target version outdates rust-version)",
+                            p.manifest_path
+                        );
+                        p.manifest.save_to(p.manifest_path.to_path(cx.root))?;
+                    } else {
+                        tracing::info!(
+                            "Woudl save {} without rust-version (target version outdates rust-version)",
+                            p.manifest_path
+                        );
+                    }
                 }
             }
         }
+        Validation::SavePackage { package } => {
+            if fix {
+                tracing::info!("Saving {}", package.manifest_path);
+                let out = package.manifest_path.to_path(cx.root);
+                package.manifest.save_to(out)?;
+            } else {
+                tracing::info!("Would save {} (--save)", package.manifest_path);
+            }
+        }
+        Validation::Replace { replaced } => {
+            if fix {
+                tracing::info!(
+                    "Saving {} (replacement: {})",
+                    replaced.path().display(),
+                    replaced.replacement()
+                );
+
+                replaced.save()?;
+            } else {
+                tracing::info!(
+                    "Would save {} (replacement: {}) (--save)",
+                    replaced.path().display(),
+                    replaced.replacement()
+                );
+            }
+        }
+        Validation::ReleaseCommit { path, version } => {
+            if fix {
+                let git = cx.require_git()?;
+                let version = version.to_string();
+                let path = path.to_path(cx.root);
+                tracing::info!("Making commit `Release {version}`");
+                git.add(&path, ["-u"])?;
+                git.commit(&path, format_args!("Release {version}"))?;
+                tracing::info!("Tagging `{version}`");
+                git.tag(&path, version)?;
+            } else {
+                tracing::info!("Would make commit `Release {version}` (--save)");
+                tracing::info!("Would make tag `{version}` (--save)");
+            }
+        }
     };
+
     Ok(())
 }
 

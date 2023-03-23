@@ -1,11 +1,17 @@
 use std::io::Write;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 
 use crate::ctxt::Ctxt;
+use crate::model::Module;
+use crate::model::ModuleParams;
+use crate::model::UpdateParams;
 use crate::urls::UrlError;
 use crate::urls::Urls;
+use crate::validation;
+use crate::workspace::Package;
+use crate::workspace::Workspace;
 
 #[derive(Default, Parser)]
 pub(crate) struct Opts {
@@ -26,7 +32,7 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
         let primary_crate = workspace.primary_crate()?;
         let params = cx.module_params(primary_crate, module)?;
 
-        crate::validation::build(cx, module, &workspace, primary_crate, params, &mut urls)
+        check(cx, module, &workspace, primary_crate, params, &mut urls)
             .with_context(|| module.path().to_owned())?;
     }
 
@@ -36,7 +42,7 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     for (url, test) in urls.bad_urls() {
         let path = &test.path;
         let (line, column, string) =
-            crate::validation::temporary_line_fix(&test.file, test.range.start, test.line_offset)?;
+            validation::temporary_line_fix(&test.file, test.range.start, test.line_offset)?;
 
         if let Some(error) = &test.error {
             writeln!(o, "{path}:{line}:{column}: bad url: `{url}`: {error}")?;
@@ -49,6 +55,78 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
 
     if opts.url_checks {
         url_checks(&mut o, urls).await?;
+    }
+
+    Ok(())
+}
+
+/// Run a single module.
+#[tracing::instrument(skip_all)]
+fn check(
+    cx: &Ctxt<'_>,
+    module: &Module,
+    workspace: &Workspace,
+    primary_crate: &Package,
+    primary_crate_params: ModuleParams<'_>,
+    urls: &mut Urls,
+) -> Result<()> {
+    let documentation = match &cx.config.documentation(module) {
+        Some(documentation) => Some(documentation.render(&primary_crate_params)?),
+        None => None,
+    };
+
+    let module_url = module.url().to_string();
+
+    let update_params = UpdateParams {
+        license: Some(cx.config.license(module)),
+        readme: Some(validation::readme::README_MD),
+        repository: Some(&module_url),
+        homepage: Some(&module_url),
+        documentation: documentation.as_deref(),
+        authors: cx.config.authors(module),
+    };
+
+    for package in workspace.packages() {
+        if package.manifest.is_publish()? {
+            validation::cargo::work_cargo_toml(cx, package, &update_params)?;
+        }
+    }
+
+    if cx.config.is_enabled(module.path(), "ci") {
+        validation::ci::build(cx, primary_crate, module, workspace)
+            .with_context(|| anyhow!("ci validation: {}", cx.config.job_name(module)))?;
+    }
+
+    if cx.config.is_enabled(module.path(), "readme") {
+        validation::readme::build(
+            cx,
+            module.path(),
+            module,
+            primary_crate,
+            &primary_crate_params,
+            urls,
+            true,
+            false,
+        )?;
+
+        for package in workspace.packages() {
+            if !package.manifest.is_publish()? {
+                continue;
+            }
+
+            let params = cx.module_params(package, module)?;
+
+            validation::readme::build(
+                cx,
+                &package.manifest_dir,
+                module,
+                package,
+                &params,
+                urls,
+                package.manifest_dir != *module.path(),
+                true,
+            )?;
+        }
     }
 
     Ok(())
