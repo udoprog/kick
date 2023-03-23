@@ -20,6 +20,7 @@ use crate::model::Module;
 use crate::rust_version::RustVersion;
 use crate::workspace::Package;
 
+/// A simple workflow validation.
 pub(crate) enum WorkflowValidation {
     /// Oudated version of an action.
     ReplaceString {
@@ -33,6 +34,7 @@ pub(crate) enum WorkflowValidation {
     Error { name: String, reason: String },
 }
 
+/// A single validation.
 pub(crate) enum Validation {
     DeprecatedWorkflow {
         path: RelativePathBuf,
@@ -135,9 +137,42 @@ pub(crate) enum Validation {
         version: Version,
     },
 }
+impl Validation {
+    /// Check if validation can save something.
+    pub(crate) fn can_save(&self) -> bool {
+        match self {
+            Validation::DeprecatedWorkflow { .. } => false,
+            Validation::MissingWorkflow { .. } => true,
+            Validation::WrongWorkflowName { .. } => false,
+            Validation::BadWorkflow { .. } => true,
+            Validation::MissingReadme { .. } => false,
+            Validation::UpdateLib { .. } => true,
+            Validation::UpdateReadme { .. } => true,
+            Validation::ToplevelHeadings { .. } => false,
+            Validation::MissingPreceedingBr { .. } => false,
+            Validation::MissingFeature { .. } => false,
+            Validation::NoFeatures { .. } => false,
+            Validation::MissingEmptyFeatures { .. } => false,
+            Validation::MissingAllFeatures { .. } => false,
+            Validation::CargoTomlIssues { cargo, .. } => cargo.is_some(),
+            Validation::ActionMissingKey { .. } => false,
+            Validation::ActionOnMissingBranch { .. } => false,
+            Validation::ActionExpectedEmptyMapping { .. } => false,
+            Validation::SetRustVersion { .. } => true,
+            Validation::RemoveRustVersion { .. } => true,
+            Validation::SavePackage { .. } => true,
+            Validation::Replace { .. } => true,
+            Validation::ReleaseCommit { .. } => true,
+        }
+    }
+}
 
 /// Report and apply a asingle validation.
-pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, fix: bool) -> Result<()> {
+pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, save: bool) -> Result<()> {
+    if cx.can_save() && !save {
+        tracing::warn!("Not writing changes since `--save` is not specified");
+    }
+
     match validation {
         Validation::MissingWorkflow {
             path,
@@ -150,7 +185,7 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, fix: bool) -> Res
                 println!("  Candidate: {candidate}");
             }
 
-            if fix {
+            if save {
                 if let [from] = candidates.as_ref() {
                     println!("{path}: Rename from {from}",);
                     std::fs::rename(from.to_path(cx.root), path.to_path(cx.root))?;
@@ -205,7 +240,7 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, fix: bool) -> Res
                     } => {
                         println!("{path}: {reason}");
 
-                        if fix {
+                        if save {
                             doc.value_mut(*uses).set_string(string);
 
                             for (id, key) in remove_keys {
@@ -251,7 +286,7 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, fix: bool) -> Res
             path,
             lib: new_file,
         } => {
-            if fix {
+            if save {
                 println!("{path}: Fixing");
                 std::fs::write(path.to_path(cx.root), new_file.as_str())?;
             } else {
@@ -262,7 +297,7 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, fix: bool) -> Res
             path,
             readme: new_file,
         } => {
-            if fix {
+            if save {
                 println!("{path}: Fixing");
                 std::fs::write(path.to_path(cx.root), new_file.as_str())?;
             } else {
@@ -312,9 +347,11 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, fix: bool) -> Res
                 println!("  {issue}");
             }
 
-            if fix {
-                if let Some(modified_cargo) = modified_cargo {
+            if let Some(modified_cargo) = modified_cargo {
+                if save {
                     modified_cargo.save_to(path.to_path(cx.root))?;
+                } else {
+                    println!("Would save {path}");
                 }
             }
         }
@@ -345,7 +382,7 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, fix: bool) -> Res
             println!("{path}: {key}: action expected empty mapping");
         }
         Validation::SetRustVersion { module, version } => {
-            if fix {
+            if save {
                 tracing::info!("Setting rust version: Rust {version}");
             } else {
                 tracing::info!("Would set rust version: Rust {version}");
@@ -359,7 +396,7 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, fix: bool) -> Res
                     let version = version.to_string();
 
                     if p.manifest.rust_version()? != Some(version.as_str()) {
-                        if fix {
+                        if save {
                             tracing::info!(
                                 "Saving {} with rust-version = \"{version}\"",
                                 p.manifest_path
@@ -378,7 +415,7 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, fix: bool) -> Res
             }
         }
         Validation::RemoveRustVersion { module, version } => {
-            if fix {
+            if save {
                 tracing::info!("Clearing rust version: Rust {version}");
             } else {
                 tracing::info!("Would clear rust version: Rust {version}");
@@ -390,7 +427,7 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, fix: bool) -> Res
                 let mut p = p.clone();
 
                 if p.manifest.remove_rust_version() {
-                    if fix {
+                    if save {
                         tracing::info!(
                             "Saving {} without rust-version (target version outdates rust-version)",
                             p.manifest_path
@@ -406,16 +443,16 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, fix: bool) -> Res
             }
         }
         Validation::SavePackage { package } => {
-            if fix {
+            if save {
                 tracing::info!("Saving {}", package.manifest_path);
                 let out = package.manifest_path.to_path(cx.root);
                 package.manifest.save_to(out)?;
             } else {
-                tracing::info!("Would save {} (--save)", package.manifest_path);
+                tracing::info!("Would save {}", package.manifest_path);
             }
         }
         Validation::Replace { replaced } => {
-            if fix {
+            if save {
                 tracing::info!(
                     "Saving {} (replacement: {})",
                     replaced.path().display(),
@@ -425,14 +462,14 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, fix: bool) -> Res
                 replaced.save()?;
             } else {
                 tracing::info!(
-                    "Would save {} (replacement: {}) (--save)",
+                    "Would save {} (replacement: {})",
                     replaced.path().display(),
                     replaced.replacement()
                 );
             }
         }
         Validation::ReleaseCommit { path, version } => {
-            if fix {
+            if save {
                 let git = cx.require_git()?;
                 let version = version.to_string();
                 let path = path.to_path(cx.root);
@@ -442,8 +479,8 @@ pub(crate) fn validate(cx: &Ctxt<'_>, validation: &Validation, fix: bool) -> Res
                 tracing::info!("Tagging `{version}`");
                 git.tag(&path, version)?;
             } else {
-                tracing::info!("Would make commit `Release {version}` (--save)");
-                tracing::info!("Would make tag `{version}` (--save)");
+                tracing::info!("Would make commit `Release {version}`");
+                tracing::info!("Would make tag `{version}`");
             }
         }
     };

@@ -56,6 +56,17 @@ impl<'a> Ctxt<'a> {
     pub(crate) fn validations(&mut self) -> Vec<Validation> {
         std::mem::take(RefCell::get_mut(&mut self.validation))
     }
+
+    /// Check if there's a validation we can save.
+    pub(crate) fn can_save(&self) -> bool {
+        let mut can_save = false;
+
+        for validation in self.validation.borrow().iter() {
+            can_save |= validation.can_save();
+        }
+
+        can_save
+    }
 }
 
 /// Minor version from rustc.
