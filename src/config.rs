@@ -98,7 +98,7 @@ impl Replacement {
 
             for path in glob.matcher() {
                 let path = path?;
-                let output_path = path.to_path(root);
+                let output_path = crate::utils::to_path(&path, root);
 
                 let content = match fs::read(&output_path) {
                     Ok(content) => content,
@@ -924,7 +924,7 @@ fn load_base(
 }
 
 fn load_repo(root: &Path, module: &Module, templating: &Templating) -> Result<Option<Repo>> {
-    let root = module.path().to_path(root);
+    let root = crate::utils::to_path(module.path(), root);
     let mut cx = ConfigCtxt::new(&root, templating);
 
     let Some(config) = cx.kick_config()? else {

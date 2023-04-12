@@ -129,7 +129,7 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module) -> Result<()> {
         command
             .args(&opts.cargo_publish)
             .stdin(Stdio::null())
-            .current_dir(package.manifest_dir.to_path(cx.root));
+            .current_dir(crate::utils::to_path(&package.manifest_dir, cx.root));
 
         let status = command.status()?;
 

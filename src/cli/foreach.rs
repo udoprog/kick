@@ -33,7 +33,7 @@ fn foreach(
     command: &str,
     args: &[String],
 ) -> Result<()> {
-    let current_dir = module.path().to_path(cx.root);
+    let current_dir = crate::utils::to_path(module.path(), cx.root);
     tracing::info!("{}", CommandRepr::new(&opts.command));
 
     let status = Command::new(command)

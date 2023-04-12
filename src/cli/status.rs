@@ -86,7 +86,7 @@ async fn build(
         return Ok(());
     };
 
-    let current_dir = module.path().to_path(cx.root);
+    let current_dir = crate::utils::to_path(module.path(), cx.root);
     let sha;
 
     let sha = match &cx.git {

@@ -81,7 +81,7 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
 fn build(cx: &Ctxt<'_>, workspace: &Workspace, module: &Module, opts: &Opts) -> Result<()> {
     let primary = workspace.primary_crate()?;
 
-    let current_dir = module.path().to_path(cx.root);
+    let current_dir = crate::utils::to_path(module.path(), cx.root);
     let rust_version = primary.rust_version()?;
 
     let opts_earliest = parse_minor_version(cx, opts.earliest.as_deref(), rust_version.as_ref())?;
@@ -94,7 +94,7 @@ fn build(cx: &Ctxt<'_>, workspace: &Workspace, module: &Module, opts: &Opts) -> 
         .unwrap_or(LATEST)
         .max(earliest);
 
-    let cargo_lock = primary.manifest_dir.join("Cargo.lock").to_path(cx.root);
+    let cargo_lock = crate::utils::to_path(primary.manifest_dir.join("Cargo.lock"), cx.root);
     let cargo_lock_original = cargo_lock.with_extension("lock.original");
 
     tracing::info!("Testing Rust {earliest}-{latest}");
@@ -125,8 +125,8 @@ fn build(cx: &Ctxt<'_>, workspace: &Workspace, module: &Module, opts: &Opts) -> 
 
         for p in &mut packages {
             let original = p.manifest_path.with_extension("toml.original");
-            let original_path = original.to_path(cx.root);
-            let manifest_path = p.manifest_path.to_path(cx.root);
+            let original_path = crate::utils::to_path(original, cx.root);
+            let manifest_path = crate::utils::to_path(&p.manifest_path, cx.root);
 
             let mut save = if opts.no_remove_dev_dependencies {
                 false
@@ -154,32 +154,32 @@ fn build(cx: &Ctxt<'_>, workspace: &Workspace, module: &Module, opts: &Opts) -> 
             restore.push((cargo_lock_original.clone(), cargo_lock.clone()));
         }
 
-        tracing::trace!("Testing against rust {version}");
+        tracing::trace!(?current_dir, "Testing against rust {version}");
 
-        let mut command = Command::new("rustup");
-        command.args(["run", &version]);
+        let mut rustup = Command::new("rustup");
+        rustup.args(["run", &version, "--"]);
 
         if !opts.command.is_empty() {
             tracing::info!(
                 "Testing Rust {version}: {}",
                 CommandRepr::new(&opts.command[..])
             );
-            command.args(&opts.command[..]);
+            rustup.args(&opts.command[..]);
         } else {
             tracing::info!(
                 "Testing Rust {version}: {}",
                 CommandRepr::new(&DEFAULT_COMMAND[..])
             );
-            command.args(DEFAULT_COMMAND);
+            rustup.args(DEFAULT_COMMAND);
         }
 
-        command.current_dir(&current_dir);
+        rustup.current_dir(&current_dir);
 
         if !opts.verbose {
-            command.stdout(Stdio::null()).stderr(Stdio::null());
+            rustup.stdout(Stdio::null()).stderr(Stdio::null());
         }
 
-        let status = command.status()?;
+        let status = rustup.status().context("Command through `rustup run`")?;
 
         if status.success() {
             tracing::info!("Rust {version}: ok");

@@ -87,7 +87,7 @@ fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, module: &Module) -> Result<()> {
     let candidates =
         candidates(cx, ci).with_context(|| anyhow!("list candidates: {path}", path = ci.path))?;
 
-    let path = if !expected_path.to_path(cx.root).is_file() {
+    let path = if !crate::utils::to_path(&expected_path, cx.root).is_file() {
         let path = match &candidates[..] {
             [path] => Some(path.clone()),
             _ => None,
@@ -107,13 +107,13 @@ fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, module: &Module) -> Result<()> {
         expected_path
     };
 
-    if deprecated_yml.to_path(cx.root).is_file() && candidates.len() > 1 {
+    if crate::utils::to_path(&deprecated_yml, cx.root).is_file() && candidates.len() > 1 {
         cx.change(Change::DeprecatedWorkflow {
             path: deprecated_yml,
         });
     }
 
-    let bytes = std::fs::read(path.to_path(cx.root))?;
+    let bytes = std::fs::read(crate::utils::to_path(&path, cx.root))?;
     let value = yaml::from_slice(bytes).with_context(|| anyhow!("{path}"))?;
 
     let name = value
@@ -136,7 +136,7 @@ fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, module: &Module) -> Result<()> {
 
 /// Get candidates.
 fn candidates(cx: &Ctxt<'_>, ci: &Ci<'_>) -> std::io::Result<Box<[RelativePathBuf]>> {
-    let dir = match std::fs::read_dir(ci.path.to_path(cx.root)) {
+    let dir = match std::fs::read_dir(crate::utils::to_path(ci.path, cx.root)) {
         Ok(dir) => dir,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Box::from([])),
         Err(e) => return Err(e),

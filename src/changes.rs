@@ -227,9 +227,12 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
             if save {
                 if let [from] = candidates.as_ref() {
                     println!("{path}: Rename from {from}",);
-                    std::fs::rename(from.to_path(cx.root), path.to_path(cx.root))?;
+                    std::fs::rename(
+                        crate::utils::to_path(from, cx.root),
+                        crate::utils::to_path(path, cx.root),
+                    )?;
                 } else {
-                    let path = path.to_path(cx.root);
+                    let path = crate::utils::to_path(path, cx.root);
 
                     if let Some(parent) = path.parent() {
                         if !parent.is_dir() {
@@ -311,7 +314,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
 
             if edited {
                 println!("{path}: Fixing");
-                std::fs::write(path.to_path(cx.root), doc.to_string())?;
+                std::fs::write(crate::utils::to_path(path, cx.root), doc.to_string())?;
             }
         }
         Change::MissingReadme { path } => {
@@ -323,7 +326,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
         } => {
             if save {
                 println!("{path}: Fixing");
-                std::fs::write(path.to_path(cx.root), new_file.as_str())?;
+                std::fs::write(crate::utils::to_path(path, cx.root), new_file.as_str())?;
             } else {
                 println!("{path}: Needs update");
             }
@@ -334,7 +337,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
         } => {
             if save {
                 println!("{path}: Fixing");
-                std::fs::write(path.to_path(cx.root), new_file.as_str())?;
+                std::fs::write(crate::utils::to_path(path, cx.root), new_file.as_str())?;
             } else {
                 println!("{path}: Needs update");
             }
@@ -384,7 +387,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
 
             if let Some(modified_cargo) = modified_cargo {
                 if save {
-                    modified_cargo.save_to(path.to_path(cx.root))?;
+                    modified_cargo.save_to(crate::utils::to_path(path, cx.root))?;
                 } else {
                     println!("Would save {path}");
                 }
@@ -438,7 +441,8 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                             );
                             p.manifest.set_rust_version(&version)?;
                             p.manifest.sort_package_keys()?;
-                            p.manifest.save_to(p.manifest_path.to_path(cx.root))?;
+                            p.manifest
+                                .save_to(crate::utils::to_path(p.manifest_path, cx.root))?;
                         } else {
                             tracing::info!(
                                 "Would save {} with rust-version = \"{version}\"",
@@ -467,7 +471,8 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                             "Saving {} without rust-version (target version outdates rust-version)",
                             p.manifest_path
                         );
-                        p.manifest.save_to(p.manifest_path.to_path(cx.root))?;
+                        p.manifest
+                            .save_to(crate::utils::to_path(p.manifest_path, cx.root))?;
                     } else {
                         tracing::info!(
                             "Woudl save {} without rust-version (target version outdates rust-version)",
@@ -480,7 +485,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
         Change::SavePackage { package } => {
             if save {
                 tracing::info!("Saving {}", package.manifest_path);
-                let out = package.manifest_path.to_path(cx.root);
+                let out = crate::utils::to_path(&package.manifest_path, cx.root);
                 package.manifest.save_to(out)?;
             } else {
                 tracing::info!("Would save {}", package.manifest_path);
@@ -507,7 +512,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
             if save {
                 let git = cx.require_git()?;
                 let version = version.to_string();
-                let path = path.to_path(cx.root);
+                let path = crate::utils::to_path(path, cx.root);
                 tracing::info!("Making commit `Release {version}`");
                 git.add(&path, ["-u"])?;
                 git.commit(&path, format_args!("Release {version}"))?;

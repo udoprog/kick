@@ -1,18 +1,22 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
+
+use anyhow::{anyhow, Context, Result};
+use relative_path::{RelativePath, RelativePathBuf};
 
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::manifest::{self, Manifest};
 use crate::model::{CrateParams, Module};
 use crate::rust_version::RustVersion;
-use anyhow::{anyhow, Context, Result};
-use relative_path::{RelativePath, RelativePathBuf};
 
 /// The default name of a cargo manifest `Cargo.toml`.
 pub(crate) const CARGO_TOML: &str = "Cargo.toml";
 
 /// Load a workspace starting at the given path.
+#[tracing::instrument(skip_all)]
 pub(crate) fn open(cx: &Ctxt<'_>, module: &Module) -> Result<Option<Workspace>> {
+    tracing::trace!("Opening workspace");
+
     let manifest_path = match cx.config.cargo_toml(module.path()) {
         Some(cargo_toml) => module.path().join(cargo_toml),
         None => module.path().join(CARGO_TOML),
@@ -23,7 +27,7 @@ pub(crate) fn open(cx: &Ctxt<'_>, module: &Module) -> Result<Option<Workspace>> 
         .crate_for(module.path())
         .or(module.repo().map(|repo| repo.name));
 
-    let Some(manifest) = manifest::open(manifest_path.to_path(cx.root))? else {
+    let Some(manifest) = manifest::open(crate::utils::to_path(&manifest_path, cx.root))? else {
         return Ok(None);
     };
 
@@ -32,6 +36,8 @@ pub(crate) fn open(cx: &Ctxt<'_>, module: &Module) -> Result<Option<Workspace>> 
         .ok_or_else(|| anyhow!("missing parent directory"))?;
 
     let mut queue = VecDeque::new();
+
+    let mut visited = HashSet::new();
 
     queue.push_back(Package {
         manifest_dir: manifest_dir.into(),
@@ -42,13 +48,24 @@ pub(crate) fn open(cx: &Ctxt<'_>, module: &Module) -> Result<Option<Workspace>> 
     let mut packages = Vec::new();
 
     while let Some(package) = queue.pop_front() {
+        if !visited.insert(package.manifest_dir.clone()) {
+            tracing::trace!(?package.manifest_path, "Already loaded");
+            continue;
+        }
+
+        if package.manifest.is_package() {
+            tracing::trace!(?package.manifest_path, name = package.manifest.crate_name()?, "Processing package");
+        } else {
+            tracing::trace!(?package.manifest_path, "Processing workspace manifest");
+        }
+
         if let Some(workspace) = package.manifest.as_workspace() {
             let members = expand_members(cx, &package, workspace.members())?;
 
             for manifest_dir in members {
                 let manifest_path = manifest_dir.join(CARGO_TOML);
 
-                let manifest = manifest::open(manifest_path.to_path(cx.root))
+                let manifest = manifest::open(crate::utils::to_path(&manifest_path, cx.root))
                     .with_context(|| anyhow!("{manifest_path}"))?
                     .with_context(|| anyhow!("{manifest_path}: missing file"))?;
 

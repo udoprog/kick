@@ -140,7 +140,7 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
         let mut replaced = Vec::new();
 
         if let Some(version) = versions.get(name) {
-            let root = package.manifest_dir.to_path(cx.root);
+            let root = crate::utils::to_path(&package.manifest_dir, cx.root);
             let version_string = version.to_string();
 
             for replacement in cx.config.version(module) {

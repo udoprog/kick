@@ -52,7 +52,7 @@ impl<'a> Matcher<'a> {
     where
         M: FnMut(&str) -> bool,
     {
-        let path = current.to_path(self.root);
+        let path = crate::utils::to_path(current, self.root);
 
         match fs::metadata(&path) {
             Ok(m) => {
@@ -85,7 +85,7 @@ impl<'a> Matcher<'a> {
 
     /// Perform star star expansion.
     fn walk(&mut self, current: &RelativePathBuf, rest: &'a [Component<'a>]) -> io::Result<()> {
-        let path = current.to_path(self.root);
+        let path = crate::utils::to_path(current, self.root);
 
         self.queue.push_back((current.clone(), rest));
 
