@@ -58,8 +58,6 @@ impl Git {
         A: IntoIterator,
         A::Item: AsRef<OsStr>,
     {
-        tracing::trace!("git add");
-
         let output = Command::new(&self.command)
             .arg("add")
             .args(args)

@@ -66,7 +66,7 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
         let span = tracing::info_span!("build", module = module.path().as_str());
         let _enter = span.enter();
 
-        if let Err(e) = build(cx, opts, module, today, &client, &limit).await {
+        if let Err(e) = status(cx, opts, module, today, &client, &limit).await {
             error!(e, "{error}");
         }
     }
@@ -74,7 +74,8 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     Ok(())
 }
 
-async fn build(
+#[tracing::instrument(skip_all, fields(source = ?module.source(), path = module.path().as_str()))]
+async fn status(
     cx: &Ctxt<'_>,
     opts: &Opts,
     module: &Module,

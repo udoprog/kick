@@ -24,8 +24,6 @@ pub(crate) struct Opts {
     url_checks: bool,
 }
 
-/// Entrypoint to run action.
-#[tracing::instrument(skip(cx, opts))]
 pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     let mut urls = Urls::default();
 
@@ -65,7 +63,7 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
 }
 
 /// Run a single module.
-#[tracing::instrument(skip_all)]
+#[tracing::instrument(skip_all, fields(source = ?module.source(), path = module.path().as_str()))]
 fn check(
     cx: &Ctxt<'_>,
     module: &Module,

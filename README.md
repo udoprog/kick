@@ -9,28 +9,28 @@ Give your projects a good 🦶!
 
 <br>
 
-## Saving changes
+## Staging changes
 
 If you specify `--save`, proposed changes that can be applied to a project
 will be applied. If `--save` is not specified the collection of changes will
 be saved to `changes.gz` (in the root) to be applied later using `kick
 apply`.
 
-```rust
+```text
 > kick check
 repos/kick/README.md: Needs update
 repos/kick/src/main.rs: Needs update
 2023-04-13T15:05:34.162247Z  WARN kick: Not writing changes since `--save` was not specified
-2023-04-13T15:05:34.162252Z  INFO kick: Writing commit to ../changes.data.gz, use `kick apply` to apply it later
+2023-04-13T15:05:34.162252Z  INFO kick: Writing commit to ../changes.gz, use `kick apply` to apply it later
 ```
 
 Applying the staged changes:
 
-```rust
-> kick --save apply
+```text
+> kick changes --save
 repos/kick/README.md: Fixing
 repos/kick/src/main.rs: Fixing
-2023-04-13T15:06:23.478579Z  WARN kick: Removing ../changes.data.gz
+2023-04-13T15:06:23.478579Z  INFO kick: Removing ../changes.gz
 ```
 
 <br>

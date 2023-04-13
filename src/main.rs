@@ -53,7 +53,7 @@ macro_rules! error {
         tracing::error!($($tt)*, error = $error);
 
         for $error in $error.chain().skip(1) {
-            tracing::error!(concat!("caused by: ", $($tt)*), error = $error);
+            tracing::error!(concat!("Caused by: ", $($tt)*), error = $error);
         }
     }
 }

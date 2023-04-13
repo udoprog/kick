@@ -62,7 +62,7 @@ impl Command {
 
     #[tracing::instrument(skip_all, fields(command = self.display().to_string(), current_dir = ?self.current_dir_repr()))]
     pub(crate) fn status(&mut self) -> io::Result<ExitStatus> {
-        tracing::trace!("running for status");
+        tracing::trace!("Running for status");
         let mut command = self.command();
         let status = command.status()?;
         tracing::trace!(?status);
@@ -71,7 +71,7 @@ impl Command {
 
     #[tracing::instrument(skip_all, fields(command = self.display().to_string(), current_dir = ?self.current_dir_repr()))]
     pub(crate) fn output(&mut self) -> io::Result<Output> {
-        tracing::trace!("running for output");
+        tracing::trace!("Running for output");
         let mut command = self.command();
         let output = command.output()?;
         tracing::trace!(?output.status);

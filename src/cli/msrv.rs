@@ -66,19 +66,17 @@ pub(crate) struct Opts {
     command: Vec<String>,
 }
 
-#[tracing::instrument(skip_all)]
 pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     for module in cx.modules() {
-        let span = tracing::info_span!("build", source = ?module.source(), module = module.path().as_str());
-        let _enter = span.enter();
         let workspace = module.workspace(cx)?;
-        build(cx, &workspace, module, opts).with_context(|| module.path().to_owned())?;
+        msrv(cx, &workspace, module, opts).with_context(|| module.path().to_owned())?;
     }
 
     Ok(())
 }
 
-fn build(cx: &Ctxt<'_>, workspace: &Workspace, module: &Module, opts: &Opts) -> Result<()> {
+#[tracing::instrument(skip_all, fields(source = ?module.source(), path = module.path().as_str()))]
+fn msrv(cx: &Ctxt<'_>, workspace: &Workspace, module: &Module, opts: &Opts) -> Result<()> {
     let primary = workspace.primary_crate()?;
 
     let current_dir = crate::utils::to_path(module.path(), cx.root);
