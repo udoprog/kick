@@ -31,6 +31,8 @@ fn foreach(cx: &Ctxt<'_>, module: &Module, command: &str, args: &[String]) -> Re
     command.args(args);
     command.current_dir(&current_dir);
 
+    tracing::info!("for: {}", command.display());
+
     if !command.status()?.success() {
         tracing::warn!(?command, "command failed");
     }
