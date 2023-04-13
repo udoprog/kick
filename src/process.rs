@@ -128,7 +128,7 @@ impl Command {
 
     /// Build a command representation.
     pub(crate) fn display(&self) -> Display<'_> {
-        Display { inner: &self }
+        Display { inner: self }
     }
 
     /// Current dir representation.

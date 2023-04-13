@@ -488,7 +488,7 @@ impl Config {
     }
 
     /// Get crate for the given repo.
-    pub(crate) fn upgrade<'a>(&'a self, path: &RelativePath) -> Upgrade {
+    pub(crate) fn upgrade(&self, path: &RelativePath) -> Upgrade {
         let mut upgrade = self
             .repos
             .get(path)

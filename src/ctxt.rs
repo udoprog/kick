@@ -11,6 +11,7 @@ use crate::git::Git;
 use crate::model::{Module, ModuleParams};
 use crate::process::Command;
 use crate::rust_version::RustVersion;
+use crate::sets::Sets;
 use crate::workspace::Package;
 
 pub(crate) struct Ctxt<'a> {
@@ -22,6 +23,7 @@ pub(crate) struct Ctxt<'a> {
     pub(crate) rustc_version: Option<RustVersion>,
     pub(crate) git: Option<Git>,
     pub(crate) changes: RefCell<Vec<Change>>,
+    pub(crate) sets: &'a mut Sets,
 }
 
 impl<'a> Ctxt<'a> {

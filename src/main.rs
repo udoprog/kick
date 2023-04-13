@@ -3,6 +3,19 @@
 //! [<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-kick-66c2a5?style=for-the-badge&logoColor=white&logo=data:image/svg+xml;base64,PHN2ZyByb2xlPSJpbWciIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgdmlld0JveD0iMCAwIDUxMiA1MTIiPjxwYXRoIGZpbGw9IiNmNWY1ZjUiIGQ9Ik00ODguNiAyNTAuMkwzOTIgMjE0VjEwNS41YzAtMTUtOS4zLTI4LjQtMjMuNC0zMy43bC0xMDAtMzcuNWMtOC4xLTMuMS0xNy4xLTMuMS0yNS4zIDBsLTEwMCAzNy41Yy0xNC4xIDUuMy0yMy40IDE4LjctMjMuNCAzMy43VjIxNGwtOTYuNiAzNi4yQzkuMyAyNTUuNSAwIDI2OC45IDAgMjgzLjlWMzk0YzAgMTMuNiA3LjcgMjYuMSAxOS45IDMyLjJsMTAwIDUwYzEwLjEgNS4xIDIyLjEgNS4xIDMyLjIgMGwxMDMuOS01MiAxMDMuOSA1MmMxMC4xIDUuMSAyMi4xIDUuMSAzMi4yIDBsMTAwLTUwYzEyLjItNi4xIDE5LjktMTguNiAxOS45LTMyLjJWMjgzLjljMC0xNS05LjMtMjguNC0yMy40LTMzLjd6TTM1OCAyMTQuOGwtODUgMzEuOXYtNjguMmw4NS0zN3Y3My4zek0xNTQgMTA0LjFsMTAyLTM4LjIgMTAyIDM4LjJ2LjZsLTEwMiA0MS40LTEwMi00MS40di0uNnptODQgMjkxLjFsLTg1IDQyLjV2LTc5LjFsODUtMzguOHY3NS40em0wLTExMmwtMTAyIDQxLjQtMTAyLTQxLjR2LS42bDEwMi0zOC4yIDEwMiAzOC4ydi42em0yNDAgMTEybC04NSA0Mi41di03OS4xbDg1LTM4Ljh2NzUuNHptMC0xMTJsLTEwMiA0MS40LTEwMi00MS40di0uNmwxMDItMzguMiAxMDIgMzguMnYuNnoiPjwvcGF0aD48L3N2Zz4K" height="20">](https://docs.rs/kick)
 //!
 //! Give your projects a good 🦶!
+//!
+//! ## Working with module sets
+//!
+//! Commands can produce sets under certain circumstances. Look out for switches
+//! prefixes with `--save-*`.
+//!
+//! This stores and saves a set of modules depending on a certain condition,
+//! such as `--save-success` for `kick for` which will save the module name for
+//! every command that was successful. Or `--save-failed` for unsuccessful ones.
+//!
+//! The names of the sets will be printed at the end of the command, and can be
+//! used with the `--with <set>` switch in subsequent iterations to only run
+//! commands present in that set.
 
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
@@ -30,15 +43,15 @@ mod manifest;
 mod model;
 mod process;
 mod rust_version;
+mod sets;
 mod templates;
 mod urls;
 mod utils;
 mod workspace;
 
-use std::{
-    cell::RefCell,
-    path::{Component, Path, PathBuf},
-};
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -108,6 +121,14 @@ struct Opts {
     /// Save any proposed changes.
     #[arg(long)]
     save: bool,
+    /// Load sets with the given ids.
+    #[arg(long)]
+    set: Vec<String>,
+    /// Subtract sets with the given ids. This will remove any items in the
+    /// loaded set (as specified by `--set <id>`) that exist in the specified
+    /// sets.
+    #[arg(long)]
+    sub_set: Vec<String>,
     /// Action to perform. Defaults to `check`.
     #[command(subcommand, name = "action")]
     action: Option<Action>,
@@ -196,6 +217,8 @@ async fn entry() -> Result<()> {
 
     let config = config::load(&root, &templating, &modules)?;
 
+    let mut sets = sets::Sets::new(root.join("sets"))?;
+
     let mut actions = Actions::default();
     actions.latest("actions/checkout", "v3");
     actions.check(
@@ -220,9 +243,40 @@ async fn entry() -> Result<()> {
         filters.push(Fragment::parse(module));
     }
 
-    filter_modules(&root, &opts, git.as_ref(), &modules, &filters, current_path)?;
+    let set = match &opts.set[..] {
+        [] => None,
+        ids => {
+            let mut set = HashSet::new();
 
-    let cx = ctxt::Ctxt {
+            for id in ids {
+                if let Some(s) = sets.load(id)? {
+                    set.extend(s.iter().map(RelativePath::to_owned));
+                }
+            }
+
+            for id in &opts.sub_set {
+                if let Some(s) = sets.load(id)? {
+                    for module in s.iter() {
+                        set.remove(module);
+                    }
+                }
+            }
+
+            Some(set)
+        }
+    };
+
+    filter_modules(
+        &root,
+        &opts,
+        git.as_ref(),
+        &modules,
+        &filters,
+        current_path,
+        set.as_ref(),
+    )?;
+
+    let mut cx = ctxt::Ctxt {
         root: &root,
         config: &config,
         actions: &actions,
@@ -231,6 +285,7 @@ async fn entry() -> Result<()> {
         rustc_version: ctxt::rustc_version(),
         git,
         changes: RefCell::new(Vec::new()),
+        sets: &mut sets,
     };
 
     match opts.action.unwrap_or_default() {
@@ -238,7 +293,7 @@ async fn entry() -> Result<()> {
             cli::check::entry(&cx, &opts).await?;
         }
         Action::For(opts) => {
-            cli::foreach::entry(&cx, &opts)?;
+            cli::foreach::entry(&mut cx, &opts)?;
         }
         Action::Status(opts) => {
             cli::status::entry(&cx, &opts).await?;
@@ -261,6 +316,7 @@ async fn entry() -> Result<()> {
         crate::changes::apply(&cx, change, opts.save)?;
     }
 
+    sets.commit()?;
     Ok(())
 }
 
@@ -272,9 +328,16 @@ fn filter_modules(
     modules: &[model::Module],
     filters: &[Fragment<'_>],
     current_path: Option<&RelativePath>,
+    set: Option<&HashSet<RelativePathBuf>>,
 ) -> Result<(), anyhow::Error> {
     // Test if module should be skipped.
     let should_disable = |module: &Module| -> bool {
+        if let Some(set) = set {
+            if !set.contains(module.path()) {
+                return true;
+            }
+        }
+
         if filters.is_empty() {
             if let Some(path) = current_path {
                 return path != module.path();
