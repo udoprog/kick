@@ -1,4 +1,5 @@
 use core::fmt;
+use std::borrow::Cow;
 
 use serde::de::Error;
 use serde::{Deserialize, Serialize, Serializer};
@@ -39,8 +40,8 @@ impl<'de> Deserialize<'de> for RustVersion {
     where
         D: serde::Deserializer<'de>,
     {
-        let string = <&str>::deserialize(deserializer)?;
-        Self::parse(string).ok_or_else(|| D::Error::custom("illegal rust version"))
+        let string = Cow::<str>::deserialize(deserializer)?;
+        Self::parse(string.as_ref()).ok_or_else(|| D::Error::custom("illegal rust version"))
     }
 }
 
