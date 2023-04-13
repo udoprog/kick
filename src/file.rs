@@ -3,6 +3,7 @@ use std::io;
 use std::path::Path;
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LineColumn {
@@ -11,7 +12,7 @@ pub(crate) struct LineColumn {
 }
 
 /// A file loaded into memory.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct File {
     data: String,
     line_starts: Vec<usize>,

@@ -2,6 +2,7 @@ use std::collections::{HashSet, VecDeque};
 
 use anyhow::{anyhow, Context, Result};
 use relative_path::{RelativePath, RelativePathBuf};
+use serde::{Deserialize, Serialize};
 
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
@@ -108,7 +109,7 @@ fn expand_members<'a>(
 }
 
 /// A single package in the workspace.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Package {
     pub(crate) manifest_dir: RelativePathBuf,
     pub(crate) manifest_path: RelativePathBuf,

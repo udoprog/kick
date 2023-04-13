@@ -3,7 +3,23 @@ use std::path::Path;
 
 use anyhow::{anyhow, Result};
 use relative_path::RelativePath;
+use serde::{Deserialize, Serialize};
 use toml_edit::{Array, Document, Formatted, Item, Table, Value};
+
+/// Open a `Cargo.toml`.
+pub(crate) fn open<P>(path: P) -> Result<Option<Manifest>>
+where
+    P: AsRef<Path>,
+{
+    let input = match std::fs::read_to_string(path) {
+        Ok(input) => input,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+
+    let doc = input.parse()?;
+    Ok(Some(Manifest { doc }))
+}
 
 /// A parsed `Cargo.toml`.
 #[derive(Debug, Clone)]
@@ -303,17 +319,34 @@ impl Manifest {
     insert_package_list!(insert_categories, "categories");
 }
 
-/// Open a `Cargo.toml`.
-pub(crate) fn open<P>(path: P) -> Result<Option<Manifest>>
-where
-    P: AsRef<Path>,
-{
-    let input = match std::fs::read_to_string(path) {
-        Ok(input) => input,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e.into()),
-    };
+#[derive(Serialize, Deserialize)]
+struct DocumentRef<'a> {
+    doc: &'a str,
+}
 
-    let doc = input.parse()?;
-    Ok(Some(Manifest { doc }))
+impl Serialize for Manifest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let doc = self.doc.to_string();
+        let doc = DocumentRef { doc: &doc };
+        doc.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Manifest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let doc = DocumentRef::deserialize(deserializer)?;
+
+        let doc = doc
+            .doc
+            .parse()
+            .map_err(<D::Error as serde::de::Error>::custom)?;
+
+        Ok(Self { doc })
+    }
 }

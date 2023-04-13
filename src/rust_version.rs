@@ -1,6 +1,7 @@
 use core::fmt;
 
-use serde::{Serialize, Serializer};
+use serde::de::Error;
+use serde::{Deserialize, Serialize, Serializer};
 
 /// First version to support 2018 edition.
 pub(crate) const EDITION_2018: RustVersion = RustVersion::new(1, 31);
@@ -30,6 +31,16 @@ impl Serialize for RustVersion {
         S: Serializer,
     {
         serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for RustVersion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let string = <&str>::deserialize(deserializer)?;
+        Self::parse(string).ok_or_else(|| D::Error::custom("illegal rust version"))
     }
 }
 
