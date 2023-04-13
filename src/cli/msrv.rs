@@ -60,8 +60,8 @@ pub(crate) struct Opts {
     /// * rustc - The version reported by your local rustc.
     #[arg(long, verbatim_doc_comment)]
     latest: Option<String>,
-    /// Store the outcome if this run into the sets `msrv-good` and `msrv-bad`,
-    /// to be used later with `--with <id>` command.
+    /// Store the outcome if this run into the sets `good` and `bad`, to be used
+    /// later with `--set <id>` command.
     #[arg(long)]
     store_sets: bool,
     /// Command to test with.
@@ -82,11 +82,11 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     }
 
     if let Some(set) = good {
-        cx.sets.save("msrv-good", set);
+        cx.sets.save("good", set);
     }
 
     if let Some(set) = bad {
-        cx.sets.save("msrv-bad", set);
+        cx.sets.save("bad", set);
     }
 
     Ok(())

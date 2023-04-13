@@ -45,5 +45,5 @@ such as `--save-success` for `kick for` which will save the module name for
 every command that was successful. Or `--save-failed` for unsuccessful ones.
 
 The names of the sets will be printed at the end of the command, and can be
-used with the `--with <set>` switch in subsequent iterations to only run
+used with the `--set <set>` switch in subsequent iterations to only run
 commands present in that set.

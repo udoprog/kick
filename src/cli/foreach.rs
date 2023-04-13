@@ -9,8 +9,8 @@ use crate::sets::Set;
 #[derive(Default, Parser)]
 pub(crate) struct Opts {
     #[arg(long)]
-    /// Store the outcome if this run into the sets `for-good` and `for-bad`, to
-    /// be used later with `--with <id>` command.
+    /// Store the outcome if this run into the sets `good` and `bad`, to
+    /// be used later with `--set <id>` command.
     store_sets: bool,
     /// Command to run.
     command: Vec<String>,
@@ -30,11 +30,11 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     }
 
     if let Some(set) = good {
-        cx.sets.save("for-good", set);
+        cx.sets.save("good", set);
     }
 
     if let Some(set) = bad {
-        cx.sets.save("for-bad", set);
+        cx.sets.save("bad", set);
     }
 
     Ok(())

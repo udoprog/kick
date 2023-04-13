@@ -42,7 +42,7 @@
 //! every command that was successful. Or `--save-failed` for unsuccessful ones.
 //!
 //! The names of the sets will be printed at the end of the command, and can be
-//! used with the `--with <set>` switch in subsequent iterations to only run
+//! used with the `--set <set>` switch in subsequent iterations to only run
 //! commands present in that set.
 
 #![allow(clippy::too_many_arguments)]
@@ -185,8 +185,8 @@ struct ModuleOptions {
     #[arg(long)]
     set: Vec<String>,
     /// Subtract sets with the given ids. This will remove any items in the
-    /// loaded set (as specified by `--with <id>`) that exist in the specified
-    /// sets.
+    /// loaded set (as specified by one or more `--set <id>`) that exist in the
+    /// specified sets.
     #[arg(long)]
     sub_set: Vec<String>,
 }
