@@ -18,7 +18,7 @@
 //! repos/kick/README.md: Needs update
 //! repos/kick/src/main.rs: Needs update
 //! 2023-04-13T15:05:34.162247Z  WARN kick: Not writing changes since `--save` was not specified
-//! 2023-04-13T15:05:34.162252Z  INFO kick: Writing commit to ../changes.gz, use `kick apply` to apply it later
+//! 2023-04-13T15:05:34.162252Z  INFO kick: Writing commit to ../changes.gz, use `kick changes` to review it later
 //! ```
 //!
 //! Applying the staged changes:
@@ -436,7 +436,7 @@ async fn entry() -> Result<()> {
     if cx.can_save() && !shared.save {
         tracing::warn!("Not writing changes since `--save` was not specified");
         tracing::info!(
-            "Writing commit to {}, use `kick apply` to apply it later",
+            "Writing commit to {}, use `kick changes` to review it later",
             changes_path.display()
         );
         save_changes(&cx, &changes_path).with_context(|| anyhow!("{}", changes_path.display()))?;
