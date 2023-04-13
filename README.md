@@ -6,3 +6,44 @@
 [<img alt="build status" src="https://img.shields.io/github/actions/workflow/status/udoprog/kick/ci.yml?branch=main&style=for-the-badge" height="20">](https://github.com/udoprog/kick/actions?query=branch%3Amain)
 
 Give your projects a good 🦶!
+
+<br>
+
+## Saving changes
+
+If you specify `--save`, proposed changes that can be applied to a project
+will be applied. If `--save` is not specified the collection of changes will
+be saved to `changes.gz` (in the root) to be applied later using `kick
+apply`.
+
+```rust
+> kick check
+repos/kick/README.md: Needs update
+repos/kick/src/main.rs: Needs update
+2023-04-13T15:05:34.162247Z  WARN kick: Not writing changes since `--save` was not specified
+2023-04-13T15:05:34.162252Z  INFO kick: Writing commit to ../changes.data.gz, use `kick apply` to apply it later
+```
+
+Applying the staged changes:
+
+```rust
+> kick --save apply
+repos/kick/README.md: Fixing
+repos/kick/src/main.rs: Fixing
+2023-04-13T15:06:23.478579Z  WARN kick: Removing ../changes.data.gz
+```
+
+<br>
+
+## Working with module sets
+
+Commands can produce sets under certain circumstances. Look out for switches
+prefixes with `--save-*`.
+
+This stores and saves a set of modules depending on a certain condition,
+such as `--save-success` for `kick for` which will save the module name for
+every command that was successful. Or `--save-failed` for unsuccessful ones.
+
+The names of the sets will be printed at the end of the command, and can be
+used with the `--with <set>` switch in subsequent iterations to only run
+commands present in that set.

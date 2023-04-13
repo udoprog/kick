@@ -4,6 +4,34 @@
 //!
 //! Give your projects a good 🦶!
 //!
+//! <br>
+//!
+//! ## Staging changes
+//!
+//! If you specify `--save`, proposed changes that can be applied to a project
+//! will be applied. If `--save` is not specified the collection of changes will
+//! be saved to `changes.gz` (in the root) to be applied later using `kick
+//! apply`.
+//!
+//! ```text
+//! > kick check
+//! repos/kick/README.md: Needs update
+//! repos/kick/src/main.rs: Needs update
+//! 2023-04-13T15:05:34.162247Z  WARN kick: Not writing changes since `--save` was not specified
+//! 2023-04-13T15:05:34.162252Z  INFO kick: Writing commit to ../changes.gz, use `kick apply` to apply it later
+//! ```
+//!
+//! Applying the staged changes:
+//!
+//! ```text
+//! > kick changes --save
+//! repos/kick/README.md: Fixing
+//! repos/kick/src/main.rs: Fixing
+//! 2023-04-13T15:06:23.478579Z  INFO kick: Removing ../changes.gz
+//! ```
+//!
+//! <br>
+//!
 //! ## Working with module sets
 //!
 //! Commands can produce sets under certain circumstances. Look out for switches
@@ -57,7 +85,7 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use changes::Change;
-use clap::{Parser, Subcommand};
+use clap::{Args, FromArgMatches, Parser, Subcommand};
 
 use actions::Actions;
 use flate2::read::GzDecoder;
@@ -74,36 +102,73 @@ const KICK_TOML: &str = "Kick.toml";
 #[derive(Subcommand)]
 enum Action {
     /// Run checks non destructively for each module (default action).
-    Check(cli::check::Opts),
+    Check(SharedAction<cli::check::Opts>),
     /// Run a command for each module.
-    For(cli::foreach::Opts),
+    For(SharedAction<cli::foreach::Opts>),
     /// Fetch github actions build status for each module.
-    Status(cli::status::Opts),
+    Status(SharedAction<cli::status::Opts>),
     /// Find the minimum supported rust version for each module.
-    Msrv(cli::msrv::Opts),
+    Msrv(SharedAction<cli::msrv::Opts>),
     /// Update package version.
-    Version(cli::version::Opts),
+    Version(SharedAction<cli::version::Opts>),
     /// Publish packages in reverse order of dependencies.
-    Publish(cli::publish::Opts),
+    Publish(SharedAction<cli::publish::Opts>),
     /// Upgrade packages.
-    Upgrade(cli::upgrade::Opts),
+    Upgrade(SharedAction<cli::upgrade::Opts>),
     /// Apply the last saved committed set of changes.
-    Apply,
+    Changes(SharedOptions),
+}
+
+impl Action {
+    fn shared(&self) -> &SharedOptions {
+        match self {
+            Action::Check(action) => &action.shared,
+            Action::For(action) => &action.shared,
+            Action::Status(action) => &action.shared,
+            Action::Msrv(action) => &action.shared,
+            Action::Version(action) => &action.shared,
+            Action::Publish(action) => &action.shared,
+            Action::Upgrade(action) => &action.shared,
+            Action::Changes(shared) => shared,
+        }
+    }
+
+    fn module(&self) -> Option<&ModuleOptions> {
+        match self {
+            Action::Check(action) => Some(&action.module),
+            Action::For(action) => Some(&action.module),
+            Action::Status(action) => Some(&action.module),
+            Action::Msrv(action) => Some(&action.module),
+            Action::Version(action) => Some(&action.module),
+            Action::Publish(action) => Some(&action.module),
+            Action::Upgrade(action) => Some(&action.module),
+            Action::Changes(..) => None,
+        }
+    }
 }
 
 impl Default for Action {
     fn default() -> Self {
-        Self::Check(cli::check::Opts::default())
+        Self::Check(SharedAction {
+            shared: SharedOptions::default(),
+            module: ModuleOptions::default(),
+            action: cli::check::Opts::default(),
+        })
     }
 }
 
 #[derive(Default, Parser)]
-#[command(author, version, about, long_about = None)]
-#[command(propagate_version = true)]
-struct Opts {
+struct SharedOptions {
     /// Specify custom root folder for project hierarchy.
     #[arg(long, name = "path")]
     root: Option<PathBuf>,
+    /// Save any proposed or loaded changes.
+    #[arg(long)]
+    save: bool,
+}
+
+#[derive(Default, Parser)]
+struct ModuleOptions {
     /// Force processing of all repos, even if the root is currently inside of
     /// an existing repo.
     #[arg(long)]
@@ -126,9 +191,6 @@ struct Opts {
     /// commit that doesn't have a tag as determined by `git describe --tags`.
     #[arg(long)]
     unreleased: bool,
-    /// Save any proposed changes.
-    #[arg(long)]
-    save: bool,
     /// Load sets with the given ids.
     #[arg(long)]
     set: Vec<String>,
@@ -137,15 +199,34 @@ struct Opts {
     /// sets.
     #[arg(long)]
     sub_set: Vec<String>,
-    /// Action to perform. Defaults to `check`.
-    #[command(subcommand, name = "action")]
-    action: Option<Action>,
 }
 
-impl Opts {
+impl ModuleOptions {
     fn needs_git(&self) -> bool {
         self.dirty || self.cached || self.cached_only || self.unreleased
     }
+}
+
+#[derive(Parser)]
+struct SharedAction<A>
+where
+    A: FromArgMatches + Args,
+{
+    #[command(flatten)]
+    shared: SharedOptions,
+    #[command(flatten)]
+    module: ModuleOptions,
+    #[command(flatten)]
+    action: A,
+}
+
+#[derive(Default, Parser)]
+#[command(author, version, about, long_about = None)]
+#[command(propagate_version = true)]
+struct Opts {
+    /// Action to perform. Defaults to `check`.
+    #[command(subcommand, name = "action")]
+    action: Option<Action>,
 }
 
 #[tokio::main]
@@ -179,7 +260,11 @@ async fn entry() -> Result<()> {
         }
     };
 
-    let current_dir = match &opts.root {
+    let action = opts.action.unwrap_or_default();
+    let shared = action.shared();
+    let module = action.module();
+
+    let current_dir = match &shared.root {
         Some(root) => root.clone(),
         None => PathBuf::new(),
     };
@@ -239,52 +324,54 @@ async fn entry() -> Result<()> {
         "using `run` is less verbose and faster",
     );
 
-    let current_path = if !opts.all && modules.iter().any(|m| m.path() == current_path) {
-        Some(current_path.as_ref())
-    } else {
-        None
-    };
+    if let Some(module) = module {
+        let current_path = if !module.all && modules.iter().any(|m| m.path() == current_path) {
+            Some(current_path.as_ref())
+        } else {
+            None
+        };
 
-    let mut filters = Vec::new();
+        let mut filters = Vec::new();
 
-    for module in &opts.modules {
-        filters.push(Fragment::parse(module));
-    }
+        for module in &module.modules {
+            filters.push(Fragment::parse(module));
+        }
 
-    let set = match &opts.set[..] {
-        [] => None,
-        ids => {
-            let mut set = HashSet::new();
+        let set = match &module.set[..] {
+            [] => None,
+            ids => {
+                let mut set = HashSet::new();
 
-            for id in ids {
-                if let Some(s) = sets.load(id)? {
-                    set.extend(s.iter().map(RelativePath::to_owned));
-                }
-            }
-
-            for id in &opts.sub_set {
-                if let Some(s) = sets.load(id)? {
-                    for module in s.iter() {
-                        set.remove(module);
+                for id in ids {
+                    if let Some(s) = sets.load(id)? {
+                        set.extend(s.iter().map(RelativePath::to_owned));
                     }
                 }
+
+                for id in &module.sub_set {
+                    if let Some(s) = sets.load(id)? {
+                        for module in s.iter() {
+                            set.remove(module);
+                        }
+                    }
+                }
+
+                Some(set)
             }
+        };
 
-            Some(set)
-        }
-    };
+        filter_modules(
+            &root,
+            module,
+            git.as_ref(),
+            &modules,
+            &filters,
+            current_path,
+            set.as_ref(),
+        )?;
+    }
 
-    filter_modules(
-        &root,
-        &opts,
-        git.as_ref(),
-        &modules,
-        &filters,
-        current_path,
-        set.as_ref(),
-    )?;
-
-    let changes_path = root.join("changes.data.gz");
+    let changes_path = root.join("changes.gz");
 
     let mut cx = ctxt::Ctxt {
         root: &root,
@@ -299,29 +386,29 @@ async fn entry() -> Result<()> {
         sets: &mut sets,
     };
 
-    match opts.action.unwrap_or_default() {
+    match &action {
         Action::Check(opts) => {
-            cli::check::entry(&cx, &opts).await?;
+            cli::check::entry(&cx, &opts.action).await?;
         }
         Action::For(opts) => {
-            cli::foreach::entry(&mut cx, &opts)?;
+            cli::foreach::entry(&mut cx, &opts.action)?;
         }
         Action::Status(opts) => {
-            cli::status::entry(&cx, &opts).await?;
+            cli::status::entry(&cx, &opts.action).await?;
         }
         Action::Msrv(opts) => {
-            cli::msrv::entry(&cx, &opts)?;
+            cli::msrv::entry(&cx, &opts.action)?;
         }
         Action::Version(opts) => {
-            cli::version::entry(&cx, &opts)?;
+            cli::version::entry(&cx, &opts.action)?;
         }
         Action::Publish(opts) => {
-            cli::publish::entry(&cx, &opts)?;
+            cli::publish::entry(&cx, &opts.action)?;
         }
         Action::Upgrade(opts) => {
-            cli::upgrade::entry(&cx, &opts)?;
+            cli::upgrade::entry(&cx, &opts.action)?;
         }
-        Action::Apply => {
+        Action::Changes(shared) => {
             let changes = load_changes(&changes_path)
                 .with_context(|| anyhow!("{}", changes_path.display()))?;
 
@@ -330,16 +417,16 @@ async fn entry() -> Result<()> {
                 return Ok(());
             };
 
-            if !opts.save {
+            if !shared.save {
                 tracing::warn!("Not writing changes since `--save` was not specified");
             }
 
             for change in changes {
-                crate::changes::apply(&cx, &change, opts.save)?;
+                crate::changes::apply(&cx, &change, shared.save)?;
             }
 
-            if opts.save {
-                tracing::warn!("Removing {}", changes_path.display());
+            if shared.save {
+                tracing::info!("Removing {}", changes_path.display());
                 std::fs::remove_file(&changes_path)
                     .with_context(|| anyhow!("{}", changes_path.display()))?;
             }
@@ -353,10 +440,10 @@ async fn entry() -> Result<()> {
     }
 
     for change in cx.changes().iter() {
-        crate::changes::apply(&cx, change, opts.save)?;
+        crate::changes::apply(&cx, change, shared.save)?;
     }
 
-    if cx.can_save() && !opts.save {
+    if cx.can_save() && !shared.save {
         tracing::warn!("Not writing changes since `--save` was not specified");
         tracing::info!(
             "Writing commit to {}, use `kick apply` to apply it later",
@@ -394,7 +481,7 @@ fn save_changes(cx: &ctxt::Ctxt<'_>, path: &Path) -> Result<()> {
 /// Perform more advanced filtering over modules.
 fn filter_modules(
     root: &Path,
-    opts: &Opts,
+    opts: &ModuleOptions,
     git: Option<&git::Git>,
     modules: &[model::Module],
     filters: &[Fragment<'_>],
