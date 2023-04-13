@@ -103,7 +103,7 @@ fn msrv(
 ) -> Result<()> {
     let primary = workspace.primary_crate()?;
 
-    let current_dir = crate::utils::to_path(module.path(), cx.root);
+    let current_dir = module.path().to_path(cx.root);
     let rust_version = primary.rust_version()?;
 
     let opts_earliest = parse_minor_version(cx, opts.earliest.as_deref(), rust_version.as_ref())?;
@@ -116,7 +116,7 @@ fn msrv(
         .unwrap_or(LATEST)
         .max(earliest);
 
-    let cargo_lock = crate::utils::to_path(primary.manifest_dir.join("Cargo.lock"), cx.root);
+    let cargo_lock = primary.manifest_dir.join("Cargo.lock").to_path(cx.root);
     let cargo_lock_original = cargo_lock.with_extension("lock.original");
 
     tracing::info!("Testing Rust {earliest}-{latest}");
@@ -147,8 +147,8 @@ fn msrv(
 
         for p in &mut packages {
             let original = p.manifest_path.with_extension("toml.original");
-            let original_path = crate::utils::to_path(original, cx.root);
-            let manifest_path = crate::utils::to_path(&p.manifest_path, cx.root);
+            let original_path = original.to_path(cx.root);
+            let manifest_path = p.manifest_path.to_path(cx.root);
 
             let mut save = if opts.no_remove_dev_dependencies {
                 false

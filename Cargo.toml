@@ -17,7 +17,7 @@ categories = ["command-line-utilities"]
 anyhow = "1.0.70"
 bstr = "1.4.0"
 chrono = { version = "0.4.24", features = ["serde"] }
-clap = { version = "4.2.1", features = ["derive"] }
+clap = { version = "4.2.2", features = ["derive"] }
 flate2 = "1.0.25"
 handlebars = "4.3.6"
 nondestructive = { version = "0.0.15", features = ["serde-edits"] }

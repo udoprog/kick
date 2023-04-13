@@ -27,7 +27,7 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
 
 #[tracing::instrument(skip_all, fields(source = ?module.source(), path = module.path().as_str()))]
 fn upgrade(cx: &Ctxt<'_>, opts: &Opts, module: &Module) -> Result<()> {
-    let current_dir = crate::utils::to_path(module.path(), cx.root);
+    let current_dir = module.path().to_path(cx.root);
     let upgrade = cx.config.upgrade(module.path());
 
     let mut command = Command::new("cargo");

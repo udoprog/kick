@@ -46,7 +46,7 @@ pub(crate) fn build(
 
     let entry = 'entry: {
         for entry in package.entries() {
-            if crate::utils::to_path(&entry, cx.root).is_file() {
+            if entry.to_path(cx.root).is_file() {
                 break 'entry entry;
             }
         }
@@ -77,13 +77,13 @@ struct MarkdownChecks {
 
 /// Validate the current model.
 fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
-    if !crate::utils::to_path(rm.readme_path, cx.root).is_file() {
+    if !rm.readme_path.to_path(cx.root).is_file() {
         cx.warning(Warning::MissingReadme {
             path: rm.readme_path.to_owned(),
         });
     }
 
-    if !crate::utils::to_path(rm.entry, cx.root).is_file() {
+    if !rm.entry.to_path(cx.root).is_file() {
         return Ok(());
     }
 
@@ -136,7 +136,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
 
     let readme_from_lib_rs = readme_from_lib_rs(cx, rm, &comments, &readme_badges)?;
 
-    let readme = match File::read(crate::utils::to_path(rm.readme_path, cx.root)) {
+    let readme = match File::read(rm.readme_path.to_path(cx.root)) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => File::new(),
         Err(e) => return Err(e.into()),
@@ -204,7 +204,7 @@ fn process_lib_rs(
     rm: &Readme<'_, '_>,
     badges: &[BadgeParams],
 ) -> Result<(Arc<File>, Arc<File>, File)> {
-    let source = File::read(crate::utils::to_path(rm.entry, cx.root))?;
+    let source = File::read(rm.entry.to_path(cx.root))?;
     let mut lib_rs = File::new();
 
     let mut source_lines = source.lines().peekable();

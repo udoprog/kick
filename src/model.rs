@@ -319,5 +319,9 @@ where
 {
     let url = git.get_url(root, "origin")?;
 
-    Ok(Module::new(ModuleSource::Git, RelativePathBuf::new(), url))
+    Ok(Module::new(
+        ModuleSource::Git,
+        RelativePathBuf::from("."),
+        url,
+    ))
 }

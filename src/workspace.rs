@@ -28,7 +28,7 @@ pub(crate) fn open(cx: &Ctxt<'_>, module: &ModuleRef) -> Result<Option<Workspace
         .crate_for(module.path())
         .or(module.repo().map(|repo| repo.name));
 
-    let Some(manifest) = manifest::open(crate::utils::to_path(&manifest_path, cx.root))? else {
+    let Some(manifest) = manifest::open(manifest_path.to_path(cx.root))? else {
         return Ok(None);
     };
 
@@ -66,7 +66,7 @@ pub(crate) fn open(cx: &Ctxt<'_>, module: &ModuleRef) -> Result<Option<Workspace
             for manifest_dir in members {
                 let manifest_path = manifest_dir.join(CARGO_TOML);
 
-                let manifest = manifest::open(crate::utils::to_path(&manifest_path, cx.root))
+                let manifest = manifest::open(manifest_path.to_path(cx.root))
                     .with_context(|| anyhow!("{manifest_path}"))?
                     .with_context(|| anyhow!("{manifest_path}: missing file"))?;
 

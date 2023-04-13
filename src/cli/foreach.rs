@@ -49,7 +49,7 @@ fn r#for(
     good: Option<&mut Set>,
     bad: Option<&mut Set>,
 ) -> Result<()> {
-    let current_dir = crate::utils::to_path(module.path(), cx.root);
+    let current_dir = module.path().to_path(cx.root);
 
     let mut command = Command::new(command);
     command.args(args);

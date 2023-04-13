@@ -64,7 +64,6 @@ mod rust_version;
 mod sets;
 mod templates;
 mod urls;
-mod utils;
 mod workspace;
 
 use std::cell::RefCell;
@@ -508,7 +507,7 @@ fn filter_modules(
 
         if opts.needs_git() {
             let git = git.context("no working git command")?;
-            let module_path = crate::utils::to_path(module.path(), root);
+            let module_path = module.path().to_path(root);
 
             let cached = git.is_cached(&module_path)?;
             let dirty = git.is_dirty(&module_path)?;
