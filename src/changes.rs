@@ -237,9 +237,15 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
         }
         Change::SetRustVersion { module, version } => {
             if save {
-                tracing::info!("Setting rust version: Rust {version}");
+                tracing::info!(
+                    path = module.path().as_str(),
+                    "Setting rust version: Rust {version}"
+                );
             } else {
-                tracing::info!("Would set rust version: Rust {version}");
+                tracing::info!(
+                    path = module.path().as_str(),
+                    "Would set rust version: Rust {version}"
+                );
             }
 
             let workspace = module.require_workspace(cx)?;
@@ -271,9 +277,15 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
         }
         Change::RemoveRustVersion { module, version } => {
             if save {
-                tracing::info!("Clearing rust version: Rust {version}");
+                tracing::info!(
+                    path = module.path().as_str(),
+                    "Clearing rust version: Rust {version}"
+                );
             } else {
-                tracing::info!("Would clear rust version: Rust {version}");
+                tracing::info!(
+                    path = module.path().as_str(),
+                    "Would clear rust version: Rust {version}"
+                );
             }
 
             let workspace = module.require_workspace(cx)?;
