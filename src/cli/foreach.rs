@@ -17,21 +17,21 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     };
 
     for module in cx.modules() {
-        foreach(cx, module, command, args).with_context(|| module.path().to_owned())?;
+        r#for(cx, module, command, args).with_context(|| module.path().to_owned())?;
     }
 
     Ok(())
 }
 
-#[tracing::instrument(skip_all, fields(path = module.path().as_str()))]
-fn foreach(cx: &Ctxt<'_>, module: &Module, command: &str, args: &[String]) -> Result<()> {
+#[tracing::instrument(name = "for", skip_all, fields(path = module.path().as_str()))]
+fn r#for(cx: &Ctxt<'_>, module: &Module, command: &str, args: &[String]) -> Result<()> {
     let current_dir = crate::utils::to_path(module.path(), cx.root);
 
     let mut command = Command::new(command);
     command.args(args);
     command.current_dir(&current_dir);
 
-    tracing::info!("for: {}", command.display());
+    tracing::info!("{}", command.display());
 
     if !command.status()?.success() {
         tracing::warn!(?command, "command failed");
