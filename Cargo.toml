@@ -17,23 +17,23 @@ categories = ["command-line-utilities"]
 anyhow = "1.0.70"
 bstr = "1.4.0"
 chrono = { version = "0.4.24", features = ["serde"] }
-clap = { version = "4.1.11", features = ["derive"] }
+clap = { version = "4.2.1", features = ["derive"] }
 handlebars = "4.3.6"
 nondestructive = "0.0.14"
 pulldown-cmark = "0.9.2"
-regex = "1.7.2"
+regex = "1.7.3"
 relative-path = { version = "1.8.0", features = ["serde"] }
-reqwest = { version = "0.11.15", features = ["json"] }
+reqwest = { version = "0.11.16", features = ["json"] }
 semver = "1.0.17"
-serde = { version = "1.0.158", features = ["derive"] }
-serde_json = "1.0.94"
-serde_yaml = "0.9.19"
-tempfile = "3.4.0"
+serde = { version = "1.0.160", features = ["derive"] }
+serde_json = "1.0.96"
+serde_yaml = "0.9.21"
+tempfile = "3.5.0"
 thiserror = "1.0.40"
-tokio = { version = "1.26.0", features = ["full"] }
+tokio = { version = "1.27.0", features = ["full"] }
 toml = { version = "0.7.3", features = ["preserve_order"] }
-toml_edit = "0.19.7"
+toml_edit = "0.19.8"
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
-unicycle = "0.9.3"
+unicycle = "0.9.4"
 url = { version = "2.3.1", features = ["serde"] }

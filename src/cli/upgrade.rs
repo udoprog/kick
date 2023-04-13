@@ -1,11 +1,9 @@
-use std::process::Command;
-
-use anyhow::{Context, Error, Result};
+use anyhow::{Context, Result};
 use clap::Parser;
 
 use crate::ctxt::Ctxt;
 use crate::model::Module;
-use crate::utils::CommandRepr;
+use crate::process::Command;
 
 #[derive(Default, Parser)]
 pub(crate) struct Opts {
@@ -49,10 +47,9 @@ fn upgrade(cx: &Ctxt<'_>, opts: &Opts, module: &Module) -> Result<()> {
 
     command.current_dir(&current_dir);
 
-    let status = command
-        .status()
-        .with_context(|| Error::msg(CommandRepr::new(&["cargo", "upgrade"]).to_string()))?;
+    if !command.status()?.success() {
+        tracing::warn!(?command, "command failed");
+    }
 
-    tracing::trace!(?status);
     Ok(())
 }

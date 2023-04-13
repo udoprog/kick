@@ -28,6 +28,7 @@ mod gitmodules;
 mod glob;
 mod manifest;
 mod model;
+mod process;
 mod rust_version;
 mod templates;
 mod urls;

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
@@ -8,8 +8,8 @@ use clap::Parser;
 use crate::changes::Change;
 use crate::ctxt::Ctxt;
 use crate::model::Module;
+use crate::process::Command;
 use crate::rust_version::{self, RustVersion};
-use crate::utils::CommandRepr;
 use crate::workspace::Workspace;
 
 /// Oldest version where rust-version was introduced.
@@ -160,16 +160,8 @@ fn build(cx: &Ctxt<'_>, workspace: &Workspace, module: &Module, opts: &Opts) -> 
         rustup.args(["run", &version, "--"]);
 
         if !opts.command.is_empty() {
-            tracing::info!(
-                "Testing Rust {version}: {}",
-                CommandRepr::new(&opts.command[..])
-            );
             rustup.args(&opts.command[..]);
         } else {
-            tracing::info!(
-                "Testing Rust {version}: {}",
-                CommandRepr::new(&DEFAULT_COMMAND[..])
-            );
             rustup.args(DEFAULT_COMMAND);
         }
 
@@ -178,6 +170,8 @@ fn build(cx: &Ctxt<'_>, workspace: &Workspace, module: &Module, opts: &Opts) -> 
         if !opts.verbose {
             rustup.stdout(Stdio::null()).stderr(Stdio::null());
         }
+
+        tracing::info!("Testing Rust {version}: {}", rustup.display());
 
         let status = rustup.status().context("Command through `rustup run`")?;
 

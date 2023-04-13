@@ -1,11 +1,9 @@
-use std::process::Command;
-
-use anyhow::{anyhow, Context, Error, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 
 use crate::ctxt::Ctxt;
 use crate::model::Module;
-use crate::utils::CommandRepr;
+use crate::process::Command;
 
 #[derive(Default, Parser)]
 pub(crate) struct Opts {
@@ -19,29 +17,23 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     };
 
     for module in cx.modules() {
-        foreach(cx, opts, module, command, args).with_context(|| module.path().to_owned())?;
+        foreach(cx, module, command, args).with_context(|| module.path().to_owned())?;
     }
 
     Ok(())
 }
 
-#[tracing::instrument(skip(cx, opts, module, command, args), fields(path = module.path().as_str()))]
-fn foreach(
-    cx: &Ctxt<'_>,
-    opts: &Opts,
-    module: &Module,
-    command: &str,
-    args: &[String],
-) -> Result<()> {
+#[tracing::instrument(skip_all, fields(path = module.path().as_str()))]
+fn foreach(cx: &Ctxt<'_>, module: &Module, command: &str, args: &[String]) -> Result<()> {
     let current_dir = crate::utils::to_path(module.path(), cx.root);
-    tracing::info!("{}", CommandRepr::new(&opts.command));
 
-    let status = Command::new(command)
-        .args(args)
-        .current_dir(&current_dir)
-        .status()
-        .with_context(|| Error::msg(CommandRepr::new(&opts.command).to_string()))?;
+    let mut command = Command::new(command);
+    command.args(args);
+    command.current_dir(&current_dir);
 
-    tracing::trace!(?status);
+    if !command.status()?.success() {
+        tracing::warn!(?command, "command failed");
+    }
+
     Ok(())
 }

@@ -3,8 +3,9 @@ use std::ffi::OsStr;
 use std::fmt::Display;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{ExitStatus, Stdio};
 
+use crate::process::Command;
 use anyhow::{anyhow, Context, Result};
 use reqwest::Url;
 

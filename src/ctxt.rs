@@ -1,6 +1,6 @@
 use std::cell::{Ref, RefCell};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use anyhow::{Context, Result};
 
@@ -9,6 +9,7 @@ use crate::changes::Change;
 use crate::config::Config;
 use crate::git::Git;
 use crate::model::{Module, ModuleParams};
+use crate::process::Command;
 use crate::rust_version::RustVersion;
 use crate::workspace::Package;
 

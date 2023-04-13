@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
@@ -8,6 +8,7 @@ use toml_edit::Item;
 
 use crate::ctxt::Ctxt;
 use crate::model::Module;
+use crate::process::Command;
 use crate::workspace;
 
 #[derive(Default, Parser)]
