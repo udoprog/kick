@@ -165,7 +165,7 @@ fn msrv(
 
             if save {
                 move_paths(&manifest_path, &original_path)?;
-                tracing::info!("Saving {}", p.manifest_path);
+                tracing::trace!("Saving {}", p.manifest_path);
                 p.manifest.save_to(&manifest_path)?;
                 restore.push((original_path, manifest_path));
             }
