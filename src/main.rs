@@ -65,6 +65,8 @@ enum Action {
     Version(cli::version::Opts),
     /// Publish packages in reverse order of dependencies.
     Publish(cli::publish::Opts),
+    /// Upgrade packages.
+    Upgrade(cli::upgrade::Opts),
 }
 
 impl Default for Action {
@@ -248,6 +250,9 @@ async fn entry() -> Result<()> {
         }
         Action::Publish(opts) => {
             cli::publish::entry(&cx, &opts)?;
+        }
+        Action::Upgrade(opts) => {
+            cli::upgrade::entry(&cx, &opts)?;
         }
     }
 

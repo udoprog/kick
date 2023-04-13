@@ -73,6 +73,18 @@ impl Replaced {
     }
 }
 
+#[derive(Default, Clone)]
+pub(crate) struct Upgrade {
+    /// Packages to exclude during an upgrade.
+    pub(crate) exclude: BTreeSet<String>,
+}
+
+impl Upgrade {
+    fn merge_with(&mut self, other: Self) {
+        self.exclude.extend(other.exclude);
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Replacement {
     /// Replacements to perform in a given crate.
@@ -165,6 +177,8 @@ pub(crate) struct Repo {
     pub(crate) variables: toml::Table,
     /// Files to look for in replacements.
     pub(crate) version: Vec<Replacement>,
+    /// Upgrade configuration.
+    pub(crate) upgrade: Upgrade,
 }
 
 impl Repo {
@@ -183,6 +197,7 @@ impl Repo {
         self.lib_badges.merge_with(other.lib_badges);
         self.readme_badges.merge_with(other.readme_badges);
         self.version.extend(other.version);
+        self.upgrade.merge_with(other.upgrade);
         merge_map(&mut self.variables, other.variables);
     }
 
@@ -470,6 +485,18 @@ impl Config {
 
         replacements.extend(self.base.version.iter());
         replacements
+    }
+
+    /// Get crate for the given repo.
+    pub(crate) fn upgrade<'a>(&'a self, path: &RelativePath) -> Upgrade {
+        let mut upgrade = self
+            .repos
+            .get(path)
+            .map(|r| r.upgrade.clone())
+            .unwrap_or_default();
+
+        upgrade.merge_with(self.base.upgrade.clone());
+        upgrade
     }
 }
 
@@ -852,6 +879,9 @@ impl<'a> ConfigCtxt<'a> {
             })
         })?;
 
+        let upgrade = self.as_table(config, "upgrade")?.unwrap_or_default();
+        let upgrade = self.upgrade(upgrade)?;
+
         Ok(Repo {
             workflow,
             job_name,
@@ -868,6 +898,7 @@ impl<'a> ConfigCtxt<'a> {
             readme_badges,
             variables,
             version: version.unwrap_or_default(),
+            upgrade,
         })
     }
 
@@ -876,6 +907,18 @@ impl<'a> ConfigCtxt<'a> {
         let repo = self.repo_table(&mut config)?;
         self.ensure_empty(config)?;
         Ok(repo)
+    }
+
+    fn upgrade(&mut self, mut config: toml::Table) -> Result<Upgrade> {
+        let exclude = self
+            .in_array(&mut config, "exclude", |cx, item| cx.string(item))?
+            .into_iter()
+            .flatten()
+            .collect();
+
+        self.ensure_empty(config)?;
+
+        Ok(Upgrade { exclude })
     }
 }
 
