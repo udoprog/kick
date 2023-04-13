@@ -220,7 +220,7 @@ impl Module {
             if let Some(workspace) = self.inner_workspace(cx)? {
                 *self.inner.workspace.borrow_mut() = Some(workspace);
             } else {
-                tracing::warn!("missing workspace for module");
+                tracing::warn!("Missing workspace for module");
             };
 
             self.inner.init.set(true);

@@ -10,6 +10,7 @@ use crate::ctxt::Ctxt;
 use crate::model::Module;
 use crate::process::Command;
 use crate::rust_version::{self, RustVersion};
+use crate::sets::Set;
 use crate::workspace::Workspace;
 
 /// Oldest version where rust-version was introduced.
@@ -59,6 +60,10 @@ pub(crate) struct Opts {
     /// * rustc - The version reported by your local rustc.
     #[arg(long, verbatim_doc_comment)]
     latest: Option<String>,
+    /// Store the outcome if this run into the sets `msrv-good` and `msrv-bad`,
+    /// to be used later with `--with <id>` command.
+    #[arg(long)]
+    store_sets: bool,
     /// Command to test with.
     ///
     /// This is run through `rustup run <version> <command>`, the default
@@ -66,17 +71,36 @@ pub(crate) struct Opts {
     command: Vec<String>,
 }
 
-pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
+pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
+    let mut good = opts.store_sets.then(Set::default);
+    let mut bad = opts.store_sets.then(Set::default);
+
     for module in cx.modules() {
         let workspace = module.workspace(cx)?;
-        msrv(cx, &workspace, module, opts).with_context(|| module.path().to_owned())?;
+        msrv(cx, &workspace, module, opts, good.as_mut(), bad.as_mut())
+            .with_context(|| module.path().to_owned())?;
+    }
+
+    if let Some(set) = good {
+        cx.sets.save("msrv-good", set);
+    }
+
+    if let Some(set) = bad {
+        cx.sets.save("msrv-bad", set);
     }
 
     Ok(())
 }
 
 #[tracing::instrument(skip_all, fields(source = ?module.source(), path = module.path().as_str()))]
-fn msrv(cx: &Ctxt<'_>, workspace: &Workspace, module: &Module, opts: &Opts) -> Result<()> {
+fn msrv(
+    cx: &Ctxt<'_>,
+    workspace: &Workspace,
+    module: &Module,
+    opts: &Opts,
+    good: Option<&mut Set>,
+    bad: Option<&mut Set>,
+) -> Result<()> {
     let primary = workspace.primary_crate()?;
 
     let current_dir = crate::utils::to_path(module.path(), cx.root);
@@ -188,8 +212,17 @@ fn msrv(cx: &Ctxt<'_>, workspace: &Workspace, module: &Module, opts: &Opts) -> R
 
     let Some(version) = candidates.get() else {
         tracing::warn!("No MSRV found");
+
+        if let Some(bad) = bad {
+            bad.insert(module);
+        }
+
         return Ok(());
     };
+
+    if let Some(good) = good {
+        good.insert(module);
+    }
 
     if version >= RUST_VERSION_SUPPORTED {
         cx.change(Change::SetRustVersion {

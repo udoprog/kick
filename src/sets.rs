@@ -108,7 +108,7 @@ impl Sets {
         }
 
         for (id, set) in self.new {
-            tracing::info!(?id, "saving set");
+            tracing::info!(?id, "Saving set");
 
             let mut path = self.path.join(id);
             path.set_extension(EXT);
@@ -146,7 +146,7 @@ pub(crate) struct Set {
 
 impl Set {
     /// Add the given module to the list.
-    pub(crate) fn add(&mut self, module: &Module) {
+    pub(crate) fn insert(&mut self, module: &Module) {
         if !self.modules.contains_key(module.path()) {
             self.added.insert(module.path().to_owned());
         }

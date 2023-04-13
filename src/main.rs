@@ -48,16 +48,6 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
 
-macro_rules! error {
-    ($error:ident, $($tt:tt)*) => {
-        tracing::error!($($tt)*, error = $error);
-
-        for $error in $error.chain().skip(1) {
-            tracing::error!(concat!("Caused by: ", $($tt)*), error = $error);
-        }
-    }
-}
-
 mod actions;
 mod changes;
 mod cli;
@@ -195,7 +185,7 @@ struct ModuleOptions {
     #[arg(long)]
     set: Vec<String>,
     /// Subtract sets with the given ids. This will remove any items in the
-    /// loaded set (as specified by `--set <id>`) that exist in the specified
+    /// loaded set (as specified by `--with <id>`) that exist in the specified
     /// sets.
     #[arg(long)]
     sub_set: Vec<String>,
@@ -397,7 +387,7 @@ async fn entry() -> Result<()> {
             cli::status::entry(&cx, &opts.action).await?;
         }
         Action::Msrv(opts) => {
-            cli::msrv::entry(&cx, &opts.action)?;
+            cli::msrv::entry(&mut cx, &opts.action)?;
         }
         Action::Version(opts) => {
             cli::version::entry(&cx, &opts.action)?;
@@ -528,28 +518,28 @@ fn filter_modules(
             let _enter = span.enter();
 
             if opts.dirty && !dirty {
-                tracing::trace!("directory is not dirty");
+                tracing::trace!("Directory is not dirty");
                 module.set_disabled(true);
             }
 
             if opts.cached && !cached {
-                tracing::trace!("directory has no cached changes");
+                tracing::trace!("Directory has no cached changes");
                 module.set_disabled(true);
             }
 
             if opts.cached_only && (!cached || dirty) {
-                tracing::trace!("directory has no cached changes");
+                tracing::trace!("Directory has no cached changes");
                 module.set_disabled(true);
             }
 
             if opts.unreleased {
                 if let Some((tag, offset)) = git.describe_tags(&module_path)? {
                     if offset.is_none() {
-                        tracing::trace!("no offset detected (tag: {tag})");
+                        tracing::trace!("No offset detected (tag: {tag})");
                         module.set_disabled(true);
                     }
                 } else {
-                    tracing::trace!("no tags to describe");
+                    tracing::trace!("No tags to describe");
                     module.set_disabled(true);
                 }
             }

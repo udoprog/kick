@@ -48,7 +48,7 @@ fn upgrade(cx: &Ctxt<'_>, opts: &Opts, module: &Module) -> Result<()> {
     command.current_dir(&current_dir);
 
     if !command.status()?.success() {
-        tracing::warn!(?command, "command failed");
+        tracing::warn!(?command, "Command failed");
     }
 
     Ok(())
