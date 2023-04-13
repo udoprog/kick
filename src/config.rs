@@ -8,11 +8,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Error, Result};
 use relative_path::{RelativePath, RelativePathBuf};
+use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
-use crate::model::{CrateParams, Module, ModuleParams, RenderRustVersions};
+use crate::model::{CrateParams, Module, ModuleParams, ModuleRef, RenderRustVersions};
 use crate::rust_version::{self};
 use crate::templates::{Template, Templating};
 use crate::KICK_TOML;
@@ -22,6 +23,7 @@ const DEFAULT_JOB_NAME: &str = "CI";
 /// Default license to use in configuration.
 const DEFAULT_LICENSE: &str = "MIT/Apache-2.0";
 
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Replaced {
     path: PathBuf,
     content: Vec<u8>,
@@ -302,7 +304,7 @@ impl Config {
     /// Generate a default workflow.
     pub(crate) fn workflow(
         &self,
-        module: &Module,
+        module: &ModuleRef,
         params: ModuleParams<'_>,
     ) -> Result<Option<String>> {
         let Some(template) = &self.repos.get(module.path()).and_then(|r|r.workflow.as_ref()).or(self.base.workflow.as_ref())  else {
@@ -316,7 +318,7 @@ impl Config {
     pub(crate) fn module_params<'a>(
         &'a self,
         cx: &Ctxt<'_>,
-        module: &Module,
+        module: &ModuleRef,
         crate_params: CrateParams<'a>,
         variables: toml::Table,
     ) -> ModuleParams<'a> {
@@ -333,7 +335,7 @@ impl Config {
     }
 
     /// Get the current job name.
-    pub(crate) fn job_name(&self, module: &Module) -> &str {
+    pub(crate) fn job_name(&self, module: &ModuleRef) -> &str {
         if let Some(name) = self
             .repos
             .get(module.path())
@@ -389,7 +391,7 @@ impl Config {
     }
 
     /// Get the current license template.
-    pub(crate) fn variables(&self, module: &Module) -> toml::Table {
+    pub(crate) fn variables(&self, module: &ModuleRef) -> toml::Table {
         let mut variables = self.base.variables.clone();
 
         if let Some(source) = self.repos.get(module.path()).map(|r| &r.variables) {

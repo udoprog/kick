@@ -320,8 +320,8 @@ impl Manifest {
 }
 
 #[derive(Serialize, Deserialize)]
-struct DocumentRef<'a> {
-    doc: &'a str,
+struct DocumentRef {
+    doc: String,
 }
 
 impl Serialize for Manifest {
@@ -330,7 +330,7 @@ impl Serialize for Manifest {
         S: serde::Serializer,
     {
         let doc = self.doc.to_string();
-        let doc = DocumentRef { doc: &doc };
+        let doc = DocumentRef { doc };
         doc.serialize(serializer)
     }
 }

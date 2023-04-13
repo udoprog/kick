@@ -8,7 +8,7 @@ use relative_path::RelativePath;
 use reqwest::Url;
 use serde::Serialize;
 
-use crate::changes::Change;
+use crate::changes::{Change, Warning};
 use crate::ctxt::Ctxt;
 use crate::file::File;
 use crate::model::{Module, ModuleParams};
@@ -78,7 +78,7 @@ struct MarkdownChecks {
 /// Validate the current model.
 fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
     if !crate::utils::to_path(rm.readme_path, cx.root).is_file() {
-        cx.change(Change::MissingReadme {
+        cx.warning(Warning::MissingReadme {
             path: rm.readme_path.to_owned(),
         });
     }
@@ -108,7 +108,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
     let checks = markdown_checks(rm, &file)?;
 
     for (file, range) in checks.toplevel_headings {
-        cx.change(Change::ToplevelHeadings {
+        cx.warning(Warning::ToplevelHeadings {
             path: rm.entry.to_owned(),
             file,
             range,
@@ -117,7 +117,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
     }
 
     for (file, range) in checks.missing_preceeding_br {
-        cx.change(Change::MissingPreceedingBr {
+        cx.warning(Warning::MissingPreceedingBr {
             path: rm.entry.to_owned(),
             file,
             range,

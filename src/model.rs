@@ -1,11 +1,12 @@
 use core::fmt;
 use std::cell::{Cell, Ref, RefCell};
+use std::ops::Deref;
 use std::path::Path;
 use std::rc::Rc;
 
 use anyhow::{bail, Context, Error, Result};
 use relative_path::{RelativePath, RelativePathBuf};
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 use url::Url;
 
 use crate::ctxt::Ctxt;
@@ -90,13 +91,56 @@ pub(crate) enum ModuleSource {
     Git,
 }
 
-struct ModuleInner {
-    /// Source of module.
-    source: ModuleSource,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ModuleRef {
     /// Path to module.
     path: RelativePathBuf,
     /// URL of module.
     url: Url,
+}
+
+impl ModuleRef {
+    /// Get path of module.
+    pub(crate) fn path(&self) -> &RelativePath {
+        &self.path
+    }
+
+    /// Get URL of module.
+    pub(crate) fn url(&self) -> &Url {
+        &self.url
+    }
+
+    /// Repo name.
+    pub(crate) fn repo(&self) -> Option<ModuleRepo<'_>> {
+        let Some("github.com") = self.url.domain() else {
+            return None;
+        };
+
+        let path = self.url.path().trim_matches('/');
+        let (owner, name) = path.split_once('/')?;
+        Some(ModuleRepo { owner, name })
+    }
+
+    /// Require that the workspace exists and can be opened.
+    pub(crate) fn require_workspace(&self, cx: &Ctxt<'_>) -> Result<Workspace> {
+        let Some(workspace) = self.inner_workspace(cx)? else {
+            bail!("{}: missing workspace", self.path);
+        };
+
+        Ok(workspace)
+    }
+
+    /// Open the workspace to this symbolic module.
+    fn inner_workspace(&self, cx: &Ctxt<'_>) -> Result<Option<Workspace>> {
+        crate::workspace::open(cx, self)
+    }
+}
+
+struct ModuleInner {
+    /// Source of module.
+    source: ModuleSource,
+    /// Interior module stuff.
+    symbolic: ModuleRef,
     /// If the module has been disabled for some reason.
     disabled: Cell<bool>,
     /// Whether we've tried to initialize the workspace.
@@ -115,8 +159,7 @@ impl fmt::Debug for Module {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Module")
             .field("source", &self.inner.source)
-            .field("path", &self.inner.path)
-            .field("url", &self.inner.url)
+            .field("symbolic", &self.inner.symbolic)
             .field("disabled", &self.inner.disabled)
             .field("init", &self.inner.init)
             .field("workspace", &self.inner.workspace)
@@ -129,8 +172,7 @@ impl Module {
         Self {
             inner: Rc::new(ModuleInner {
                 source,
-                path,
-                url,
+                symbolic: ModuleRef { path, url },
                 disabled: Cell::new(false),
                 init: Cell::new(false),
                 workspace: RefCell::new(None),
@@ -153,36 +195,15 @@ impl Module {
         &self.inner.source
     }
 
-    /// Get path of module.
-    pub(crate) fn path(&self) -> &RelativePath {
-        &self.inner.path
-    }
-
-    /// Get URL of module.
-    pub(crate) fn url(&self) -> &Url {
-        &self.inner.url
-    }
-
-    /// Repo name.
-    pub(crate) fn repo(&self) -> Option<ModuleRepo<'_>> {
-        let Some("github.com") = self.inner.url.domain() else {
-            return None;
-        };
-
-        let path = self.inner.url.path().trim_matches('/');
-        let (owner, name) = path.split_once('/')?;
-        Some(ModuleRepo { owner, name })
-    }
-
     /// Try to get a workspace, if one is present in the module.
-    #[tracing::instrument(skip_all, fields(source = ?self.inner.source, module = self.inner.path.as_str()))]
+    #[tracing::instrument(skip_all, fields(source = ?self.inner.source, module = self.path().as_str()))]
     pub(crate) fn try_workspace(&self, cx: &Ctxt<'_>) -> Result<Option<Ref<'_, Workspace>>> {
         self.init_workspace(cx)?;
         Ok(Ref::filter_map(self.inner.workspace.borrow(), Option::as_ref).ok())
     }
 
     /// Try to get a workspace, if one is present in the module.
-    #[tracing::instrument(skip_all, fields(source = ?self.inner.source, module = self.inner.path.as_str()))]
+    #[tracing::instrument(skip_all, fields(source = ?self.inner.source, module = self.path().as_str()))]
     pub(crate) fn workspace(&self, cx: &Ctxt<'_>) -> Result<Ref<'_, Workspace>> {
         self.init_workspace(cx)?;
 
@@ -196,7 +217,7 @@ impl Module {
     #[tracing::instrument(skip_all)]
     fn init_workspace(&self, cx: &Ctxt<'_>) -> Result<()> {
         if !self.inner.init.get() {
-            if let Some(workspace) = crate::workspace::open(cx, self)? {
+            if let Some(workspace) = self.inner_workspace(cx)? {
                 *self.inner.workspace.borrow_mut() = Some(workspace);
             } else {
                 tracing::warn!("missing workspace for module");
@@ -206,6 +227,15 @@ impl Module {
         }
 
         Ok(())
+    }
+}
+
+impl Deref for Module {
+    type Target = ModuleRef;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.inner.symbolic
     }
 }
 

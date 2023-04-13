@@ -51,12 +51,18 @@ mod workspace;
 
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::fs::File;
+use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
+use changes::Change;
 use clap::{Parser, Subcommand};
 
 use actions::Actions;
+use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use relative_path::{RelativePath, RelativePathBuf};
 use tracing::metadata::LevelFilter;
 
@@ -81,6 +87,8 @@ enum Action {
     Publish(cli::publish::Opts),
     /// Upgrade packages.
     Upgrade(cli::upgrade::Opts),
+    /// Apply the last saved committed set of changes.
+    Apply,
 }
 
 impl Default for Action {
@@ -276,6 +284,8 @@ async fn entry() -> Result<()> {
         set.as_ref(),
     )?;
 
+    let changes_path = root.join("changes.data.gz");
+
     let mut cx = ctxt::Ctxt {
         root: &root,
         config: &config,
@@ -284,6 +294,7 @@ async fn entry() -> Result<()> {
         github_auth,
         rustc_version: ctxt::rustc_version(),
         git,
+        warnings: RefCell::new(Vec::new()),
         changes: RefCell::new(Vec::new()),
         sets: &mut sets,
     };
@@ -310,13 +321,73 @@ async fn entry() -> Result<()> {
         Action::Upgrade(opts) => {
             cli::upgrade::entry(&cx, &opts)?;
         }
+        Action::Apply => {
+            let changes = load_changes(&changes_path)
+                .with_context(|| anyhow!("{}", changes_path.display()))?;
+
+            let Some(changes) = changes else {
+                tracing::info!("No changes found: {}", changes_path.display());
+                return Ok(());
+            };
+
+            if !opts.save {
+                tracing::warn!("Not writing changes since `--save` was not specified");
+            }
+
+            for change in changes {
+                crate::changes::apply(&cx, &change, opts.save)?;
+            }
+
+            if opts.save {
+                tracing::warn!("Removing {}", changes_path.display());
+                std::fs::remove_file(&changes_path)
+                    .with_context(|| anyhow!("{}", changes_path.display()))?;
+            }
+
+            return Ok(());
+        }
+    }
+
+    for warning in cx.warnings().iter() {
+        crate::changes::report(warning)?;
     }
 
     for change in cx.changes().iter() {
         crate::changes::apply(&cx, change, opts.save)?;
     }
 
+    if cx.can_save() && !opts.save {
+        tracing::warn!("Not writing changes since `--save` was not specified");
+        tracing::info!(
+            "Writing commit to {}, use `kick apply` to apply it later",
+            changes_path.display()
+        );
+        save_changes(&cx, &changes_path).with_context(|| anyhow!("{}", changes_path.display()))?;
+    }
+
     sets.commit()?;
+    Ok(())
+}
+
+/// Save changes to the given path.
+fn load_changes(path: &Path) -> Result<Option<Vec<Change>>> {
+    let f = match File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+
+    let encoder = GzDecoder::new(f);
+    let out = serde_cbor::from_reader(encoder)?;
+    Ok(out)
+}
+
+/// Save changes to the given path.
+fn save_changes(cx: &ctxt::Ctxt<'_>, path: &Path) -> Result<()> {
+    let f = File::create(path)?;
+    let encoder = GzEncoder::new(f, Compression::default());
+    let changes = cx.changes().iter().cloned().collect::<Vec<_>>();
+    serde_cbor::to_writer(encoder, &changes)?;
     Ok(())
 }
 

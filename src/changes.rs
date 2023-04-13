@@ -6,6 +6,7 @@ use anyhow::{bail, Result};
 use nondestructive::yaml;
 use relative_path::RelativePathBuf;
 use semver::Version;
+use serde::{Deserialize, Serialize};
 
 use crate::cli::check::cargo::CargoKey;
 use crate::cli::check::ci::ActionExpected;
@@ -13,205 +14,91 @@ use crate::config::Replaced;
 use crate::ctxt::Ctxt;
 use crate::file::{File, LineColumn};
 use crate::manifest::Manifest;
-use crate::model::Module;
+use crate::model::ModuleRef;
 use crate::rust_version::RustVersion;
 use crate::workspace::Package;
 
-macro_rules! cargo_issues {
-    ($f:ident, $($issue:ident $({ $($field:ident: $ty:ty),* $(,)? })? => $description:expr),* $(,)?) => {
-        pub(crate) enum CargoIssue {
-            $($issue $({$($field: $ty),*})?,)*
+/// Report a warning.
+pub(crate) fn report(warning: &Warning) -> Result<()> {
+    match warning {
+        Warning::MissingReadme { path } => {
+            println!("{path}: Missing README");
         }
+        Warning::DeprecatedWorkflow { path } => {
+            println!("{path}: Reprecated Workflow");
+        }
+        Warning::WrongWorkflowName {
+            path,
+            actual,
+            expected,
+        } => {
+            println!("{path}: Wrong workflow name: {actual} (actual) != {expected} (expected)");
+        }
+        Warning::ToplevelHeadings {
+            path,
+            file,
+            range,
+            line_offset,
+        } => {
+            let (line, column, string) = temporary_line_fix(file, range.start, *line_offset)?;
+            println!("{path}:{line}:{column}: doc comment has toplevel headings");
+            println!("{string}");
+        }
+        Warning::MissingPreceedingBr {
+            path,
+            file,
+            range,
+            line_offset,
+        } => {
+            let (line, column, string) = temporary_line_fix(file, range.start, *line_offset)?;
+            println!("{path}:{line}:{column}: missing preceeding <br>");
+            println!("{string}");
+        }
+        Warning::MissingFeature { path, feature } => {
+            println!("{path}: missing features `{feature}`");
+        }
+        Warning::NoFeatures { path } => {
+            println!("{path}: trying featured build (--all-features, --no-default-features), but no features present");
+        }
+        Warning::MissingEmptyFeatures { path } => {
+            println!("{path}: missing empty features build");
+        }
+        Warning::MissingAllFeatures { path } => {
+            println!("{path}: missing all features build");
+        }
+        Warning::ActionMissingKey {
+            path,
+            key,
+            expected,
+            doc,
+            actual,
+        } => {
+            println!("{path}: {key}: action missing key, expected {expected}");
 
-        impl fmt::Display for CargoIssue {
-            fn fmt(&self, $f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                match self {
-                    $(#[allow(unused_variables)] CargoIssue::$issue $({ $($field),* })? => $description,)*
+            match actual {
+                Some(value) => {
+                    println!("  actual:");
+                    let value = doc.value(*value);
+                    print!("{value}");
+                }
+                None => {
+                    println!("  actual: *missing value*");
                 }
             }
         }
-    }
-}
-
-cargo_issues! {
-    f,
-    MissingPackageLicense => write!(f, "package.license: missing"),
-    WrongPackageLicense => write!(f, "package.license: wrong"),
-    MissingPackageReadme => write!(f, "package.readme: missing"),
-    WrongPackageReadme => write!(f, "package.readme: wrong"),
-    MissingPackageRepository => write!(f, "package.repository: missing"),
-    WrongPackageRepository => write!(f, "package.repository: wrong"),
-    MissingPackageHomepage => write!(f, "package.homepage: missing"),
-    WrongPackageHomepage => write!(f, "package.homepage: wrong"),
-    MissingPackageDocumentation => write!(f, "package.documentation: missing"),
-    WrongPackageDocumentation => write!(f, "package.documentation: wrong"),
-    PackageDescription => write!(f, "package.description: missing"),
-    PackageCategories => write!(f, "package.categories: missing"),
-    PackageCategoriesNotSorted => write!(f, "package.categories: not sorted"),
-    PackageKeywords => write!(f, "package.keywords: missing"),
-    PackageKeywordsNotSorted => write!(f, "package.keywords: not sorted"),
-    PackageAuthorsEmpty => write!(f, "authors: empty"),
-    PackageDependenciesEmpty => write!(f, "dependencies: empty"),
-    PackageDevDependenciesEmpty => write!(f, "dev-dependencies: empty"),
-    PackageBuildDependenciesEmpty => write!(f, "build-dependencies: empty"),
-    KeysNotSorted { expected: Vec<CargoKey>, actual: Vec<CargoKey> } => {
-        write!(f, "[package] keys out-of-order, expected: {expected:?}")
-    }
-}
-
-/// A simple workflow change.
-pub(crate) enum WorkflowChange {
-    /// Oudated version of an action.
-    ReplaceString {
-        reason: String,
-        string: String,
-        value: yaml::Id,
-        remove_keys: Vec<(yaml::Id, String)>,
-        set_keys: Vec<(yaml::Id, String, String)>,
-    },
-    /// Deny use of the specific action.
-    Error { name: String, reason: String },
-}
-
-/// A single change.
-pub(crate) enum Change {
-    DeprecatedWorkflow {
-        path: RelativePathBuf,
-    },
-    MissingWorkflow {
-        path: RelativePathBuf,
-        module: Module,
-        candidates: Box<[RelativePathBuf]>,
-    },
-    WrongWorkflowName {
-        path: RelativePathBuf,
-        actual: String,
-        expected: String,
-    },
-    BadWorkflow {
-        path: RelativePathBuf,
-        doc: yaml::Document,
-        change: Vec<WorkflowChange>,
-    },
-    MissingReadme {
-        path: RelativePathBuf,
-    },
-    UpdateLib {
-        path: RelativePathBuf,
-        lib: Arc<File>,
-    },
-    UpdateReadme {
-        path: RelativePathBuf,
-        readme: Arc<File>,
-    },
-    ToplevelHeadings {
-        path: RelativePathBuf,
-        file: Arc<File>,
-        range: Range<usize>,
-        line_offset: usize,
-    },
-    MissingPreceedingBr {
-        path: RelativePathBuf,
-        file: Arc<File>,
-        range: Range<usize>,
-        line_offset: usize,
-    },
-    MissingFeature {
-        path: RelativePathBuf,
-        feature: String,
-    },
-    NoFeatures {
-        path: RelativePathBuf,
-    },
-    MissingEmptyFeatures {
-        path: RelativePathBuf,
-    },
-    MissingAllFeatures {
-        path: RelativePathBuf,
-    },
-    CargoTomlIssues {
-        path: RelativePathBuf,
-        cargo: Option<Manifest>,
-        issues: Vec<CargoIssue>,
-    },
-    ActionMissingKey {
-        path: RelativePathBuf,
-        key: Box<str>,
-        expected: ActionExpected,
-        doc: yaml::Document,
-        actual: Option<yaml::Id>,
-    },
-    ActionOnMissingBranch {
-        path: RelativePathBuf,
-        key: Box<str>,
-        branch: Box<str>,
-    },
-    ActionExpectedEmptyMapping {
-        path: RelativePathBuf,
-        key: Box<str>,
-    },
-    /// Set rust version for the given module.
-    SetRustVersion {
-        module: Module,
-        version: RustVersion,
-    },
-    /// Remove rust version from the given module.
-    RemoveRustVersion {
-        module: Module,
-        version: RustVersion,
-    },
-    /// Save a package.
-    SavePackage {
-        /// Save the given package.
-        package: Package,
-    },
-    Replace {
-        /// A cached replacement.
-        replaced: Replaced,
-    },
-    ReleaseCommit {
-        /// Perform a release commit.
-        path: RelativePathBuf,
-        /// Version to commit.
-        version: Version,
-    },
-}
-impl Change {
-    /// Check if change can save something.
-    pub(crate) fn has_changes(&self) -> bool {
-        match self {
-            Change::DeprecatedWorkflow { .. } => false,
-            Change::MissingWorkflow { .. } => true,
-            Change::WrongWorkflowName { .. } => false,
-            Change::BadWorkflow { change, .. } => !change.is_empty(),
-            Change::MissingReadme { .. } => false,
-            Change::UpdateLib { .. } => true,
-            Change::UpdateReadme { .. } => true,
-            Change::ToplevelHeadings { .. } => false,
-            Change::MissingPreceedingBr { .. } => false,
-            Change::MissingFeature { .. } => false,
-            Change::NoFeatures { .. } => false,
-            Change::MissingEmptyFeatures { .. } => false,
-            Change::MissingAllFeatures { .. } => false,
-            Change::CargoTomlIssues { cargo, .. } => cargo.is_some(),
-            Change::ActionMissingKey { .. } => false,
-            Change::ActionOnMissingBranch { .. } => false,
-            Change::ActionExpectedEmptyMapping { .. } => false,
-            Change::SetRustVersion { .. } => true,
-            Change::RemoveRustVersion { .. } => true,
-            Change::SavePackage { .. } => true,
-            Change::Replace { .. } => true,
-            Change::ReleaseCommit { .. } => true,
+        Warning::ActionOnMissingBranch { path, key, branch } => {
+            println!("{path}: {key}: action missing branch `{branch}`");
+        }
+        Warning::ActionExpectedEmptyMapping { path, key } => {
+            println!("{path}: {key}: action expected empty mapping");
         }
     }
+
+    Ok(())
 }
 
 /// Report and apply a asingle change.
 pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
-    if cx.can_save() && !save {
-        tracing::warn!("Not writing changes since `--save` is not specified");
-    }
-
     match change {
         Change::MissingWorkflow {
             path,
@@ -240,7 +127,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                         }
                     }
 
-                    let workspace = module.workspace(cx)?;
+                    let workspace = module.require_workspace(cx)?;
                     let primary_crate = workspace.primary_crate()?;
                     let params = cx.module_params(primary_crate, module)?;
 
@@ -252,16 +139,6 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                     std::fs::write(path, string)?;
                 }
             }
-        }
-        Change::DeprecatedWorkflow { path } => {
-            println!("{path}: Reprecated Workflow");
-        }
-        Change::WrongWorkflowName {
-            path,
-            actual,
-            expected,
-        } => {
-            println!("{path}: Wrong workflow name: {actual} (actual) != {expected} (expected)");
         }
         Change::BadWorkflow { path, doc, change } => {
             let mut doc = doc.clone();
@@ -317,9 +194,6 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                 std::fs::write(crate::utils::to_path(path, cx.root), doc.to_string())?;
             }
         }
-        Change::MissingReadme { path } => {
-            println!("{path}: Missing README");
-        }
         Change::UpdateLib {
             path,
             lib: new_file,
@@ -342,38 +216,6 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                 println!("{path}: Needs update");
             }
         }
-        Change::ToplevelHeadings {
-            path,
-            file,
-            range,
-            line_offset,
-        } => {
-            let (line, column, string) = temporary_line_fix(file, range.start, *line_offset)?;
-            println!("{path}:{line}:{column}: doc comment has toplevel headings");
-            println!("{string}");
-        }
-        Change::MissingPreceedingBr {
-            path,
-            file,
-            range,
-            line_offset,
-        } => {
-            let (line, column, string) = temporary_line_fix(file, range.start, *line_offset)?;
-            println!("{path}:{line}:{column}: missing preceeding <br>");
-            println!("{string}");
-        }
-        Change::MissingFeature { path, feature } => {
-            println!("{path}: missing features `{feature}`");
-        }
-        Change::NoFeatures { path } => {
-            println!("{path}: trying featured build (--all-features, --no-default-features), but no features present");
-        }
-        Change::MissingEmptyFeatures { path } => {
-            println!("{path}: missing empty features build");
-        }
-        Change::MissingAllFeatures { path } => {
-            println!("{path}: missing all features build");
-        }
         Change::CargoTomlIssues {
             path,
             cargo: modified_cargo,
@@ -393,32 +235,6 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                 }
             }
         }
-        Change::ActionMissingKey {
-            path,
-            key,
-            expected,
-            doc,
-            actual,
-        } => {
-            println!("{path}: {key}: action missing key, expected {expected}");
-
-            match actual {
-                Some(value) => {
-                    println!("  actual:");
-                    let value = doc.value(*value);
-                    print!("{value}");
-                }
-                None => {
-                    println!("  actual: *missing value*");
-                }
-            }
-        }
-        Change::ActionOnMissingBranch { path, key, branch } => {
-            println!("{path}: {key}: action missing branch `{branch}`");
-        }
-        Change::ActionExpectedEmptyMapping { path, key } => {
-            println!("{path}: {key}: action expected empty mapping");
-        }
         Change::SetRustVersion { module, version } => {
             if save {
                 tracing::info!("Setting rust version: Rust {version}");
@@ -426,7 +242,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                 tracing::info!("Would set rust version: Rust {version}");
             }
 
-            let workspace = module.workspace(cx)?;
+            let workspace = module.require_workspace(cx)?;
 
             for p in workspace.packages() {
                 if p.manifest.is_publish()? {
@@ -460,7 +276,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                 tracing::info!("Would clear rust version: Rust {version}");
             }
 
-            let workspace = module.workspace(cx)?;
+            let workspace = module.require_workspace(cx)?;
 
             for p in workspace.packages() {
                 let mut p = p.clone();
@@ -538,4 +354,172 @@ pub(crate) fn temporary_line_fix(
     let line = line_offset + line;
     let column = column + 4;
     Ok((line, column, string))
+}
+
+macro_rules! cargo_issues {
+    ($f:ident, $($issue:ident $({ $($field:ident: $ty:ty),* $(,)? })? => $description:expr),* $(,)?) => {
+        #[derive(Clone, Serialize, Deserialize)]
+        #[serde(tag = "kind")]
+        pub(crate) enum CargoIssue {
+            $($issue $({$($field: $ty),*})?,)*
+        }
+
+        impl fmt::Display for CargoIssue {
+            fn fmt(&self, $f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                match self {
+                    $(#[allow(unused_variables)] CargoIssue::$issue $({ $($field),* })? => $description,)*
+                }
+            }
+        }
+    }
+}
+
+cargo_issues! {
+    f,
+    MissingPackageLicense => write!(f, "package.license: missing"),
+    WrongPackageLicense => write!(f, "package.license: wrong"),
+    MissingPackageReadme => write!(f, "package.readme: missing"),
+    WrongPackageReadme => write!(f, "package.readme: wrong"),
+    MissingPackageRepository => write!(f, "package.repository: missing"),
+    WrongPackageRepository => write!(f, "package.repository: wrong"),
+    MissingPackageHomepage => write!(f, "package.homepage: missing"),
+    WrongPackageHomepage => write!(f, "package.homepage: wrong"),
+    MissingPackageDocumentation => write!(f, "package.documentation: missing"),
+    WrongPackageDocumentation => write!(f, "package.documentation: wrong"),
+    PackageDescription => write!(f, "package.description: missing"),
+    PackageCategories => write!(f, "package.categories: missing"),
+    PackageCategoriesNotSorted => write!(f, "package.categories: not sorted"),
+    PackageKeywords => write!(f, "package.keywords: missing"),
+    PackageKeywordsNotSorted => write!(f, "package.keywords: not sorted"),
+    PackageAuthorsEmpty => write!(f, "authors: empty"),
+    PackageDependenciesEmpty => write!(f, "dependencies: empty"),
+    PackageDevDependenciesEmpty => write!(f, "dev-dependencies: empty"),
+    PackageBuildDependenciesEmpty => write!(f, "build-dependencies: empty"),
+    KeysNotSorted { expected: Vec<CargoKey>, actual: Vec<CargoKey> } => {
+        write!(f, "[package] keys out-of-order, expected: {expected:?}")
+    }
+}
+
+/// A simple workflow change.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub(crate) enum WorkflowChange {
+    /// Oudated version of an action.
+    ReplaceString {
+        reason: String,
+        string: String,
+        value: yaml::Id,
+        remove_keys: Vec<(yaml::Id, String)>,
+        set_keys: Vec<(yaml::Id, String, String)>,
+    },
+    /// Deny use of the specific action.
+    Error { name: String, reason: String },
+}
+
+pub(crate) enum Warning {
+    MissingReadme {
+        path: RelativePathBuf,
+    },
+    DeprecatedWorkflow {
+        path: RelativePathBuf,
+    },
+    WrongWorkflowName {
+        path: RelativePathBuf,
+        actual: String,
+        expected: String,
+    },
+    ToplevelHeadings {
+        path: RelativePathBuf,
+        file: Arc<File>,
+        range: Range<usize>,
+        line_offset: usize,
+    },
+    MissingPreceedingBr {
+        path: RelativePathBuf,
+        file: Arc<File>,
+        range: Range<usize>,
+        line_offset: usize,
+    },
+    MissingFeature {
+        path: RelativePathBuf,
+        feature: String,
+    },
+    NoFeatures {
+        path: RelativePathBuf,
+    },
+    MissingEmptyFeatures {
+        path: RelativePathBuf,
+    },
+    MissingAllFeatures {
+        path: RelativePathBuf,
+    },
+    ActionMissingKey {
+        path: RelativePathBuf,
+        key: Box<str>,
+        expected: ActionExpected,
+        doc: yaml::Document,
+        actual: Option<yaml::Id>,
+    },
+    ActionOnMissingBranch {
+        path: RelativePathBuf,
+        key: Box<str>,
+        branch: Box<str>,
+    },
+    ActionExpectedEmptyMapping {
+        path: RelativePathBuf,
+        key: Box<str>,
+    },
+}
+
+/// A single change.
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) enum Change {
+    MissingWorkflow {
+        path: RelativePathBuf,
+        module: ModuleRef,
+        candidates: Box<[RelativePathBuf]>,
+    },
+    BadWorkflow {
+        path: RelativePathBuf,
+        doc: yaml::Document,
+        change: Vec<WorkflowChange>,
+    },
+    UpdateLib {
+        path: RelativePathBuf,
+        lib: Arc<File>,
+    },
+    UpdateReadme {
+        path: RelativePathBuf,
+        readme: Arc<File>,
+    },
+    CargoTomlIssues {
+        path: RelativePathBuf,
+        cargo: Option<Manifest>,
+        issues: Vec<CargoIssue>,
+    },
+    /// Set rust version for the given module.
+    SetRustVersion {
+        module: ModuleRef,
+        version: RustVersion,
+    },
+    /// Remove rust version from the given module.
+    RemoveRustVersion {
+        module: ModuleRef,
+        version: RustVersion,
+    },
+    /// Save a package.
+    SavePackage {
+        /// Save the given package.
+        package: Package,
+    },
+    Replace {
+        /// A cached replacement.
+        replaced: Replaced,
+    },
+    ReleaseCommit {
+        /// Perform a release commit.
+        path: RelativePathBuf,
+        /// Version to commit.
+        version: Version,
+    },
 }

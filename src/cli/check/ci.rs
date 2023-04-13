@@ -6,8 +6,7 @@ use bstr::ByteSlice;
 use nondestructive::yaml;
 use relative_path::{RelativePath, RelativePathBuf};
 
-use crate::changes::Change;
-use crate::changes::WorkflowChange;
+use crate::changes::{Change, Warning, WorkflowChange};
 use crate::ctxt::Ctxt;
 use crate::manifest::Manifest;
 use crate::model::Module;
@@ -95,7 +94,7 @@ fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, module: &Module) -> Result<()> {
 
         cx.change(Change::MissingWorkflow {
             path: expected_path,
-            module: module.clone(),
+            module: (**module).clone(),
             candidates: candidates.clone(),
         });
 
@@ -108,7 +107,7 @@ fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, module: &Module) -> Result<()> {
     };
 
     if crate::utils::to_path(&deprecated_yml, cx.root).is_file() && candidates.len() > 1 {
-        cx.change(Change::DeprecatedWorkflow {
+        cx.warning(Warning::DeprecatedWorkflow {
             path: deprecated_yml,
         });
     }
@@ -123,7 +122,7 @@ fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, module: &Module) -> Result<()> {
         .ok_or_else(|| anyhow!("{path}: missing .name"))?;
 
     if name != cx.config.job_name(module) {
-        cx.change(Change::WrongWorkflowName {
+        cx.warning(Warning::WrongWorkflowName {
             path: path.clone(),
             actual: name.to_owned(),
             expected: cx.config.job_name(module).to_owned(),
@@ -298,7 +297,7 @@ fn check_strategy_rust_version(ci: &mut Ci, job: &yaml::Mapping, change: &mut Ve
 
 fn validate_on(cx: &Ctxt<'_>, doc: &yaml::Document, value: yaml::Value<'_>, path: &RelativePath) {
     let Some(m) = value.as_mapping() else {
-        cx.change(Change::ActionMissingKey {
+        cx.warning(Warning::ActionMissingKey {
             path: path.to_owned(),
             key: Box::from("on"),
             expected: ActionExpected::Mapping,
@@ -312,14 +311,14 @@ fn validate_on(cx: &Ctxt<'_>, doc: &yaml::Document, value: yaml::Value<'_>, path
     match m.get("pull_request").map(yaml::Value::into_any) {
         Some(yaml::Any::Mapping(m)) => {
             if !m.is_empty() {
-                cx.change(Change::ActionExpectedEmptyMapping {
+                cx.warning(Warning::ActionExpectedEmptyMapping {
                     path: path.to_owned(),
                     key: Box::from("on.pull_request"),
                 });
             }
         }
         value => {
-            cx.change(Change::ActionMissingKey {
+            cx.warning(Warning::ActionMissingKey {
                 path: path.to_owned(),
                 key: Box::from("on.pull_request"),
                 expected: ActionExpected::Mapping,
@@ -333,7 +332,7 @@ fn validate_on(cx: &Ctxt<'_>, doc: &yaml::Document, value: yaml::Value<'_>, path
         Some(yaml::Any::Mapping(m)) => match m.get("branches").map(yaml::Value::into_any) {
             Some(yaml::Any::Sequence(s)) => {
                 if !s.iter().flat_map(|v| v.as_str()).any(|b| b == "main") {
-                    cx.change(Change::ActionOnMissingBranch {
+                    cx.warning(Warning::ActionOnMissingBranch {
                         path: path.to_owned(),
                         key: Box::from("on.push.branches"),
                         branch: Box::from("main"),
@@ -341,7 +340,7 @@ fn validate_on(cx: &Ctxt<'_>, doc: &yaml::Document, value: yaml::Value<'_>, path
                 }
             }
             value => {
-                cx.change(Change::ActionMissingKey {
+                cx.warning(Warning::ActionMissingKey {
                     path: path.to_owned(),
                     key: Box::from("on.push.branches"),
                     expected: ActionExpected::Sequence,
@@ -351,7 +350,7 @@ fn validate_on(cx: &Ctxt<'_>, doc: &yaml::Document, value: yaml::Value<'_>, path
             }
         },
         value => {
-            cx.change(Change::ActionMissingKey {
+            cx.warning(Warning::ActionMissingKey {
                 path: path.to_owned(),
                 key: Box::from("on.push"),
                 expected: ActionExpected::Mapping,
@@ -383,7 +382,7 @@ fn verify_single_project_build(
 
             if let RunIdentity::Cargo(cargo) = identity {
                 for feature in &cargo.missing_features {
-                    cx.change(Change::MissingFeature {
+                    cx.warning(Warning::MissingFeature {
                         path: path.to_owned(),
                         feature: feature.clone(),
                     });
@@ -400,7 +399,7 @@ fn verify_single_project_build(
         if features.is_empty() {
             for build in &cargo_combos {
                 if !matches!(build.features, CargoFeatures::Default) {
-                    cx.change(Change::NoFeatures {
+                    cx.warning(Warning::NoFeatures {
                         path: path.to_owned(),
                     });
                 }
@@ -431,13 +430,13 @@ fn ensure_feature_combo(cx: &Ctxt<'_>, path: &RelativePath, cargos: &[Cargo]) ->
     }
 
     if !empty_features {
-        cx.change(Change::MissingEmptyFeatures {
+        cx.warning(Warning::MissingEmptyFeatures {
             path: path.to_owned(),
         });
     }
 
     if !all_features {
-        cx.change(Change::MissingAllFeatures {
+        cx.warning(Warning::MissingAllFeatures {
             path: path.to_owned(),
         });
     }

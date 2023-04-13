@@ -1,6 +1,7 @@
 use core::fmt;
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 use crate::changes::{CargoIssue, Change};
 use crate::ctxt::Ctxt;
@@ -9,7 +10,8 @@ use crate::workspace::Package;
 
 macro_rules! cargo_keys {
     ($($ident:ident => $name:literal),* $(,)?) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[serde(tag = "kind")]
         pub(crate) enum CargoKey {
             $($ident,)*
         }

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::manifest::{self, Manifest};
-use crate::model::{CrateParams, Module};
+use crate::model::{CrateParams, ModuleRef};
 use crate::rust_version::RustVersion;
 
 /// The default name of a cargo manifest `Cargo.toml`.
@@ -15,7 +15,7 @@ pub(crate) const CARGO_TOML: &str = "Cargo.toml";
 
 /// Load a workspace starting at the given path.
 #[tracing::instrument(skip_all)]
-pub(crate) fn open(cx: &Ctxt<'_>, module: &Module) -> Result<Option<Workspace>> {
+pub(crate) fn open(cx: &Ctxt<'_>, module: &ModuleRef) -> Result<Option<Workspace>> {
     tracing::trace!("Opening workspace");
 
     let manifest_path = match cx.config.cargo_toml(module.path()) {
@@ -134,7 +134,7 @@ impl Package {
     }
 
     /// Construct crate parameters.
-    pub(crate) fn crate_params<'a>(&'a self, module: &'a Module) -> Result<CrateParams<'a>> {
+    pub(crate) fn crate_params<'a>(&'a self, module: &'a ModuleRef) -> Result<CrateParams<'a>> {
         Ok(CrateParams {
             repo: module.repo(),
             name: self.manifest.crate_name()?,

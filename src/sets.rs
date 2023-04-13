@@ -21,7 +21,7 @@ pub(crate) struct Sets {
 
 impl Sets {
     /// Load sets from the given path.
-    #[tracing::instrument(ret, skip_all)]
+    #[tracing::instrument(level = "trace", ret, skip_all)]
     pub(crate) fn new<P>(path: P) -> Result<Self>
     where
         P: AsRef<Path>,

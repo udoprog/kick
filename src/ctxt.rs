@@ -5,10 +5,10 @@ use std::process::Stdio;
 use anyhow::{Context, Result};
 
 use crate::actions::Actions;
-use crate::changes::Change;
+use crate::changes::{Change, Warning};
 use crate::config::Config;
 use crate::git::Git;
-use crate::model::{Module, ModuleParams};
+use crate::model::{Module, ModuleParams, ModuleRef};
 use crate::process::Command;
 use crate::rust_version::RustVersion;
 use crate::sets::Sets;
@@ -22,6 +22,7 @@ pub(crate) struct Ctxt<'a> {
     pub(crate) github_auth: Option<String>,
     pub(crate) rustc_version: Option<RustVersion>,
     pub(crate) git: Option<Git>,
+    pub(crate) warnings: RefCell<Vec<Warning>>,
     pub(crate) changes: RefCell<Vec<Change>>,
     pub(crate) sets: &'a mut Sets,
 }
@@ -31,7 +32,7 @@ impl<'a> Ctxt<'a> {
     pub(crate) fn module_params<'m>(
         &'m self,
         package: &'m Package,
-        module: &'m Module,
+        module: &'m ModuleRef,
     ) -> Result<ModuleParams<'m>> {
         let variables = self.config.variables(module);
         let crate_params = package.crate_params(module)?;
@@ -51,8 +52,18 @@ impl<'a> Ctxt<'a> {
     }
 
     /// Push a change.
+    pub(crate) fn warning(&self, warning: Warning) {
+        self.warnings.borrow_mut().push(warning);
+    }
+
+    /// Push a change.
     pub(crate) fn change(&self, change: Change) {
         self.changes.borrow_mut().push(change);
+    }
+
+    /// Get a list of warnings.
+    pub(crate) fn warnings(&self) -> Ref<'_, [Warning]> {
+        Ref::map(self.warnings.borrow(), Vec::as_slice)
     }
 
     /// Get a list of proposed changes.
@@ -62,13 +73,7 @@ impl<'a> Ctxt<'a> {
 
     /// Check if there's a change we can save.
     pub(crate) fn can_save(&self) -> bool {
-        let mut can_save = false;
-
-        for change in self.changes.borrow().iter() {
-            can_save |= change.has_changes();
-        }
-
-        can_save
+        !self.changes.borrow().is_empty()
     }
 }
 
