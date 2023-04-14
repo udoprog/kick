@@ -5,19 +5,26 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
+use chrono::Local;
+use chrono::NaiveDateTime;
 use relative_path::{RelativePath, RelativePathBuf};
 
 use crate::model::Module;
 
+/// Date format for sets.
+const DATE_FORMAT: &str = "%Y-%m-%d-%H%M%S";
+/// Prune the three last sets.
+const PRUNE: usize = 3;
+
 /// Collection of known sets.
 #[derive(Debug, Default)]
-pub(crate) struct Sets {
+pub(crate) struct ModuleSets {
     path: PathBuf,
     known: HashMap<String, Known>,
-    new: HashMap<String, Set>,
+    updates: Vec<(String, ModuleSet, bool)>,
 }
 
-impl Sets {
+impl ModuleSets {
     /// Load sets from the given path.
     #[tracing::instrument(level = "trace", ret, skip_all)]
     pub(crate) fn new<P>(path: P) -> Result<Self>
@@ -29,7 +36,7 @@ impl Sets {
         let mut sets = Self {
             path: path.into(),
             known: HashMap::default(),
-            new: HashMap::default(),
+            updates: Vec::default(),
         };
 
         let dir = match std::fs::read_dir(path) {
@@ -42,19 +49,30 @@ impl Sets {
             let e = e.with_context(|| anyhow!("{}", path.display()))?;
             let path = e.path();
 
-            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            let Some(name) = path.file_stem().and_then(|name| name.to_str()) else {
                 continue;
             };
 
-            sets.known.insert(name.to_owned(), Known { path });
+            let date = path
+                .extension()
+                .and_then(|ext| NaiveDateTime::parse_from_str(ext.to_str()?, DATE_FORMAT).ok());
+
+            sets.known
+                .entry(name.to_owned())
+                .or_insert_with(|| Known {
+                    path,
+                    dates: Default::default(),
+                })
+                .dates
+                .extend(date);
         }
 
         Ok(sets)
     }
 
     /// Get the given set.
-    pub(crate) fn load(&self, id: &str) -> Result<Option<Set>> {
-        let Some(Known { path }) = self.known.get(id) else {
+    pub(crate) fn load(&self, id: &str) -> Result<Option<ModuleSet>> {
+        let Some(Known { path, .. }) = self.known.get(id) else {
             return Ok(None);
         };
 
@@ -64,7 +82,7 @@ impl Sets {
             Err(e) => return Err(e).context(anyhow!("{}", path.display())),
         };
 
-        let mut set = Set::default();
+        let mut set = ModuleSet::default();
         let reader = BufReader::new(file);
 
         for (n, line) in reader.lines().enumerate() {
@@ -82,12 +100,13 @@ impl Sets {
     }
 
     /// Save the given set.
-    pub(crate) fn save(&mut self, id: &str, set: Set) {
-        self.new.insert(id.into(), set);
+    pub(crate) fn save(&mut self, id: &str, set: ModuleSet, primary: bool) {
+        self.updates.push((id.into(), set, primary));
     }
 
-    pub(crate) fn commit(self) -> Result<()> {
-        fn write_set(set: Set, mut f: File) -> Result<(), anyhow::Error> {
+    /// Commit updates.
+    pub(crate) fn commit(&mut self) -> Result<()> {
+        fn write_set(set: ModuleSet, mut f: File) -> Result<(), anyhow::Error> {
             for line in set.raw {
                 writeln!(f, "{line}")?;
             }
@@ -100,22 +119,50 @@ impl Sets {
             Ok(())
         }
 
-        for (id, set) in self.new {
+        let now = Local::now().naive_local();
+
+        for (id, set, primary) in self.updates.drain(..) {
             tracing::info!(?id, "Saving set");
-            let path = self.path.join(id);
+
+            let path = self.path.join(&id);
+            let mut write_path = path.clone();
+
+            if !primary {
+                write_path.set_extension(now.format(DATE_FORMAT).to_string());
+            }
 
             if !self.path.is_dir() {
                 std::fs::create_dir_all(&self.path)
                     .with_context(|| anyhow!("{}", self.path.display()))?;
             }
 
-            let f = match File::create(&path) {
+            let f = match File::create(&write_path) {
                 Ok(file) => file,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-                Err(e) => return Err(e).context(anyhow!("{}", path.display())),
+                Err(e) => return Err(e).context(anyhow!("{}", write_path.display())),
             };
 
-            write_set(set, f).context(anyhow!("{}", path.display()))?;
+            write_set(set, f).context(anyhow!("{}", write_path.display()))?;
+
+            let known = self.known.entry(id).or_insert_with(|| Known::new(path));
+
+            if !primary {
+                known.dates.insert(now);
+            }
+        }
+
+        // Prune old sets.
+        for (id, known) in &mut self.known {
+            while known.dates.len() > PRUNE {
+                let Some(date) = known.dates.pop_first() else {
+                    continue;
+                };
+
+                let mut path = self.path.join(id);
+                path.set_extension(date.format(DATE_FORMAT).to_string());
+                tracing::trace!(path = path.display().to_string(), "Removing old set");
+                let _ = std::fs::remove_file(&path);
+            }
         }
 
         Ok(())
@@ -125,17 +172,27 @@ impl Sets {
 #[derive(Debug)]
 struct Known {
     path: PathBuf,
+    dates: BTreeSet<NaiveDateTime>,
+}
+
+impl Known {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            dates: BTreeSet::default(),
+        }
+    }
 }
 
 /// A single loaded list of repos.
 #[derive(Debug, Default)]
-pub(crate) struct Set {
+pub(crate) struct ModuleSet {
     raw: Vec<String>,
     modules: HashMap<RelativePathBuf, usize>,
     added: BTreeSet<RelativePathBuf>,
 }
 
-impl Set {
+impl ModuleSet {
     /// Add the given module to the list.
     pub(crate) fn insert(&mut self, module: &Module) {
         if !self.modules.contains_key(module.path()) {

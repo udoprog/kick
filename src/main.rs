@@ -34,16 +34,31 @@
 //!
 //! ## Working with module sets
 //!
-//! Commands can produce sets under certain circumstances. Look out for switches
-//! prefixes with `--save-*`.
+//! Commands can produce sets under certain circumstances. Look out for the
+//! switch named `--store-sets`.
 //!
-//! This stores and saves a set of modules depending on a certain condition,
-//! such as `--save-success` for `kick for` which will save the module name for
-//! every command that was successful. Or `--save-failed` for unsuccessful ones.
+//! If this is set during a run, it will store sets of modules, such as the set
+//! for which a command failed. This set can then later be re-used through the
+//! `--set <id>` switch.
 //!
-//! The names of the sets will be printed at the end of the command, and can be
-//! used with the `--set <set>` switch in subsequent iterations to only run
-//! commands present in that set.
+//! Note that for convenience every call stores sets, if you want to see all
+//! available sets run `kick sets`.
+//!
+//! ```
+//! ```
+//!
+//! > **Note** the three most recent versions of each set will be retained. If
+//! > you want to save a set make you can either rename it from its dated file
+//! > or use `--store-sets` while running a command.
+//!
+//! Set files are simply lists of repositories, which supports comments by
+//! prefixing lines with `#`. They are intended to be edited by hand if needed.
+//!
+//! ```text
+//! repos/kick
+//! # ignore this for now
+//! # repos/unsync
+//! ```
 
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
@@ -59,9 +74,9 @@ mod gitmodules;
 mod glob;
 mod manifest;
 mod model;
+mod module_sets;
 mod process;
 mod rust_version;
-mod sets;
 mod templates;
 mod urls;
 mod workspace;
@@ -299,7 +314,7 @@ async fn entry() -> Result<()> {
 
     let config = config::load(&root, &templating, &modules)?;
 
-    let mut sets = sets::Sets::new(root.join("sets"))?;
+    let mut sets = module_sets::ModuleSets::new(root.join("sets"))?;
 
     let mut actions = Actions::default();
     actions.latest("actions/checkout", "v3");

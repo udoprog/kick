@@ -3,14 +3,17 @@ use clap::Parser;
 
 use crate::ctxt::Ctxt;
 use crate::model::Module;
+use crate::module_sets::ModuleSet;
 use crate::process::Command;
-use crate::sets::Set;
 
 #[derive(Default, Parser)]
 pub(crate) struct Opts {
     #[arg(long)]
-    /// Store the outcome if this run into the sets `good` and `bad`, to
-    /// be used later with `--set <id>` command.
+    /// Store the outcome if this run into the sets `good` and `bad`, to be used
+    /// later with `--set <id>` command.
+    ///
+    /// The `good` set will contain modules for which the command exited
+    /// successfully, while the `bad` set for which they failed.
     store_sets: bool,
     /// Command to run.
     command: Vec<String>,
@@ -21,22 +24,16 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
         return Err(anyhow!("missing command"));
     };
 
-    let mut good = opts.store_sets.then(Set::default);
-    let mut bad = opts.store_sets.then(Set::default);
+    let mut good = ModuleSet::default();
+    let mut bad = ModuleSet::default();
 
     for module in cx.modules() {
-        r#for(cx, module, command, args, good.as_mut(), bad.as_mut())
+        r#for(cx, module, command, args, &mut good, &mut bad)
             .with_context(|| module.path().to_owned())?;
     }
 
-    if let Some(set) = good {
-        cx.sets.save("good", set);
-    }
-
-    if let Some(set) = bad {
-        cx.sets.save("bad", set);
-    }
-
+    cx.sets.save("good", good, opts.store_sets);
+    cx.sets.save("bad", bad, opts.store_sets);
     Ok(())
 }
 
@@ -46,8 +43,8 @@ fn r#for(
     module: &Module,
     command: &str,
     args: &[String],
-    good: Option<&mut Set>,
-    bad: Option<&mut Set>,
+    good: &mut ModuleSet,
+    bad: &mut ModuleSet,
 ) -> Result<()> {
     let current_dir = module.path().to_path(cx.root);
 
@@ -57,14 +54,11 @@ fn r#for(
 
     tracing::info!("{}", command.display());
 
-    if !command.status()?.success() {
+    if command.status()?.success() {
+        good.insert(module);
+    } else {
         tracing::warn!(?command, "command failed");
-
-        if let Some(set) = bad {
-            set.insert(module);
-        }
-    } else if let Some(set) = good {
-        set.insert(module);
+        bad.insert(module);
     }
 
     Ok(())

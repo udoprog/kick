@@ -8,9 +8,9 @@ use clap::Parser;
 use crate::changes::Change;
 use crate::ctxt::Ctxt;
 use crate::model::Module;
+use crate::module_sets::ModuleSet;
 use crate::process::Command;
 use crate::rust_version::{self, RustVersion};
-use crate::sets::Set;
 use crate::workspace::Workspace;
 
 /// Oldest version where rust-version was introduced.
@@ -62,6 +62,10 @@ pub(crate) struct Opts {
     latest: Option<String>,
     /// Store the outcome if this run into the sets `good` and `bad`, to be used
     /// later with `--set <id>` command.
+    ///
+    /// The `good` set will contain modules for which an MSRV was found, while
+    /// the `bad` set will contain modules for which no MSRV could be found for
+    /// one reason or another.
     #[arg(long)]
     store_sets: bool,
     /// Command to test with.
@@ -72,23 +76,17 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    let mut good = opts.store_sets.then(Set::default);
-    let mut bad = opts.store_sets.then(Set::default);
+    let mut good = ModuleSet::default();
+    let mut bad = ModuleSet::default();
 
     for module in cx.modules() {
         let workspace = module.workspace(cx)?;
-        msrv(cx, &workspace, module, opts, good.as_mut(), bad.as_mut())
+        msrv(cx, &workspace, module, opts, &mut good, &mut bad)
             .with_context(|| module.path().to_owned())?;
     }
 
-    if let Some(set) = good {
-        cx.sets.save("good", set);
-    }
-
-    if let Some(set) = bad {
-        cx.sets.save("bad", set);
-    }
-
+    cx.sets.save("good", good, opts.store_sets);
+    cx.sets.save("bad", bad, opts.store_sets);
     Ok(())
 }
 
@@ -98,8 +96,8 @@ fn msrv(
     workspace: &Workspace,
     module: &Module,
     opts: &Opts,
-    good: Option<&mut Set>,
-    bad: Option<&mut Set>,
+    good: &mut ModuleSet,
+    bad: &mut ModuleSet,
 ) -> Result<()> {
     let primary = workspace.primary_crate()?;
 
@@ -212,17 +210,11 @@ fn msrv(
 
     let Some(version) = candidates.get() else {
         tracing::warn!("No MSRV found");
-
-        if let Some(bad) = bad {
-            bad.insert(module);
-        }
-
+        bad.insert(module);
         return Ok(());
     };
 
-    if let Some(good) = good {
-        good.insert(module);
-    }
+    good.insert(module);
 
     if version >= RUST_VERSION_SUPPORTED {
         cx.change(Change::SetRustVersion {

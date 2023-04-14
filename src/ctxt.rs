@@ -9,9 +9,9 @@ use crate::changes::{Change, Warning};
 use crate::config::Config;
 use crate::git::Git;
 use crate::model::{Module, ModuleParams, ModuleRef};
+use crate::module_sets::ModuleSets;
 use crate::process::Command;
 use crate::rust_version::RustVersion;
-use crate::sets::Sets;
 use crate::workspace::Package;
 
 pub(crate) struct Ctxt<'a> {
@@ -24,7 +24,7 @@ pub(crate) struct Ctxt<'a> {
     pub(crate) git: Option<Git>,
     pub(crate) warnings: RefCell<Vec<Warning>>,
     pub(crate) changes: RefCell<Vec<Change>>,
-    pub(crate) sets: &'a mut Sets,
+    pub(crate) sets: &'a mut ModuleSets,
 }
 
 impl<'a> Ctxt<'a> {
