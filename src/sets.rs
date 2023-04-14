@@ -9,8 +9,6 @@ use relative_path::{RelativePath, RelativePathBuf};
 
 use crate::model::Module;
 
-const EXT: &str = "modules";
-
 /// Collection of known sets.
 #[derive(Debug, Default)]
 pub(crate) struct Sets {
@@ -44,11 +42,7 @@ impl Sets {
             let e = e.with_context(|| anyhow!("{}", path.display()))?;
             let path = e.path();
 
-            let Some(EXT) = path.extension().and_then(|ext| ext.to_str()) else {
-                continue;
-            };
-
-            let Some(name) = path.file_stem().and_then(|name| name.to_str()) else {
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
 
@@ -103,15 +97,12 @@ impl Sets {
             }
 
             f.flush()?;
-
             Ok(())
         }
 
         for (id, set) in self.new {
             tracing::info!(?id, "Saving set");
-
-            let mut path = self.path.join(id);
-            path.set_extension(EXT);
+            let path = self.path.join(id);
 
             if !self.path.is_dir() {
                 std::fs::create_dir_all(&self.path)
