@@ -14,7 +14,7 @@ consistent README style.
 
 Repositories to check are detected through two mechanism:
 * If a `.gitmodules` file is present either in the current directory or the
-  one where `Rune.toml` is found, this is used to detect repositories to
+  one where `Kick.toml` is found, this is used to detect repositories to
   manage.
 * If a `.git` folder is present, `git remote get-url origin` is used to
   determine its name and repo.
@@ -88,15 +88,22 @@ If this is set during a run, it will store sets of modules, such as the set
 for which a command failed. This set can then later be re-used through the
 `--set <id>` switch.
 
-Note that for convenience every call stores sets, if you want to see all
-available sets run `kick sets`.
+For a list of available sets, you can simply list the `sets` folder:
 
-```rust
+```text
+sets\bad
+sets\bad.2023-04-14-050517
+sets\bad.2023-04-14-050928
+sets\bad.2023-04-14-051046
+sets\good.2023-04-14-050517
+sets\good.2023-04-14-050928
+sets\good.2023-04-14-051046
 ```
 
 > **Note** the three most recent versions of each set will be retained. If
 > you want to save a set make you can either rename it from its dated file
-> or use `--store-sets` while running a command.
+> or make use of `--store-sets` while running a command. If there are no
+> non-dated versions of a set the latest one is used.
 
 Set files are simply lists of repositories, which supports comments by
 prefixing lines with `#`. They are intended to be edited by hand if needed.
@@ -116,8 +123,8 @@ command it will look recursively for the `Kick.toml` that is in the
 shallowest possible filesystem location.
 
 Configuration is loaded in a hierarchy, and each option can be extended or
-overriden on a per-repo basis. This is usually done through the
-[repos."repo"].
+overriden on a per-repo basis. This is usually done through a
+`[repos."<name>"]` section.
 
 ```toml
 [repos."repos/OxidizeBot"]
@@ -131,10 +138,12 @@ exclude = [
 ```
 
 The equivalent would be to put the following inside of
-`repos/OxidizeBot/Rune.toml`, but this is usually not desirable since the
-target project might not be using kick.
+`repos/OxidizeBot/Kick.toml`, but this is usually not desirable since you
+might not want to contaminate the project folder with a random file nobody
+knows what it is.
 
 ```toml
+# repos/OxidizeBot/Kick.toml
 crate = "oxidize"
 
 [upgrade]

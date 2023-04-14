@@ -6,7 +6,7 @@ use crate::model::Module;
 use crate::module_sets::ModuleSet;
 use crate::process::Command;
 
-#[derive(Default, Parser)]
+#[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     /// Pass `--workspace` to `cargo upgrade`.
     #[arg(long)]
@@ -25,7 +25,7 @@ pub(crate) struct Opts {
     upgrade_args: Vec<String>,
 }
 
-pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
+pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     let mut good = ModuleSet::default();
     let mut bad = ModuleSet::default();
 

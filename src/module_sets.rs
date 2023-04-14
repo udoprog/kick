@@ -57,14 +57,13 @@ impl ModuleSets {
                 .extension()
                 .and_then(|ext| NaiveDateTime::parse_from_str(ext.to_str()?, DATE_FORMAT).ok());
 
-            sets.known
+            let known = sets
+                .known
                 .entry(name.to_owned())
-                .or_insert_with(|| Known {
-                    path,
-                    dates: Default::default(),
-                })
-                .dates
-                .extend(date);
+                .or_insert_with(|| Known::new(path));
+
+            known.base |= date.is_none();
+            known.dates.extend(date);
         }
 
         Ok(sets)
@@ -72,11 +71,22 @@ impl ModuleSets {
 
     /// Get the given set.
     pub(crate) fn load(&self, id: &str) -> Result<Option<ModuleSet>> {
-        let Some(Known { path, .. }) = self.known.get(id) else {
+        let Some(known) = self.known.get(id) else {
             return Ok(None);
         };
 
-        let file = match File::open(path) {
+        let mut path = known.path.clone();
+
+        if !known.base {
+            let latest = known
+                .dates
+                .last()
+                .with_context(|| anyhow!("{id}: missing latest set"))?;
+
+            path.set_extension(latest.format(DATE_FORMAT).to_string());
+        }
+
+        let file = match File::open(&path) {
             Ok(file) => file,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e).context(anyhow!("{}", path.display())),
@@ -183,13 +193,18 @@ impl ModuleSets {
 
 #[derive(Debug)]
 struct Known {
+    /// Indicates if there is a base set.
+    base: bool,
+    /// Base path of the set.
     path: PathBuf,
+    /// Known dates.
     dates: BTreeSet<NaiveDateTime>,
 }
 
 impl Known {
     fn new(path: PathBuf) -> Self {
         Self {
+            base: false,
             path,
             dates: BTreeSet::default(),
         }
