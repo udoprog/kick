@@ -6,8 +6,7 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
-use chrono::Local;
-use chrono::NaiveDateTime;
+use chrono::{DateTime, Local, NaiveDateTime};
 use relative_path::{RelativePath, RelativePathBuf};
 
 use crate::model::Module;
@@ -111,8 +110,14 @@ impl ModuleSets {
 
     /// Commit updates.
     pub(crate) fn commit(&mut self) -> Result<()> {
-        fn write_set(set: ModuleSet, hint: &str, mut f: File) -> Result<(), anyhow::Error> {
+        fn write_set(
+            set: ModuleSet,
+            hint: &str,
+            now: DateTime<Local>,
+            mut f: File,
+        ) -> Result<(), anyhow::Error> {
             writeln!(f, "# {hint}")?;
+            writeln!(f, "# date: {now}")?;
 
             for line in set.raw {
                 writeln!(f, "{line}")?;
@@ -126,7 +131,7 @@ impl ModuleSets {
             Ok(())
         }
 
-        let now = Local::now().naive_local();
+        let now = Local::now();
 
         for (id, set, primary, hint) in self.updates.drain(..) {
             tracing::info!(?id, "Saving set");
@@ -135,7 +140,7 @@ impl ModuleSets {
             let mut write_path = path.clone();
 
             if !primary {
-                write_path.set_extension(now.format(DATE_FORMAT).to_string());
+                write_path.set_extension(now.naive_local().format(DATE_FORMAT).to_string());
             }
 
             if !self.path.is_dir() {
@@ -149,12 +154,12 @@ impl ModuleSets {
                 Err(e) => return Err(e).context(anyhow!("{}", write_path.display())),
             };
 
-            write_set(set, &hint, f).context(anyhow!("{}", write_path.display()))?;
+            write_set(set, &hint, now, f).context(anyhow!("{}", write_path.display()))?;
 
             let known = self.known.entry(id).or_insert_with(|| Known::new(path));
 
             if !primary {
-                known.dates.insert(now);
+                known.dates.insert(now.naive_local());
             }
         }
 

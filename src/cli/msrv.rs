@@ -85,7 +85,7 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
             .with_context(|| module.path().to_owned())?;
     }
 
-    let hint = format!("msrv {:?}", opts);
+    let hint = format!("msrv: {:?}", opts);
     cx.sets.save("good", good, opts.store_sets, &hint);
     cx.sets.save("bad", bad, opts.store_sets, &hint);
     Ok(())
