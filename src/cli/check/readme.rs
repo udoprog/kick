@@ -416,9 +416,10 @@ fn readme_from_lib_rs(
             // Detect a code block and store the ticks that it uses.
             None if (line.as_ref().starts_with("```") || line.as_ref().starts_with("~~~")) => {
                 let (specs, ticks) = filter_code_block(line.as_ref());
+                let is_rust = specs.iter().any(|item| item == "rust");
                 let parts = specs.join(",");
                 body.line(format_args!("{ticks}{parts}"));
-                in_code_block = Some((specs.iter().any(|item| item == "rust"), ticks));
+                in_code_block = Some((is_rust, ticks));
                 continue;
             }
             _ => {}
@@ -470,10 +471,13 @@ fn readme_from_lib_rs(
 
 /// Filter code block fragments.
 fn filter_code_block(comment: &str) -> (Vec<String>, String) {
-    let index = comment.find(|c| !(c == '`' || c == '~')).unwrap_or(0);
+    let index = comment
+        .find(|c| !(c == '`' || c == '~'))
+        .unwrap_or(comment.len());
 
     let ticks = comment.get(..index).unwrap_or_default();
     let parts = comment.get(index..).unwrap_or_default();
+
     let mut out = Vec::new();
 
     for part in parts.split(',') {
