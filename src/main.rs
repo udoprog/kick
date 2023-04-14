@@ -76,12 +76,12 @@
 //!
 //! <br>
 //!
-//! ## Working with module sets
+//! ## Working with repo sets
 //!
 //! Commands can produce sets under certain circumstances. Look out for the
 //! switch named `--store-sets`.
 //!
-//! If this is set during a run, it will store sets of modules, such as the set
+//! If this is set during a run, it will store sets of repos, such as the set
 //! for which a command failed. This set can then later be re-used through the
 //! `--set <id>` switch.
 //!
@@ -121,13 +121,13 @@
 //!
 //! Configuration is loaded in a hierarchy, and each option can be extended or
 //! overriden on a per-repo basis. This is usually done through a
-//! `[repos."<name>"]` section.
+//! `[repo."<name>"]` section.
 //!
 //! ```toml
-//! [repos."repos/OxidizeBot"]
+//! [repo."repos/OxidizeBot"]
 //! crate = "oxidize"
 //!
-//! [repos."repos/OxidizeBot".upgrade]
+//! [repo."repos/OxidizeBot".upgrade]
 //! exclude = [
 //!    # We avoid touching this dependency since it has a complex set of version-dependent feature flags.
 //!    "libsqlite3-sys"
@@ -164,7 +164,7 @@
 //! #### Examples
 //!
 //! ```toml
-//! [repos."repos/OxidizeBot"]
+//! [repo."repos/OxidizeBot"]
 //! crate = "oxidize"
 //! ```
 //!
@@ -379,7 +379,7 @@
 //! #### Examples
 //!
 //! ```toml
-//! [repos."repos/rune"]
+//! [repo."repos/rune"]
 //! lib = "data/rune.lib.md"
 //! readme = "data/rune.readme.md"
 //! ```
@@ -487,7 +487,7 @@
 //! ```toml
 //! [[version]]
 //! paths = ["src/**/*.rs"]
-//! # replaces versions in module level comments that looks likle [dependencies] declarations
+//! # replaces versions in repo level comments that looks likle [dependencies] declarations
 //! pattern = "//!\\s+[a-z-]+\\s*=\\s*.+(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+).+"
 //! ```
 //!
@@ -521,8 +521,26 @@
 //!
 //! ### `readme` module
 //!
-//! Generates a `README.md` based on what's in the module-level comment of your
+//! Generates a `README.md` based on what's in the top-level comments of your
 //! primary crate's entrypoint. See the `readme` template above.
+//!
+//! ```rust,no_run
+//! //! This is my crate!
+//! //!
+//! //! ```
+//! //! let a = 42;
+//! //! ```
+//! ```
+//!
+//! Would become the following `README.md`:
+//!
+//! ````text
+//! This is my crate!
+//!
+//! ```rust
+//! let a = 42;
+//! ```
+//! ````
 //!
 //! To disable, specify:
 //!
@@ -544,8 +562,8 @@ mod gitmodules;
 mod glob;
 mod manifest;
 mod model;
-mod module_sets;
 mod process;
+mod repo_sets;
 mod rust_version;
 mod templates;
 mod urls;
@@ -568,7 +586,7 @@ use flate2::Compression;
 use relative_path::{RelativePath, RelativePathBuf};
 use tracing::metadata::LevelFilter;
 
-use crate::{glob::Fragment, model::Module};
+use crate::{glob::Fragment, model::Repo};
 
 /// Name of project configuration files.
 const KICK_TOML: &str = "Kick.toml";
@@ -582,9 +600,9 @@ enum Action {
     Changes(SharedOptions),
     /// Run a custom command for each repo.
     For(SharedAction<cli::foreach::Opts>),
-    /// Fetch github actions build status for each module.
+    /// Fetch github actions build status for each repo.
     Status(SharedAction<cli::status::Opts>),
-    /// Find the minimum supported rust version for each module.
+    /// Find the minimum supported rust version for each repo.
     Msrv(SharedAction<cli::msrv::Opts>),
     /// Update package version.
     Version(SharedAction<cli::version::Opts>),
@@ -608,15 +626,15 @@ impl Action {
         }
     }
 
-    fn module(&self) -> Option<&ModuleOptions> {
+    fn repo(&self) -> Option<&RepoOptions> {
         match self {
-            Action::Check(action) => Some(&action.module),
-            Action::For(action) => Some(&action.module),
-            Action::Status(action) => Some(&action.module),
-            Action::Msrv(action) => Some(&action.module),
-            Action::Version(action) => Some(&action.module),
-            Action::Publish(action) => Some(&action.module),
-            Action::Upgrade(action) => Some(&action.module),
+            Action::Check(action) => Some(&action.repo),
+            Action::For(action) => Some(&action.repo),
+            Action::Status(action) => Some(&action.repo),
+            Action::Msrv(action) => Some(&action.repo),
+            Action::Version(action) => Some(&action.repo),
+            Action::Publish(action) => Some(&action.repo),
+            Action::Upgrade(action) => Some(&action.repo),
             Action::Changes(..) => None,
         }
     }
@@ -626,7 +644,7 @@ impl Default for Action {
     fn default() -> Self {
         Self::Check(SharedAction {
             shared: SharedOptions::default(),
-            module: ModuleOptions::default(),
+            repo: RepoOptions::default(),
             action: cli::check::Opts::default(),
         })
     }
@@ -643,14 +661,14 @@ struct SharedOptions {
 }
 
 #[derive(Default, Parser)]
-struct ModuleOptions {
+struct RepoOptions {
     /// Force processing of all repos, even if the root is currently inside of
     /// an existing repo.
     #[arg(long)]
     all: bool,
-    /// Only run the specified set of modules.
-    #[arg(long = "module", short = 'm', name = "module")]
-    modules: Vec<String>,
+    /// Only run the specified set of repos.
+    #[arg(long = "repo", short = 'm', name = "repo")]
+    repos: Vec<String>,
     /// Only run over dirty modules with changes that have not been staged in
     /// cache.
     #[arg(long)]
@@ -676,7 +694,7 @@ struct ModuleOptions {
     sub_set: Vec<String>,
 }
 
-impl ModuleOptions {
+impl RepoOptions {
     fn needs_git(&self) -> bool {
         self.dirty || self.cached || self.cached_only || self.unreleased
     }
@@ -690,7 +708,7 @@ where
     #[command(flatten)]
     shared: SharedOptions,
     #[command(flatten)]
-    module: ModuleOptions,
+    repo: RepoOptions,
     #[command(flatten)]
     action: A,
 }
@@ -737,7 +755,7 @@ async fn entry() -> Result<()> {
 
     let action = opts.action.unwrap_or_default();
     let shared = action.shared();
-    let module = action.module();
+    let repo_opts = action.repo();
 
     let current_dir = match &shared.root {
         Some(root) => root.clone(),
@@ -772,10 +790,10 @@ async fn entry() -> Result<()> {
     let git = git::Git::find()?;
 
     let templating = templates::Templating::new()?;
-    let modules = model::load_modules(&root, git.as_ref())?;
+    let repos = model::load_modules(&root, git.as_ref())?;
 
     tracing::trace!(
-        modules = modules
+        modules = repos
             .iter()
             .map(|m| m.path().to_string())
             .collect::<Vec<_>>()
@@ -783,9 +801,9 @@ async fn entry() -> Result<()> {
         "loaded modules"
     );
 
-    let config = config::load(&root, &templating, &modules)?;
+    let config = config::load(&root, &templating, &repos)?;
 
-    let mut sets = module_sets::ModuleSets::new(root.join("sets"))?;
+    let mut sets = repo_sets::RepoSets::new(root.join("sets"))?;
 
     let mut actions = Actions::default();
     actions.latest("actions/checkout", "v3");
@@ -799,8 +817,8 @@ async fn entry() -> Result<()> {
         "using `run` is less verbose and faster",
     );
 
-    if let Some(module) = module {
-        let current_path = if !module.all && modules.iter().any(|m| m.path() == current_path) {
+    if let Some(repo_opts) = repo_opts {
+        let current_path = if !repo_opts.all && repos.iter().any(|m| m.path() == current_path) {
             Some(current_path.as_ref())
         } else {
             None
@@ -808,11 +826,11 @@ async fn entry() -> Result<()> {
 
         let mut filters = Vec::new();
 
-        for module in &module.modules {
-            filters.push(Fragment::parse(module));
+        for repo in &repo_opts.repos {
+            filters.push(Fragment::parse(repo));
         }
 
-        let set = match &module.set[..] {
+        let set = match &repo_opts.set[..] {
             [] => None,
             ids => {
                 let mut set = HashSet::new();
@@ -823,10 +841,10 @@ async fn entry() -> Result<()> {
                     }
                 }
 
-                for id in &module.sub_set {
+                for id in &repo_opts.sub_set {
                     if let Some(s) = sets.load(id)? {
-                        for module in s.iter() {
-                            set.remove(module);
+                        for repo in s.iter() {
+                            set.remove(repo);
                         }
                     }
                 }
@@ -835,11 +853,11 @@ async fn entry() -> Result<()> {
             }
         };
 
-        filter_modules(
+        filter_repos(
             &root,
-            module,
+            repo_opts,
             git.as_ref(),
-            &modules,
+            &repos,
             &filters,
             current_path,
             set.as_ref(),
@@ -852,7 +870,7 @@ async fn entry() -> Result<()> {
         root: &root,
         config: &config,
         actions: &actions,
-        modules: &modules,
+        repos: &repos,
         github_auth,
         rustc_version: ctxt::rustc_version(),
         git,
@@ -954,26 +972,26 @@ fn save_changes(cx: &ctxt::Ctxt<'_>, path: &Path) -> Result<()> {
 }
 
 /// Perform more advanced filtering over modules.
-fn filter_modules(
+fn filter_repos(
     root: &Path,
-    opts: &ModuleOptions,
+    repo_opts: &RepoOptions,
     git: Option<&git::Git>,
-    modules: &[model::Module],
+    repos: &[model::Repo],
     filters: &[Fragment<'_>],
     current_path: Option<&RelativePath>,
     set: Option<&HashSet<RelativePathBuf>>,
 ) -> Result<(), anyhow::Error> {
-    // Test if module should be skipped.
-    let should_disable = |module: &Module| -> bool {
+    // Test if repo should be skipped.
+    let should_disable = |repo: &Repo| -> bool {
         if let Some(set) = set {
-            if !set.contains(module.path()) {
+            if !set.contains(repo.path()) {
                 return true;
             }
         }
 
         if filters.is_empty() {
             if let Some(path) = current_path {
-                return path != module.path();
+                return path != repo.path();
             }
 
             return false;
@@ -981,51 +999,50 @@ fn filter_modules(
 
         !filters
             .iter()
-            .any(|filter| filter.is_match(module.path().as_str()))
+            .any(|filter| filter.is_match(repo.path().as_str()))
     };
 
-    for module in modules {
-        module.set_disabled(should_disable(module));
+    for repo in repos {
+        repo.set_disabled(should_disable(repo));
 
-        if module.is_disabled() {
+        if repo.is_disabled() {
             continue;
         }
 
-        if opts.needs_git() {
+        if repo_opts.needs_git() {
             let git = git.context("no working git command")?;
-            let module_path = module.path().to_path(root);
+            let repo_path = repo.path().to_path(root);
 
-            let cached = git.is_cached(&module_path)?;
-            let dirty = git.is_dirty(&module_path)?;
+            let cached = git.is_cached(&repo_path)?;
+            let dirty = git.is_dirty(&repo_path)?;
 
-            let span =
-                tracing::trace_span!("git", ?cached, ?dirty, module = module.path().to_string());
+            let span = tracing::trace_span!("git", ?cached, ?dirty, repo = repo.path().to_string());
             let _enter = span.enter();
 
-            if opts.dirty && !dirty {
+            if repo_opts.dirty && !dirty {
                 tracing::trace!("Directory is not dirty");
-                module.set_disabled(true);
+                repo.set_disabled(true);
             }
 
-            if opts.cached && !cached {
+            if repo_opts.cached && !cached {
                 tracing::trace!("Directory has no cached changes");
-                module.set_disabled(true);
+                repo.set_disabled(true);
             }
 
-            if opts.cached_only && (!cached || dirty) {
+            if repo_opts.cached_only && (!cached || dirty) {
                 tracing::trace!("Directory has no cached changes");
-                module.set_disabled(true);
+                repo.set_disabled(true);
             }
 
-            if opts.unreleased {
-                if let Some((tag, offset)) = git.describe_tags(&module_path)? {
+            if repo_opts.unreleased {
+                if let Some((tag, offset)) = git.describe_tags(&repo_path)? {
                     if offset.is_none() {
                         tracing::trace!("No offset detected (tag: {tag})");
-                        module.set_disabled(true);
+                        repo.set_disabled(true);
                     }
                 } else {
                     tracing::trace!("No tags to describe");
-                    module.set_disabled(true);
+                    repo.set_disabled(true);
                 }
             }
         }

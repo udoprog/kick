@@ -19,7 +19,7 @@ use crate::workspace::Workspace;
 #[derive(Debug, Clone, Copy, Serialize)]
 pub(crate) struct CrateParams<'a> {
     pub(crate) name: &'a str,
-    pub(crate) repo: Option<ModuleRepo<'a>>,
+    pub(crate) repo: Option<RepoPath<'a>>,
     pub(crate) description: Option<&'a str>,
     pub(crate) rust_version: Option<RustVersion>,
 }
@@ -34,7 +34,7 @@ pub(crate) struct RenderRustVersions {
 
 /// Parameters particular to a specific module.
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct ModuleParams<'a> {
+pub(crate) struct RepoParams<'a> {
     #[serde(rename = "crate")]
     pub(crate) crate_params: CrateParams<'a>,
     /// Current job name.
@@ -45,7 +45,7 @@ pub(crate) struct ModuleParams<'a> {
     pub(crate) variables: toml::Table,
 }
 
-impl ModuleParams<'_> {
+impl RepoParams<'_> {
     /// Get the current crate name.
     pub(crate) fn crate_name(&self) -> &str {
         self.crate_params.name
@@ -63,18 +63,18 @@ pub(crate) struct UpdateParams<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ModuleRepo<'a> {
+pub(crate) struct RepoPath<'a> {
     pub(crate) owner: &'a str,
     pub(crate) name: &'a str,
 }
 
-impl fmt::Display for ModuleRepo<'_> {
+impl fmt::Display for RepoPath<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}/{}", self.owner, self.name)
     }
 }
 
-impl Serialize for ModuleRepo<'_> {
+impl Serialize for RepoPath<'_> {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -84,7 +84,7 @@ impl Serialize for ModuleRepo<'_> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum ModuleSource {
+pub(crate) enum RepoSource {
     /// Module loaded from a .gitmodules file.
     Gitmodules,
     /// Module loaded from .git
@@ -92,14 +92,14 @@ pub(crate) enum ModuleSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct ModuleRef {
+pub(crate) struct RepoRef {
     /// Path to module.
     path: RelativePathBuf,
     /// URL of module.
     url: Url,
 }
 
-impl ModuleRef {
+impl RepoRef {
     /// Get path of module.
     pub(crate) fn path(&self) -> &RelativePath {
         &self.path
@@ -111,14 +111,14 @@ impl ModuleRef {
     }
 
     /// Repo name.
-    pub(crate) fn repo(&self) -> Option<ModuleRepo<'_>> {
+    pub(crate) fn repo(&self) -> Option<RepoPath<'_>> {
         let Some("github.com") = self.url.domain() else {
             return None;
         };
 
         let path = self.url.path().trim_matches('/');
         let (owner, name) = path.split_once('/')?;
-        Some(ModuleRepo { owner, name })
+        Some(RepoPath { owner, name })
     }
 
     /// Require that the workspace exists and can be opened.
@@ -136,11 +136,11 @@ impl ModuleRef {
     }
 }
 
-struct ModuleInner {
+struct RepoInner {
     /// Source of module.
-    source: ModuleSource,
+    source: RepoSource,
     /// Interior module stuff.
-    symbolic: ModuleRef,
+    symbolic: RepoRef,
     /// If the module has been disabled for some reason.
     disabled: Cell<bool>,
     /// Whether we've tried to initialize the workspace.
@@ -151,13 +151,13 @@ struct ModuleInner {
 
 /// A git module.
 #[derive(Clone)]
-pub(crate) struct Module {
-    inner: Rc<ModuleInner>,
+pub(crate) struct Repo {
+    inner: Rc<RepoInner>,
 }
 
-impl fmt::Debug for Module {
+impl fmt::Debug for Repo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Module")
+        f.debug_struct("Repo")
             .field("source", &self.inner.source)
             .field("symbolic", &self.inner.symbolic)
             .field("disabled", &self.inner.disabled)
@@ -167,12 +167,12 @@ impl fmt::Debug for Module {
     }
 }
 
-impl Module {
-    pub(crate) fn new(source: ModuleSource, path: RelativePathBuf, url: Url) -> Self {
+impl Repo {
+    pub(crate) fn new(source: RepoSource, path: RelativePathBuf, url: Url) -> Self {
         Self {
-            inner: Rc::new(ModuleInner {
+            inner: Rc::new(RepoInner {
                 source,
-                symbolic: ModuleRef { path, url },
+                symbolic: RepoRef { path, url },
                 disabled: Cell::new(false),
                 init: Cell::new(false),
                 workspace: RefCell::new(None),
@@ -191,7 +191,7 @@ impl Module {
     }
 
     /// Get the source of a module.
-    pub(crate) fn source(&self) -> &ModuleSource {
+    pub(crate) fn source(&self) -> &RepoSource {
         &self.inner.source
     }
 
@@ -230,8 +230,8 @@ impl Module {
     }
 }
 
-impl Deref for Module {
-    type Target = ModuleRef;
+impl Deref for Repo {
+    type Target = RepoRef;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
@@ -240,7 +240,7 @@ impl Deref for Module {
 }
 
 /// Load git modules.
-pub(crate) fn load_modules(root: &Path, git: Option<&Git>) -> Result<Vec<Module>> {
+pub(crate) fn load_modules(root: &Path, git: Option<&Git>) -> Result<Vec<Repo>> {
     let gitmodules_path = root.join(".gitmodules");
 
     match std::fs::read(&gitmodules_path) {
@@ -269,7 +269,7 @@ pub(crate) fn load_modules(root: &Path, git: Option<&Git>) -> Result<Vec<Module>
 }
 
 /// Parse a git module.
-pub(crate) fn parse_git_module(parser: &mut gitmodules::Parser<'_>) -> Result<Option<Module>> {
+pub(crate) fn parse_git_module(parser: &mut gitmodules::Parser<'_>) -> Result<Option<Repo>> {
     let mut parsed_path = None;
     let mut parsed_url = None;
 
@@ -296,11 +296,11 @@ pub(crate) fn parse_git_module(parser: &mut gitmodules::Parser<'_>) -> Result<Op
         return Ok(None);
     };
 
-    Ok(Some(Module::new(ModuleSource::Gitmodules, path, url)))
+    Ok(Some(Repo::new(RepoSource::Gitmodules, path, url)))
 }
 
 /// Parse gitmodules from the given input.
-pub(crate) fn parse_git_modules(input: &[u8]) -> Result<Vec<Module>> {
+pub(crate) fn parse_git_modules(input: &[u8]) -> Result<Vec<Repo>> {
     let mut parser = gitmodules::Parser::new(input);
 
     let mut modules = Vec::new();
@@ -313,15 +313,11 @@ pub(crate) fn parse_git_modules(input: &[u8]) -> Result<Vec<Module>> {
 }
 
 /// Process module information from a git repository.
-fn module_from_git<P>(git: &Git, root: &P) -> Result<Module>
+fn module_from_git<P>(git: &Git, root: &P) -> Result<Repo>
 where
     P: ?Sized + AsRef<Path>,
 {
     let url = git.get_url(root, "origin")?;
 
-    Ok(Module::new(
-        ModuleSource::Git,
-        RelativePathBuf::from("."),
-        url,
-    ))
+    Ok(Repo::new(RepoSource::Git, RelativePathBuf::from("."), url))
 }

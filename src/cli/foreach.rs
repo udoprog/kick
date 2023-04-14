@@ -2,9 +2,9 @@ use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 
 use crate::ctxt::Ctxt;
-use crate::model::Module;
-use crate::module_sets::ModuleSet;
+use crate::model::Repo;
 use crate::process::Command;
+use crate::repo_sets::RepoSet;
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -12,7 +12,7 @@ pub(crate) struct Opts {
     /// Store the outcome if this run into the sets `good` and `bad`, to be used
     /// later with `--set <id>` command.
     ///
-    /// The `good` set will contain modules for which the command exited
+    /// The `good` set will contain repos for which the command exited
     /// successfully, while the `bad` set for which they failed.
     store_sets: bool,
     /// Command to run.
@@ -24,12 +24,12 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
         return Err(anyhow!("missing command"));
     };
 
-    let mut good = ModuleSet::default();
-    let mut bad = ModuleSet::default();
+    let mut good = RepoSet::default();
+    let mut bad = RepoSet::default();
 
-    for module in cx.modules() {
-        r#for(cx, module, command, args, &mut good, &mut bad)
-            .with_context(|| module.path().to_owned())?;
+    for repo in cx.repos() {
+        r#for(cx, repo, command, args, &mut good, &mut bad)
+            .with_context(|| repo.path().to_owned())?;
     }
 
     let hint = format!("for: {:?}", opts);
@@ -38,16 +38,16 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     Ok(())
 }
 
-#[tracing::instrument(name = "for", skip_all, fields(path = module.path().as_str()))]
+#[tracing::instrument(name = "for", skip_all, fields(path = repo.path().as_str()))]
 fn r#for(
     cx: &Ctxt<'_>,
-    module: &Module,
+    repo: &Repo,
     command: &str,
     args: &[String],
-    good: &mut ModuleSet,
-    bad: &mut ModuleSet,
+    good: &mut RepoSet,
+    bad: &mut RepoSet,
 ) -> Result<()> {
-    let current_dir = module.path().to_path(cx.root);
+    let current_dir = repo.path().to_path(cx.root);
 
     let mut command = Command::new(command);
     command.args(args);
@@ -56,10 +56,10 @@ fn r#for(
     tracing::info!("{}", command.display());
 
     if command.status()?.success() {
-        good.insert(module);
+        good.insert(repo);
     } else {
         tracing::warn!(?command, "command failed");
-        bad.insert(module);
+        bad.insert(repo);
     }
 
     Ok(())

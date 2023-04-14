@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::manifest::{self, Manifest};
-use crate::model::{CrateParams, ModuleRef};
+use crate::model::{CrateParams, RepoRef};
 use crate::rust_version::RustVersion;
 
 /// The default name of a cargo manifest `Cargo.toml`.
@@ -15,18 +15,18 @@ pub(crate) const CARGO_TOML: &str = "Cargo.toml";
 
 /// Load a workspace starting at the given path.
 #[tracing::instrument(skip_all)]
-pub(crate) fn open(cx: &Ctxt<'_>, module: &ModuleRef) -> Result<Option<Workspace>> {
+pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Workspace>> {
     tracing::trace!("Opening workspace");
 
-    let manifest_path = match cx.config.cargo_toml(module.path()) {
-        Some(cargo_toml) => module.path().join(cargo_toml),
-        None => module.path().join(CARGO_TOML),
+    let manifest_path = match cx.config.cargo_toml(repo.path()) {
+        Some(cargo_toml) => repo.path().join(cargo_toml),
+        None => repo.path().join(CARGO_TOML),
     };
 
     let primary_crate = cx
         .config
-        .crate_for(module.path())
-        .or(module.repo().map(|repo| repo.name));
+        .crate_for(repo.path())
+        .or(repo.repo().map(|repo| repo.name));
 
     let Some(manifest) = manifest::open(manifest_path.to_path(cx.root))? else {
         return Ok(None);
@@ -134,10 +134,10 @@ impl Package {
     }
 
     /// Construct crate parameters.
-    pub(crate) fn crate_params<'a>(&'a self, module: &'a ModuleRef) -> Result<CrateParams<'a>> {
+    pub(crate) fn crate_params<'a>(&'a self, repo: &'a RepoRef) -> Result<CrateParams<'a>> {
         Ok(CrateParams {
-            repo: module.repo(),
             name: self.manifest.crate_name()?,
+            repo: repo.repo(),
             description: self.manifest.description()?,
             rust_version: self.rust_version()?,
         })

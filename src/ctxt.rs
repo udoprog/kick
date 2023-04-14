@@ -8,9 +8,9 @@ use crate::actions::Actions;
 use crate::changes::{Change, Warning};
 use crate::config::Config;
 use crate::git::Git;
-use crate::model::{Module, ModuleParams, ModuleRef};
-use crate::module_sets::ModuleSets;
+use crate::model::{Repo, RepoParams, RepoRef};
 use crate::process::Command;
+use crate::repo_sets::RepoSets;
 use crate::rust_version::RustVersion;
 use crate::workspace::Package;
 
@@ -18,32 +18,30 @@ pub(crate) struct Ctxt<'a> {
     pub(crate) root: &'a Path,
     pub(crate) config: &'a Config,
     pub(crate) actions: &'a Actions<'a>,
-    pub(crate) modules: &'a [Module],
+    pub(crate) repos: &'a [Repo],
     pub(crate) github_auth: Option<String>,
     pub(crate) rustc_version: Option<RustVersion>,
     pub(crate) git: Option<Git>,
     pub(crate) warnings: RefCell<Vec<Warning>>,
     pub(crate) changes: RefCell<Vec<Change>>,
-    pub(crate) sets: &'a mut ModuleSets,
+    pub(crate) sets: &'a mut RepoSets,
 }
 
 impl<'a> Ctxt<'a> {
-    /// Get module parameters for the given package.
-    pub(crate) fn module_params<'m>(
+    /// Get repo parameters for the given package.
+    pub(crate) fn repo_params<'m>(
         &'m self,
         package: &'m Package,
-        module: &'m ModuleRef,
-    ) -> Result<ModuleParams<'m>> {
-        let variables = self.config.variables(module);
-        let crate_params = package.crate_params(module)?;
-        Ok(self
-            .config
-            .module_params(self, module, crate_params, variables))
+        repo: &'m RepoRef,
+    ) -> Result<RepoParams<'m>> {
+        let variables = self.config.variables(repo);
+        let crate_params = package.crate_params(repo)?;
+        Ok(self.config.repo_params(self, repo, crate_params, variables))
     }
 
     /// Iterate over non-disabled modules.
-    pub(crate) fn modules(&self) -> impl Iterator<Item = &Module> + '_ {
-        self.modules.iter().filter(move |m| !m.is_disabled())
+    pub(crate) fn repos(&self) -> impl Iterator<Item = &Repo> + '_ {
+        self.repos.iter().filter(move |m| !m.is_disabled())
     }
 
     /// Require a working git command.

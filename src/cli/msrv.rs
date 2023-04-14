@@ -7,9 +7,9 @@ use clap::Parser;
 
 use crate::changes::Change;
 use crate::ctxt::Ctxt;
-use crate::model::Module;
-use crate::module_sets::ModuleSet;
+use crate::model::Repo;
 use crate::process::Command;
+use crate::repo_sets::RepoSet;
 use crate::rust_version::{self, RustVersion};
 use crate::workspace::Workspace;
 
@@ -63,9 +63,9 @@ pub(crate) struct Opts {
     /// Store the outcome if this run into the sets `good` and `bad`, to be used
     /// later with `--set <id>` command.
     ///
-    /// The `good` set will contain modules for which an MSRV was found, while
-    /// the `bad` set will contain modules for which no MSRV could be found for
-    /// one reason or another.
+    /// The `good` set will contain repos for which an MSRV was found, while the
+    /// `bad` set will contain repos for which no MSRV could be found for one
+    /// reason or another.
     #[arg(long)]
     store_sets: bool,
     /// Command to test with.
@@ -76,13 +76,13 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    let mut good = ModuleSet::default();
-    let mut bad = ModuleSet::default();
+    let mut good = RepoSet::default();
+    let mut bad = RepoSet::default();
 
-    for module in cx.modules() {
-        let workspace = module.workspace(cx)?;
-        msrv(cx, &workspace, module, opts, &mut good, &mut bad)
-            .with_context(|| module.path().to_owned())?;
+    for repo in cx.repos() {
+        let workspace = repo.workspace(cx)?;
+        msrv(cx, &workspace, repo, opts, &mut good, &mut bad)
+            .with_context(|| repo.path().to_owned())?;
     }
 
     let hint = format!("msrv: {:?}", opts);
@@ -91,18 +91,18 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     Ok(())
 }
 
-#[tracing::instrument(skip_all, fields(source = ?module.source(), path = module.path().as_str()))]
+#[tracing::instrument(skip_all, fields(source = ?repo.source(), path = repo.path().as_str()))]
 fn msrv(
     cx: &Ctxt<'_>,
     workspace: &Workspace,
-    module: &Module,
+    repo: &Repo,
     opts: &Opts,
-    good: &mut ModuleSet,
-    bad: &mut ModuleSet,
+    good: &mut RepoSet,
+    bad: &mut RepoSet,
 ) -> Result<()> {
     let primary = workspace.primary_crate()?;
 
-    let current_dir = module.path().to_path(cx.root);
+    let current_dir = repo.path().to_path(cx.root);
     let rust_version = primary.rust_version()?;
 
     let opts_earliest = parse_minor_version(cx, opts.earliest.as_deref(), rust_version.as_ref())?;
@@ -211,20 +211,20 @@ fn msrv(
 
     let Some(version) = candidates.get() else {
         tracing::warn!("No MSRV found");
-        bad.insert(module);
+        bad.insert(repo);
         return Ok(());
     };
 
-    good.insert(module);
+    good.insert(repo);
 
     if version >= RUST_VERSION_SUPPORTED {
         cx.change(Change::SetRustVersion {
-            module: (**module).clone(),
+            repo: (**repo).clone(),
             version,
         });
     } else {
         cx.change(Change::RemoveRustVersion {
-            module: (**module).clone(),
+            repo: (**repo).clone(),
             version,
         });
     }

@@ -9,7 +9,7 @@ use serde::{de::IntoDeserializer, Deserialize};
 use url::Url;
 
 use crate::ctxt::Ctxt;
-use crate::model::Module;
+use crate::model::Repo;
 
 #[derive(Default, Parser)]
 pub(crate) struct Opts {
@@ -62,27 +62,27 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     let today = Local::now();
     let limit = opts.limit.unwrap_or(1).max(1).to_string();
 
-    for module in cx.modules() {
-        status(cx, opts, module, today, &client, &limit).await?;
+    for repo in cx.repos() {
+        status(cx, opts, repo, today, &client, &limit).await?;
     }
 
     Ok(())
 }
 
-#[tracing::instrument(skip_all, fields(source = ?module.source(), path = module.path().as_str()))]
+#[tracing::instrument(skip_all, fields(source = ?repo.source(), path = repo.path().as_str()))]
 async fn status(
     cx: &Ctxt<'_>,
     opts: &Opts,
-    module: &Module,
+    repo: &Repo,
     today: DateTime<Local>,
     client: &Client,
     limit: &str,
 ) -> Result<()> {
-    let Some(repo) = module.repo() else {
+    let Some(repo_path) = repo.repo() else {
         return Ok(());
     };
 
-    let current_dir = module.path().to_path(cx.root);
+    let current_dir = repo.path().to_path(cx.root);
     let sha;
 
     let sha = match &cx.git {
@@ -97,14 +97,14 @@ async fn status(
 
     let url = format!(
         "https://api.github.com/repos/{owner}/{name}/actions/workflows/ci.yml/runs",
-        owner = repo.owner,
-        name = repo.name
+        owner = repo_path.owner,
+        name = repo_path.name
     );
 
     let req = build_request(cx, client, url)
         .query(&[("exclude_pull_requests", "true"), ("per_page", limit)]);
 
-    println!("{}: {}", module.path(), module.url());
+    println!("{}: {}", repo.path(), repo.url());
 
     let res = req.send().await?;
 

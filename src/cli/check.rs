@@ -9,8 +9,8 @@ use clap::Parser;
 
 use crate::changes;
 use crate::ctxt::Ctxt;
-use crate::model::Module;
-use crate::model::ModuleParams;
+use crate::model::Repo;
+use crate::model::RepoParams;
 use crate::model::UpdateParams;
 use crate::urls::UrlError;
 use crate::urls::Urls;
@@ -27,15 +27,15 @@ pub(crate) struct Opts {
 pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     let mut urls = Urls::default();
 
-    for module in cx.modules() {
-        tracing::info!("checking: {}", module.path());
+    for repo in cx.repos() {
+        tracing::info!("checking: {}", repo.path());
 
-        let workspace = module.workspace(cx)?;
+        let workspace = repo.workspace(cx)?;
         let primary_crate = workspace.primary_crate()?;
-        let params = cx.module_params(primary_crate, module)?;
+        let params = cx.repo_params(primary_crate, repo)?;
 
-        check(cx, module, &workspace, primary_crate, params, &mut urls)
-            .with_context(|| module.path().to_owned())?;
+        check(cx, repo, &workspace, primary_crate, params, &mut urls)
+            .with_context(|| repo.path().to_owned())?;
     }
 
     let o = std::io::stdout();
@@ -62,30 +62,30 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     Ok(())
 }
 
-/// Run a single module.
-#[tracing::instrument(skip_all, fields(source = ?module.source(), path = module.path().as_str()))]
+/// Run checks for a single repo.
+#[tracing::instrument(skip_all, fields(source = ?repo.source(), path = repo.path().as_str()))]
 fn check(
     cx: &Ctxt<'_>,
-    module: &Module,
+    repo: &Repo,
     workspace: &Workspace,
     primary_crate: &Package,
-    primary_crate_params: ModuleParams<'_>,
+    primary_crate_params: RepoParams<'_>,
     urls: &mut Urls,
 ) -> Result<()> {
-    let documentation = match &cx.config.documentation(module) {
+    let documentation = match &cx.config.documentation(repo) {
         Some(documentation) => Some(documentation.render(&primary_crate_params)?),
         None => None,
     };
 
-    let module_url = module.url().to_string();
+    let repo_url = repo.url().to_string();
 
     let update_params = UpdateParams {
-        license: Some(cx.config.license(module)),
+        license: Some(cx.config.license(repo)),
         readme: Some(readme::README_MD),
-        repository: Some(&module_url),
-        homepage: Some(&module_url),
+        repository: Some(&repo_url),
+        homepage: Some(&repo_url),
         documentation: documentation.as_deref(),
-        authors: cx.config.authors(module),
+        authors: cx.config.authors(repo),
     };
 
     for package in workspace.packages() {
@@ -94,16 +94,16 @@ fn check(
         }
     }
 
-    if cx.config.is_enabled(module.path(), "ci") {
-        ci::build(cx, primary_crate, module, workspace)
-            .with_context(|| anyhow!("ci change: {}", cx.config.job_name(module)))?;
+    if cx.config.is_enabled(repo.path(), "ci") {
+        ci::build(cx, primary_crate, repo, workspace)
+            .with_context(|| anyhow!("ci change: {}", cx.config.job_name(repo)))?;
     }
 
-    if cx.config.is_enabled(module.path(), "readme") {
+    if cx.config.is_enabled(repo.path(), "readme") {
         readme::build(
             cx,
-            module.path(),
-            module,
+            repo.path(),
+            repo,
             primary_crate,
             &primary_crate_params,
             urls,
@@ -116,16 +116,16 @@ fn check(
                 continue;
             }
 
-            let params = cx.module_params(package, module)?;
+            let params = cx.repo_params(package, repo)?;
 
             readme::build(
                 cx,
                 &package.manifest_dir,
-                module,
+                repo,
                 package,
                 &params,
                 urls,
-                package.manifest_dir != *module.path(),
+                package.manifest_dir != *repo.path(),
                 true,
             )?;
         }

@@ -9,7 +9,7 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Local, NaiveDateTime};
 use relative_path::{RelativePath, RelativePathBuf};
 
-use crate::model::Module;
+use crate::model::Repo;
 
 /// Date format for sets.
 const DATE_FORMAT: &str = "%Y-%m-%d-%H%M%S";
@@ -18,13 +18,13 @@ const PRUNE: usize = 3;
 
 /// Collection of known sets.
 #[derive(Debug, Default)]
-pub(crate) struct ModuleSets {
+pub(crate) struct RepoSets {
     path: PathBuf,
     known: HashMap<String, Known>,
-    updates: Vec<(String, ModuleSet, bool, String)>,
+    updates: Vec<(String, RepoSet, bool, String)>,
 }
 
-impl ModuleSets {
+impl RepoSets {
     /// Load sets from the given path.
     #[tracing::instrument(level = "trace", ret, skip_all)]
     pub(crate) fn new<P>(path: P) -> Result<Self>
@@ -70,7 +70,7 @@ impl ModuleSets {
     }
 
     /// Get the given set.
-    pub(crate) fn load(&self, id: &str) -> Result<Option<ModuleSet>> {
+    pub(crate) fn load(&self, id: &str) -> Result<Option<RepoSet>> {
         let Some(known) = self.known.get(id) else {
             return Ok(None);
         };
@@ -92,7 +92,7 @@ impl ModuleSets {
             Err(e) => return Err(e).context(anyhow!("{}", path.display())),
         };
 
-        let mut set = ModuleSet::default();
+        let mut set = RepoSet::default();
         let reader = BufReader::new(file);
 
         for (n, line) in reader.lines().enumerate() {
@@ -103,14 +103,14 @@ impl ModuleSets {
                 continue;
             }
 
-            set.modules.insert(RelativePathBuf::from(line), n);
+            set.repos.insert(RelativePathBuf::from(line), n);
         }
 
         Ok(Some(set))
     }
 
     /// Save the given set.
-    pub(crate) fn save<D>(&mut self, id: &str, set: ModuleSet, primary: bool, hint: &D)
+    pub(crate) fn save<D>(&mut self, id: &str, set: RepoSet, primary: bool, hint: &D)
     where
         D: ?Sized + fmt::Display,
     {
@@ -121,7 +121,7 @@ impl ModuleSets {
     /// Commit updates.
     pub(crate) fn commit(&mut self) -> Result<()> {
         fn write_set(
-            set: ModuleSet,
+            set: RepoSet,
             hint: &str,
             now: DateTime<Local>,
             mut f: File,
@@ -133,8 +133,8 @@ impl ModuleSets {
                 writeln!(f, "{line}")?;
             }
 
-            for module in set.added {
-                writeln!(f, "{module}")?;
+            for repo in set.added {
+                writeln!(f, "{repo}")?;
             }
 
             f.flush()?;
@@ -211,25 +211,25 @@ impl Known {
     }
 }
 
-/// A single loaded list of repos.
+/// A set of loaded repos.
 #[derive(Debug, Default)]
-pub(crate) struct ModuleSet {
+pub(crate) struct RepoSet {
     raw: Vec<String>,
-    modules: HashMap<RelativePathBuf, usize>,
+    repos: HashMap<RelativePathBuf, usize>,
     added: BTreeSet<RelativePathBuf>,
 }
 
-impl ModuleSet {
-    /// Add the given module to the list.
-    pub(crate) fn insert(&mut self, module: &Module) {
-        if !self.modules.contains_key(module.path()) {
-            self.added.insert(module.path().to_owned());
+impl RepoSet {
+    /// Add the given repo to the set.
+    pub(crate) fn insert(&mut self, repo: &Repo) {
+        if !self.repos.contains_key(repo.path()) {
+            self.added.insert(repo.path().to_owned());
         }
     }
 
-    /// Iterate over all modules in the set.
+    /// Iterate over all repos in the set.
     pub(crate) fn iter(&self) -> impl Iterator<Item = &RelativePath> {
-        self.modules
+        self.repos
             .keys()
             .map(|p| p.as_relative_path())
             .chain(self.added.iter().map(|p| p.as_relative_path()))

@@ -7,7 +7,7 @@ use clap::Parser;
 use toml_edit::Item;
 
 use crate::ctxt::Ctxt;
-use crate::model::Module;
+use crate::model::Repo;
 use crate::process::Command;
 use crate::workspace;
 
@@ -28,16 +28,16 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
-    for module in cx.modules() {
-        publish(cx, opts, module).with_context(|| module.path().to_owned())?;
+    for repo in cx.repos() {
+        publish(cx, opts, repo).with_context(|| repo.path().to_owned())?;
     }
 
     Ok(())
 }
 
-#[tracing::instrument(skip_all, fields(source = ?module.source(), path = module.path().as_str()))]
-fn publish(cx: &Ctxt<'_>, opts: &Opts, module: &Module) -> Result<()> {
-    let Some(workspace) = workspace::open(cx, module)? else {
+#[tracing::instrument(skip_all, fields(source = ?repo.source(), path = repo.path().as_str()))]
+fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
+    let Some(workspace) = workspace::open(cx, repo)? else {
         bail!("not a workspace");
     };
 

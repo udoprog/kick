@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -11,7 +10,7 @@ use serde::Serialize;
 use crate::changes::{Change, Warning};
 use crate::ctxt::Ctxt;
 use crate::file::File;
-use crate::model::{Module, ModuleParams};
+use crate::model::{Repo, RepoParams};
 use crate::urls::Urls;
 use crate::workspace::Package;
 
@@ -22,10 +21,10 @@ pub(crate) const README_MD: &str = "README.md";
 const HEADER_MARKER: &str = "<!--- header -->";
 
 struct Readme<'a, 'outer> {
-    module: &'a Module,
+    repo: &'a Repo,
     readme_path: &'a RelativePath,
     entry: &'a RelativePath,
-    params: &'a ModuleParams<'a>,
+    params: &'a RepoParams<'a>,
     urls: &'outer mut Urls,
     do_readme: bool,
     do_lib: bool,
@@ -35,9 +34,9 @@ struct Readme<'a, 'outer> {
 pub(crate) fn build(
     cx: &Ctxt<'_>,
     manifest_dir: &RelativePath,
-    module: &Module,
+    repo: &Repo,
     package: &Package,
-    params: &ModuleParams<'_>,
+    params: &RepoParams<'_>,
     urls: &mut Urls,
     do_readme: bool,
     do_lib: bool,
@@ -55,7 +54,7 @@ pub(crate) fn build(
     };
 
     let mut readme = Readme {
-        module,
+        repo,
         readme_path: &readme_path,
         entry: &entry,
         params,
@@ -89,7 +88,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
 
     let mut lib_badges = Vec::new();
 
-    for badge in cx.config.lib_badges(rm.module.path()) {
+    for badge in cx.config.lib_badges(rm.repo.path()) {
         lib_badges.push(BadgeParams {
             markdown: badge.markdown(rm.params)?,
             html: badge.html(rm.params)?,
@@ -127,7 +126,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
 
     let mut readme_badges = Vec::new();
 
-    for badge in cx.config.readme_badges(rm.module.path()) {
+    for badge in cx.config.readme_badges(rm.repo.path()) {
         readme_badges.push(BadgeParams {
             markdown: badge.markdown(rm.params)?,
             html: badge.html(rm.params)?,
@@ -187,7 +186,7 @@ struct TemplateParams<'a> {
     body: Option<&'a str>,
     header_marker: Option<&'a str>,
     #[serde(flatten)]
-    params: &'a ModuleParams<'a>,
+    params: &'a RepoParams<'a>,
 }
 
 #[derive(Serialize)]
@@ -195,7 +194,7 @@ struct ReadmeParams<'a> {
     body: Option<&'a str>,
     badges: &'a [BadgeParams],
     #[serde(flatten)]
-    params: &'a ModuleParams<'a>,
+    params: &'a RepoParams<'a>,
 }
 
 /// Process the lib rs.
@@ -210,7 +209,7 @@ fn process_lib_rs(
     let mut source_lines = source.lines().peekable();
     let mut header_marker = None;
 
-    let comments = if let Some(lib) = cx.config.lib(rm.module.path()) {
+    let comments = if let Some(lib) = cx.config.lib(rm.repo.path()) {
         while let Some(line) = source_lines.peek().and_then(|line| line.as_rust_comment()) {
             if line.starts_with('#') {
                 break;
@@ -403,28 +402,32 @@ fn readme_from_lib_rs(
 ) -> Result<File> {
     let mut body = File::new();
 
-    let mut in_code_block = None::<bool>;
+    let mut in_code_block = None::<(bool, String)>;
 
     for line in comments.lines() {
-        if in_code_block == Some(true) && line.as_ref().trim_start().starts_with("# ") {
-            continue;
-        }
-
-        if line.as_ref().starts_with("```") {
-            if in_code_block.is_none() {
-                let (parts, specs) = filter_code_block(line.as_ref());
-                body.line(format_args!("```{parts}"));
-                in_code_block = Some(specs.contains("rust"));
+        match &in_code_block {
+            Some((_, ticks)) if line.as_ref() == ticks => {
+                in_code_block = None;
+            }
+            // Skip over rust comments.
+            Some((true, _)) if line.as_ref().trim_start().starts_with("# ") => {
                 continue;
             }
-
-            in_code_block = None;
+            // Detect a code block and store the ticks that it uses.
+            None if (line.as_ref().starts_with("```") || line.as_ref().starts_with("~~~")) => {
+                let (specs, ticks) = filter_code_block(line.as_ref());
+                let parts = specs.join(",");
+                body.line(format_args!("{ticks}{parts}"));
+                in_code_block = Some((specs.iter().any(|item| item == "rust"), ticks));
+                continue;
+            }
+            _ => {}
         }
 
         body.line(line);
     }
 
-    let mut readme = if let Some(readme) = cx.config.readme(rm.module.path()) {
+    let mut readme = if let Some(readme) = cx.config.readme(rm.repo.path()) {
         let output = readme.render(&ReadmeParams {
             body: body.as_non_empty_str(),
             badges,
@@ -466,9 +469,12 @@ fn readme_from_lib_rs(
 }
 
 /// Filter code block fragments.
-fn filter_code_block(comment: &str) -> (String, BTreeSet<String>) {
-    let parts = comment.get(3..).unwrap_or_default();
-    let mut out = BTreeSet::new();
+fn filter_code_block(comment: &str) -> (Vec<String>, String) {
+    let index = comment.find(|c| !(c == '`' || c == '~')).unwrap_or(0);
+
+    let ticks = comment.get(..index).unwrap_or_default();
+    let parts = comment.get(index..).unwrap_or_default();
+    let mut out = Vec::new();
 
     for part in parts.split(',') {
         let part = part.trim();
@@ -478,12 +484,12 @@ fn filter_code_block(comment: &str) -> (String, BTreeSet<String>) {
             _ => {}
         }
 
-        out.insert(part.to_owned());
+        out.push(part.to_owned());
     }
 
     if out.is_empty() {
-        out.insert(String::from("rust"));
+        out.push(String::from("rust"));
     }
 
-    (out.iter().cloned().collect::<Vec<_>>().join(","), out)
+    (out, ticks.into())
 }

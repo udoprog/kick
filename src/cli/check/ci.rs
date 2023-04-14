@@ -9,7 +9,7 @@ use relative_path::{RelativePath, RelativePathBuf};
 use crate::changes::{Change, Warning, WorkflowChange};
 use crate::ctxt::Ctxt;
 use crate::manifest::Manifest;
-use crate::model::Module;
+use crate::model::Repo;
 use crate::rust_version::RustVersion;
 use crate::workspace::{Package, Workspace};
 
@@ -64,10 +64,10 @@ enum CargoFeatures {
 pub(crate) fn build(
     cx: &Ctxt<'_>,
     primary_crate: &Package,
-    module: &Module,
+    repo: &Repo,
     workspace: &Workspace,
 ) -> Result<()> {
-    let path = module.path().join(".github").join("workflows");
+    let path = repo.path().join(".github").join("workflows");
 
     let mut ci = Ci {
         path: &path,
@@ -75,11 +75,11 @@ pub(crate) fn build(
         workspace: !workspace.is_single_crate(),
     };
 
-    validate(cx, &mut ci, module)
+    validate(cx, &mut ci, repo)
 }
 
 /// Validate the current model.
-fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, module: &Module) -> Result<()> {
+fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, repo: &Repo) -> Result<()> {
     let deprecated_yml = ci.path.join("rust.yml");
     let expected_path = ci.path.join("ci.yml");
 
@@ -94,7 +94,7 @@ fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, module: &Module) -> Result<()> {
 
         cx.change(Change::MissingWorkflow {
             path: expected_path,
-            module: (**module).clone(),
+            repo: (**repo).clone(),
             candidates: candidates.clone(),
         });
 
@@ -121,11 +121,11 @@ fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, module: &Module) -> Result<()> {
         .and_then(|m| m.get("name")?.as_str())
         .ok_or_else(|| anyhow!("{path}: missing .name"))?;
 
-    if name != cx.config.job_name(module) {
+    if name != cx.config.job_name(repo) {
         cx.warning(Warning::WrongWorkflowName {
             path: path.clone(),
             actual: name.to_owned(),
-            expected: cx.config.job_name(module).to_owned(),
+            expected: cx.config.job_name(repo).to_owned(),
         });
     }
 

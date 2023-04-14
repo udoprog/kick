@@ -79,12 +79,12 @@ repos/kick/src/main.rs: Fixing
 
 <br>
 
-## Working with module sets
+## Working with repo sets
 
 Commands can produce sets under certain circumstances. Look out for the
 switch named `--store-sets`.
 
-If this is set during a run, it will store sets of modules, such as the set
+If this is set during a run, it will store sets of repos, such as the set
 for which a command failed. This set can then later be re-used through the
 `--set <id>` switch.
 
@@ -124,13 +124,13 @@ shallowest possible filesystem location.
 
 Configuration is loaded in a hierarchy, and each option can be extended or
 overriden on a per-repo basis. This is usually done through a
-`[repos."<name>"]` section.
+`[repo."<name>"]` section.
 
 ```toml
-[repos."repos/OxidizeBot"]
+[repo."repos/OxidizeBot"]
 crate = "oxidize"
 
-[repos."repos/OxidizeBot".upgrade]
+[repo."repos/OxidizeBot".upgrade]
 exclude = [
    # We avoid touching this dependency since it has a complex set of version-dependent feature flags.
    "libsqlite3-sys"
@@ -167,7 +167,7 @@ Overrides the detected crate name.
 #### Examples
 
 ```toml
-[repos."repos/OxidizeBot"]
+[repo."repos/OxidizeBot"]
 crate = "oxidize"
 ```
 
@@ -382,7 +382,7 @@ Path to templates:
 #### Examples
 
 ```toml
-[repos."repos/rune"]
+[repo."repos/rune"]
 lib = "data/rune.lib.md"
 readme = "data/rune.readme.md"
 ```
@@ -490,7 +490,7 @@ Available keys are:
 ```toml
 [[version]]
 paths = ["src/**/*.rs"]
-# replaces versions in module level comments that looks likle [dependencies] declarations
+# replaces versions in repo level comments that looks likle [dependencies] declarations
 pattern = "//!\\s+[a-z-]+\\s*=\\s*.+(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+).+"
 ```
 
@@ -524,8 +524,26 @@ disabled = ["ci"]
 
 ### `readme` module
 
-Generates a `README.md` based on what's in the module-level comment of your
+Generates a `README.md` based on what's in the top-level comments of your
 primary crate's entrypoint. See the `readme` template above.
+
+```rust
+//! This is my crate!
+//!
+//! ```
+//! let a = 42;
+//! ```
+```
+
+Would become the following `README.md`:
+
+````text
+This is my crate!
+
+```rust
+let a = 42;
+```
+````
 
 To disable, specify:
 

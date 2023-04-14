@@ -7,7 +7,7 @@ use toml_edit::{Formatted, Item, Table, Value};
 
 use crate::changes::Change;
 use crate::ctxt::Ctxt;
-use crate::model::Module;
+use crate::model::Repo;
 use crate::workspace;
 
 #[derive(Default, Parser)]
@@ -62,16 +62,16 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
         }
     }
 
-    for module in cx.modules() {
-        version(cx, opts, module, &version_set).with_context(|| module.path().to_owned())?;
+    for repo in cx.repos() {
+        version(cx, opts, repo, &version_set).with_context(|| repo.path().to_owned())?;
     }
 
     Ok(())
 }
 
-#[tracing::instrument(skip_all, fields(source = ?module.source(), path = module.path().as_str()))]
-fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet) -> Result<()> {
-    let Some(workspace) = workspace::open(cx, module)? else {
+#[tracing::instrument(skip_all, fields(source = ?repo.source(), path = repo.path().as_str()))]
+fn version(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo, version_set: &VersionSet) -> Result<()> {
+    let Some(workspace) = workspace::open(cx, repo)? else {
         bail!("not a workspace");
     };
 
@@ -143,7 +143,7 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, module: &Module, version_set: &VersionSet
             let root = package.manifest_dir.to_path(cx.root);
             let version_string = version.to_string();
 
-            for replacement in cx.config.version(module) {
+            for replacement in cx.config.version(repo) {
                 if matches!(&replacement.crate_name, Some(id) if id != name) {
                     continue;
                 }

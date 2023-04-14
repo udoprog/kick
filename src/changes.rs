@@ -14,7 +14,7 @@ use crate::config::Replaced;
 use crate::ctxt::Ctxt;
 use crate::file::{File, LineColumn};
 use crate::manifest::Manifest;
-use crate::model::ModuleRef;
+use crate::model::RepoRef;
 use crate::rust_version::RustVersion;
 use crate::workspace::Package;
 
@@ -102,7 +102,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
     match change {
         Change::MissingWorkflow {
             path,
-            module,
+            repo,
             candidates,
         } => {
             println!("{path}: Missing workflow");
@@ -124,11 +124,11 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                         }
                     }
 
-                    let workspace = module.require_workspace(cx)?;
+                    let workspace = repo.require_workspace(cx)?;
                     let primary_crate = workspace.primary_crate()?;
-                    let params = cx.module_params(primary_crate, module)?;
+                    let params = cx.repo_params(primary_crate, repo)?;
 
-                    let Some(string) = cx.config.workflow(module, params)? else {
+                    let Some(string) = cx.config.workflow(repo, params)? else {
                         println!("  Missing default workflow!");
                         return Ok(());
                     };
@@ -232,20 +232,20 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                 }
             }
         }
-        Change::SetRustVersion { module, version } => {
+        Change::SetRustVersion { repo, version } => {
             if save {
                 tracing::info!(
-                    path = module.path().as_str(),
+                    path = repo.path().as_str(),
                     "Setting rust version: Rust {version}"
                 );
             } else {
                 tracing::info!(
-                    path = module.path().as_str(),
+                    path = repo.path().as_str(),
                     "Would set rust version: Rust {version}"
                 );
             }
 
-            let workspace = module.require_workspace(cx)?;
+            let workspace = repo.require_workspace(cx)?;
 
             for p in workspace.packages() {
                 if p.manifest.is_publish()? {
@@ -271,20 +271,20 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                 }
             }
         }
-        Change::RemoveRustVersion { module, version } => {
+        Change::RemoveRustVersion { repo, version } => {
             if save {
                 tracing::info!(
-                    path = module.path().as_str(),
+                    path = repo.path().as_str(),
                     "Clearing rust version: Rust {version}"
                 );
             } else {
                 tracing::info!(
-                    path = module.path().as_str(),
+                    path = repo.path().as_str(),
                     "Would clear rust version: Rust {version}"
                 );
             }
 
-            let workspace = module.require_workspace(cx)?;
+            let workspace = repo.require_workspace(cx)?;
 
             for p in workspace.packages() {
                 let mut p = p.clone();
@@ -483,7 +483,7 @@ pub(crate) enum Warning {
 pub(crate) enum Change {
     MissingWorkflow {
         path: RelativePathBuf,
-        module: ModuleRef,
+        repo: RepoRef,
         candidates: Box<[RelativePathBuf]>,
     },
     BadWorkflow {
@@ -504,16 +504,10 @@ pub(crate) enum Change {
         cargo: Option<Manifest>,
         issues: Vec<CargoIssue>,
     },
-    /// Set rust version for the given module.
-    SetRustVersion {
-        module: ModuleRef,
-        version: RustVersion,
-    },
-    /// Remove rust version from the given module.
-    RemoveRustVersion {
-        module: ModuleRef,
-        version: RustVersion,
-    },
+    /// Set rust version for the given repo.
+    SetRustVersion { repo: RepoRef, version: RustVersion },
+    /// Remove rust version from the given repo.
+    RemoveRustVersion { repo: RepoRef, version: RustVersion },
     /// Save a package.
     SavePackage {
         /// Save the given package.

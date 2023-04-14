@@ -2,9 +2,9 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 use crate::ctxt::Ctxt;
-use crate::model::Module;
-use crate::module_sets::ModuleSet;
+use crate::model::Repo;
 use crate::process::Command;
+use crate::repo_sets::RepoSet;
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -17,8 +17,8 @@ pub(crate) struct Opts {
     /// Store the outcome if this run into the sets `good` and `bad`, to be used
     /// later with `--set <id>` command.
     ///
-    /// The `good` set will contain modules for which the `cargo upgrade`
-    /// command exited successfully, while the `bad` set for which they failed.
+    /// The `good` set will contain repos for which the `cargo upgrade` command
+    /// exited successfully, while the `bad` set for which they failed.
     #[arg(long)]
     store_sets: bool,
     /// Extra upgrade arguments.
@@ -26,11 +26,11 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    let mut good = ModuleSet::default();
-    let mut bad = ModuleSet::default();
+    let mut good = RepoSet::default();
+    let mut bad = RepoSet::default();
 
-    for module in cx.modules() {
-        upgrade(cx, opts, module, &mut good, &mut bad).with_context(|| module.path().to_owned())?;
+    for repo in cx.repos() {
+        upgrade(cx, opts, repo, &mut good, &mut bad).with_context(|| repo.path().to_owned())?;
     }
 
     let hint = format!("upgrade: {:?}", opts);
@@ -39,16 +39,16 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     Ok(())
 }
 
-#[tracing::instrument(skip_all, fields(source = ?module.source(), path = module.path().as_str()))]
+#[tracing::instrument(skip_all, fields(source = ?repo.source(), path = repo.path().as_str()))]
 fn upgrade(
     cx: &Ctxt<'_>,
     opts: &Opts,
-    module: &Module,
-    good: &mut ModuleSet,
-    bad: &mut ModuleSet,
+    repo: &Repo,
+    good: &mut RepoSet,
+    bad: &mut RepoSet,
 ) -> Result<()> {
-    let current_dir = module.path().to_path(cx.root);
-    let upgrade = cx.config.upgrade(module.path());
+    let current_dir = repo.path().to_path(cx.root);
+    let upgrade = cx.config.upgrade(repo.path());
 
     let mut command = Command::new("cargo");
     command.arg("upgrade");
@@ -68,10 +68,10 @@ fn upgrade(
     command.current_dir(&current_dir);
 
     if command.status()?.success() {
-        good.insert(module);
+        good.insert(repo);
     } else {
         tracing::warn!(?command, "Command failed");
-        bad.insert(module);
+        bad.insert(repo);
     }
 
     Ok(())
