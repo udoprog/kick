@@ -22,7 +22,7 @@ const LATEST: RustVersion = RustVersion::new(1, 68);
 /// Default command to build.
 const DEFAULT_COMMAND: [&str; 2] = ["cargo", "build"];
 
-#[derive(Default, Parser)]
+#[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     /// Verbose output.
     #[arg(long)]
@@ -85,8 +85,9 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
             .with_context(|| module.path().to_owned())?;
     }
 
-    cx.sets.save("good", good, opts.store_sets);
-    cx.sets.save("bad", bad, opts.store_sets);
+    let hint = format!("msrv {:?}", opts);
+    cx.sets.save("good", good, opts.store_sets, &hint);
+    cx.sets.save("bad", bad, opts.store_sets, &hint);
     Ok(())
 }
 

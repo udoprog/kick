@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::collections::HashMap;
+use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -21,7 +22,7 @@ const PRUNE: usize = 3;
 pub(crate) struct ModuleSets {
     path: PathBuf,
     known: HashMap<String, Known>,
-    updates: Vec<(String, ModuleSet, bool)>,
+    updates: Vec<(String, ModuleSet, bool, String)>,
 }
 
 impl ModuleSets {
@@ -100,13 +101,19 @@ impl ModuleSets {
     }
 
     /// Save the given set.
-    pub(crate) fn save(&mut self, id: &str, set: ModuleSet, primary: bool) {
-        self.updates.push((id.into(), set, primary));
+    pub(crate) fn save<D>(&mut self, id: &str, set: ModuleSet, primary: bool, hint: &D)
+    where
+        D: ?Sized + fmt::Display,
+    {
+        self.updates
+            .push((id.into(), set, primary, hint.to_string()));
     }
 
     /// Commit updates.
     pub(crate) fn commit(&mut self) -> Result<()> {
-        fn write_set(set: ModuleSet, mut f: File) -> Result<(), anyhow::Error> {
+        fn write_set(set: ModuleSet, hint: &str, mut f: File) -> Result<(), anyhow::Error> {
+            writeln!(f, "# {hint}")?;
+
             for line in set.raw {
                 writeln!(f, "{line}")?;
             }
@@ -121,7 +128,7 @@ impl ModuleSets {
 
         let now = Local::now().naive_local();
 
-        for (id, set, primary) in self.updates.drain(..) {
+        for (id, set, primary, hint) in self.updates.drain(..) {
             tracing::info!(?id, "Saving set");
 
             let path = self.path.join(&id);
@@ -142,7 +149,7 @@ impl ModuleSets {
                 Err(e) => return Err(e).context(anyhow!("{}", write_path.display())),
             };
 
-            write_set(set, f).context(anyhow!("{}", write_path.display()))?;
+            write_set(set, &hint, f).context(anyhow!("{}", write_path.display()))?;
 
             let known = self.known.entry(id).or_insert_with(|| Known::new(path));
 

@@ -6,7 +6,7 @@ use crate::model::Module;
 use crate::module_sets::ModuleSet;
 use crate::process::Command;
 
-#[derive(Default, Parser)]
+#[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     #[arg(long)]
     /// Store the outcome if this run into the sets `good` and `bad`, to be used
@@ -32,8 +32,9 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
             .with_context(|| module.path().to_owned())?;
     }
 
-    cx.sets.save("good", good, opts.store_sets);
-    cx.sets.save("bad", bad, opts.store_sets);
+    let hint = format!("for {:?}", opts);
+    cx.sets.save("good", good, opts.store_sets, &hint);
+    cx.sets.save("bad", bad, opts.store_sets, &hint);
     Ok(())
 }
 
