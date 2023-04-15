@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::changes::{CargoIssue, Change};
 use crate::ctxt::Ctxt;
-use crate::manifest::ManifestPackage;
+use crate::manifest::Package;
 use crate::model::UpdateParams;
-use crate::workspace::Workspace;
+use crate::workspace::Crates;
 
 macro_rules! cargo_keys {
     ($($ident:ident => $name:literal),* $(,)?) => {
@@ -55,8 +55,8 @@ cargo_keys! {
 /// Validate the main `Cargo.toml`.
 pub(crate) fn work_cargo_toml(
     cx: &Ctxt<'_>,
-    workspace: &Workspace,
-    package: &ManifestPackage,
+    crates: &Crates,
+    package: &Package,
     update: &UpdateParams<'_>,
 ) -> Result<()> {
     let mut modified_manifest = package.manifest().clone();
@@ -164,19 +164,19 @@ pub(crate) fn work_cargo_toml(
         modified_manifest.insert_authors(update.authors.to_vec())?;
     }
 
-    if matches!(modified_manifest.dependencies(workspace), Some(d) if d.is_empty()) {
+    if matches!(modified_manifest.dependencies(crates), Some(d) if d.is_empty()) {
         issues.push(CargoIssue::PackageDependenciesEmpty);
         changed = true;
         modified_manifest.remove_dependencies();
     }
 
-    if matches!(modified_manifest.dev_dependencies(workspace), Some(d) if d.is_empty()) {
+    if matches!(modified_manifest.dev_dependencies(crates), Some(d) if d.is_empty()) {
         issues.push(CargoIssue::PackageDevDependenciesEmpty);
         changed = true;
         modified_manifest.remove_dev_dependencies();
     }
 
-    if matches!(modified_manifest.build_dependencies(workspace), Some(d) if d.is_empty()) {
+    if matches!(modified_manifest.build_dependencies(crates), Some(d) if d.is_empty()) {
         issues.push(CargoIssue::PackageBuildDependenciesEmpty);
         changed = true;
         modified_manifest.remove_build_dependencies();

@@ -1,11 +1,11 @@
 use toml_edit::Item;
 
 /// A single declared dependency.
-pub(crate) struct ManifestWorkspaceDependency<'a> {
+pub(crate) struct ManifestDependency<'a> {
     value: &'a Item,
 }
 
-impl<'a> ManifestWorkspaceDependency<'a> {
+impl<'a> ManifestDependency<'a> {
     pub(crate) fn new(value: &'a Item) -> Self {
         Self { value }
     }

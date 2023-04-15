@@ -11,7 +11,7 @@ use crate::model::Repo;
 use crate::process::Command;
 use crate::repo_sets::RepoSet;
 use crate::rust_version::{self, RustVersion};
-use crate::workspace::Workspace;
+use crate::workspace::Crates;
 
 /// Oldest version where rust-version was introduced.
 const RUST_VERSION_SUPPORTED: RustVersion = RustVersion::new(1, 56, None);
@@ -94,13 +94,13 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 #[tracing::instrument(skip_all, fields(source = ?repo.source(), path = repo.path().as_str()))]
 fn msrv(
     cx: &Ctxt<'_>,
-    workspace: &Workspace,
+    crates: &Crates,
     repo: &Repo,
     opts: &Opts,
     good: &mut RepoSet,
     bad: &mut RepoSet,
 ) -> Result<()> {
-    let primary = workspace.primary_package()?;
+    let primary = crates.primary_package()?;
 
     let current_dir = repo.path().to_path(cx.root);
     let rust_version = primary.rust_version().and_then(RustVersion::parse);
@@ -144,7 +144,7 @@ fn msrv(
 
         let mut restore = Vec::new();
 
-        for p in workspace.packages() {
+        for p in crates.packages() {
             let original = p.manifest().path().with_extension("toml.original");
             let original_path = original.to_path(cx.root);
             let manifest_path = p.manifest().path().to_path(cx.root);

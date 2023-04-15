@@ -13,7 +13,7 @@ use crate::ctxt::Ctxt;
 use crate::git::Git;
 use crate::gitmodules;
 use crate::rust_version::RustVersion;
-use crate::workspace::Workspace;
+use crate::workspace::Crates;
 
 /// Parameters particular to a given package.
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -122,7 +122,7 @@ impl RepoRef {
     }
 
     /// Require that the workspace exists and can be opened.
-    pub(crate) fn require_workspace(&self, cx: &Ctxt<'_>) -> Result<Workspace> {
+    pub(crate) fn require_workspace(&self, cx: &Ctxt<'_>) -> Result<Crates> {
         let Some(workspace) = self.inner_workspace(cx)? else {
             bail!("{}: missing workspace", self.path);
         };
@@ -131,7 +131,7 @@ impl RepoRef {
     }
 
     /// Open the workspace to this symbolic module.
-    fn inner_workspace(&self, cx: &Ctxt<'_>) -> Result<Option<Workspace>> {
+    fn inner_workspace(&self, cx: &Ctxt<'_>) -> Result<Option<Crates>> {
         crate::workspace::open(cx, self)
     }
 }
@@ -146,7 +146,7 @@ struct RepoInner {
     /// Whether we've tried to initialize the workspace.
     init: Cell<bool>,
     /// Initialized workspace.
-    workspace: RefCell<Option<Workspace>>,
+    crates: RefCell<Option<Crates>>,
 }
 
 /// A git module.
@@ -162,7 +162,7 @@ impl fmt::Debug for Repo {
             .field("symbolic", &self.inner.symbolic)
             .field("disabled", &self.inner.disabled)
             .field("init", &self.inner.init)
-            .field("workspace", &self.inner.workspace)
+            .field("workspace", &self.inner.crates)
             .finish()
     }
 }
@@ -175,7 +175,7 @@ impl Repo {
                 symbolic: RepoRef { path, url },
                 disabled: Cell::new(false),
                 init: Cell::new(false),
-                workspace: RefCell::new(None),
+                crates: RefCell::new(None),
             }),
         }
     }
@@ -197,17 +197,17 @@ impl Repo {
 
     /// Try to get a workspace, if one is present in the module.
     #[tracing::instrument(skip_all, fields(source = ?self.inner.source, module = self.path().as_str()))]
-    pub(crate) fn try_workspace(&self, cx: &Ctxt<'_>) -> Result<Option<Ref<'_, Workspace>>> {
+    pub(crate) fn try_workspace(&self, cx: &Ctxt<'_>) -> Result<Option<Ref<'_, Crates>>> {
         self.init_workspace(cx)?;
-        Ok(Ref::filter_map(self.inner.workspace.borrow(), Option::as_ref).ok())
+        Ok(Ref::filter_map(self.inner.crates.borrow(), Option::as_ref).ok())
     }
 
     /// Try to get a workspace, if one is present in the module.
     #[tracing::instrument(skip_all, fields(source = ?self.inner.source, module = self.path().as_str()))]
-    pub(crate) fn workspace(&self, cx: &Ctxt<'_>) -> Result<Ref<'_, Workspace>> {
+    pub(crate) fn workspace(&self, cx: &Ctxt<'_>) -> Result<Ref<'_, Crates>> {
         self.init_workspace(cx)?;
 
-        if let Ok(workspace) = Ref::filter_map(self.inner.workspace.borrow(), Option::as_ref) {
+        if let Ok(workspace) = Ref::filter_map(self.inner.crates.borrow(), Option::as_ref) {
             Ok(workspace)
         } else {
             bail!("missing workspace")
@@ -218,7 +218,7 @@ impl Repo {
     fn init_workspace(&self, cx: &Ctxt<'_>) -> Result<()> {
         if !self.inner.init.get() {
             if let Some(workspace) = self.inner_workspace(cx)? {
-                *self.inner.workspace.borrow_mut() = Some(workspace);
+                *self.inner.crates.borrow_mut() = Some(workspace);
             } else {
                 tracing::warn!("Missing workspace for module");
             };

@@ -8,8 +8,7 @@ use toml_edit::{Item, Value};
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::manifest::{
-    self, Manifest, ManifestPackage, ManifestWorkspace, ManifestWorkspaceDependencies,
-    ManifestWorkspaceDependency,
+    self, Manifest, ManifestDependency, Package, Workspace, WorkspaceDependencies,
 };
 use crate::model::RepoRef;
 
@@ -18,7 +17,7 @@ pub(crate) const CARGO_TOML: &str = "Cargo.toml";
 
 /// Load a workspace starting at the given path.
 #[tracing::instrument(skip_all)]
-pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Workspace>> {
+pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Crates>> {
     tracing::trace!("Opening workspace");
 
     let manifest_path = match cx.config.cargo_toml(repo.path()) {
@@ -83,7 +82,7 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Workspace>> {
         manifests.push(manifest);
     }
 
-    Ok(Some(Workspace {
+    Ok(Some(Crates {
         primary_package: primary_package.map(Box::from),
         manifests,
         packages,
@@ -111,7 +110,7 @@ fn expand_members<'a>(
 }
 
 #[derive(Debug)]
-pub(crate) struct Workspace {
+pub(crate) struct Crates {
     primary_package: Option<Box<str>>,
     /// List of loaded packages and their associated manifests.
     manifests: Vec<Manifest>,
@@ -121,21 +120,21 @@ pub(crate) struct Workspace {
     workspaces: Vec<usize>,
 }
 
-impl Workspace {
+impl Crates {
     /// Test if this is a single crate workspace.
     pub(crate) fn is_single_crate(&self) -> bool {
         self.packages.len() == 1
     }
 
     /// Get list of packages.
-    pub(crate) fn packages(&self) -> impl Iterator<Item = ManifestPackage<'_>> {
+    pub(crate) fn packages(&self) -> impl Iterator<Item = Package<'_>> {
         self.packages
             .iter()
             .flat_map(|&index| self.manifests.get(index)?.as_package())
     }
 
     /// Find the primary crate in the workspace.
-    pub(crate) fn primary_package(&self) -> Result<ManifestPackage<'_>> {
+    pub(crate) fn primary_package(&self) -> Result<Package<'_>> {
         // Single package, easy to determine primary package.
         if let &[index] = &self.packages[..] {
             let package = self
@@ -191,9 +190,9 @@ impl Workspace {
         field: &'static str,
     ) -> Result<Option<PackageValue<T>>>
     where
-        F: Fn(&ManifestWorkspace<'a>) -> Option<ManifestWorkspaceDependencies<'a>>,
+        F: Fn(&Workspace<'a>) -> Option<WorkspaceDependencies<'a>>,
         V: Fn(&'a Value) -> Option<T>,
-        D: Fn(&ManifestWorkspaceDependency<'a>) -> Option<T>,
+        D: Fn(&ManifestDependency<'a>) -> Option<T>,
     {
         if let Some(Item::Value(value)) = dep.get(field) {
             if let Some(value) = value_map(value) {

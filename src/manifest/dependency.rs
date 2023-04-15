@@ -1,41 +1,39 @@
 use anyhow::Result;
 use toml_edit::{Item, Value};
 
-use crate::manifest::{
-    ManifestWorkspace, ManifestWorkspaceDependencies, ManifestWorkspaceDependency,
-};
-use crate::workspace::{PackageValue, Workspace};
+use crate::manifest::{ManifestDependency, Workspace, WorkspaceDependencies};
+use crate::workspace::{Crates, PackageValue};
 
 /// A single declared dependency.
-pub(crate) struct ManifestDependency<'a> {
+pub(crate) struct Dependency<'a> {
     dependency: &'a str,
     value: &'a Item,
-    workspace: &'a Workspace,
-    accessor: fn(&ManifestWorkspace<'a>) -> Option<ManifestWorkspaceDependencies<'a>>,
+    crates: &'a Crates,
+    accessor: fn(&Workspace<'a>) -> Option<WorkspaceDependencies<'a>>,
 }
 
-impl<'a> ManifestDependency<'a> {
+impl<'a> Dependency<'a> {
     pub(crate) fn new(
         dependency: &'a str,
         value: &'a Item,
-        workspace: &'a Workspace,
-        accessor: fn(&ManifestWorkspace<'a>) -> Option<ManifestWorkspaceDependencies<'a>>,
+        crates: &'a Crates,
+        accessor: fn(&Workspace<'a>) -> Option<WorkspaceDependencies<'a>>,
     ) -> Self {
         Self {
             dependency,
             value,
-            workspace,
+            crates,
             accessor,
         }
     }
 
     /// Get the package name of the dependency.
     pub(crate) fn package(&self) -> Result<PackageValue<&'a str>> {
-        let optional = self.workspace.lookup_dependency_key(
+        let optional = self.crates.lookup_dependency_key(
             self.dependency,
             self.value,
             self.accessor,
-            ManifestWorkspaceDependency::package,
+            ManifestDependency::package,
             Value::as_str,
             "package",
         )?;
@@ -49,11 +47,11 @@ impl<'a> ManifestDependency<'a> {
 
     /// Get the package name of the dependency.
     pub(crate) fn is_optional(&self) -> Result<PackageValue<bool>> {
-        let optional = self.workspace.lookup_dependency_key(
+        let optional = self.crates.lookup_dependency_key(
             self.dependency,
             self.value,
             self.accessor,
-            ManifestWorkspaceDependency::is_optional,
+            ManifestDependency::is_optional,
             Value::as_bool,
             "optional",
         )?;

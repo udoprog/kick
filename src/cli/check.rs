@@ -9,10 +9,10 @@ use clap::Parser;
 
 use crate::changes;
 use crate::ctxt::Ctxt;
-use crate::manifest::ManifestPackage;
+use crate::manifest::Package;
 use crate::model::{Repo, RepoParams, UpdateParams};
 use crate::urls::{UrlError, Urls};
-use crate::workspace::Workspace;
+use crate::workspace::Crates;
 
 #[derive(Default, Parser)]
 pub(crate) struct Opts {
@@ -64,8 +64,8 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
 fn check(
     cx: &Ctxt<'_>,
     repo: &Repo,
-    workspace: &Workspace,
-    primary_crate: &ManifestPackage<'_>,
+    crates: &Crates,
+    primary_crate: &Package<'_>,
     primary_crate_params: RepoParams<'_>,
     urls: &mut Urls,
 ) -> Result<()> {
@@ -85,14 +85,14 @@ fn check(
         authors: cx.config.authors(repo),
     };
 
-    for package in workspace.packages() {
+    for package in crates.packages() {
         if package.is_publish() {
-            cargo::work_cargo_toml(cx, workspace, &package, &update_params)?;
+            cargo::work_cargo_toml(cx, crates, &package, &update_params)?;
         }
     }
 
     if cx.config.is_enabled(repo.path(), "ci") {
-        ci::build(cx, &primary_crate, repo, workspace)
+        ci::build(cx, &primary_crate, repo, crates)
             .with_context(|| anyhow!("ci change: {}", cx.config.job_name(repo)))?;
     }
 
@@ -108,7 +108,7 @@ fn check(
             false,
         )?;
 
-        for package in workspace.packages() {
+        for package in crates.packages() {
             if !package.is_publish() {
                 continue;
             }

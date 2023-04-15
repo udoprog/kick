@@ -1,9 +1,9 @@
-mod manifest_dependencies;
-mod manifest_dependency;
-mod manifest_package;
-mod manifest_workspace;
-mod manifest_workspace_dependencies;
-mod manifest_workspace_dependency;
+mod dependencies;
+mod dependency;
+mod package;
+mod workspace;
+mod workspace_dependencies;
+mod workspace_dependency;
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -14,14 +14,14 @@ use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Deserialize, Serialize};
 use toml_edit::{Array, Document, Formatted, Item, Table, Value};
 
-use crate::workspace::Workspace;
+use crate::workspace::Crates;
 
-pub(crate) use self::manifest_dependencies::ManifestDependencies;
-pub(crate) use self::manifest_dependency::ManifestDependency;
-pub(crate) use self::manifest_package::ManifestPackage;
-pub(crate) use self::manifest_workspace::ManifestWorkspace;
-pub(crate) use self::manifest_workspace_dependencies::ManifestWorkspaceDependencies;
-pub(crate) use self::manifest_workspace_dependency::ManifestWorkspaceDependency;
+pub(crate) use self::dependencies::Dependencies;
+pub(crate) use self::dependency::Dependency;
+pub(crate) use self::package::Package;
+pub(crate) use self::workspace::Workspace;
+pub(crate) use self::workspace_dependencies::WorkspaceDependencies;
+pub(crate) use self::workspace_dependency::ManifestDependency;
 
 /// The "dependencies" field.
 const DEPENDENCIES: &str = "dependencies";
@@ -141,15 +141,15 @@ impl Manifest {
     }
 
     /// Get workspace configuration.
-    pub(crate) fn as_workspace(&self) -> Option<ManifestWorkspace<'_>> {
+    pub(crate) fn as_workspace(&self) -> Option<Workspace<'_>> {
         let doc = self.doc.get("workspace")?.as_table()?;
-        Some(ManifestWorkspace::new(doc))
+        Some(Workspace::new(doc))
     }
 
     /// Get package configuration.
-    pub(crate) fn as_package<'a>(&'a self) -> Option<ManifestPackage<'a>> {
+    pub(crate) fn as_package<'a>(&'a self) -> Option<Package<'a>> {
         let doc = self.doc.get("package")?.as_table()?;
-        Some(ManifestPackage::new(doc, self))
+        Some(Package::new(doc, self))
     }
 
     /// Insert authors.
@@ -222,7 +222,7 @@ impl Manifest {
     }
 
     /// List of features.
-    pub(crate) fn features(&self, workspace: &Workspace) -> Result<HashSet<String>> {
+    pub(crate) fn features(&self, workspace: &Crates) -> Result<HashSet<String>> {
         let mut new_features = HashSet::new();
 
         // Get explicit features.
@@ -278,53 +278,36 @@ impl Manifest {
     manifest_package_field!(insert_documentation, "documentation");
 
     /// Access dependencies.
-    pub(crate) fn dependencies<'a>(
-        &'a self,
-        workspace: &'a Workspace,
-    ) -> Option<ManifestDependencies<'a>> {
+    pub(crate) fn dependencies<'a>(&'a self, crates: &'a Crates) -> Option<Dependencies<'a>> {
         let doc = self
             .doc
             .get(DEPENDENCIES)
             .and_then(|table| table.as_table())?;
 
-        Some(ManifestDependencies::new(
-            doc,
-            workspace,
-            ManifestWorkspace::dependencies,
-        ))
+        Some(Dependencies::new(doc, crates, Workspace::dependencies))
     }
 
     /// Access dev-dependencies.
-    pub(crate) fn dev_dependencies<'a>(
-        &'a self,
-        workspace: &'a Workspace,
-    ) -> Option<ManifestDependencies<'a>> {
+    pub(crate) fn dev_dependencies<'a>(&'a self, crates: &'a Crates) -> Option<Dependencies<'a>> {
         let doc = self
             .doc
             .get(DEV_DEPENDENCIES)
             .and_then(|table| table.as_table())?;
 
-        Some(ManifestDependencies::new(
-            doc,
-            workspace,
-            ManifestWorkspace::dev_dependencies,
-        ))
+        Some(Dependencies::new(doc, crates, Workspace::dev_dependencies))
     }
 
     /// Access build-dependencies.
-    pub(crate) fn build_dependencies<'a>(
-        &'a self,
-        workspace: &'a Workspace,
-    ) -> Option<ManifestDependencies<'a>> {
+    pub(crate) fn build_dependencies<'a>(&'a self, crates: &'a Crates) -> Option<Dependencies<'a>> {
         let doc = self
             .doc
             .get(BUILD_DEPENDENCIES)
             .and_then(|table| table.as_table())?;
 
-        Some(ManifestDependencies::new(
+        Some(Dependencies::new(
             doc,
-            workspace,
-            ManifestWorkspace::build_dependencies,
+            crates,
+            Workspace::build_dependencies,
         ))
     }
 

@@ -8,15 +8,15 @@ use relative_path::{RelativePath, RelativePathBuf};
 
 use crate::changes::{Change, Warning, WorkflowChange};
 use crate::ctxt::Ctxt;
-use crate::manifest::ManifestPackage;
+use crate::manifest::Package;
 use crate::model::Repo;
 use crate::rust_version::RustVersion;
-use crate::workspace::Workspace;
+use crate::workspace::Crates;
 
 pub(crate) struct Ci<'a> {
     path: &'a RelativePath,
-    package: &'a ManifestPackage<'a>,
-    workspace: &'a Workspace,
+    package: &'a Package<'a>,
+    crates: &'a Crates,
 }
 
 pub(crate) enum ActionExpected {
@@ -61,18 +61,13 @@ enum CargoFeatures {
 }
 
 /// Build ci change.
-pub(crate) fn build(
-    cx: &Ctxt<'_>,
-    package: &ManifestPackage,
-    repo: &Repo,
-    workspace: &Workspace,
-) -> Result<()> {
+pub(crate) fn build(cx: &Ctxt<'_>, package: &Package, repo: &Repo, crates: &Crates) -> Result<()> {
     let path = repo.path().join(".github").join("workflows");
 
     let mut ci = Ci {
         path: &path,
         package,
-        workspace,
+        crates,
     };
 
     validate(cx, &mut ci, repo)
@@ -183,7 +178,7 @@ fn validate_jobs(
 
             check_actions(cx, &job, &mut change)?;
 
-            if ci.workspace.is_single_crate() {
+            if ci.crates.is_single_crate() {
                 verify_single_project_build(cx, ci, path, job)?;
             }
         }
@@ -366,7 +361,7 @@ fn verify_single_project_build(
     job: yaml::Mapping<'_>,
 ) -> Result<()> {
     let mut cargo_combos = Vec::new();
-    let features = ci.package.manifest().features(ci.workspace)?;
+    let features = ci.package.manifest().features(ci.crates)?;
 
     for step in job
         .get("steps")

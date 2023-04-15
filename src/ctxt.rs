@@ -8,7 +8,7 @@ use crate::actions::Actions;
 use crate::changes::{Change, Warning};
 use crate::config::Config;
 use crate::git::Git;
-use crate::manifest::ManifestPackage;
+use crate::manifest::Package;
 use crate::model::{Repo, RepoParams, RepoRef};
 use crate::process::Command;
 use crate::repo_sets::RepoSets;
@@ -31,7 +31,7 @@ impl<'a> Ctxt<'a> {
     /// Get repo parameters for the given package.
     pub(crate) fn repo_params<'m>(
         &'m self,
-        package: &'m ManifestPackage,
+        package: &'m Package,
         repo: &'m RepoRef,
     ) -> Result<RepoParams<'m>> {
         let variables = self.config.variables(repo);

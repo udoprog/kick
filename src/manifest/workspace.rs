@@ -1,16 +1,14 @@
 use relative_path::RelativePath;
 use toml_edit::{Item, Table};
 
-use crate::manifest::{
-    ManifestWorkspaceDependencies, BUILD_DEPENDENCIES, DEPENDENCIES, DEV_DEPENDENCIES,
-};
+use crate::manifest::{WorkspaceDependencies, BUILD_DEPENDENCIES, DEPENDENCIES, DEV_DEPENDENCIES};
 
 /// Represents the `[workspace]` section of a manifest.
-pub(crate) struct ManifestWorkspace<'a> {
+pub(crate) struct Workspace<'a> {
     doc: &'a Table,
 }
 
-impl<'a> ManifestWorkspace<'a> {
+impl<'a> Workspace<'a> {
     pub(crate) fn new(doc: &'a Table) -> Self {
         Self { doc }
     }
@@ -26,20 +24,20 @@ impl<'a> ManifestWorkspace<'a> {
     }
 
     /// Workspace dependencies.
-    pub(crate) fn dependencies(&self) -> Option<ManifestWorkspaceDependencies<'a>> {
+    pub(crate) fn dependencies(&self) -> Option<WorkspaceDependencies<'a>> {
         let doc = self.doc.get(DEPENDENCIES).and_then(Item::as_table)?;
-        Some(ManifestWorkspaceDependencies::new(doc))
+        Some(WorkspaceDependencies::new(doc))
     }
 
     /// Workspace dev-dependencies.
-    pub(crate) fn dev_dependencies(&self) -> Option<ManifestWorkspaceDependencies<'a>> {
+    pub(crate) fn dev_dependencies(&self) -> Option<WorkspaceDependencies<'a>> {
         let doc = self.doc.get(DEV_DEPENDENCIES).and_then(Item::as_table)?;
-        Some(ManifestWorkspaceDependencies::new(doc))
+        Some(WorkspaceDependencies::new(doc))
     }
 
     /// Workspace dev-dependencies.
-    pub(crate) fn build_dependencies(&self) -> Option<ManifestWorkspaceDependencies<'a>> {
+    pub(crate) fn build_dependencies(&self) -> Option<WorkspaceDependencies<'a>> {
         let doc = self.doc.get(BUILD_DEPENDENCIES).and_then(Item::as_table)?;
-        Some(ManifestWorkspaceDependencies::new(doc))
+        Some(WorkspaceDependencies::new(doc))
     }
 }

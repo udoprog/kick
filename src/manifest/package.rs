@@ -14,12 +14,12 @@ macro_rules! package_field {
 }
 
 /// Represents the `[package]` section of a manifest.
-pub(crate) struct ManifestPackage<'a> {
+pub(crate) struct Package<'a> {
     doc: &'a Table,
     manifest: &'a Manifest,
 }
 
-impl<'a> ManifestPackage<'a> {
+impl<'a> Package<'a> {
     pub(crate) fn new(doc: &'a Table, manifest: &'a Manifest) -> Self {
         Self { doc, manifest }
     }
