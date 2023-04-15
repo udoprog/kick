@@ -44,15 +44,15 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
     let mut pending = HashSet::new();
 
     for package in workspace.packages() {
-        if !package.is_publish()? {
+        if !package.is_publish() {
             continue;
         }
 
-        let from = package.crate_name()?;
+        let from = package.name()?;
 
-        if let Some(dependencies) = package.dependencies(&workspace) {
+        if let Some(dependencies) = package.manifest().dependencies(&workspace) {
             for dep in dependencies.iter() {
-                let to = dep.package_name()?;
+                let to = dep.package()?;
 
                 deps.entry(from.to_string())
                     .or_default()
@@ -62,7 +62,7 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
             }
         }
 
-        packages.push(package.clone());
+        packages.push(package);
         pending.insert(from.to_string());
     }
 
@@ -72,7 +72,7 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
         let start = pending.len();
 
         for package in &packages {
-            let name = package.crate_name()?;
+            let name = package.name()?;
 
             if !pending.contains(name) {
                 continue;
@@ -98,12 +98,12 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
         }
     }
 
-    for manifest in ordered.into_iter().rev() {
-        let name = manifest.crate_name()?;
+    for package in ordered.into_iter().rev() {
+        let name = package.name()?;
 
         cx.change(Change::Publish {
             name: name.to_owned(),
-            manifest_dir: manifest.manifest_dir.clone(),
+            manifest_dir: package.manifest().dir().to_owned(),
             dry_run: opts.dry_run,
             no_verify: no_verify.contains(name),
             args: opts.cargo_publish.clone(),

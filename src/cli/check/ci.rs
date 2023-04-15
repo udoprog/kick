@@ -8,14 +8,14 @@ use relative_path::{RelativePath, RelativePathBuf};
 
 use crate::changes::{Change, Warning, WorkflowChange};
 use crate::ctxt::Ctxt;
-use crate::manifest::Manifest;
+use crate::manifest::ManifestPackage;
 use crate::model::Repo;
 use crate::rust_version::RustVersion;
 use crate::workspace::Workspace;
 
 pub(crate) struct Ci<'a> {
     path: &'a RelativePath,
-    manifest: &'a Manifest,
+    package: &'a ManifestPackage<'a>,
     workspace: &'a Workspace,
 }
 
@@ -63,7 +63,7 @@ enum CargoFeatures {
 /// Build ci change.
 pub(crate) fn build(
     cx: &Ctxt<'_>,
-    manifest: &Manifest,
+    package: &ManifestPackage,
     repo: &Repo,
     workspace: &Workspace,
 ) -> Result<()> {
@@ -71,7 +71,7 @@ pub(crate) fn build(
 
     let mut ci = Ci {
         path: &path,
-        manifest,
+        package,
         workspace,
     };
 
@@ -246,10 +246,8 @@ fn check_actions(cx: &Ctxt, job: &yaml::Mapping, change: &mut Vec<WorkflowChange
 /// Check that the correct rust-version is used in a job.
 fn check_strategy_rust_version(ci: &mut Ci, job: &yaml::Mapping, change: &mut Vec<WorkflowChange>) {
     let Some(rust_version) = ci
-        .manifest
+        .package
         .rust_version()
-        .ok()
-        .flatten()
         .and_then(RustVersion::parse) else
     {
         return;
@@ -368,7 +366,7 @@ fn verify_single_project_build(
     job: yaml::Mapping<'_>,
 ) -> Result<()> {
     let mut cargo_combos = Vec::new();
-    let features = ci.manifest.features(ci.workspace)?;
+    let features = ci.package.manifest().features(ci.workspace)?;
 
     for step in job
         .get("steps")

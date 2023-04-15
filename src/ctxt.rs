@@ -8,7 +8,7 @@ use crate::actions::Actions;
 use crate::changes::{Change, Warning};
 use crate::config::Config;
 use crate::git::Git;
-use crate::manifest::Manifest;
+use crate::manifest::ManifestPackage;
 use crate::model::{Repo, RepoParams, RepoRef};
 use crate::process::Command;
 use crate::repo_sets::RepoSets;
@@ -31,12 +31,14 @@ impl<'a> Ctxt<'a> {
     /// Get repo parameters for the given package.
     pub(crate) fn repo_params<'m>(
         &'m self,
-        manifest: &'m Manifest,
+        package: &'m ManifestPackage,
         repo: &'m RepoRef,
     ) -> Result<RepoParams<'m>> {
         let variables = self.config.variables(repo);
-        let crate_params = manifest.crate_params(repo)?;
-        Ok(self.config.repo_params(self, repo, crate_params, variables))
+        let package_params = package.package_params(repo)?;
+        Ok(self
+            .config
+            .repo_params(self, repo, package_params, variables))
     }
 
     /// Iterate over non-disabled modules.

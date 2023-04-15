@@ -9,7 +9,7 @@ use clap::Parser;
 
 use crate::changes;
 use crate::ctxt::Ctxt;
-use crate::manifest::Manifest;
+use crate::manifest::ManifestPackage;
 use crate::model::{Repo, RepoParams, UpdateParams};
 use crate::urls::{UrlError, Urls};
 use crate::workspace::Workspace;
@@ -28,10 +28,10 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
         tracing::info!("checking: {}", repo.path());
 
         let workspace = repo.workspace(cx)?;
-        let primary_crate = workspace.primary_crate()?;
-        let params = cx.repo_params(primary_crate, repo)?;
+        let primary = workspace.primary_package()?;
+        let params = cx.repo_params(&primary, repo)?;
 
-        check(cx, repo, &workspace, primary_crate, params, &mut urls)
+        check(cx, repo, &workspace, &primary, params, &mut urls)
             .with_context(|| repo.path().to_owned())?;
     }
 
@@ -65,7 +65,7 @@ fn check(
     cx: &Ctxt<'_>,
     repo: &Repo,
     workspace: &Workspace,
-    primary_crate: &Manifest,
+    primary_crate: &ManifestPackage<'_>,
     primary_crate_params: RepoParams<'_>,
     urls: &mut Urls,
 ) -> Result<()> {
@@ -85,14 +85,14 @@ fn check(
         authors: cx.config.authors(repo),
     };
 
-    for manifest in workspace.packages() {
-        if manifest.is_publish()? {
-            cargo::work_cargo_toml(cx, workspace, manifest, &update_params)?;
+    for package in workspace.packages() {
+        if package.is_publish() {
+            cargo::work_cargo_toml(cx, workspace, &package, &update_params)?;
         }
     }
 
     if cx.config.is_enabled(repo.path(), "ci") {
-        ci::build(cx, primary_crate, repo, workspace)
+        ci::build(cx, &primary_crate, repo, workspace)
             .with_context(|| anyhow!("ci change: {}", cx.config.job_name(repo)))?;
     }
 
@@ -101,28 +101,28 @@ fn check(
             cx,
             repo.path(),
             repo,
-            primary_crate,
+            primary_crate.manifest(),
             &primary_crate_params,
             urls,
             true,
             false,
         )?;
 
-        for manifest in workspace.packages() {
-            if !manifest.is_publish()? {
+        for package in workspace.packages() {
+            if !package.is_publish() {
                 continue;
             }
 
-            let params = cx.repo_params(manifest, repo)?;
+            let params = cx.repo_params(&package, repo)?;
 
             readme::build(
                 cx,
-                &manifest.manifest_dir,
+                &package.manifest().dir(),
                 repo,
-                manifest,
+                package.manifest(),
                 &params,
                 urls,
-                manifest.manifest_dir != *repo.path(),
+                package.manifest().dir() != repo.path(),
                 true,
             )?;
         }

@@ -100,10 +100,10 @@ fn msrv(
     good: &mut RepoSet,
     bad: &mut RepoSet,
 ) -> Result<()> {
-    let primary = workspace.primary_crate()?;
+    let primary = workspace.primary_package()?;
 
     let current_dir = repo.path().to_path(cx.root);
-    let rust_version = primary.rust_version()?.and_then(RustVersion::parse);
+    let rust_version = primary.rust_version().and_then(RustVersion::parse);
 
     let opts_earliest = parse_minor_version(cx, opts.earliest.as_deref(), rust_version.as_ref())?;
     let opts_latest = parse_minor_version(cx, opts.latest.as_deref(), rust_version.as_ref())?;
@@ -116,7 +116,7 @@ fn msrv(
         .unwrap_or(LATEST)
         .max(earliest);
 
-    let cargo_lock = primary.manifest_dir.join("Cargo.lock").to_path(cx.root);
+    let cargo_lock = primary.manifest().dir().join("Cargo.lock").to_path(cx.root);
     let cargo_lock_original = cargo_lock.with_extension("lock.original");
 
     tracing::info!("Testing Rust {earliest}-{latest}");
@@ -143,31 +143,32 @@ fn msrv(
         }
 
         let mut restore = Vec::new();
-        let mut packages = workspace.packages().cloned().collect::<Vec<_>>();
 
-        for p in &mut packages {
-            let original = p.manifest_path.with_extension("toml.original");
+        for p in workspace.packages() {
+            let original = p.manifest().path().with_extension("toml.original");
             let original_path = original.to_path(cx.root);
-            let manifest_path = p.manifest_path.to_path(cx.root);
+            let manifest_path = p.manifest().path().to_path(cx.root);
+
+            let mut manifest = p.manifest().clone();
 
             let mut save = if opts.no_remove_dev_dependencies {
                 false
             } else {
-                p.remove_dev_dependencies()
+                manifest.remove_dev_dependencies()
             };
 
             save |= if current < RUST_VERSION_SUPPORTED {
-                p.set_rust_version(&version)?;
+                manifest.set_rust_version(&version)?;
                 true
             } else {
-                p.remove_rust_version()
+                manifest.remove_rust_version()
             };
 
             if save {
                 move_paths(&manifest_path, &original_path)?;
-                tracing::trace!("Saving {}", p.manifest_path);
-                p.save_to(&manifest_path)?;
-                restore.push((original_path, manifest_path));
+                tracing::trace!("Saving {}", p.manifest().path());
+                manifest.save_to(&manifest_path)?;
+                restore.push((original_path.to_owned(), manifest_path));
             }
         }
 

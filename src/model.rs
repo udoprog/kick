@@ -15,9 +15,9 @@ use crate::gitmodules;
 use crate::rust_version::RustVersion;
 use crate::workspace::Workspace;
 
-/// Parameters particular to a given crate.
+/// Parameters particular to a given package.
 #[derive(Debug, Clone, Copy, Serialize)]
-pub(crate) struct CrateParams<'a> {
+pub(crate) struct PackageParams<'a> {
     pub(crate) name: &'a str,
     pub(crate) repo: Option<RepoPath<'a>>,
     pub(crate) description: Option<&'a str>,
@@ -35,8 +35,8 @@ pub(crate) struct RenderRustVersions {
 /// Parameters particular to a specific module.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct RepoParams<'a> {
-    #[serde(rename = "crate")]
-    pub(crate) crate_params: CrateParams<'a>,
+    #[serde(rename = "package")]
+    pub(crate) package_params: PackageParams<'a>,
     /// Current job name.
     pub(crate) job_name: &'a str,
     /// Globally known rust versions in use.
@@ -47,8 +47,8 @@ pub(crate) struct RepoParams<'a> {
 
 impl RepoParams<'_> {
     /// Get the current crate name.
-    pub(crate) fn crate_name(&self) -> &str {
-        self.crate_params.name
+    pub(crate) fn name(&self) -> &str {
+        self.package_params.name
     }
 }
 

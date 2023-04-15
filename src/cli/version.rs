@@ -79,13 +79,13 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo, version_set: &VersionSet) ->
     let mut packages = Vec::new();
 
     for package in workspace.packages() {
-        if !package.is_publish()? {
+        if !package.is_publish() {
             continue;
         }
 
-        let name = package.crate_name()?;
+        let name = package.name()?;
 
-        let current_version = if let Some(version) = package.version()? {
+        let current_version = if let Some(version) = package.version() {
             Some(Version::parse(version)?)
         } else {
             None
@@ -114,10 +114,9 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo, version_set: &VersionSet) ->
                 }
 
                 tracing::trace!(
-                    ?name,
+                    name,
                     from = from.to_string(),
                     to = to.to_string(),
-                    ?name,
                     "Bump version"
                 );
 
@@ -130,21 +129,23 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo, version_set: &VersionSet) ->
             versions.insert(name.to_string(), version.clone());
         }
 
-        packages.push((package.clone(), current_version));
+        packages.push((package, current_version));
     }
 
-    for (package, _) in &mut packages {
-        let name = package.crate_name()?;
+    for (package, _) in packages {
+        let name = package.name()?;
 
         let mut changed_manifest = false;
         let mut replaced = Vec::new();
 
+        let mut manifest = package.manifest().clone();
+
         if let Some(version) = versions.get(name) {
-            let root = package.manifest_dir.to_path(cx.root);
+            let root = manifest.dir().to_path(cx.root);
             let version_string = version.to_string();
 
             for replacement in cx.config.version(repo) {
-                if matches!(&replacement.crate_name, Some(id) if id != name) {
+                if matches!(&replacement.package_name, Some(id) if id != name) {
                     continue;
                 }
 
@@ -155,25 +156,25 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo, version_set: &VersionSet) ->
                 );
             }
 
-            if package.version()? != Some(version_string.as_str()) {
-                package.insert_version(&version_string)?;
+            if package.version() != Some(version_string.as_str()) {
+                manifest.insert_version(&version_string)?;
                 changed_manifest = true;
             }
         }
 
-        if let Some(deps) = package.dependencies_mut() {
+        if let Some(deps) = manifest.dependencies_mut() {
             if modify_dependencies(deps, &versions)? {
                 changed_manifest = true;
             }
         }
 
-        if let Some(deps) = package.dev_dependencies_mut() {
+        if let Some(deps) = manifest.dev_dependencies_mut() {
             if modify_dependencies(deps, &versions)? {
                 changed_manifest = true;
             }
         }
 
-        if let Some(deps) = package.build_dependencies_mut() {
+        if let Some(deps) = manifest.build_dependencies_mut() {
             if modify_dependencies(deps, &versions)? {
                 changed_manifest = true;
             }
@@ -181,7 +182,7 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo, version_set: &VersionSet) ->
 
         if changed_manifest {
             cx.change(Change::SavePackage {
-                manifest: package.clone(),
+                manifest: manifest.clone(),
             });
         }
 
@@ -191,14 +192,14 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo, version_set: &VersionSet) ->
     }
 
     if opts.commit {
-        let primary = workspace.primary_crate()?;
+        let primary = workspace.primary_package()?;
 
         let version = versions
-            .get(primary.crate_name()?)
+            .get(primary.name()?)
             .context("missing version for primary manifest")?;
 
         cx.change(Change::ReleaseCommit {
-            path: primary.manifest_dir.clone(),
+            path: primary.manifest().dir().to_owned(),
             version: version.clone(),
         });
     }

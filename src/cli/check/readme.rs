@@ -444,7 +444,7 @@ fn readme_from_lib_rs(
         readme
     } else {
         let mut readme = File::new();
-        readme.line(format!("# {name}", name = rm.params.crate_name()));
+        readme.line(format!("# {name}", name = rm.params.name()));
 
         if !badges.is_empty() {
             readme.line("");

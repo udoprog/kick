@@ -127,8 +127,8 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                     }
 
                     let workspace = repo.require_workspace(cx)?;
-                    let primary_crate = workspace.primary_crate()?;
-                    let params = cx.repo_params(primary_crate, repo)?;
+                    let primary_package = workspace.primary_package()?;
+                    let params = cx.repo_params(&primary_package, repo)?;
 
                     let Some(string) = cx.config.workflow(repo, params)? else {
                         println!("  Missing default workflow!");
@@ -249,26 +249,28 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
 
             let workspace = repo.require_workspace(cx)?;
 
-            for p in workspace.packages() {
-                if p.is_publish()? {
-                    let mut p = p.clone();
-                    let version = version.to_string();
+            for package in workspace.packages() {
+                if !package.is_publish() {
+                    continue;
+                }
 
-                    if p.rust_version()? != Some(version.as_str()) {
-                        if save {
-                            tracing::info!(
-                                "Saving {} with rust-version = \"{version}\"",
-                                p.manifest_path
-                            );
-                            p.set_rust_version(&version)?;
-                            p.sort_package_keys()?;
-                            p.save_to(p.manifest_path.to_path(cx.root))?;
-                        } else {
-                            tracing::info!(
-                                "Would save {} with rust-version = \"{version}\"",
-                                p.manifest_path
-                            );
-                        }
+                let mut manifest = package.manifest().clone();
+                let version = version.to_string();
+
+                if package.rust_version() != Some(version.as_str()) {
+                    if save {
+                        tracing::info!(
+                            "Saving {} with rust-version = \"{version}\"",
+                            manifest.path()
+                        );
+                        manifest.set_rust_version(&version)?;
+                        manifest.sort_package_keys()?;
+                        manifest.save_to(manifest.path().to_path(cx.root))?;
+                    } else {
+                        tracing::info!(
+                            "Would save {} with rust-version = \"{version}\"",
+                            manifest.path()
+                        );
                     }
                 }
             }
@@ -288,20 +290,20 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
 
             let workspace = repo.require_workspace(cx)?;
 
-            for p in workspace.packages() {
-                let mut p = p.clone();
+            for package in workspace.packages() {
+                let mut manifest = package.manifest().clone();
 
-                if p.remove_rust_version() {
+                if manifest.remove_rust_version() {
                     if save {
                         tracing::info!(
                             "Saving {} without rust-version (target version outdates rust-version)",
-                            p.manifest_path
+                            manifest.path()
                         );
-                        p.save_to(p.manifest_path.to_path(cx.root))?;
+                        manifest.save_to(manifest.path().to_path(cx.root))?;
                     } else {
                         tracing::info!(
                             "Woudl save {} without rust-version (target version outdates rust-version)",
-                            p.manifest_path
+                            manifest.path()
                         );
                     }
                 }
@@ -309,11 +311,11 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
         }
         Change::SavePackage { manifest } => {
             if save {
-                tracing::info!("Saving {}", manifest.manifest_path);
-                let out = manifest.manifest_path.to_path(cx.root);
+                tracing::info!("Saving {}", manifest.path());
+                let out = manifest.path().to_path(cx.root);
                 manifest.save_to(out)?;
             } else {
-                tracing::info!("Would save {}", manifest.manifest_path);
+                tracing::info!("Would save {}", manifest.path());
             }
         }
         Change::Replace { replaced } => {

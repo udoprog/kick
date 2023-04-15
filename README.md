@@ -266,7 +266,7 @@ Defines the documentation link to use.
 #### Examples
 
 ```toml
-documentation = "{{docs_rs}}/{{crate.name}}"
+documentation = "{{docs_rs}}/{{package.name}}"
 ```
 
 <br>
@@ -315,29 +315,29 @@ Defines a list of *available* badges to use, with the following options:
 ```toml
 [[badges]]
 alt = "github"
-src = "https://img.shields.io/badge/github-{{dash_escape crate.repo}}-{{colors.github}}?style=for-the-badge&logo=github"
-href = "{{github}}/{{crate.repo}}"
+src = "https://img.shields.io/badge/github-{{dash_escape package.repo}}-{{colors.github}}?style=for-the-badge&logo=github"
+href = "{{github}}/{{package.repo}}"
 height = "{{badge_height}}"
 
 [[badges]]
 id = "crates.io"
 alt = "crates.io"
-src = "https://img.shields.io/crates/v/{{crate.name}}.svg?style=for-the-badge&color={{colors.crates_io}}&logo=rust"
-href = "https://crates.io/crates/{{crate.name}}"
+src = "https://img.shields.io/crates/v/{{package.name}}.svg?style=for-the-badge&color={{colors.crates_io}}&logo=rust"
+href = "https://crates.io/crates/{{package.name}}"
 height = "{{badge_height}}"
 
 [[badges]]
 id = "docs.rs"
 alt = "docs.rs"
-src = "https://img.shields.io/badge/docs.rs-{{dash_escape crate.name}}-{{colors.docs_rs}}?style=for-the-badge&logoColor=white&logo={{docs_rs_image}}"
-href = "{{docs_rs}}/{{crate.name}}"
+src = "https://img.shields.io/badge/docs.rs-{{dash_escape package.name}}-{{colors.docs_rs}}?style=for-the-badge&logoColor=white&logo={{docs_rs_image}}"
+href = "{{docs_rs}}/{{package.name}}"
 height = "{{badge_height}}"
 
 [[badges]]
 id = "build"
 alt = "build status"
-src = "https://img.shields.io/github/actions/workflow/status/{{crate.repo}}/ci.yml?branch=main&style=for-the-badge"
-href = "{{github}}/{{crate.repo}}/actions?query=branch%3Amain"
+src = "https://img.shields.io/github/actions/workflow/status/{{package.repo}}/ci.yml?branch=main&style=for-the-badge"
+href = "{{github}}/{{package.repo}}/actions?query=branch%3Amain"
 height = "{{badge_height}}"
 enabled = false
 
@@ -402,14 +402,14 @@ The following variables are available for expansion:
   edition.
 * `rust_versions.edition_2021` the rust version that corresponds to the 2021
   edition.
-* `crate.name` the name of the crate.
-* `crate.repo.owner` the owner of the repository, as in `<owner>/<name>`
+* `package.name` the name of the package.
+* `package.repo.owner` the owner of the repository, as in `<owner>/<name>`
   (optional).
-* `crate.repo.name` the name of the repository, as in `<owner>/<name>`
+* `package.repo.name` the name of the repository, as in `<owner>/<name>`
   (optional).
-* `crate.description` the repo-specific description from its primary
+* `package.description` the repo-specific description from its primary
   `Cargo.toml` manifest (optional).
-* `crate.rust_version` the rust-version read from its primary `Cargo.toml`
+* `package.rust_version` the rust-version read from its primary `Cargo.toml`
   manifest (optional).
 
 The following is an example `lib` template stored in `data/rune.lib.md`,
@@ -423,8 +423,8 @@ trailing comment in use.
 {{literal this.html}}
 {{/each}}
 <br>
-{{#if crate.rust_version}}
-Minimum support: Rust <b>{{crate.rust_version}}+</b>.
+{{#if package.rust_version}}
+Minimum support: Rust <b>{{package.rust_version}}+</b>.
 <br>
 {{/if}}
 <br>
@@ -434,7 +434,7 @@ Minimum support: Rust <b>{{crate.rust_version}}+</b>.
 <br>
 <br>
 
-{{crate.description}}
+{{package.description}}
 {{#if body}}
 
 <br>
@@ -453,7 +453,7 @@ The following is an example `readme` template stored in `data/rune.readme.md`:
 &mdash;
 <a href="https://rune-rs.github.io/book/"><b>Read the book 📖</b></a>
 
-# {{crate.name}}
+# {{package.name}}
 
 {{#each badges}}
 {{literal this.html}}
@@ -461,7 +461,7 @@ The following is an example `readme` template stored in `data/rune.readme.md`:
 <br>
 <br>
 
-{{crate.description}}
+{{package.description}}
 {{#if body}}
 
 <br>

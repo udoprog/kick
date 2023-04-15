@@ -13,7 +13,7 @@ use tempfile::NamedTempFile;
 
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
-use crate::model::{CrateParams, RenderRustVersions, Repo, RepoParams, RepoRef};
+use crate::model::{PackageParams, RenderRustVersions, Repo, RepoParams, RepoRef};
 use crate::rust_version::{self};
 use crate::templates::{Template, Templating};
 use crate::KICK_TOML;
@@ -89,8 +89,8 @@ impl Upgrade {
 
 #[derive(Clone)]
 pub(crate) struct Replacement {
-    /// Replacements to perform in a given crate.
-    pub(crate) crate_name: Option<String>,
+    /// Replacements to perform in a given package.
+    pub(crate) package_name: Option<String>,
     /// Replacement path.
     pub(crate) paths: Vec<RelativePathBuf>,
     /// A regular expression pattern to replace.
@@ -319,11 +319,11 @@ impl Config {
         &'a self,
         cx: &Ctxt<'_>,
         repo: &RepoRef,
-        crate_params: CrateParams<'a>,
+        package_params: PackageParams<'a>,
         variables: toml::Table,
     ) -> RepoParams<'a> {
         RepoParams {
-            crate_params,
+            package_params,
             job_name: self.job_name(repo),
             rust_versions: RenderRustVersions {
                 rustc: cx.rustc_version,
@@ -858,7 +858,7 @@ impl<'a> ConfigCtxt<'a> {
 
         let version = self.in_array(config, "version", |cx, item| {
             let mut config = cx.table(item)?;
-            let crate_name = cx.as_string(&mut config, "crate")?;
+            let package_name = cx.as_string(&mut config, "crate")?;
 
             let paths = cx
                 .in_array(&mut config, "paths", |cx, string| {
@@ -875,7 +875,7 @@ impl<'a> ConfigCtxt<'a> {
             cx.ensure_empty(config)?;
 
             Ok(Replacement {
-                crate_name,
+                package_name,
                 paths,
                 pattern,
             })

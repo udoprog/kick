@@ -8,7 +8,8 @@ use toml_edit::{Item, Value};
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::manifest::{
-    self, Manifest, ManifestDependencies, ManifestDependency, ManifestWorkspace,
+    self, Manifest, ManifestPackage, ManifestWorkspace, ManifestWorkspaceDependencies,
+    ManifestWorkspaceDependency,
 };
 use crate::model::RepoRef;
 
@@ -25,7 +26,7 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Workspace>> {
         None => repo.path().join(CARGO_TOML),
     };
 
-    let primary_crate = cx
+    let primary_package = cx
         .config
         .crate_for(repo.path())
         .or(repo.repo().map(|repo| repo.name));
@@ -48,7 +49,7 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Workspace>> {
     let mut packages = Vec::new();
 
     while let Some(manifest) = queue.pop_front() {
-        if !visited.insert(manifest.manifest_dir.clone()) {
+        if !visited.insert(manifest.dir().to_owned()) {
             tracing::trace!(?manifest, "Already loaded");
             continue;
         }
@@ -57,7 +58,7 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Workspace>> {
             packages.push(manifests.len());
         }
 
-        tracing::trace!(?manifest.manifest_path, name = manifest.crate_name()?, "Processing package");
+        tracing::trace!(path = ?manifest.path(), "Processing manifest");
 
         if let Some(workspace) = manifest.as_workspace() {
             let members = expand_members(cx, &manifest, workspace.members())?;
@@ -83,7 +84,7 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Workspace>> {
     }
 
     Ok(Some(Workspace {
-        primary_crate: primary_crate.map(Box::from),
+        primary_package: primary_package.map(Box::from),
         manifests,
         packages,
         workspaces,
@@ -98,7 +99,7 @@ fn expand_members<'a>(
     let mut output = Vec::new();
 
     for path in iter {
-        let manifest_dir = manifest.manifest_dir.join(path);
+        let manifest_dir = manifest.dir().join(path);
         let glob = Glob::new(cx.root, &manifest_dir);
 
         for path in glob.matcher() {
@@ -111,7 +112,7 @@ fn expand_members<'a>(
 
 #[derive(Debug)]
 pub(crate) struct Workspace {
-    primary_crate: Option<Box<str>>,
+    primary_package: Option<Box<str>>,
     /// List of loaded packages and their associated manifests.
     manifests: Vec<Manifest>,
     /// Index of manifests which have a [package] declaration in them.
@@ -127,27 +128,38 @@ impl Workspace {
     }
 
     /// Get list of packages.
-    pub(crate) fn packages(&self) -> impl Iterator<Item = &Manifest> {
+    pub(crate) fn packages(&self) -> impl Iterator<Item = ManifestPackage<'_>> {
         self.packages
             .iter()
-            .flat_map(|&index| self.manifests.get(index))
+            .flat_map(|&index| self.manifests.get(index)?.as_package())
     }
 
     /// Find the primary crate in the workspace.
-    pub(crate) fn primary_crate(&self) -> Result<&Manifest> {
-        // Single package, easy to determine primary crate.
+    pub(crate) fn primary_package(&self) -> Result<ManifestPackage<'_>> {
+        // Single package, easy to determine primary package.
         if let &[index] = &self.packages[..] {
-            let manifest = self.manifests.get(index).context("missing package")?;
-            return Ok(manifest);
+            let package = self
+                .manifests
+                .get(index)
+                .context("missing package")?
+                .as_package()
+                .context("not a package")?;
+
+            return Ok(package);
         }
 
         // Find a package which matches the name of the project.
-        if let Some(name) = &self.primary_crate {
+        if let Some(name) = &self.primary_package {
             for &index in &self.packages {
-                let manifest = self.manifests.get(index).context("missing package")?;
+                let package = self
+                    .manifests
+                    .get(index)
+                    .context("missing package")?
+                    .as_package()
+                    .context("not a package")?;
 
-                if manifest.crate_name()? == name.as_ref() {
-                    return Ok(manifest);
+                if package.name()? == name.as_ref() {
+                    return Ok(package);
                 }
             }
         }
@@ -155,7 +167,9 @@ impl Workspace {
         let mut names = Vec::with_capacity(self.manifests.len());
 
         for manifest in &self.manifests {
-            names.push(manifest.crate_name()?);
+            if let Some(package) = manifest.as_package() {
+                names.push(package.name()?);
+            }
         }
 
         Err(anyhow!(
@@ -169,20 +183,20 @@ impl Workspace {
     /// This is complicated, because it can be declared in the workplace declaration.
     pub(crate) fn lookup_dependency_key<'a, F, D, V, T>(
         &'a self,
-        key: &'a str,
+        dependency: &'a str,
         dep: &'a Item,
         workspace_field: F,
         dep_lookup: D,
-        value_lookup: V,
+        value_map: V,
         field: &'static str,
     ) -> Result<Option<PackageValue<T>>>
     where
-        F: Fn(ManifestWorkspace<'a>, &'a Self) -> Option<ManifestDependencies<'a>>,
+        F: Fn(&ManifestWorkspace<'a>) -> Option<ManifestWorkspaceDependencies<'a>>,
         V: Fn(&'a Value) -> Option<T>,
-        D: Fn(&ManifestDependency<'a>) -> Result<PackageValue<T>>,
+        D: Fn(&ManifestWorkspaceDependency<'a>) -> Option<T>,
     {
         if let Some(Item::Value(value)) = dep.get(field) {
-            if let Some(value) = value_lookup(value) {
+            if let Some(value) = value_map(value) {
                 return Ok(Some(PackageValue {
                     workspace: None,
                     value,
@@ -193,19 +207,22 @@ impl Workspace {
         // workspace dependency.
         if let Some(true) = dep.get("workspace").and_then(|w| w.as_bool()) {
             for &index in self.workspaces.iter() {
-                let Some(workspace) = self.manifests.get(index).and_then(|m| m.as_workspace()) else {
+                let Some(workspace) = self.manifests.get(index).and_then(Manifest::as_workspace) else {
                     continue;
                 };
 
-                let Some(deps) = workspace_field(workspace, self) else {
+                let Some(dep) = workspace_field(&workspace).and_then(|d| d.get(dependency)) else {
                     continue;
                 };
 
-                let Some(dep) = deps.get(key) else {
+                let Some(value) = dep_lookup(&dep) else {
                     continue;
                 };
 
-                return Ok(Some(dep_lookup(&dep)?));
+                return Ok(Some(PackageValue {
+                    workspace: Some(index),
+                    value,
+                }));
             }
         }
 

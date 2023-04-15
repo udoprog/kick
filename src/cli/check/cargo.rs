@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::changes::{CargoIssue, Change};
 use crate::ctxt::Ctxt;
-use crate::manifest::Manifest;
+use crate::manifest::ManifestPackage;
 use crate::model::UpdateParams;
 use crate::workspace::Workspace;
 
@@ -56,16 +56,16 @@ cargo_keys! {
 pub(crate) fn work_cargo_toml(
     cx: &Ctxt<'_>,
     workspace: &Workspace,
-    manifest: &Manifest,
+    package: &ManifestPackage,
     update: &UpdateParams<'_>,
 ) -> Result<()> {
-    let mut modified_manifest = manifest.clone();
+    let mut modified_manifest = package.manifest().clone();
     let mut issues = Vec::new();
     let mut changed = false;
 
     macro_rules! check {
         ($get:ident, $insert:ident, $missing:ident, $wrong:ident) => {
-            match (manifest.$get()?, &update.$get) {
+            match (package.$get(), &update.$get) {
                 (None, Some(update)) => {
                     modified_manifest.$insert(update.clone())?;
                     issues.push(CargoIssue::$missing);
@@ -116,11 +116,11 @@ pub(crate) fn work_cargo_toml(
         WrongPackageDocumentation
     };
 
-    if manifest.description()?.is_none() {
+    if package.description().filter(|d| !d.is_empty()).is_none() {
         issues.push(CargoIssue::PackageDescription);
     }
 
-    if let Some(categories) = manifest.categories()?.filter(|value| !value.is_empty()) {
+    if let Some(categories) = package.categories().filter(|value| !value.is_empty()) {
         let categories = categories
             .iter()
             .flat_map(|v| Some(v.as_str()?.to_owned()))
@@ -137,7 +137,7 @@ pub(crate) fn work_cargo_toml(
         issues.push(CargoIssue::PackageCategories);
     }
 
-    if let Some(keywords) = manifest.keywords()?.filter(|value| !value.is_empty()) {
+    if let Some(keywords) = package.keywords().filter(|value| !value.is_empty()) {
         let keywords = keywords
             .iter()
             .flat_map(|v| Some(v.as_str()?.to_owned()))
@@ -154,8 +154,8 @@ pub(crate) fn work_cargo_toml(
         issues.push(CargoIssue::PackageKeywords);
     }
 
-    if manifest
-        .authors()?
+    if package
+        .authors()
         .filter(|authors| !authors.is_empty())
         .is_none()
     {
@@ -164,19 +164,19 @@ pub(crate) fn work_cargo_toml(
         modified_manifest.insert_authors(update.authors.to_vec())?;
     }
 
-    if matches!(manifest.dependencies(workspace), Some(d) if d.is_empty()) {
+    if matches!(modified_manifest.dependencies(workspace), Some(d) if d.is_empty()) {
         issues.push(CargoIssue::PackageDependenciesEmpty);
         changed = true;
         modified_manifest.remove_dependencies();
     }
 
-    if matches!(manifest.dev_dependencies(), Some(d) if d.is_empty()) {
+    if matches!(modified_manifest.dev_dependencies(workspace), Some(d) if d.is_empty()) {
         issues.push(CargoIssue::PackageDevDependenciesEmpty);
         changed = true;
         modified_manifest.remove_dev_dependencies();
     }
 
-    if matches!(manifest.build_dependencies(), Some(d) if d.is_empty()) {
+    if matches!(modified_manifest.build_dependencies(workspace), Some(d) if d.is_empty()) {
         issues.push(CargoIssue::PackageBuildDependenciesEmpty);
         changed = true;
         modified_manifest.remove_build_dependencies();
@@ -207,7 +207,7 @@ pub(crate) fn work_cargo_toml(
 
     if !issues.is_empty() {
         cx.change(Change::CargoTomlIssues {
-            path: manifest.manifest_path.clone(),
+            path: package.manifest().path().to_owned(),
             cargo: changed.then_some(modified_manifest),
             issues,
         });
