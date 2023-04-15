@@ -3,13 +3,10 @@ use std::ops::Deref;
 
 use anyhow::{anyhow, Context, Result};
 use relative_path::{RelativePath, RelativePathBuf};
-use toml_edit::{Item, Value};
 
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
-use crate::manifest::{
-    self, Manifest, ManifestDependency, Package, Workspace, WorkspaceDependencies,
-};
+use crate::manifest::{self, Manifest, Package, Workspace};
 use crate::model::RepoRef;
 
 /// The default name of a cargo manifest `Cargo.toml`.
@@ -126,11 +123,18 @@ impl Crates {
         self.packages.len() == 1
     }
 
-    /// Get list of packages.
+    /// Iterate over manifest workspaces.
+    pub(crate) fn workspaces(&self) -> impl Iterator<Item = (usize, Workspace<'_>)> {
+        self.workspaces
+            .iter()
+            .flat_map(|&i| Some((i, self.manifests.get(i)?.as_workspace()?)))
+    }
+
+    /// Iterate over manifest packages.
     pub(crate) fn packages(&self) -> impl Iterator<Item = Package<'_>> {
         self.packages
             .iter()
-            .flat_map(|&index| self.manifests.get(index)?.as_package())
+            .flat_map(|&i| self.manifests.get(i)?.as_package())
     }
 
     /// Find the primary crate in the workspace.
@@ -176,57 +180,6 @@ impl Crates {
             candidates = names.join(", ")
         ))
     }
-
-    /// Lookup a key related to a package.
-    ///
-    /// This is complicated, because it can be declared in the workplace declaration.
-    pub(crate) fn lookup_dependency_key<'a, F, D, V, T>(
-        &'a self,
-        dependency: &'a str,
-        dep: &'a Item,
-        workspace_field: F,
-        dep_lookup: D,
-        value_map: V,
-        field: &'static str,
-    ) -> Result<Option<PackageValue<T>>>
-    where
-        F: Fn(&Workspace<'a>) -> Option<WorkspaceDependencies<'a>>,
-        V: Fn(&'a Value) -> Option<T>,
-        D: Fn(&ManifestDependency<'a>) -> Option<T>,
-    {
-        if let Some(Item::Value(value)) = dep.get(field) {
-            if let Some(value) = value_map(value) {
-                return Ok(Some(PackageValue {
-                    workspace: None,
-                    value,
-                }));
-            }
-        }
-
-        // workspace dependency.
-        if let Some(true) = dep.get("workspace").and_then(|w| w.as_bool()) {
-            for &index in self.workspaces.iter() {
-                let Some(workspace) = self.manifests.get(index).and_then(Manifest::as_workspace) else {
-                    continue;
-                };
-
-                let Some(dep) = workspace_field(&workspace).and_then(|d| d.get(dependency)) else {
-                    continue;
-                };
-
-                let Some(value) = dep_lookup(&dep) else {
-                    continue;
-                };
-
-                return Ok(Some(PackageValue {
-                    workspace: Some(index),
-                    value,
-                }));
-            }
-        }
-
-        Ok(None)
-    }
 }
 
 /// A value fetched from a package that keeps track of where it is defined.
@@ -239,10 +192,18 @@ pub(crate) struct PackageValue<T> {
 }
 
 impl<T> PackageValue<T> {
-    /// Construct a value from a package.
-    pub(crate) fn from_package(value: T) -> Self {
+    /// Construct a value that is directly related to the current package.
+    pub(crate) fn new(value: T) -> Self {
         Self {
             workspace: None,
+            value,
+        }
+    }
+
+    /// Construct a value from a workspace configuration.
+    pub(crate) fn workspace(workspace: usize, value: T) -> Self {
+        Self {
+            workspace: Some(workspace),
             value,
         }
     }

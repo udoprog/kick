@@ -1,7 +1,7 @@
 use anyhow::Result;
 use toml_edit::{Item, Value};
 
-use crate::manifest::{ManifestDependency, Workspace, WorkspaceDependencies};
+use crate::manifest::{Workspace, WorkspaceDependencies, WorkspaceDependency};
 use crate::workspace::{Crates, PackageValue};
 
 /// A single declared dependency.
@@ -29,16 +29,9 @@ impl<'a> Dependency<'a> {
 
     /// Get the package name of the dependency.
     pub(crate) fn package(&self) -> Result<PackageValue<&'a str>> {
-        let optional = self.crates.lookup_dependency_key(
-            self.dependency,
-            self.value,
-            self.accessor,
-            ManifestDependency::package,
-            Value::as_str,
-            "package",
-        )?;
+        let optional = self.lookup(WorkspaceDependency::package, Value::as_str, "package")?;
 
-        Ok(PackageValue::from_package(
+        Ok(PackageValue::new(
             optional
                 .map(PackageValue::into_value)
                 .unwrap_or(self.dependency),
@@ -47,17 +40,47 @@ impl<'a> Dependency<'a> {
 
     /// Get the package name of the dependency.
     pub(crate) fn is_optional(&self) -> Result<PackageValue<bool>> {
-        let optional = self.crates.lookup_dependency_key(
-            self.dependency,
-            self.value,
-            self.accessor,
-            ManifestDependency::is_optional,
-            Value::as_bool,
-            "optional",
-        )?;
+        let optional = self.lookup(WorkspaceDependency::is_optional, Value::as_bool, "optional")?;
 
-        Ok(PackageValue::from_package(
+        Ok(PackageValue::new(
             optional.map(PackageValue::into_value).unwrap_or(false),
         ))
+    }
+
+    /// Lookup a key related to a package.
+    ///
+    /// This is complicated, because it can be declared in the workplace declaration.
+    pub(crate) fn lookup<D, V, T>(
+        &self,
+        dep_lookup: D,
+        value_map: V,
+        field: &'static str,
+    ) -> Result<Option<PackageValue<T>>>
+    where
+        V: Fn(&'a Value) -> Option<T>,
+        D: Fn(&WorkspaceDependency<'a>) -> Option<T>,
+    {
+        if let Some(Item::Value(value)) = self.value.get(field) {
+            if let Some(value) = value_map(value) {
+                return Ok(Some(PackageValue::new(value)));
+            }
+        }
+
+        // workspace dependency.
+        if let Some(true) = self.value.get("workspace").and_then(|w| w.as_bool()) {
+            for (index, workspace) in self.crates.workspaces() {
+                let Some(dep) = (self.accessor)(&workspace).and_then(|d| d.get(self.dependency)) else {
+                    continue;
+                };
+
+                let Some(value) = dep_lookup(&dep) else {
+                    continue;
+                };
+
+                return Ok(Some(PackageValue::workspace(index, value)));
+            }
+        }
+
+        Ok(None)
     }
 }

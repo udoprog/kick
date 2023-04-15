@@ -21,7 +21,7 @@ pub(crate) use self::dependency::Dependency;
 pub(crate) use self::package::Package;
 pub(crate) use self::workspace::Workspace;
 pub(crate) use self::workspace_dependencies::WorkspaceDependencies;
-pub(crate) use self::workspace_dependency::ManifestDependency;
+pub(crate) use self::workspace_dependency::WorkspaceDependency;
 
 /// The "dependencies" field.
 const DEPENDENCIES: &str = "dependencies";
