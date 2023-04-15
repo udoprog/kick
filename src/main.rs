@@ -958,7 +958,7 @@ fn load_changes(path: &Path) -> Result<Option<Vec<Change>>> {
     };
 
     let encoder = GzDecoder::new(f);
-    let out = serde_cbor::from_reader(encoder)?;
+    let out = bincode::deserialize_from(encoder)?;
     Ok(out)
 }
 
@@ -967,7 +967,7 @@ fn save_changes(cx: &ctxt::Ctxt<'_>, path: &Path) -> Result<()> {
     let f = File::create(path)?;
     let encoder = GzEncoder::new(f, Compression::default());
     let changes = cx.changes().iter().cloned().collect::<Vec<_>>();
-    serde_cbor::to_writer(encoder, &changes)?;
+    bincode::serialize_into(encoder, &changes)?;
     Ok(())
 }
 

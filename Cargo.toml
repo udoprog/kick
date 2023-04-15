@@ -15,19 +15,19 @@ categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0.70"
+bincode = { version = "1.3.3", features = ["i128"] }
 bstr = "1.4.0"
 chrono = { version = "0.4.24", features = ["serde"] }
 clap = { version = "4.2.2", features = ["derive"] }
 flate2 = "1.0.25"
 handlebars = "4.3.6"
-nondestructive = { version = "0.0.15", features = ["serde-edits"] }
+nondestructive = { version = "0.0.17", features = ["serde-edits"] }
 pulldown-cmark = "0.9.2"
 regex = "1.7.3"
 relative-path = { version = "1.8.0", features = ["serde"] }
 reqwest = { version = "0.11.16", features = ["json"] }
 semver = { version = "1.0.17", features = ["serde"] }
 serde = { version = "1.0.160", features = ["derive", "rc"] }
-serde_cbor = "0.11.2"
 serde_json = "1.0.96"
 serde_yaml = "0.9.21"
 tempfile = "3.5.0"
