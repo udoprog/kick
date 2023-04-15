@@ -90,7 +90,7 @@ fn check(
 
     for package in workspace.packages() {
         if package.manifest.is_publish()? {
-            cargo::work_cargo_toml(cx, package, &update_params)?;
+            cargo::work_cargo_toml(cx, &workspace, package, &update_params)?;
         }
     }
 

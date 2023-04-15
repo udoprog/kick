@@ -1,10 +1,15 @@
-use std::collections::HashSet;
 use std::path::Path;
+use std::{collections::HashSet, iter::from_fn};
 
 use anyhow::{anyhow, Result};
 use relative_path::RelativePath;
 use serde::{Deserialize, Serialize};
 use toml_edit::{Array, Document, Formatted, Item, Table, Value};
+
+use crate::workspace::{PackageValue, Workspace};
+
+/// The "dependencies" field.
+const DEPENDENCIES: &str = "dependencies";
 
 /// Open a `Cargo.toml`.
 pub(crate) fn open<P>(path: P) -> Result<Option<Manifest>>
@@ -44,12 +49,16 @@ macro_rules! field {
     };
 }
 
-macro_rules! dependencies {
-    ($get:ident, $get_mut:ident, $remove:ident, $field:literal) => {
+macro_rules! table_ref {
+    ($get:ident, $field:literal) => {
         pub(crate) fn $get(&self) -> Option<&Table> {
             self.doc.get($field).and_then(|table| table.as_table())
         }
+    };
+}
 
+macro_rules! table_mut {
+    ($get_mut:ident, $remove:ident, $field:expr) => {
         pub(crate) fn $get_mut(&mut self) -> Option<&mut Table> {
             self.doc
                 .get_mut($field)
@@ -82,19 +91,113 @@ macro_rules! insert_package_list {
     };
 }
 
-/// A cargo workspace.
-pub(crate) struct Workspace<'a> {
-    table: &'a Table,
+/// Represents the `[workspace]` section of a manifest.
+pub(crate) struct ManifestWorkspace<'a> {
+    doc: &'a Table,
 }
 
-impl<'a> Workspace<'a> {
+impl<'a> ManifestWorkspace<'a> {
     /// Get list of members.
     pub(crate) fn members(&self) -> impl Iterator<Item = &'a RelativePath> {
-        let members = self.table.get("members").and_then(|v| v.as_array());
+        let members = self.doc.get("members").and_then(|v| v.as_array());
         members
             .into_iter()
             .flatten()
             .flat_map(|v| Some(RelativePath::new(v.as_str()?)))
+    }
+
+    /// Get dependencies table, if it exists.
+    pub(crate) fn dependencies(self, workspace: &'a Workspace) -> Option<ManifestDependencies<'a>> {
+        let doc = self
+            .doc
+            .get(DEPENDENCIES)
+            .and_then(|table| table.as_table())?;
+
+        Some(ManifestDependencies { doc, workspace })
+    }
+}
+
+/// A single declared dependency.
+pub(crate) struct ManifestDependency<'a> {
+    key: &'a str,
+    value: &'a Item,
+    workspace: &'a Workspace,
+    accessor: fn(ManifestWorkspace<'a>, &'a Workspace) -> Option<ManifestDependencies<'a>>,
+}
+
+impl<'a> ManifestDependency<'a> {
+    /// Get the package name of the dependency.
+    pub(crate) fn package_name(&self) -> Result<PackageValue<&'a str>> {
+        let optional = self.workspace.lookup_dependency_key(
+            self.key,
+            self.value,
+            self.accessor,
+            ManifestDependency::package_name,
+            Value::as_str,
+            "package",
+        )?;
+
+        Ok(PackageValue::from_package(
+            optional.map(PackageValue::into_value).unwrap_or(self.key),
+        ))
+    }
+
+    /// Get the package name of the dependency.
+    pub(crate) fn is_optional(&self) -> Result<PackageValue<bool>> {
+        let optional = self.workspace.lookup_dependency_key(
+            self.key,
+            self.value,
+            self.accessor,
+            ManifestDependency::is_optional,
+            Value::as_bool,
+            "optional",
+        )?;
+
+        Ok(PackageValue::from_package(
+            optional.map(PackageValue::into_value).unwrap_or(false),
+        ))
+    }
+}
+
+/// Represents the `[dependencies]` section of a manifest.
+pub(crate) struct ManifestDependencies<'a> {
+    doc: &'a Table,
+    workspace: &'a Workspace,
+}
+
+impl<'a> ManifestDependencies<'a> {
+    /// Test if the dependencies section is empty.
+    pub fn is_empty(&self) -> bool {
+        self.doc.is_empty()
+    }
+
+    /// Get a dependency by its key.
+    pub fn get(&self, key: &'a str) -> Option<ManifestDependency<'a>> {
+        let value = self.doc.get(key)?;
+
+        Some(ManifestDependency {
+            key,
+            value,
+            workspace: self.workspace,
+            accessor: ManifestWorkspace::dependencies,
+        })
+    }
+
+    /// Iterate over dependencies.
+    pub fn iter(&self) -> impl Iterator<Item = ManifestDependency<'a>> + 'a {
+        let mut iter = self.doc.iter();
+        let workspace = self.workspace;
+
+        from_fn(move || {
+            let (key, value) = iter.next()?;
+
+            Some(ManifestDependency {
+                key,
+                value,
+                workspace,
+                accessor: ManifestWorkspace::dependencies,
+            })
+        })
     }
 }
 
@@ -114,9 +217,9 @@ impl Manifest {
     }
 
     /// Get workspace configuration.
-    pub(crate) fn as_workspace(&self) -> Option<Workspace<'_>> {
+    pub(crate) fn as_workspace(&self) -> Option<ManifestWorkspace<'_>> {
         let table = self.doc.get("workspace")?.as_table()?;
-        Some(Workspace { table })
+        Some(ManifestWorkspace { doc: table })
     }
 
     /// Get authors.
@@ -226,7 +329,7 @@ impl Manifest {
     }
 
     /// List of features.
-    pub(crate) fn features(&self) -> HashSet<String> {
+    pub(crate) fn features(&self, workspace: &Workspace) -> Result<HashSet<String>> {
         let mut new_features = HashSet::new();
 
         // Get explicit features.
@@ -240,26 +343,17 @@ impl Manifest {
         }
 
         // Get features from optional dependencies.
-        if let Some(table) = self.dependencies() {
-            for (key, value) in table.iter() {
-                let package = if let Some(package) = value.get("package").and_then(|v| v.as_str()) {
-                    package
-                } else {
-                    key
-                };
+        if let Some(dependencies) = self.dependencies(workspace) {
+            for dep in dependencies.iter() {
+                let package = dep.package_name()?;
 
-                if value
-                    .get("optional")
-                    .and_then(|v| v.as_bool())
-                    .filter(|v| *v)
-                    .is_some()
-                {
-                    new_features.insert(package.to_owned());
+                if *dep.is_optional()? {
+                    new_features.insert((*package).to_owned());
                 }
             }
         }
 
-        new_features
+        Ok(new_features)
     }
 
     /// Access `[package]` section.
@@ -297,24 +391,33 @@ impl Manifest {
     field!(repository, insert_repository, "repository");
     field!(homepage, insert_homepage, "homepage");
     field!(documentation, insert_documentation, "documentation");
-    dependencies!(
-        dependencies,
-        dependencies_mut,
-        remove_dependencies,
-        "dependencies"
-    );
-    dependencies!(
-        dev_dependencies,
+
+    pub(crate) fn dependencies<'a>(
+        &'a self,
+        workspace: &'a Workspace,
+    ) -> Option<ManifestDependencies<'a>> {
+        let doc = self
+            .doc
+            .get(DEPENDENCIES)
+            .and_then(|table| table.as_table())?;
+
+        Some(ManifestDependencies { doc, workspace })
+    }
+
+    table_mut!(dependencies_mut, remove_dependencies, DEPENDENCIES);
+    table_ref!(dev_dependencies, "dev-dependencies");
+    table_mut!(
         dev_dependencies_mut,
         remove_dev_dependencies,
         "dev-dependencies"
     );
-    dependencies!(
-        build_dependencies,
+    table_ref!(build_dependencies, "build-dependencies");
+    table_mut!(
         build_dependencies_mut,
         remove_build_dependencies,
         "build-dependencies"
     );
+
     insert_package_list!(insert_keywords, "keywords");
     insert_package_list!(insert_categories, "categories");
 }

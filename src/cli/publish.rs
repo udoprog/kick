@@ -1,21 +1,16 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
-use std::process::Stdio;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use toml_edit::Item;
 
+use crate::changes::Change;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
-use crate::process::Command;
 use crate::workspace;
 
 #[derive(Default, Parser)]
 pub(crate) struct Opts {
-    /// Actually publish packages, and don't just pretend.
-    #[arg(long)]
-    run: bool,
     /// Provide a list of crates which we do not verify locally by adding
     /// `--no-verify` to cargo publish.
     #[arg(long = "no-verify", name = "crate")]
@@ -55,12 +50,14 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
 
         let from = package.manifest.crate_name()?;
 
-        if let Some(table) = package.manifest.dependencies() {
-            for (key, value) in table {
-                let to = package_name(key, value);
+        if let Some(dependencies) = package.manifest.dependencies(&workspace) {
+            for dep in dependencies.iter() {
+                let to = dep.package_name()?;
+
                 deps.entry(from.to_string())
                     .or_default()
                     .push(to.to_string());
+
                 *rev.entry(to.to_string()).or_default() += 1;
             }
         }
@@ -103,54 +100,14 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
 
     for package in ordered.into_iter().rev() {
         let name = package.manifest.crate_name()?;
-
-        if !opts.run {
-            tracing::info!(
-                "{}: would publish: {} (with --run)",
-                package.manifest_dir,
-                name
-            );
-            continue;
-        }
-
-        tracing::info!("{}: publishing: {}", package.manifest_dir, name);
-
-        let mut command = Command::new("cargo");
-
-        command.args(["publish"]);
-
-        if no_verify.contains(name) {
-            command.arg("--no-verify");
-        }
-
-        if opts.dry_run {
-            command.arg("--dry-run");
-        }
-
-        command
-            .args(&opts.cargo_publish)
-            .stdin(Stdio::null())
-            .current_dir(package.manifest_dir.to_path(cx.root));
-
-        let status = command.status()?;
-
-        if !status.success() {
-            bail!("{}: failed to publish: {status}", package.manifest_dir);
-        }
-
-        tracing::info!("{status}");
+        cx.change(Change::Publish {
+            name: name.to_owned(),
+            manifest_dir: package.manifest_dir.to_owned(),
+            dry_run: opts.dry_run,
+            no_verify: no_verify.contains(name),
+            args: opts.cargo_publish.clone(),
+        });
     }
 
     Ok(())
-}
-
-/// Extract package name.
-fn package_name<'a>(key: &'a str, dep: &'a Item) -> &'a str {
-    if let Some(Item::Value(value)) = dep.get("package") {
-        if let Some(value) = value.as_str() {
-            return value;
-        }
-    }
-
-    key
 }

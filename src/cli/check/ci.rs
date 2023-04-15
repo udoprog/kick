@@ -16,7 +16,7 @@ use crate::workspace::{Package, Workspace};
 pub(crate) struct Ci<'a> {
     path: &'a RelativePath,
     manifest: &'a Manifest,
-    workspace: bool,
+    workspace: &'a Workspace,
 }
 
 pub(crate) enum ActionExpected {
@@ -72,7 +72,7 @@ pub(crate) fn build(
     let mut ci = Ci {
         path: &path,
         manifest: &primary_crate.manifest,
-        workspace: !workspace.is_single_crate(),
+        workspace,
     };
 
     validate(cx, &mut ci, repo)
@@ -183,8 +183,8 @@ fn validate_jobs(
 
             check_actions(cx, &job, &mut change)?;
 
-            if !ci.workspace {
-                verify_single_project_build(cx, ci, path, job);
+            if ci.workspace.is_single_crate() {
+                verify_single_project_build(cx, ci, path, job)?;
             }
         }
     }
@@ -366,9 +366,9 @@ fn verify_single_project_build(
     ci: &mut Ci<'_>,
     path: &RelativePath,
     job: yaml::Mapping<'_>,
-) {
+) -> Result<()> {
     let mut cargo_combos = Vec::new();
-    let features = ci.manifest.features();
+    let features = ci.manifest.features(ci.workspace)?;
 
     for step in job
         .get("steps")
@@ -408,6 +408,8 @@ fn verify_single_project_build(
             ensure_feature_combo(cx, path, &cargo_combos);
         }
     }
+
+    Ok(())
 }
 
 /// Ensure that feature combination is valid.

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::changes::{CargoIssue, Change};
 use crate::ctxt::Ctxt;
 use crate::model::UpdateParams;
-use crate::workspace::Package;
+use crate::workspace::{Package, Workspace};
 
 macro_rules! cargo_keys {
     ($($ident:ident => $name:literal),* $(,)?) => {
@@ -54,6 +54,7 @@ cargo_keys! {
 /// Validate the main `Cargo.toml`.
 pub(crate) fn work_cargo_toml(
     cx: &Ctxt<'_>,
+    workspace: &Workspace,
     package: &Package,
     update: &UpdateParams<'_>,
 ) -> Result<()> {
@@ -171,7 +172,7 @@ pub(crate) fn work_cargo_toml(
         modified_manifest.insert_authors(update.authors.to_vec())?;
     }
 
-    if matches!(package.manifest.dependencies(), Some(d) if d.is_empty()) {
+    if matches!(package.manifest.dependencies(workspace), Some(d) if d.is_empty()) {
         issues.push(CargoIssue::PackageDependenciesEmpty);
         changed = true;
         modified_manifest.remove_dependencies();

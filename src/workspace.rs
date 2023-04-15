@@ -1,12 +1,16 @@
 use std::collections::{HashSet, VecDeque};
+use std::ops::Deref;
 
 use anyhow::{anyhow, Context, Result};
 use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Deserialize, Serialize};
+use toml_edit::{Item, Value};
 
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
-use crate::manifest::{self, Manifest};
+use crate::manifest::{
+    self, Manifest, ManifestDependencies, ManifestDependency, ManifestWorkspace,
+};
 use crate::model::{CrateParams, RepoRef};
 use crate::rust_version::RustVersion;
 
@@ -46,6 +50,8 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Workspace>> {
         manifest,
     });
 
+    let mut manifests = Vec::new();
+    let mut workspaces = Vec::new();
     let mut packages = Vec::new();
 
     while let Some(package) = queue.pop_front() {
@@ -55,10 +61,10 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Workspace>> {
         }
 
         if package.manifest.is_package() {
-            tracing::trace!(?package.manifest_path, name = package.manifest.crate_name()?, "Processing package");
-        } else {
-            tracing::trace!(?package.manifest_path, "Processing workspace manifest");
+            packages.push(manifests.len());
         }
+
+        tracing::trace!(?package.manifest_path, name = package.manifest.crate_name()?, "Processing package");
 
         if let Some(workspace) = package.manifest.as_workspace() {
             let members = expand_members(cx, &package, workspace.members())?;
@@ -76,16 +82,18 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Workspace>> {
                     manifest,
                 });
             }
+
+            workspaces.push(manifests.len());
         }
 
-        if package.manifest.is_package() {
-            packages.push(package);
-        }
+        manifests.push(package);
     }
 
     Ok(Some(Workspace {
         primary_crate: primary_crate.map(Box::from),
+        manifests,
         packages,
+        workspaces,
     }))
 }
 
@@ -155,7 +163,12 @@ impl Package {
 #[derive(Debug)]
 pub(crate) struct Workspace {
     primary_crate: Option<Box<str>>,
-    packages: Vec<Package>,
+    /// List of loaded packages and their associated manifests.
+    manifests: Vec<Package>,
+    /// Index of manifests which have a [package] declaration in them.
+    packages: Vec<usize>,
+    /// Index of manifests which have a [workspace] declaration in them.
+    workspaces: Vec<usize>,
 }
 
 impl Workspace {
@@ -166,28 +179,33 @@ impl Workspace {
 
     /// Get list of packages.
     pub(crate) fn packages(&self) -> impl Iterator<Item = &Package> {
-        self.packages.iter()
+        self.packages
+            .iter()
+            .flat_map(|&index| self.manifests.get(index))
     }
 
     /// Find the primary crate in the workspace.
     pub(crate) fn primary_crate(&self) -> Result<&Package> {
         // Single package, easy to determine primary crate.
-        if let [package] = &self.packages[..] {
+        if let &[index] = &self.packages[..] {
+            let package = self.manifests.get(index).context("missing package")?;
             return Ok(package);
         }
 
         // Find a package which matches the name of the project.
         if let Some(name) = &self.primary_crate {
-            for package in &self.packages {
+            for &index in &self.packages {
+                let package = self.manifests.get(index).context("missing package")?;
+
                 if package.manifest.crate_name()? == name.as_ref() {
                     return Ok(package);
                 }
             }
         }
 
-        let mut names = Vec::with_capacity(self.packages.len());
+        let mut names = Vec::with_capacity(self.manifests.len());
 
-        for package in &self.packages {
+        for package in &self.manifests {
             names.push(package.manifest.crate_name()?);
         }
 
@@ -195,5 +213,85 @@ impl Workspace {
             "Cannot determine primary crate, candidates are: {candidates}",
             candidates = names.join(", ")
         ))
+    }
+
+    /// Lookup a key related to a package.
+    ///
+    /// This is complicated, because it can be declared in the workplace declaration.
+    pub(crate) fn lookup_dependency_key<'a, F, D, V, T>(
+        &'a self,
+        key: &'a str,
+        dep: &'a Item,
+        workspace_field: F,
+        dep_lookup: D,
+        value_lookup: V,
+        field: &'static str,
+    ) -> Result<Option<PackageValue<T>>>
+    where
+        F: Fn(ManifestWorkspace<'a>, &'a Self) -> Option<ManifestDependencies<'a>>,
+        V: Fn(&'a Value) -> Option<T>,
+        D: Fn(&ManifestDependency<'a>) -> Result<PackageValue<T>>,
+    {
+        if let Some(Item::Value(value)) = dep.get(field) {
+            if let Some(value) = value_lookup(value) {
+                return Ok(Some(PackageValue {
+                    workspace: None,
+                    value,
+                }));
+            }
+        }
+
+        // workspace dependency.
+        if let Some(true) = dep.get("workspace").and_then(|w| w.as_bool()) {
+            for &index in self.workspaces.iter() {
+                let Some(workspace) = self.manifests.get(index).and_then(|p| p.manifest.as_workspace()) else {
+                    continue;
+                };
+
+                let Some(deps) = workspace_field(workspace, self) else {
+                    continue;
+                };
+
+                let Some(dep) = deps.get(key) else {
+                    continue;
+                };
+
+                return Ok(Some(dep_lookup(&dep)?));
+            }
+        }
+
+        Ok(None)
+    }
+}
+
+/// A value fetched from a package that keeps track of where it is defined.
+pub(crate) struct PackageValue<T> {
+    /// The workspace package that the name came from. This will be useful once
+    /// we start editing things.
+    #[allow(unused)]
+    workspace: Option<usize>,
+    value: T,
+}
+
+impl<T> PackageValue<T> {
+    /// Construct a value from a package.
+    pub(crate) fn from_package(value: T) -> Self {
+        Self {
+            workspace: None,
+            value,
+        }
+    }
+
+    /// Convert into its inner value.
+    pub(crate) fn into_value(value: PackageValue<T>) -> T {
+        value.value
+    }
+}
+
+impl<T> Deref for PackageValue<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
     }
 }

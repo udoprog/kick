@@ -1,5 +1,7 @@
+use std::ffi::OsString;
 use std::fmt;
 use std::ops::Range;
+use std::process::Stdio;
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
@@ -15,6 +17,7 @@ use crate::ctxt::Ctxt;
 use crate::file::{File, LineColumn};
 use crate::manifest::Manifest;
 use crate::model::RepoRef;
+use crate::process::Command;
 use crate::rust_version::RustVersion;
 use crate::workspace::Package;
 
@@ -346,6 +349,43 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                 tracing::info!("Would make tag `{version}`");
             }
         }
+        Change::Publish {
+            name,
+            dry_run,
+            manifest_dir,
+            args,
+            no_verify,
+        } => {
+            if save {
+                tracing::info!("{}: publishing: {}", manifest_dir, name);
+
+                let mut command = Command::new("cargo");
+                command.args(["publish"]);
+
+                if *no_verify {
+                    command.arg("--no-verify");
+                }
+
+                if *dry_run {
+                    command.arg("--dry-run");
+                }
+
+                command
+                    .args(&args[..])
+                    .stdin(Stdio::null())
+                    .current_dir(manifest_dir.to_path(cx.root));
+
+                let status = command.status()?;
+
+                if !status.success() {
+                    bail!("{}: failed to publish: {status}", manifest_dir);
+                }
+
+                tracing::info!("{status}");
+            } else {
+                tracing::info!("{}: would publish: {} (with --run)", manifest_dir, name);
+            }
+        }
     };
 
     Ok(())
@@ -522,5 +562,18 @@ pub(crate) enum Change {
         path: RelativePathBuf,
         /// Version to commit.
         version: Version,
+    },
+    /// Perform a publish action somewhere.
+    Publish {
+        /// Name of the crate being published.
+        name: String,
+        /// Directory to publish.
+        manifest_dir: RelativePathBuf,
+        /// Whether we perform a dry run or not.
+        dry_run: bool,
+        /// Whether `--no-verify` should be passed.
+        no_verify: bool,
+        /// Extra arguments.
+        args: Vec<OsString>,
     },
 }
