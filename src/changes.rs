@@ -19,7 +19,6 @@ use crate::manifest::Manifest;
 use crate::model::RepoRef;
 use crate::process::Command;
 use crate::rust_version::RustVersion;
-use crate::workspace::Package;
 
 /// Report a warning.
 pub(crate) fn report(warning: &Warning) -> Result<()> {
@@ -251,19 +250,19 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
             let workspace = repo.require_workspace(cx)?;
 
             for p in workspace.packages() {
-                if p.manifest.is_publish()? {
+                if p.is_publish()? {
                     let mut p = p.clone();
                     let version = version.to_string();
 
-                    if p.manifest.rust_version()? != Some(version.as_str()) {
+                    if p.rust_version()? != Some(version.as_str()) {
                         if save {
                             tracing::info!(
                                 "Saving {} with rust-version = \"{version}\"",
                                 p.manifest_path
                             );
-                            p.manifest.set_rust_version(&version)?;
-                            p.manifest.sort_package_keys()?;
-                            p.manifest.save_to(p.manifest_path.to_path(cx.root))?;
+                            p.set_rust_version(&version)?;
+                            p.sort_package_keys()?;
+                            p.save_to(p.manifest_path.to_path(cx.root))?;
                         } else {
                             tracing::info!(
                                 "Would save {} with rust-version = \"{version}\"",
@@ -292,13 +291,13 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
             for p in workspace.packages() {
                 let mut p = p.clone();
 
-                if p.manifest.remove_rust_version() {
+                if p.remove_rust_version() {
                     if save {
                         tracing::info!(
                             "Saving {} without rust-version (target version outdates rust-version)",
                             p.manifest_path
                         );
-                        p.manifest.save_to(p.manifest_path.to_path(cx.root))?;
+                        p.save_to(p.manifest_path.to_path(cx.root))?;
                     } else {
                         tracing::info!(
                             "Woudl save {} without rust-version (target version outdates rust-version)",
@@ -308,13 +307,13 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                 }
             }
         }
-        Change::SavePackage { package } => {
+        Change::SavePackage { manifest } => {
             if save {
-                tracing::info!("Saving {}", package.manifest_path);
-                let out = package.manifest_path.to_path(cx.root);
-                package.manifest.save_to(out)?;
+                tracing::info!("Saving {}", manifest.manifest_path);
+                let out = manifest.manifest_path.to_path(cx.root);
+                manifest.save_to(out)?;
             } else {
-                tracing::info!("Would save {}", package.manifest_path);
+                tracing::info!("Would save {}", manifest.manifest_path);
             }
         }
         Change::Replace { replaced } => {
@@ -551,7 +550,7 @@ pub(crate) enum Change {
     /// Save a package.
     SavePackage {
         /// Save the given package.
-        package: Package,
+        manifest: Manifest,
     },
     Replace {
         /// A cached replacement.

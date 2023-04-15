@@ -11,7 +11,7 @@ use crate::ctxt::Ctxt;
 use crate::manifest::Manifest;
 use crate::model::Repo;
 use crate::rust_version::RustVersion;
-use crate::workspace::{Package, Workspace};
+use crate::workspace::Workspace;
 
 pub(crate) struct Ci<'a> {
     path: &'a RelativePath,
@@ -63,7 +63,7 @@ enum CargoFeatures {
 /// Build ci change.
 pub(crate) fn build(
     cx: &Ctxt<'_>,
-    primary_crate: &Package,
+    manifest: &Manifest,
     repo: &Repo,
     workspace: &Workspace,
 ) -> Result<()> {
@@ -71,7 +71,7 @@ pub(crate) fn build(
 
     let mut ci = Ci {
         path: &path,
-        manifest: &primary_crate.manifest,
+        manifest,
         workspace,
     };
 

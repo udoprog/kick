@@ -33,7 +33,7 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
         upgrade(cx, opts, repo, &mut good, &mut bad).with_context(|| repo.path().to_owned())?;
     }
 
-    let hint = format!("upgrade: {:?}", opts);
+    let hint = format!("upgrade: {opts:?}");
     cx.sets.save("good", good, opts.store_sets, &hint);
     cx.sets.save("bad", bad, opts.store_sets, &hint);
     Ok(())

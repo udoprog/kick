@@ -14,11 +14,11 @@ use crate::rust_version::{self, RustVersion};
 use crate::workspace::Workspace;
 
 /// Oldest version where rust-version was introduced.
-const RUST_VERSION_SUPPORTED: RustVersion = RustVersion::new(1, 56);
+const RUST_VERSION_SUPPORTED: RustVersion = RustVersion::new(1, 56, None);
 /// Oldest version to test by default.
 const EARLIEST: RustVersion = RUST_VERSION_SUPPORTED;
 /// Final fallback version to use if *nothing* else can be figured out.
-const LATEST: RustVersion = RustVersion::new(1, 68);
+const LATEST: RustVersion = RustVersion::new(1, 68, None);
 /// Default command to build.
 const DEFAULT_COMMAND: [&str; 2] = ["cargo", "build"];
 
@@ -103,12 +103,13 @@ fn msrv(
     let primary = workspace.primary_crate()?;
 
     let current_dir = repo.path().to_path(cx.root);
-    let rust_version = primary.rust_version()?;
+    let rust_version = primary.rust_version()?.and_then(RustVersion::parse);
 
     let opts_earliest = parse_minor_version(cx, opts.earliest.as_deref(), rust_version.as_ref())?;
     let opts_latest = parse_minor_version(cx, opts.latest.as_deref(), rust_version.as_ref())?;
 
     let earliest = opts_earliest.unwrap_or(EARLIEST);
+
     let latest = opts_latest
         .or(cx.rustc_version)
         .or(rust_version)
@@ -152,20 +153,20 @@ fn msrv(
             let mut save = if opts.no_remove_dev_dependencies {
                 false
             } else {
-                p.manifest.remove_dev_dependencies()
+                p.remove_dev_dependencies()
             };
 
             save |= if current < RUST_VERSION_SUPPORTED {
-                p.manifest.set_rust_version(&version)?;
+                p.set_rust_version(&version)?;
                 true
             } else {
-                p.manifest.remove_rust_version()
+                p.remove_rust_version()
             };
 
             if save {
                 move_paths(&manifest_path, &original_path)?;
                 tracing::trace!("Saving {}", p.manifest_path);
-                p.manifest.save_to(&manifest_path)?;
+                p.save_to(&manifest_path)?;
                 restore.push((original_path, manifest_path));
             }
         }
@@ -243,7 +244,7 @@ fn parse_minor_version(
         Some("2021") => Some(rust_version::EDITION_2021),
         Some("workspace") => Some(rust_version::WORKSPACE),
         Some("rust-version") => rust_version.copied(),
-        Some(n) => Some(RustVersion::new(1, n.parse()?)),
+        Some(n) => Some(RustVersion::new(1, n.parse()?, None)),
         None => None,
     })
 }
@@ -282,13 +283,13 @@ impl Bisect {
             return None;
         }
 
-        Some(RustVersion::new(1, self.current))
+        Some(RustVersion::new(1, self.current, None))
     }
 
     /// Return a successfully tested version.
     fn get(&self) -> Option<RustVersion> {
         if *self.versions.get(&self.current)? {
-            return Some(RustVersion::new(1, self.current));
+            return Some(RustVersion::new(1, self.current, None));
         }
 
         None

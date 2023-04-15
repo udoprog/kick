@@ -265,10 +265,10 @@ impl IdSet {
 
     /// Test if id is enabled.
     pub(crate) fn is_enabled(&self, id: &str, enabled: bool) -> bool {
-        if !enabled {
-            self.enabled.contains(id)
-        } else {
+        if enabled {
             !self.disabled.contains(id)
+        } else {
+            self.enabled.contains(id)
         }
     }
 }

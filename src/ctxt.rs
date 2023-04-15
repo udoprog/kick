@@ -8,11 +8,11 @@ use crate::actions::Actions;
 use crate::changes::{Change, Warning};
 use crate::config::Config;
 use crate::git::Git;
+use crate::manifest::Manifest;
 use crate::model::{Repo, RepoParams, RepoRef};
 use crate::process::Command;
 use crate::repo_sets::RepoSets;
 use crate::rust_version::RustVersion;
-use crate::workspace::Package;
 
 pub(crate) struct Ctxt<'a> {
     pub(crate) root: &'a Path,
@@ -31,11 +31,11 @@ impl<'a> Ctxt<'a> {
     /// Get repo parameters for the given package.
     pub(crate) fn repo_params<'m>(
         &'m self,
-        package: &'m Package,
+        manifest: &'m Manifest,
         repo: &'m RepoRef,
     ) -> Result<RepoParams<'m>> {
         let variables = self.config.variables(repo);
-        let crate_params = package.crate_params(repo)?;
+        let crate_params = manifest.crate_params(repo)?;
         Ok(self.config.repo_params(self, repo, crate_params, variables))
     }
 

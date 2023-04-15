@@ -44,13 +44,13 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
     let mut pending = HashSet::new();
 
     for package in workspace.packages() {
-        if !package.manifest.is_publish()? {
+        if !package.is_publish()? {
             continue;
         }
 
-        let from = package.manifest.crate_name()?;
+        let from = package.crate_name()?;
 
-        if let Some(dependencies) = package.manifest.dependencies(&workspace) {
+        if let Some(dependencies) = package.dependencies(&workspace) {
             for dep in dependencies.iter() {
                 let to = dep.package_name()?;
 
@@ -72,7 +72,7 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
         let start = pending.len();
 
         for package in &packages {
-            let name = package.manifest.crate_name()?;
+            let name = package.crate_name()?;
 
             if !pending.contains(name) {
                 continue;
@@ -98,11 +98,12 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
         }
     }
 
-    for package in ordered.into_iter().rev() {
-        let name = package.manifest.crate_name()?;
+    for manifest in ordered.into_iter().rev() {
+        let name = manifest.crate_name()?;
+
         cx.change(Change::Publish {
             name: name.to_owned(),
-            manifest_dir: package.manifest_dir.to_owned(),
+            manifest_dir: manifest.manifest_dir.clone(),
             dry_run: opts.dry_run,
             no_verify: no_verify.contains(name),
             args: opts.cargo_publish.clone(),

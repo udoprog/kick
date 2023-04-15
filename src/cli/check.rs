@@ -9,12 +9,9 @@ use clap::Parser;
 
 use crate::changes;
 use crate::ctxt::Ctxt;
-use crate::model::Repo;
-use crate::model::RepoParams;
-use crate::model::UpdateParams;
-use crate::urls::UrlError;
-use crate::urls::Urls;
-use crate::workspace::Package;
+use crate::manifest::Manifest;
+use crate::model::{Repo, RepoParams, UpdateParams};
+use crate::urls::{UrlError, Urls};
 use crate::workspace::Workspace;
 
 #[derive(Default, Parser)]
@@ -68,7 +65,7 @@ fn check(
     cx: &Ctxt<'_>,
     repo: &Repo,
     workspace: &Workspace,
-    primary_crate: &Package,
+    primary_crate: &Manifest,
     primary_crate_params: RepoParams<'_>,
     urls: &mut Urls,
 ) -> Result<()> {
@@ -88,9 +85,9 @@ fn check(
         authors: cx.config.authors(repo),
     };
 
-    for package in workspace.packages() {
-        if package.manifest.is_publish()? {
-            cargo::work_cargo_toml(cx, &workspace, package, &update_params)?;
+    for manifest in workspace.packages() {
+        if manifest.is_publish()? {
+            cargo::work_cargo_toml(cx, workspace, manifest, &update_params)?;
         }
     }
 
@@ -111,21 +108,21 @@ fn check(
             false,
         )?;
 
-        for package in workspace.packages() {
-            if !package.manifest.is_publish()? {
+        for manifest in workspace.packages() {
+            if !manifest.is_publish()? {
                 continue;
             }
 
-            let params = cx.repo_params(package, repo)?;
+            let params = cx.repo_params(manifest, repo)?;
 
             readme::build(
                 cx,
-                &package.manifest_dir,
+                &manifest.manifest_dir,
                 repo,
-                package,
+                manifest,
                 &params,
                 urls,
-                package.manifest_dir != *repo.path(),
+                manifest.manifest_dir != *repo.path(),
                 true,
             )?;
         }

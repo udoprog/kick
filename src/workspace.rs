@@ -3,7 +3,6 @@ use std::ops::Deref;
 
 use anyhow::{anyhow, Context, Result};
 use relative_path::{RelativePath, RelativePathBuf};
-use serde::{Deserialize, Serialize};
 use toml_edit::{Item, Value};
 
 use crate::ctxt::Ctxt;
@@ -11,8 +10,7 @@ use crate::glob::Glob;
 use crate::manifest::{
     self, Manifest, ManifestDependencies, ManifestDependency, ManifestWorkspace,
 };
-use crate::model::{CrateParams, RepoRef};
-use crate::rust_version::RustVersion;
+use crate::model::RepoRef;
 
 /// The default name of a cargo manifest `Cargo.toml`.
 pub(crate) const CARGO_TOML: &str = "Cargo.toml";
@@ -32,61 +30,56 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Workspace>> {
         .crate_for(repo.path())
         .or(repo.repo().map(|repo| repo.name));
 
-    let Some(manifest) = manifest::open(manifest_path.to_path(cx.root))? else {
-        return Ok(None);
-    };
-
     let manifest_dir = manifest_path
         .parent()
         .ok_or_else(|| anyhow!("missing parent directory"))?;
 
+    let Some(manifest) = manifest::open(manifest_path.to_path(cx.root), manifest_dir, &manifest_path)? else {
+        return Ok(None);
+    };
+
     let mut queue = VecDeque::new();
+    queue.push_back(manifest);
 
     let mut visited = HashSet::new();
-
-    queue.push_back(Package {
-        manifest_dir: manifest_dir.into(),
-        manifest_path: manifest_path.clone(),
-        manifest,
-    });
 
     let mut manifests = Vec::new();
     let mut workspaces = Vec::new();
     let mut packages = Vec::new();
 
-    while let Some(package) = queue.pop_front() {
-        if !visited.insert(package.manifest_dir.clone()) {
-            tracing::trace!(?package.manifest_path, "Already loaded");
+    while let Some(manifest) = queue.pop_front() {
+        if !visited.insert(manifest.manifest_dir.clone()) {
+            tracing::trace!(?manifest, "Already loaded");
             continue;
         }
 
-        if package.manifest.is_package() {
+        if manifest.is_package() {
             packages.push(manifests.len());
         }
 
-        tracing::trace!(?package.manifest_path, name = package.manifest.crate_name()?, "Processing package");
+        tracing::trace!(?manifest.manifest_path, name = manifest.crate_name()?, "Processing package");
 
-        if let Some(workspace) = package.manifest.as_workspace() {
-            let members = expand_members(cx, &package, workspace.members())?;
+        if let Some(workspace) = manifest.as_workspace() {
+            let members = expand_members(cx, &manifest, workspace.members())?;
 
             for manifest_dir in members {
                 let manifest_path = manifest_dir.join(CARGO_TOML);
 
-                let manifest = manifest::open(manifest_path.to_path(cx.root))
-                    .with_context(|| anyhow!("{manifest_path}"))?
-                    .with_context(|| anyhow!("{manifest_path}: missing file"))?;
+                let manifest = manifest::open(
+                    manifest_path.to_path(cx.root),
+                    &manifest_dir,
+                    &manifest_path,
+                )
+                .with_context(|| anyhow!("{manifest_path}"))?
+                .with_context(|| anyhow!("{manifest_path}: missing file"))?;
 
-                queue.push_back(Package {
-                    manifest_dir,
-                    manifest_path,
-                    manifest,
-                });
+                queue.push_back(manifest);
             }
 
             workspaces.push(manifests.len());
         }
 
-        manifests.push(package);
+        manifests.push(manifest);
     }
 
     Ok(Some(Workspace {
@@ -99,13 +92,13 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Workspace>> {
 
 fn expand_members<'a>(
     cx: &Ctxt<'_>,
-    package: &Package,
+    manifest: &Manifest,
     iter: impl Iterator<Item = &'a RelativePath>,
 ) -> Result<Vec<RelativePathBuf>> {
     let mut output = Vec::new();
 
     for path in iter {
-        let manifest_dir = package.manifest_dir.join(path);
+        let manifest_dir = manifest.manifest_dir.join(path);
         let glob = Glob::new(cx.root, &manifest_dir);
 
         for path in glob.matcher() {
@@ -116,55 +109,11 @@ fn expand_members<'a>(
     Ok(output)
 }
 
-/// A single package in the workspace.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct Package {
-    pub(crate) manifest_dir: RelativePathBuf,
-    pub(crate) manifest_path: RelativePathBuf,
-    pub(crate) manifest: Manifest,
-}
-
-impl Package {
-    /// Find the location of the entrypoint `lib.rs`.
-    pub(crate) fn entries(&self) -> Vec<RelativePathBuf> {
-        if let Some(path) = self
-            .manifest
-            .lib()
-            .and_then(|lib| lib.get("path").and_then(toml_edit::Item::as_str))
-        {
-            vec![self.manifest_dir.join(path)]
-        } else {
-            vec![
-                self.manifest_dir.join("src").join("lib.rs"),
-                self.manifest_dir.join("src").join("main.rs"),
-            ]
-        }
-    }
-
-    /// Construct crate parameters.
-    pub(crate) fn crate_params<'a>(&'a self, repo: &'a RepoRef) -> Result<CrateParams<'a>> {
-        Ok(CrateParams {
-            name: self.manifest.crate_name()?,
-            repo: repo.repo(),
-            description: self.manifest.description()?,
-            rust_version: self.rust_version()?,
-        })
-    }
-
-    /// Rust versions for a specific manifest.
-    pub(crate) fn rust_version(&self) -> Result<Option<RustVersion>> {
-        Ok(match self.manifest.rust_version()? {
-            Some(rust_version) => RustVersion::parse(rust_version),
-            None => None,
-        })
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct Workspace {
     primary_crate: Option<Box<str>>,
     /// List of loaded packages and their associated manifests.
-    manifests: Vec<Package>,
+    manifests: Vec<Manifest>,
     /// Index of manifests which have a [package] declaration in them.
     packages: Vec<usize>,
     /// Index of manifests which have a [workspace] declaration in them.
@@ -178,35 +127,35 @@ impl Workspace {
     }
 
     /// Get list of packages.
-    pub(crate) fn packages(&self) -> impl Iterator<Item = &Package> {
+    pub(crate) fn packages(&self) -> impl Iterator<Item = &Manifest> {
         self.packages
             .iter()
             .flat_map(|&index| self.manifests.get(index))
     }
 
     /// Find the primary crate in the workspace.
-    pub(crate) fn primary_crate(&self) -> Result<&Package> {
+    pub(crate) fn primary_crate(&self) -> Result<&Manifest> {
         // Single package, easy to determine primary crate.
         if let &[index] = &self.packages[..] {
-            let package = self.manifests.get(index).context("missing package")?;
-            return Ok(package);
+            let manifest = self.manifests.get(index).context("missing package")?;
+            return Ok(manifest);
         }
 
         // Find a package which matches the name of the project.
         if let Some(name) = &self.primary_crate {
             for &index in &self.packages {
-                let package = self.manifests.get(index).context("missing package")?;
+                let manifest = self.manifests.get(index).context("missing package")?;
 
-                if package.manifest.crate_name()? == name.as_ref() {
-                    return Ok(package);
+                if manifest.crate_name()? == name.as_ref() {
+                    return Ok(manifest);
                 }
             }
         }
 
         let mut names = Vec::with_capacity(self.manifests.len());
 
-        for package in &self.manifests {
-            names.push(package.manifest.crate_name()?);
+        for manifest in &self.manifests {
+            names.push(manifest.crate_name()?);
         }
 
         Err(anyhow!(
@@ -244,7 +193,7 @@ impl Workspace {
         // workspace dependency.
         if let Some(true) = dep.get("workspace").and_then(|w| w.as_bool()) {
             for &index in self.workspaces.iter() {
-                let Some(workspace) = self.manifests.get(index).and_then(|p| p.manifest.as_workspace()) else {
+                let Some(workspace) = self.manifests.get(index).and_then(|m| m.as_workspace()) else {
                     continue;
                 };
 

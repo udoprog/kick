@@ -10,9 +10,9 @@ use serde::Serialize;
 use crate::changes::{Change, Warning};
 use crate::ctxt::Ctxt;
 use crate::file::File;
+use crate::manifest::Manifest;
 use crate::model::{Repo, RepoParams};
 use crate::urls::Urls;
-use crate::workspace::Package;
 
 /// Name of README to generate.
 pub(crate) const README_MD: &str = "README.md";
@@ -35,7 +35,7 @@ pub(crate) fn build(
     cx: &Ctxt<'_>,
     manifest_dir: &RelativePath,
     repo: &Repo,
-    package: &Package,
+    manifest: &Manifest,
     params: &RepoParams<'_>,
     urls: &mut Urls,
     do_readme: bool,
@@ -44,7 +44,7 @@ pub(crate) fn build(
     let readme_path = manifest_dir.join(README_MD);
 
     let entry = 'entry: {
-        for entry in package.entries() {
+        for entry in manifest.entries() {
             if entry.to_path(cx.root).is_file() {
                 break 'entry entry;
             }

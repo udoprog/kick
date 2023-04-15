@@ -1,18 +1,26 @@
+use std::borrow::Cow;
+use std::collections::HashSet;
+use std::iter::from_fn;
 use std::path::Path;
-use std::{collections::HashSet, iter::from_fn};
 
 use anyhow::{anyhow, Result};
-use relative_path::RelativePath;
+use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Deserialize, Serialize};
 use toml_edit::{Array, Document, Formatted, Item, Table, Value};
 
+use crate::model::{CrateParams, RepoRef};
+use crate::rust_version::RustVersion;
 use crate::workspace::{PackageValue, Workspace};
 
 /// The "dependencies" field.
 const DEPENDENCIES: &str = "dependencies";
 
 /// Open a `Cargo.toml`.
-pub(crate) fn open<P>(path: P) -> Result<Option<Manifest>>
+pub(crate) fn open<P>(
+    path: P,
+    manifest_dir: &RelativePath,
+    manifest_path: &RelativePath,
+) -> Result<Option<Manifest>>
 where
     P: AsRef<Path>,
 {
@@ -23,13 +31,12 @@ where
     };
 
     let doc = input.parse()?;
-    Ok(Some(Manifest { doc }))
-}
 
-/// A parsed `Cargo.toml`.
-#[derive(Debug, Clone)]
-pub(crate) struct Manifest {
-    doc: Document,
+    Ok(Some(Manifest {
+        doc,
+        manifest_dir: manifest_dir.to_owned(),
+        manifest_path: manifest_path.to_owned(),
+    }))
 }
 
 macro_rules! field {
@@ -91,117 +98,43 @@ macro_rules! insert_package_list {
     };
 }
 
-/// Represents the `[workspace]` section of a manifest.
-pub(crate) struct ManifestWorkspace<'a> {
-    doc: &'a Table,
-}
-
-impl<'a> ManifestWorkspace<'a> {
-    /// Get list of members.
-    pub(crate) fn members(&self) -> impl Iterator<Item = &'a RelativePath> {
-        let members = self.doc.get("members").and_then(|v| v.as_array());
-        members
-            .into_iter()
-            .flatten()
-            .flat_map(|v| Some(RelativePath::new(v.as_str()?)))
-    }
-
-    /// Get dependencies table, if it exists.
-    pub(crate) fn dependencies(self, workspace: &'a Workspace) -> Option<ManifestDependencies<'a>> {
-        let doc = self
-            .doc
-            .get(DEPENDENCIES)
-            .and_then(|table| table.as_table())?;
-
-        Some(ManifestDependencies { doc, workspace })
-    }
-}
-
-/// A single declared dependency.
-pub(crate) struct ManifestDependency<'a> {
-    key: &'a str,
-    value: &'a Item,
-    workspace: &'a Workspace,
-    accessor: fn(ManifestWorkspace<'a>, &'a Workspace) -> Option<ManifestDependencies<'a>>,
-}
-
-impl<'a> ManifestDependency<'a> {
-    /// Get the package name of the dependency.
-    pub(crate) fn package_name(&self) -> Result<PackageValue<&'a str>> {
-        let optional = self.workspace.lookup_dependency_key(
-            self.key,
-            self.value,
-            self.accessor,
-            ManifestDependency::package_name,
-            Value::as_str,
-            "package",
-        )?;
-
-        Ok(PackageValue::from_package(
-            optional.map(PackageValue::into_value).unwrap_or(self.key),
-        ))
-    }
-
-    /// Get the package name of the dependency.
-    pub(crate) fn is_optional(&self) -> Result<PackageValue<bool>> {
-        let optional = self.workspace.lookup_dependency_key(
-            self.key,
-            self.value,
-            self.accessor,
-            ManifestDependency::is_optional,
-            Value::as_bool,
-            "optional",
-        )?;
-
-        Ok(PackageValue::from_package(
-            optional.map(PackageValue::into_value).unwrap_or(false),
-        ))
-    }
-}
-
-/// Represents the `[dependencies]` section of a manifest.
-pub(crate) struct ManifestDependencies<'a> {
-    doc: &'a Table,
-    workspace: &'a Workspace,
-}
-
-impl<'a> ManifestDependencies<'a> {
-    /// Test if the dependencies section is empty.
-    pub fn is_empty(&self) -> bool {
-        self.doc.is_empty()
-    }
-
-    /// Get a dependency by its key.
-    pub fn get(&self, key: &'a str) -> Option<ManifestDependency<'a>> {
-        let value = self.doc.get(key)?;
-
-        Some(ManifestDependency {
-            key,
-            value,
-            workspace: self.workspace,
-            accessor: ManifestWorkspace::dependencies,
-        })
-    }
-
-    /// Iterate over dependencies.
-    pub fn iter(&self) -> impl Iterator<Item = ManifestDependency<'a>> + 'a {
-        let mut iter = self.doc.iter();
-        let workspace = self.workspace;
-
-        from_fn(move || {
-            let (key, value) = iter.next()?;
-
-            Some(ManifestDependency {
-                key,
-                value,
-                workspace,
-                accessor: ManifestWorkspace::dependencies,
-            })
-        })
-    }
+/// A parsed `Cargo.toml`.
+#[derive(Debug, Clone)]
+pub(crate) struct Manifest {
+    pub(crate) manifest_dir: RelativePathBuf,
+    pub(crate) manifest_path: RelativePathBuf,
+    doc: Document,
 }
 
 impl Manifest {
+    /// Find the location of the entrypoint `lib.rs`.
+    pub(crate) fn entries(&self) -> Vec<RelativePathBuf> {
+        if let Some(path) = self
+            .lib()
+            .and_then(|lib| lib.get("path").and_then(toml_edit::Item::as_str))
+        {
+            vec![self.manifest_dir.join(path)]
+        } else {
+            vec![
+                self.manifest_dir.join("src").join("lib.rs"),
+                self.manifest_dir.join("src").join("main.rs"),
+            ]
+        }
+    }
+
+    /// Construct crate parameters.
+    pub(crate) fn crate_params<'a>(&'a self, repo: &'a RepoRef) -> Result<CrateParams<'a>> {
+        Ok(CrateParams {
+            name: self.crate_name()?,
+            repo: repo.repo(),
+            description: self.description()?,
+            rust_version: match self.rust_version()? {
+                Some(rust_version) => RustVersion::parse(rust_version),
+                None => None,
+            },
+        })
+    }
+
     /// Test if toml defines a package.
     pub(crate) fn is_package(&self) -> bool {
         self.doc.contains_key("package")
@@ -422,9 +355,114 @@ impl Manifest {
     insert_package_list!(insert_categories, "categories");
 }
 
-#[derive(Serialize, Deserialize)]
-struct DocumentRef {
-    doc: String,
+/// Represents the `[workspace]` section of a manifest.
+pub(crate) struct ManifestWorkspace<'a> {
+    doc: &'a Table,
+}
+
+impl<'a> ManifestWorkspace<'a> {
+    /// Get list of members.
+    pub(crate) fn members(&self) -> impl Iterator<Item = &'a RelativePath> {
+        let members = self.doc.get("members").and_then(|v| v.as_array());
+        members
+            .into_iter()
+            .flatten()
+            .flat_map(|v| Some(RelativePath::new(v.as_str()?)))
+    }
+
+    /// Get dependencies table, if it exists.
+    pub(crate) fn dependencies(self, workspace: &'a Workspace) -> Option<ManifestDependencies<'a>> {
+        let doc = self
+            .doc
+            .get(DEPENDENCIES)
+            .and_then(|table| table.as_table())?;
+
+        Some(ManifestDependencies { doc, workspace })
+    }
+}
+
+/// A single declared dependency.
+pub(crate) struct ManifestDependency<'a> {
+    key: &'a str,
+    value: &'a Item,
+    workspace: &'a Workspace,
+    accessor: fn(ManifestWorkspace<'a>, &'a Workspace) -> Option<ManifestDependencies<'a>>,
+}
+
+impl<'a> ManifestDependency<'a> {
+    /// Get the package name of the dependency.
+    pub(crate) fn package_name(&self) -> Result<PackageValue<&'a str>> {
+        let optional = self.workspace.lookup_dependency_key(
+            self.key,
+            self.value,
+            self.accessor,
+            ManifestDependency::package_name,
+            Value::as_str,
+            "package",
+        )?;
+
+        Ok(PackageValue::from_package(
+            optional.map(PackageValue::into_value).unwrap_or(self.key),
+        ))
+    }
+
+    /// Get the package name of the dependency.
+    pub(crate) fn is_optional(&self) -> Result<PackageValue<bool>> {
+        let optional = self.workspace.lookup_dependency_key(
+            self.key,
+            self.value,
+            self.accessor,
+            ManifestDependency::is_optional,
+            Value::as_bool,
+            "optional",
+        )?;
+
+        Ok(PackageValue::from_package(
+            optional.map(PackageValue::into_value).unwrap_or(false),
+        ))
+    }
+}
+
+/// Represents the `[dependencies]` section of a manifest.
+pub(crate) struct ManifestDependencies<'a> {
+    doc: &'a Table,
+    workspace: &'a Workspace,
+}
+
+impl<'a> ManifestDependencies<'a> {
+    /// Test if the dependencies section is empty.
+    pub fn is_empty(&self) -> bool {
+        self.doc.is_empty()
+    }
+
+    /// Get a dependency by its key.
+    pub fn get(&self, key: &'a str) -> Option<ManifestDependency<'a>> {
+        let value = self.doc.get(key)?;
+
+        Some(ManifestDependency {
+            key,
+            value,
+            workspace: self.workspace,
+            accessor: ManifestWorkspace::dependencies,
+        })
+    }
+
+    /// Iterate over dependencies.
+    pub fn iter(&self) -> impl Iterator<Item = ManifestDependency<'a>> + 'a {
+        let mut iter = self.doc.iter();
+        let workspace = self.workspace;
+
+        from_fn(move || {
+            let (key, value) = iter.next()?;
+
+            Some(ManifestDependency {
+                key,
+                value,
+                workspace,
+                accessor: ManifestWorkspace::dependencies,
+            })
+        })
+    }
 }
 
 impl Serialize for Manifest {
@@ -432,9 +470,22 @@ impl Serialize for Manifest {
     where
         S: serde::Serializer,
     {
+        #[derive(Serialize, Deserialize)]
+        struct DocumentRef<'a> {
+            doc: &'a str,
+            manifest_dir: &'a RelativePath,
+            manifest_path: &'a RelativePath,
+        }
+
         let doc = self.doc.to_string();
-        let doc = DocumentRef { doc };
-        doc.serialize(serializer)
+
+        let doc_ref = DocumentRef {
+            doc: &doc,
+            manifest_dir: &self.manifest_dir,
+            manifest_path: &self.manifest_path,
+        };
+
+        doc_ref.serialize(serializer)
     }
 }
 
@@ -443,13 +494,24 @@ impl<'de> Deserialize<'de> for Manifest {
     where
         D: serde::Deserializer<'de>,
     {
-        let doc = DocumentRef::deserialize(deserializer)?;
+        #[derive(Serialize, Deserialize)]
+        struct DocumentRef<'a> {
+            doc: Cow<'a, str>,
+            manifest_dir: RelativePathBuf,
+            manifest_path: RelativePathBuf,
+        }
 
-        let doc = doc
+        let doc_ref = DocumentRef::deserialize(deserializer)?;
+
+        let doc = doc_ref
             .doc
             .parse()
             .map_err(<D::Error as serde::de::Error>::custom)?;
 
-        Ok(Self { doc })
+        Ok(Self {
+            doc,
+            manifest_dir: doc_ref.manifest_dir,
+            manifest_path: doc_ref.manifest_path,
+        })
     }
 }

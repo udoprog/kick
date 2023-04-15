@@ -42,7 +42,7 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
         patch: opts.patch,
         pre: match &opts.pre {
             Some(pre) if !pre.is_empty() => {
-                Some(Prerelease::new(pre).with_context(|| pre.to_owned())?)
+                Some(Prerelease::new(pre).with_context(|| pre.clone())?)
             }
             Some(..) => Some(Prerelease::EMPTY),
             _ => None,
@@ -79,13 +79,13 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo, version_set: &VersionSet) ->
     let mut packages = Vec::new();
 
     for package in workspace.packages() {
-        if !package.manifest.is_publish()? {
+        if !package.is_publish()? {
             continue;
         }
 
-        let name = package.manifest.crate_name()?;
+        let name = package.crate_name()?;
 
-        let current_version = if let Some(version) = package.manifest.version()? {
+        let current_version = if let Some(version) = package.version()? {
             Some(Version::parse(version)?)
         } else {
             None
@@ -134,7 +134,7 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo, version_set: &VersionSet) ->
     }
 
     for (package, _) in &mut packages {
-        let name = package.manifest.crate_name()?;
+        let name = package.crate_name()?;
 
         let mut changed_manifest = false;
         let mut replaced = Vec::new();
@@ -155,25 +155,25 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo, version_set: &VersionSet) ->
                 );
             }
 
-            if package.manifest.version()? != Some(version_string.as_str()) {
-                package.manifest.insert_version(&version_string)?;
+            if package.version()? != Some(version_string.as_str()) {
+                package.insert_version(&version_string)?;
                 changed_manifest = true;
             }
         }
 
-        if let Some(deps) = package.manifest.dependencies_mut() {
+        if let Some(deps) = package.dependencies_mut() {
             if modify_dependencies(deps, &versions)? {
                 changed_manifest = true;
             }
         }
 
-        if let Some(deps) = package.manifest.dev_dependencies_mut() {
+        if let Some(deps) = package.dev_dependencies_mut() {
             if modify_dependencies(deps, &versions)? {
                 changed_manifest = true;
             }
         }
 
-        if let Some(deps) = package.manifest.build_dependencies_mut() {
+        if let Some(deps) = package.build_dependencies_mut() {
             if modify_dependencies(deps, &versions)? {
                 changed_manifest = true;
             }
@@ -181,7 +181,7 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo, version_set: &VersionSet) ->
 
         if changed_manifest {
             cx.change(Change::SavePackage {
-                package: package.clone(),
+                manifest: package.clone(),
             });
         }
 
@@ -194,7 +194,7 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo, version_set: &VersionSet) ->
         let primary = workspace.primary_crate()?;
 
         let version = versions
-            .get(primary.manifest.crate_name()?)
+            .get(primary.crate_name()?)
             .context("missing version for primary manifest")?;
 
         cx.change(Change::ReleaseCommit {
