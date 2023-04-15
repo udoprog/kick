@@ -24,7 +24,7 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Crates>> {
 
     let primary_package = cx
         .config
-        .crate_for(repo.path())
+        .name(repo.path())
         .or(repo.repo().map(|repo| repo.name));
 
     let manifest_dir = manifest_path

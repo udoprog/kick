@@ -166,7 +166,7 @@ pub(crate) struct RepoConfig {
     /// Custom badges for a specific project.
     pub(crate) badges: Vec<ConfigBadge>,
     /// Override crate to use.
-    pub(crate) krate: Option<String>,
+    pub(crate) name: Option<String>,
     /// Path to Cargo.toml to build.
     pub(crate) cargo_toml: Option<RelativePathBuf>,
     /// Disabled modules.
@@ -193,7 +193,7 @@ impl RepoConfig {
         self.documentation = other.documentation.or(self.documentation.take());
         self.lib = other.lib.or(self.lib.take());
         self.badges.append(&mut other.badges);
-        self.krate = other.krate.or(self.krate.take());
+        self.name = other.name.or(self.name.take());
         self.cargo_toml = other.cargo_toml.or(self.cargo_toml.take());
         self.disabled.extend(other.disabled);
         self.lib_badges.merge_with(other.lib_badges);
@@ -446,12 +446,12 @@ impl Config {
     }
 
     /// Get crate for the given repo.
-    pub(crate) fn crate_for<'a>(&'a self, path: &RelativePath) -> Option<&'a str> {
-        if let Some(krate) = self.repo.get(path).and_then(|r| r.krate.as_deref()) {
+    pub(crate) fn name<'a>(&'a self, path: &RelativePath) -> Option<&'a str> {
+        if let Some(krate) = self.repo.get(path).and_then(|r| r.name.as_deref()) {
             return Some(krate);
         }
 
-        self.base.krate.as_deref()
+        self.base.name.as_deref()
     }
 
     /// Get Cargo.toml path for the given repo.
@@ -834,7 +834,7 @@ impl<'a> ConfigCtxt<'a> {
         let _ = self
             .as_boolean(config, "center_badges")?
             .unwrap_or_default();
-        let krate = self.as_string(config, "crate")?;
+        let name = self.as_string(config, "name")?;
 
         let cargo_toml = self.in_string(config, "cargo_toml", |_, string| {
             Ok(RelativePathBuf::from(string))
@@ -893,7 +893,7 @@ impl<'a> ConfigCtxt<'a> {
             lib,
             readme,
             badges,
-            krate,
+            name,
             cargo_toml,
             disabled,
             lib_badges,
