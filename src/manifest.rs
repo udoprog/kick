@@ -23,12 +23,16 @@ pub(crate) use self::workspace::Workspace;
 pub(crate) use self::workspace_dependencies::WorkspaceDependencies;
 pub(crate) use self::workspace_dependency::WorkspaceDependency;
 
+/// The "workspace" field.
+pub(crate) const WORKSPACE: &str = "workspace";
 /// The "dependencies" field.
-const DEPENDENCIES: &str = "dependencies";
+pub(crate) const DEPENDENCIES: &str = "dependencies";
 /// The "dev-dependencies" field.
-const DEV_DEPENDENCIES: &str = "dev-dependencies";
+pub(crate) const DEV_DEPENDENCIES: &str = "dev-dependencies";
 /// The "build-dependencies" field.
-const BUILD_DEPENDENCIES: &str = "build-dependencies";
+pub(crate) const BUILD_DEPENDENCIES: &str = "build-dependencies";
+/// Various kinds of dependencies sections.
+pub(crate) const DEPS: [&str; 3] = [DEPENDENCIES, DEV_DEPENDENCIES, BUILD_DEPENDENCIES];
 
 /// Open a `Cargo.toml`.
 pub(crate) fn open<P>(
@@ -63,20 +67,6 @@ macro_rules! manifest_package_field {
                 Item::Value(Value::String(Formatted::new(String::from(value)))),
             );
             Ok(())
-        }
-    };
-}
-
-macro_rules! table_mut {
-    ($get_mut:ident, $remove:ident, $field:expr) => {
-        pub(crate) fn $get_mut(&mut self) -> Option<&mut Table> {
-            self.doc
-                .get_mut($field)
-                .and_then(|table| table.as_table_mut())
-        }
-
-        pub(crate) fn $remove(&mut self) -> bool {
-            self.doc.remove($field).is_some()
         }
     };
 }
@@ -311,17 +301,15 @@ impl Manifest {
         ))
     }
 
-    table_mut!(dependencies_mut, remove_dependencies, DEPENDENCIES);
-    table_mut!(
-        dev_dependencies_mut,
-        remove_dev_dependencies,
-        DEV_DEPENDENCIES
-    );
-    table_mut!(
-        build_dependencies_mut,
-        remove_build_dependencies,
-        BUILD_DEPENDENCIES
-    );
+    /// Get the given key.
+    pub(crate) fn get_mut(&mut self, key: &str) -> Option<&mut Item> {
+        self.doc.get_mut(key)
+    }
+
+    /// Remove the given key.
+    pub(crate) fn remove(&mut self, key: &str) -> bool {
+        self.doc.remove(key).is_some()
+    }
 
     insert_package_list!(insert_keywords, "keywords");
     insert_package_list!(insert_categories, "categories");

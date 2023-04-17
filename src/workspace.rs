@@ -123,6 +123,11 @@ impl Crates {
         self.packages.len() == 1
     }
 
+    /// Iterate over manifest in the workspace.
+    pub(crate) fn manifests(&self) -> impl Iterator<Item = &Manifest> {
+        self.manifests.iter()
+    }
+
     /// Iterate over manifest workspaces.
     pub(crate) fn workspaces(&self) -> impl Iterator<Item = (usize, Workspace<'_>)> {
         self.workspaces

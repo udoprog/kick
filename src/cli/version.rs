@@ -3,10 +3,11 @@ use std::collections::HashMap;
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use semver::{Comparator, Op, Prerelease, Version, VersionReq};
-use toml_edit::{Formatted, Item, Table, Value};
+use toml_edit::{Formatted, Item, TableLike, Value};
 
 use crate::changes::Change;
 use crate::ctxt::Ctxt;
+use crate::manifest;
 use crate::model::Repo;
 use crate::workspace;
 
@@ -76,9 +77,12 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo, version_set: &VersionSet) ->
     };
 
     let mut versions = HashMap::new();
-    let mut packages = Vec::new();
 
-    for package in workspace.packages() {
+    for manifest in workspace.manifests() {
+        let Some(package) = manifest.as_package() else {
+            continue;
+        };
+
         if !package.is_publish() {
             continue;
         }
@@ -128,61 +132,63 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo, version_set: &VersionSet) ->
             tracing::info!(?name, version = ?version.to_string(), ?name, "Set version");
             versions.insert(name.to_string(), version.clone());
         }
-
-        packages.push((package, current_version));
     }
 
-    for (package, _) in packages {
-        let name = package.name()?;
-
+    for manifest in workspace.manifests() {
         let mut changed_manifest = false;
         let mut replaced = Vec::new();
+        let mut modified = manifest.clone();
 
-        let mut manifest = package.manifest().clone();
+        if let Some(package) = manifest.as_package() {
+            let name = package.name()?;
 
-        if let Some(version) = versions.get(name) {
-            let root = manifest.dir().to_path(cx.root);
-            let version_string = version.to_string();
+            if let Some(version) = versions.get(name) {
+                let root = modified.dir().to_path(cx.root);
+                let version_string = version.to_string();
 
-            for replacement in cx.config.version(repo) {
-                if matches!(&replacement.package_name, Some(id) if id != name) {
-                    continue;
+                for replacement in cx.config.version(repo) {
+                    if matches!(&replacement.package_name, Some(id) if id != name) {
+                        continue;
+                    }
+
+                    replaced.extend(
+                        replacement
+                            .replace_in(&root, "version", &version_string)
+                            .context("Failed to replace version string")?,
+                    );
                 }
 
-                replaced.extend(
-                    replacement
-                        .replace_in(&root, "version", &version_string)
-                        .context("Failed to replace version string")?,
-                );
-            }
-
-            if package.version() != Some(version_string.as_str()) {
-                manifest.insert_version(&version_string)?;
-                changed_manifest = true;
+                if package.version() != Some(version_string.as_str()) {
+                    modified.insert_version(&version_string)?;
+                    changed_manifest = true;
+                }
             }
         }
 
-        if let Some(deps) = manifest.dependencies_mut() {
-            if modify_dependencies(deps, &versions)? {
-                changed_manifest = true;
+        for key in manifest::DEPS {
+            if let Some(deps) = modified.get_mut(key).and_then(|d| d.as_table_like_mut()) {
+                if modify_dependencies(deps, &versions)? {
+                    changed_manifest = true;
+                }
             }
         }
 
-        if let Some(deps) = manifest.dev_dependencies_mut() {
-            if modify_dependencies(deps, &versions)? {
-                changed_manifest = true;
-            }
-        }
-
-        if let Some(deps) = manifest.build_dependencies_mut() {
-            if modify_dependencies(deps, &versions)? {
-                changed_manifest = true;
+        if let Some(workspace) = modified
+            .get_mut(manifest::WORKSPACE)
+            .and_then(|d| d.as_table_like_mut())
+        {
+            for key in manifest::DEPS {
+                if let Some(deps) = workspace.get_mut(key).and_then(|d| d.as_table_like_mut()) {
+                    if modify_dependencies(deps, &versions)? {
+                        changed_manifest = true;
+                    }
+                }
             }
         }
 
         if changed_manifest {
             cx.change(Change::SavePackage {
-                manifest: manifest.clone(),
+                manifest: modified.clone(),
             });
         }
 
@@ -236,7 +242,10 @@ fn package_name<'a>(key: &'a str, dep: &'a Item) -> &'a str {
 }
 
 /// Modify dependencies in place.
-fn modify_dependencies(deps: &mut Table, versions: &HashMap<String, Version>) -> Result<bool> {
+fn modify_dependencies(
+    deps: &mut dyn TableLike,
+    versions: &HashMap<String, Version>,
+) -> Result<bool> {
     let mut changed = false;
 
     for (key, dep) in deps.iter_mut() {

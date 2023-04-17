@@ -7,6 +7,7 @@ use clap::Parser;
 
 use crate::changes::Change;
 use crate::ctxt::Ctxt;
+use crate::manifest;
 use crate::model::Repo;
 use crate::process::Command;
 use crate::repo_sets::RepoSet;
@@ -154,7 +155,7 @@ fn msrv(
             let mut save = if opts.no_remove_dev_dependencies {
                 false
             } else {
-                manifest.remove_dev_dependencies()
+                manifest.remove(manifest::DEV_DEPENDENCIES)
             };
 
             save |= if current < RUST_VERSION_SUPPORTED {
