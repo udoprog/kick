@@ -484,7 +484,8 @@ fn filter_code_block(comment: &str) -> (Vec<String>, String) {
         let part = part.trim();
 
         match part {
-            "" | "no_run" | "should_panic" | "ignore" | "edition2018" | "edition2021" | "no_miri" => continue,
+            "" | "no_run" | "should_panic" | "compile_fail" | "ignore" | "edition2018"
+            | "edition2021" | "no_miri" => continue,
             _ => {}
         }
 
