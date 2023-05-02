@@ -818,11 +818,12 @@ async fn entry() -> Result<()> {
     );
 
     if let Some(repo_opts) = repo_opts {
-        let current_path = if !repo_opts.all && repos.iter().any(|m| m.path() == current_path) {
-            Some(current_path.as_ref())
-        } else {
-            None
-        };
+        let current_path =
+            if !repo_opts.all && repos.iter().any(|m| current_path.starts_with(m.path())) {
+                Some(current_path.as_ref())
+            } else {
+                None
+            };
 
         let mut filters = Vec::new();
 
@@ -991,7 +992,7 @@ fn filter_repos(
 
         if filters.is_empty() {
             if let Some(path) = current_path {
-                return path != repo.path();
+                return !path.starts_with(repo.path());
             }
 
             return false;
