@@ -92,7 +92,7 @@ fn check(
     }
 
     if cx.config.is_enabled(repo.path(), "ci") {
-        ci::build(cx, &primary_crate, repo, crates)
+        ci::build(cx, primary_crate, repo, crates)
             .with_context(|| anyhow!("ci change: {}", cx.config.job_name(repo)))?;
     }
 
@@ -117,7 +117,7 @@ fn check(
 
             readme::build(
                 cx,
-                &package.manifest().dir(),
+                package.manifest().dir(),
                 repo,
                 package.manifest(),
                 &params,

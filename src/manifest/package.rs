@@ -26,7 +26,7 @@ impl<'a> Package<'a> {
 
     /// Get the underlying manifest of the package.
     pub(crate) fn manifest(&self) -> &Manifest {
-        &self.manifest
+        self.manifest
     }
 
     /// Test if package should or should not be published.

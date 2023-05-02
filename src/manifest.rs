@@ -137,7 +137,7 @@ impl Manifest {
     }
 
     /// Get package configuration.
-    pub(crate) fn as_package<'a>(&'a self) -> Option<Package<'a>> {
+    pub(crate) fn as_package(&self) -> Option<Package<'_>> {
         let doc = self.doc.get("package")?.as_table()?;
         Some(Package::new(doc, self))
     }
