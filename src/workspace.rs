@@ -99,7 +99,13 @@ fn expand_members<'a>(
         let glob = Glob::new(cx.root, &manifest_dir);
 
         for path in glob.matcher() {
-            output.push(path?);
+            let path = path?;
+
+            if !path.to_path(cx.root).is_dir() {
+                continue;
+            }
+
+            output.push(path);
         }
     }
 
