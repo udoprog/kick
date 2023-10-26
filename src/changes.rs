@@ -169,7 +169,9 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                                 let mut m = doc.value_mut(*id);
 
                                 for step in key.split('.') {
-                                    let Some(next) = m.into_mapping_mut().and_then(|m| m.get_into_mut(step)) else {
+                                    let Some(next) =
+                                        m.into_mapping_mut().and_then(|m| m.get_into_mut(step))
+                                    else {
                                         bail!("{path}: missing step `{step}` in key `{key}`");
                                     };
 

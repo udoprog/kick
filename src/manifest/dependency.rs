@@ -69,7 +69,8 @@ impl<'a> Dependency<'a> {
         // workspace dependency.
         if let Some(true) = self.value.get("workspace").and_then(|w| w.as_bool()) {
             for (index, workspace) in self.crates.workspaces() {
-                let Some(dep) = (self.accessor)(&workspace).and_then(|d| d.get(self.dependency)) else {
+                let Some(dep) = (self.accessor)(&workspace).and_then(|d| d.get(self.dependency))
+                else {
                     continue;
                 };
 

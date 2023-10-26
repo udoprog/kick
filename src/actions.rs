@@ -65,7 +65,10 @@ impl ActionsCheck for ActionsRsToolchainActionsCheck {
         change: &mut Vec<WorkflowChange>,
     ) -> Result<()> {
         let Some(uses) = mapping.get("uses") else {
-            change.push(WorkflowChange::Error { name: name.to_string(), reason: String::from("there are better alternatives") });
+            change.push(WorkflowChange::Error {
+                name: name.to_string(),
+                reason: String::from("there are better alternatives"),
+            });
             return Ok(());
         };
 

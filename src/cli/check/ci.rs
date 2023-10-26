@@ -169,7 +169,7 @@ fn validate_jobs(
     if let Some(jobs) = table.get("jobs").and_then(|v| v.as_mapping()) {
         for (job_name, job) in jobs {
             let Some(job) = job.as_mapping() else {
-                continue
+                continue;
             };
 
             if matches!(job_name.to_str(), Ok("test" | "build")) {
@@ -203,7 +203,8 @@ fn check_actions(cx: &Ctxt, job: &yaml::Mapping, change: &mut Vec<WorkflowChange
         .flatten()
         .flat_map(|v| v.as_mapping())
     {
-        let Some((uses, name)) = action.get("uses").and_then(|v| Some((v.id(), v.as_str()?))) else {
+        let Some((uses, name)) = action.get("uses").and_then(|v| Some((v.id(), v.as_str()?)))
+        else {
             continue;
         };
 
@@ -240,11 +241,7 @@ fn check_actions(cx: &Ctxt, job: &yaml::Mapping, change: &mut Vec<WorkflowChange
 
 /// Check that the correct rust-version is used in a job.
 fn check_strategy_rust_version(ci: &mut Ci, job: &yaml::Mapping, change: &mut Vec<WorkflowChange>) {
-    let Some(rust_version) = ci
-        .package
-        .rust_version()
-        .and_then(RustVersion::parse) else
-    {
+    let Some(rust_version) = ci.package.rust_version().and_then(RustVersion::parse) else {
         return;
     };
 

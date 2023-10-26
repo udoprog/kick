@@ -15,6 +15,9 @@ pub(crate) struct Opts {
     /// `--no-verify` to cargo publish.
     #[arg(long = "no-verify", name = "crate")]
     no_verify: Vec<String>,
+    /// Skip publishing a crate.
+    #[arg(long = "skip", name = "crate")]
+    skip: Vec<String>,
     /// Perform a dry run by passing `--dry-run` to cargo publish.
     #[arg(long)]
     dry_run: bool,
@@ -37,6 +40,7 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
     };
 
     let no_verify = opts.no_verify.iter().cloned().collect::<HashSet<_>>();
+    let skip = opts.skip.iter().cloned().collect::<HashSet<_>>();
 
     let mut packages = Vec::new();
     let mut deps = HashMap::<_, Vec<_>>::new();
@@ -100,6 +104,10 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
 
     for package in ordered.into_iter().rev() {
         let name = package.name()?;
+
+        if skip.contains(name) {
+            continue;
+        }
 
         cx.change(Change::Publish {
             name: name.to_owned(),

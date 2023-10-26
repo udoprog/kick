@@ -307,7 +307,12 @@ impl Config {
         repo: &RepoRef,
         params: RepoParams<'_>,
     ) -> Result<Option<String>> {
-        let Some(template) = &self.repo.get(repo.path()).and_then(|r|r.workflow.as_ref()).or(self.base.workflow.as_ref())  else {
+        let Some(template) = &self
+            .repo
+            .get(repo.path())
+            .and_then(|r| r.workflow.as_ref())
+            .or(self.base.workflow.as_ref())
+        else {
             return Ok(None);
         };
 
@@ -953,7 +958,9 @@ fn load_base(
         .unwrap_or_default();
 
     for repo in repos {
-        let Some(config) = load_repo(cx.root, repo, templating).with_context(|| repo.path().to_owned())? else {
+        let Some(config) =
+            load_repo(cx.root, repo, templating).with_context(|| repo.path().to_owned())?
+        else {
             continue;
         };
 

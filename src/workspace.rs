@@ -31,7 +31,9 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Crates>> {
         .parent()
         .ok_or_else(|| anyhow!("missing parent directory"))?;
 
-    let Some(manifest) = manifest::open(manifest_path.to_path(cx.root), manifest_dir, &manifest_path)? else {
+    let Some(manifest) =
+        manifest::open(manifest_path.to_path(cx.root), manifest_dir, &manifest_path)?
+    else {
         return Ok(None);
     };
 

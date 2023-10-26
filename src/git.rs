@@ -208,8 +208,11 @@ impl Git {
 
         let string = std::str::from_utf8(&output.stdout)?.trim();
 
-        let Some(((tag, count), hash)) = string.rsplit_once('-').and_then(|(rest, hash)| Some((rest.rsplit_once('-')?, hash))) else {
-            return Ok(Some((string.to_string(), None)))
+        let Some(((tag, count), hash)) = string
+            .rsplit_once('-')
+            .and_then(|(rest, hash)| Some((rest.rsplit_once('-')?, hash)))
+        else {
+            return Ok(Some((string.to_string(), None)));
         };
 
         Ok(Some((
