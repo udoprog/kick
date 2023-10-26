@@ -572,7 +572,7 @@ mod workspace;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
@@ -958,17 +958,21 @@ fn load_changes(path: &Path) -> Result<Option<Vec<Change>>> {
         Err(e) => return Err(e.into()),
     };
 
-    let encoder = GzDecoder::new(f);
-    let out = bincode::deserialize_from(encoder)?;
-    Ok(out)
+    let mut encoder = GzDecoder::new(f);
+
+    let mut buf = Vec::new();
+    encoder.read_to_end(&mut buf)?;
+    Ok(serde_json::from_slice(&buf)?)
 }
 
 /// Save changes to the given path.
 fn save_changes(cx: &ctxt::Ctxt<'_>, path: &Path) -> Result<()> {
     let f = File::create(path)?;
-    let encoder = GzEncoder::new(f, Compression::default());
     let changes = cx.changes().iter().cloned().collect::<Vec<_>>();
-    bincode::serialize_into(encoder, &changes)?;
+    let buf = serde_json::to_vec(&changes)?;
+    let mut encoder = GzEncoder::new(f, Compression::default());
+    encoder.write_all(&buf)?;
+    encoder.flush()?;
     Ok(())
 }
 

@@ -13,10 +13,10 @@ use crate::workspace;
 pub(crate) struct Opts {
     /// Provide a list of crates which we do not verify locally by adding
     /// `--no-verify` to cargo publish.
-    #[arg(long = "no-verify", name = "crate")]
+    #[arg(long = "no-verify", value_name = "crate")]
     no_verify: Vec<String>,
     /// Skip publishing a crate.
-    #[arg(long = "skip", name = "crate")]
+    #[arg(long = "skip", value_name = "crate")]
     skip: Vec<String>,
     /// Perform a dry run by passing `--dry-run` to cargo publish.
     #[arg(long)]
