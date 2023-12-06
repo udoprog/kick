@@ -16,7 +16,7 @@ use crate::rust_version::RustVersion;
 
 pub(crate) struct Ctxt<'a> {
     pub(crate) root: &'a Path,
-    pub(crate) config: &'a Config,
+    pub(crate) config: &'a Config<'a>,
     pub(crate) actions: &'a Actions<'a>,
     pub(crate) repos: &'a [Repo],
     pub(crate) github_auth: Option<String>,
@@ -36,9 +36,7 @@ impl<'a> Ctxt<'a> {
     ) -> Result<RepoParams<'m>> {
         let variables = self.config.variables(repo);
         let package_params = package.package_params(repo)?;
-        Ok(self
-            .config
-            .repo_params(self, repo, package_params, variables))
+        Ok(self.config.repo_params(self, package_params, variables))
     }
 
     /// Iterate over non-disabled modules.

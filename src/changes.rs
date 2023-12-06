@@ -139,6 +139,30 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                 }
             }
         }
+        Change::MissingWeeklyBuild { path, repo } => {
+            println!("{path}: Missing workflow");
+
+            if save {
+                let path = path.to_path(cx.root);
+
+                if let Some(parent) = path.parent() {
+                    if !parent.is_dir() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                }
+
+                let workspace = repo.require_workspace(cx)?;
+                let primary_package = workspace.primary_package()?;
+                let params = cx.repo_params(&primary_package, repo)?;
+
+                let Some(string) = cx.config.weekly(repo, params)? else {
+                    println!("  Missing default weekly build!");
+                    return Ok(());
+                };
+
+                std::fs::write(path, string)?;
+            }
+        }
         Change::BadWorkflow { path, doc, change } => {
             let mut doc = doc.clone();
             let mut edited = false;
@@ -528,6 +552,10 @@ pub(crate) enum Change {
         path: RelativePathBuf,
         repo: RepoRef,
         candidates: Box<[RelativePathBuf]>,
+    },
+    MissingWeeklyBuild {
+        path: RelativePathBuf,
+        repo: RepoRef,
     },
     BadWorkflow {
         path: RelativePathBuf,

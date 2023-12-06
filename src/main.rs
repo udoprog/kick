@@ -801,7 +801,8 @@ async fn entry() -> Result<()> {
         "loaded modules"
     );
 
-    let config = config::load(&root, &templating, &repos)?;
+    let defaults = config::defaults();
+    let config = config::load(&root, &templating, &repos, &defaults)?;
 
     let mut sets = repo_sets::RepoSets::new(root.join("sets"))?;
 

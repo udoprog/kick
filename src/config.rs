@@ -19,9 +19,25 @@ use crate::templates::{Template, Templating};
 use crate::KICK_TOML;
 
 /// Default job name.
-const DEFAULT_JOB_NAME: &str = "CI";
+const DEFAULT_CI_NAME: &str = "CI";
+/// Default weekly name.
+const DEFAULT_WEEKLY_NAME: &str = "Weekly";
 /// Default license to use in configuration.
 const DEFAULT_LICENSE: &str = "MIT/Apache-2.0";
+
+/// Set up variable defaults.
+pub(crate) fn defaults() -> toml::Table {
+    let mut defaults = toml::Table::new();
+    defaults.insert(
+        String::from("ci_name"),
+        toml::Value::String(String::from(DEFAULT_CI_NAME)),
+    );
+    defaults.insert(
+        String::from("weekly_name"),
+        toml::Value::String(String::from(DEFAULT_WEEKLY_NAME)),
+    );
+    defaults
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Replaced {
@@ -147,9 +163,10 @@ impl Replacement {
 
 #[derive(Default)]
 pub(crate) struct RepoConfig {
-    pub(crate) workflow: Option<Template>,
-    /// The name of the actions job.
-    pub(crate) job_name: Option<String>,
+    /// Workflow template.
+    pub(crate) ci: Option<Template>,
+    /// Weekly workflow template.
+    pub(crate) weekly: Option<Template>,
     /// License of the project.
     pub(crate) license: Option<String>,
     /// Authors of the project.
@@ -183,8 +200,7 @@ pub(crate) struct RepoConfig {
 impl RepoConfig {
     /// Merge this config with another.
     pub(crate) fn merge_with(&mut self, mut other: Self) {
-        self.workflow = other.workflow.or(self.workflow.take());
-        self.job_name = other.job_name.or(self.job_name.take());
+        self.ci = other.ci.or(self.ci.take());
         self.license = other.license.or(self.license.take());
         self.authors.append(&mut other.authors);
         self.documentation = other.documentation.or(self.documentation.take());
@@ -291,13 +307,13 @@ impl FromIterator<Id> for IdSet {
     }
 }
 
-#[derive(Default)]
-pub(crate) struct Config {
+pub(crate) struct Config<'a> {
     pub(crate) base: RepoConfig,
     pub(crate) repo: HashMap<RelativePathBuf, RepoConfig>,
+    pub(crate) defaults: &'a toml::Table,
 }
 
-impl Config {
+impl Config<'_> {
     /// Generate a default workflow.
     pub(crate) fn workflow(
         &self,
@@ -307,8 +323,22 @@ impl Config {
         let Some(template) = &self
             .repo
             .get(repo.path())
-            .and_then(|r| r.workflow.as_ref())
-            .or(self.base.workflow.as_ref())
+            .and_then(|r| r.ci.as_ref())
+            .or(self.base.ci.as_ref())
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(template.render(&params)?))
+    }
+
+    /// Generate a weekly workflow.
+    pub(crate) fn weekly(&self, repo: &RepoRef, params: RepoParams<'_>) -> Result<Option<String>> {
+        let Some(template) = &self
+            .repo
+            .get(repo.path())
+            .and_then(|r| r.weekly.as_ref())
+            .or(self.base.weekly.as_ref())
         else {
             return Ok(None);
         };
@@ -320,13 +350,11 @@ impl Config {
     pub(crate) fn repo_params<'a>(
         &'a self,
         cx: &Ctxt<'_>,
-        repo: &RepoRef,
         package_params: PackageParams<'a>,
         variables: toml::Table,
     ) -> RepoParams<'a> {
         RepoParams {
             package_params,
-            job_name: self.job_name(repo),
             rust_versions: RenderRustVersions {
                 rustc: cx.rustc_version,
                 edition_2018: rust_version::EDITION_2018,
@@ -337,16 +365,32 @@ impl Config {
     }
 
     /// Get the current job name.
-    pub(crate) fn job_name(&self, repo: &RepoRef) -> &str {
-        if let Some(name) = self
-            .repo
-            .get(repo.path())
-            .and_then(|r| r.job_name.as_deref())
-        {
-            return name;
+    pub(crate) fn variable(&self, repo: &RepoRef, key: &str) -> Result<&toml::Value> {
+        if let Some(source) = self.repo.get(repo.path()).map(|r| &r.variables) {
+            if let Some(value) = source.get(key) {
+                return Ok(value);
+            }
         }
 
-        self.base.job_name.as_deref().unwrap_or(DEFAULT_JOB_NAME)
+        if let Some(value) = self.base.variables.get(key) {
+            return Ok(value);
+        }
+
+        let Some(value) = self.defaults.get(key) else {
+            bail!("Missing variable `{key}`");
+        };
+
+        Ok(value)
+    }
+
+    /// Get a string variable.
+    pub(crate) fn string_variable(&self, repo: &RepoRef, key: &str) -> Result<&str> {
+        let value = match self.variable(repo, key)? {
+            toml::Value::String(value) => value,
+            other => bail!("Found variable `{key}` with invalid type {other:?}, expected string"),
+        };
+
+        Ok(value.as_str())
     }
 
     /// Get the current documentation template.
@@ -394,7 +438,9 @@ impl Config {
 
     /// Get the current license template.
     pub(crate) fn variables(&self, repo: &RepoRef) -> toml::Table {
-        let mut variables = self.base.variables.clone();
+        let mut variables = self.defaults.clone();
+
+        merge_map(&mut variables, self.base.variables.clone());
 
         if let Some(source) = self.repo.get(repo.path()).map(|r| &r.variables) {
             merge_map(&mut variables, source.clone());
@@ -801,14 +847,20 @@ impl<'a> ConfigCtxt<'a> {
     }
 
     fn repo_table(&mut self, config: &mut toml::Table) -> Result<RepoConfig> {
-        let workflow = self.in_string(config, "workflow", |cx, string| {
+        let ci = self.in_string(config, "ci", |cx, string| {
             let path = cx.root.join(string);
             let template =
                 std::fs::read_to_string(&path).with_context(|| path.display().to_string())?;
             cx.compile(&template)
         })?;
 
-        let job_name = self.in_string(config, "job_name", |_, string| Ok(string))?;
+        let weekly = self.in_string(config, "weekly", |cx, string| {
+            let path = cx.root.join(string);
+            let template =
+                std::fs::read_to_string(&path).with_context(|| path.display().to_string())?;
+            cx.compile(&template)
+        })?;
+
         let license = self.in_string(config, "license", |_, string| Ok(string))?;
 
         let authors = self
@@ -887,8 +939,8 @@ impl<'a> ConfigCtxt<'a> {
         let upgrade = self.upgrade(upgrade)?;
 
         Ok(RepoConfig {
-            workflow,
-            job_name,
+            ci,
+            weekly,
             license,
             authors,
             documentation,
@@ -927,24 +979,34 @@ impl<'a> ConfigCtxt<'a> {
 }
 
 /// Load a configuration from the given path.
-pub(crate) fn load(root: &Path, templating: &Templating, repos: &[Repo]) -> Result<Config> {
+pub(crate) fn load<'a>(
+    root: &Path,
+    templating: &Templating,
+    repos: &[Repo],
+    defaults: &'a toml::Table,
+) -> Result<Config<'a>> {
     let mut cx = ConfigCtxt::new(root, templating);
 
     let Some(config) = cx.kick_config()? else {
         tracing::trace!("{}: missing configuration file", cx.kick_path.display());
-        return Ok(Config::default());
+        return Ok(Config {
+            base: RepoConfig::default(),
+            repo: HashMap::new(),
+            defaults,
+        });
     };
 
-    load_base(&mut cx, templating, repos, config)
+    load_base(&mut cx, templating, repos, config, defaults)
         .with_context(|| cx.kick_path.display().to_string())
 }
 
-fn load_base(
+fn load_base<'a>(
     cx: &mut ConfigCtxt<'_>,
     templating: &Templating,
     repos: &[Repo],
     config: toml::Value,
-) -> Result<Config> {
+    defaults: &'a toml::Table,
+) -> Result<Config<'a>> {
     let mut config = cx.table(config)?;
     let base = cx.repo_table(&mut config)?;
 
@@ -969,9 +1031,11 @@ fn load_base(
     }
 
     cx.ensure_empty(config)?;
+
     Ok(Config {
         base,
         repo: repo_configs,
+        defaults,
     })
 }
 

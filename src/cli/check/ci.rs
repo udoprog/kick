@@ -70,11 +70,47 @@ pub(crate) fn build(cx: &Ctxt<'_>, package: &Package, repo: &Repo, crates: &Crat
         crates,
     };
 
-    validate(cx, &mut ci, repo)
+    validate_weekly_yml(cx, &mut ci, repo)?;
+    validate_ci_yml(cx, &mut ci, repo)?;
+    Ok(())
 }
 
 /// Validate the current model.
-fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, repo: &Repo) -> Result<()> {
+fn validate_weekly_yml(cx: &Ctxt<'_>, ci: &mut Ci<'_>, repo: &Repo) -> Result<()> {
+    let path = ci.path.join("weekly.yml");
+
+    if !path.to_path(cx.root).is_file() {
+        cx.change(Change::MissingWeeklyBuild {
+            path,
+            repo: (**repo).clone(),
+        });
+
+        return Ok(());
+    }
+
+    let bytes = std::fs::read(path.to_path(cx.root))?;
+    let value = yaml::from_slice(bytes).with_context(|| anyhow!("{path}"))?;
+
+    let name = value
+        .as_ref()
+        .as_mapping()
+        .and_then(|m| m.get("name")?.as_str())
+        .ok_or_else(|| anyhow!("{path}: missing .name"))?;
+    let weekly_name = cx.config.string_variable(repo, "weekly_name")?;
+
+    if name != weekly_name {
+        cx.warning(Warning::WrongWorkflowName {
+            path: path.clone(),
+            actual: name.to_owned(),
+            expected: weekly_name.to_owned(),
+        });
+    }
+
+    Ok(())
+}
+
+/// Validate the current model.
+fn validate_ci_yml(cx: &Ctxt<'_>, ci: &mut Ci<'_>, repo: &Repo) -> Result<()> {
     let deprecated_yml = ci.path.join("rust.yml");
     let expected_path = ci.path.join("ci.yml");
 
@@ -116,11 +152,13 @@ fn validate(cx: &Ctxt<'_>, ci: &mut Ci<'_>, repo: &Repo) -> Result<()> {
         .and_then(|m| m.get("name")?.as_str())
         .ok_or_else(|| anyhow!("{path}: missing .name"))?;
 
-    if name != cx.config.job_name(repo) {
+    let ci_name = cx.config.string_variable(repo, "ci_name")?;
+
+    if name != ci_name {
         cx.warning(Warning::WrongWorkflowName {
             path: path.clone(),
             actual: name.to_owned(),
-            expected: cx.config.job_name(repo).to_owned(),
+            expected: ci_name.to_owned(),
         });
     }
 

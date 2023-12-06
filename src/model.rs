@@ -37,8 +37,6 @@ pub(crate) struct RenderRustVersions {
 pub(crate) struct RepoParams<'a> {
     #[serde(rename = "package")]
     pub(crate) package_params: PackageParams<'a>,
-    /// Current job name.
-    pub(crate) job_name: &'a str,
     /// Globally known rust versions in use.
     pub(crate) rust_versions: RenderRustVersions,
     #[serde(flatten)]
