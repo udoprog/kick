@@ -21,7 +21,7 @@ const PRUNE: usize = 3;
 pub(crate) struct RepoSets {
     path: PathBuf,
     known: HashMap<String, Known>,
-    updates: Vec<(String, RepoSet, bool, String)>,
+    updates: Vec<(String, RepoSet, String)>,
 }
 
 impl RepoSets {
@@ -53,14 +53,23 @@ impl RepoSets {
                 continue;
             };
 
-            let date = path
-                .extension()
-                .and_then(|ext| NaiveDateTime::parse_from_str(ext.to_str()?, DATE_FORMAT).ok());
+            let (id, date, path) = if let Some((head, tail)) = name.rsplit_once('-') {
+                let Ok(date) = NaiveDateTime::parse_from_str(tail, DATE_FORMAT) else {
+                    continue;
+                };
+
+                let mut base = path.clone();
+                base.pop();
+                base.push(head);
+                (head, Some(date), base)
+            } else {
+                (name, None, path.clone())
+            };
 
             let known = sets
                 .known
-                .entry(name.to_owned())
-                .or_insert_with(|| Known::new(path));
+                .entry(id.to_owned())
+                .or_insert_with(|| Known::new(path.clone()));
 
             known.base |= date.is_none();
             known.dates.extend(date);
@@ -110,18 +119,17 @@ impl RepoSets {
     }
 
     /// Save the given set.
-    pub(crate) fn save<D>(&mut self, id: &str, set: RepoSet, primary: bool, hint: &D)
+    pub(crate) fn save<D>(&mut self, id: &str, set: RepoSet, hint: &D)
     where
         D: ?Sized + fmt::Display,
     {
-        self.updates
-            .push((id.into(), set, primary, hint.to_string()));
+        self.updates.push((id.into(), set, hint.to_string()));
     }
 
     /// Commit updates.
     pub(crate) fn commit(&mut self) -> Result<()> {
         fn write_set(
-            set: RepoSet,
+            set: &RepoSet,
             hint: &str,
             now: DateTime<Local>,
             mut f: File,
@@ -129,11 +137,11 @@ impl RepoSets {
             writeln!(f, "# {hint}")?;
             writeln!(f, "# date: {now}")?;
 
-            for line in set.raw {
+            for line in &set.raw {
                 writeln!(f, "{line}")?;
             }
 
-            for repo in set.added {
+            for repo in &set.added {
                 writeln!(f, "{repo}")?;
             }
 
@@ -142,34 +150,37 @@ impl RepoSets {
         }
 
         let now = Local::now();
+        let timestamp = now.naive_local().format(DATE_FORMAT).to_string();
 
-        for (id, set, primary, hint) in self.updates.drain(..) {
-            tracing::info!(?id, "Saving set");
+        for (id, set, hint) in self.updates.drain(..) {
+            tracing::info!(?id, ?timestamp, "Saving set");
 
-            let path = self.path.join(&id);
-            let mut write_path = path.clone();
+            let base_path = self.path.join(&id);
 
-            if !primary {
-                write_path.set_extension(now.naive_local().format(DATE_FORMAT).to_string());
-            }
+            let paths = [
+                base_path.clone(),
+                self.path.join(format!("{id}-{timestamp}")),
+            ];
 
-            if !self.path.is_dir() {
-                std::fs::create_dir_all(&self.path)
-                    .with_context(|| anyhow!("{}", self.path.display()))?;
-            }
+            let known = self
+                .known
+                .entry(id.clone())
+                .or_insert_with(|| Known::new(base_path));
+            known.base = true;
+            known.dates.insert(now.naive_local());
 
-            let f = match File::create(&write_path) {
-                Ok(file) => file,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-                Err(e) => return Err(e).context(anyhow!("{}", write_path.display())),
-            };
+            for path in paths {
+                if !self.path.is_dir() {
+                    std::fs::create_dir_all(&self.path)
+                        .with_context(|| anyhow!("{}", self.path.display()))?;
+                }
 
-            write_set(set, &hint, now, f).context(anyhow!("{}", write_path.display()))?;
+                let f = match File::create(&path) {
+                    Ok(file) => file,
+                    Err(e) => return Err(e).context(anyhow!("{}", path.display())),
+                };
 
-            let known = self.known.entry(id).or_insert_with(|| Known::new(path));
-
-            if !primary {
-                known.dates.insert(now.naive_local());
+                write_set(&set, &hint, now, f).context(anyhow!("{}", path.display()))?;
             }
         }
 

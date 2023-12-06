@@ -67,10 +67,7 @@ impl Replaced {
         let mut file = NamedTempFile::new_in(parent)?;
         self.write_ranges(&mut file)
             .with_context(|| self.path.display().to_string())?;
-        let (mut file, path) = file.keep()?;
-        file.flush()?;
-        drop(file);
-        fs::rename(path, &self.path)?;
+        file.persist(&self.path)?;
         Ok(())
     }
 }

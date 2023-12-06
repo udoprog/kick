@@ -8,13 +8,6 @@ use crate::repo_sets::RepoSet;
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
-    #[arg(long)]
-    /// Store the outcome if this run into the sets `good` and `bad`, to be used
-    /// later with `--set <id>` command.
-    ///
-    /// The `good` set will contain repos for which the command exited
-    /// successfully, while the `bad` set for which they failed.
-    store_sets: bool,
     /// Command to run.
     command: Vec<String>,
 }
@@ -33,8 +26,8 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     }
 
     let hint = format!("for: {:?}", opts);
-    cx.sets.save("good", good, opts.store_sets, &hint);
-    cx.sets.save("bad", bad, opts.store_sets, &hint);
+    cx.sets.save("good", good, &hint);
+    cx.sets.save("bad", bad, &hint);
     Ok(())
 }
 

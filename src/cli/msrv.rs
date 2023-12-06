@@ -61,14 +61,6 @@ pub(crate) struct Opts {
     /// * rustc - The version reported by your local rustc.
     #[arg(long, verbatim_doc_comment)]
     latest: Option<String>,
-    /// Store the outcome if this run into the sets `good` and `bad`, to be used
-    /// later with `--set <id>` command.
-    ///
-    /// The `good` set will contain repos for which an MSRV was found, while the
-    /// `bad` set will contain repos for which no MSRV could be found for one
-    /// reason or another.
-    #[arg(long)]
-    store_sets: bool,
     /// Command to test with.
     ///
     /// This is run through `rustup run <version> <command>`, the default
@@ -87,8 +79,8 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     }
 
     let hint = format!("msrv: {:?}", opts);
-    cx.sets.save("good", good, opts.store_sets, &hint);
-    cx.sets.save("bad", bad, opts.store_sets, &hint);
+    cx.sets.save("good", good, &hint);
+    cx.sets.save("bad", bad, &hint);
     Ok(())
 }
 

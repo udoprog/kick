@@ -34,8 +34,8 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     }
 
     let hint = format!("upgrade: {opts:?}");
-    cx.sets.save("good", good, opts.store_sets, &hint);
-    cx.sets.save("bad", bad, opts.store_sets, &hint);
+    cx.sets.save("good", good, &hint);
+    cx.sets.save("bad", bad, &hint);
     Ok(())
 }
 
