@@ -13,7 +13,7 @@ use tempfile::NamedTempFile;
 
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
-use crate::model::{PackageParams, RenderRustVersions, Repo, RepoParams, RepoRef};
+use crate::model::{PackageParams, Random, RenderRustVersions, Repo, RepoParams, RepoRef};
 use crate::rust_version::{self};
 use crate::templates::{Template, Templating};
 use crate::KICK_TOML;
@@ -351,6 +351,7 @@ impl Config<'_> {
         &'a self,
         cx: &Ctxt<'_>,
         package_params: PackageParams<'a>,
+        random: Random,
         variables: toml::Table,
     ) -> RepoParams<'a> {
         RepoParams {
@@ -360,6 +361,7 @@ impl Config<'_> {
                 edition_2018: rust_version::EDITION_2018,
                 edition_2021: rust_version::EDITION_2021,
             },
+            random,
             variables,
         }
     }
@@ -447,6 +449,25 @@ impl Config<'_> {
         }
 
         variables
+    }
+
+    /// Generate random variables which are consistent for a given repo name.
+    pub(crate) fn random(&self, repo: &RepoRef) -> Random {
+        use rand::prelude::*;
+
+        let mut state = 0u64;
+
+        for c in repo.path().as_str().chars() {
+            state = state.wrapping_shl(16);
+            state = state ^ c as u64;
+        }
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(state);
+
+        Random {
+            hour: rng.gen_range(0..24),
+            day: rng.gen_range(0..7),
+        }
     }
 
     fn badges<F>(&self, path: &RelativePath, mut filter: F) -> impl Iterator<Item = &'_ ConfigBadge>

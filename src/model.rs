@@ -32,6 +32,15 @@ pub(crate) struct RenderRustVersions {
     pub(crate) edition_2021: RustVersion,
 }
 
+/// Global version parameters.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub(crate) struct Random {
+    /// A random hour, ranging from 0 to 23.
+    pub(crate) hour: u8,
+    /// A random day of the week, ranging from 0 to 6.
+    pub(crate) day: u8,
+}
+
 /// Parameters particular to a specific module.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct RepoParams<'a> {
@@ -39,6 +48,8 @@ pub(crate) struct RepoParams<'a> {
     pub(crate) package_params: PackageParams<'a>,
     /// Globally known rust versions in use.
     pub(crate) rust_versions: RenderRustVersions,
+    /// Some pseudo-random variables.
+    pub(crate) random: Random,
     #[serde(flatten)]
     pub(crate) variables: toml::Table,
 }

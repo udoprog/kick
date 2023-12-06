@@ -36,7 +36,10 @@ impl<'a> Ctxt<'a> {
     ) -> Result<RepoParams<'m>> {
         let variables = self.config.variables(repo);
         let package_params = package.package_params(repo)?;
-        Ok(self.config.repo_params(self, package_params, variables))
+        let random = self.config.random(repo);
+        Ok(self
+            .config
+            .repo_params(self, package_params, random, variables))
     }
 
     /// Iterate over non-disabled modules.

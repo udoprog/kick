@@ -656,6 +656,7 @@ dependencies = [
  "handlebars",
  "nondestructive",
  "pulldown-cmark",
+ "rand",
  "regex",
  "relative-path",
  "reqwest",
