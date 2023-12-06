@@ -10,8 +10,9 @@ use url::Url;
 
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
+use crate::repo_sets::RepoSet;
 
-#[derive(Default, Parser)]
+#[derive(Debug, Default, Parser)]
 pub(crate) struct Opts {
     /// Output raw JSON response.
     #[arg(long)]
@@ -22,6 +23,13 @@ pub(crate) struct Opts {
     /// Include information on individual jobs.
     #[arg(long)]
     jobs: bool,
+    #[arg(long)]
+    /// Store the outcome if this run into the sets `good` and `bad`, to be used
+    /// later with `--set <id>` command.
+    ///
+    /// The `good` set will contain repos for which the command exited
+    /// successfully, while the `bad` set for which they failed.
+    store_sets: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,15 +65,21 @@ struct WorkflowRuns {
     workflow_runs: Vec<Workflow>,
 }
 
-pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
+pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     let client = Client::builder().build()?;
     let today = Local::now();
     let limit = opts.limit.unwrap_or(1).max(1).to_string();
 
+    let mut good = RepoSet::default();
+    let mut bad = RepoSet::default();
+
     for repo in cx.repos() {
-        status(cx, opts, repo, today, &client, &limit).await?;
+        status(cx, opts, repo, today, &client, &limit, &mut good, &mut bad).await?;
     }
 
+    let hint = format!("status: {:?}", opts);
+    cx.sets.save("good", good, opts.store_sets, &hint);
+    cx.sets.save("bad", bad, opts.store_sets, &hint);
     Ok(())
 }
 
@@ -77,6 +91,8 @@ async fn status(
     today: DateTime<Local>,
     client: &Client,
     limit: &str,
+    good: &mut RepoSet,
+    bad: &mut RepoSet,
 ) -> Result<()> {
     let Some(repo_path) = repo.repo() else {
         return Ok(());
@@ -175,6 +191,12 @@ async fn status(
                     );
                 }
             }
+        }
+
+        if failure {
+            bad.insert(repo);
+        } else {
+            good.insert(repo);
         }
     }
 

@@ -888,7 +888,7 @@ async fn entry() -> Result<()> {
             cli::foreach::entry(&mut cx, &opts.action)?;
         }
         Action::Status(opts) => {
-            cli::status::entry(&cx, &opts.action).await?;
+            cli::status::entry(&mut cx, &opts.action).await?;
         }
         Action::Msrv(opts) => {
             cli::msrv::entry(&mut cx, &opts.action)?;
