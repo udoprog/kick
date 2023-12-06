@@ -459,7 +459,7 @@ impl Config<'_> {
 
         for c in repo.path().as_str().chars() {
             state = state.wrapping_shl(16);
-            state = state ^ c as u64;
+            state ^= c as u64;
         }
 
         let mut rng = rand::rngs::StdRng::seed_from_u64(state);
