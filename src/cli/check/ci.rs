@@ -4,9 +4,10 @@ use std::collections::HashSet;
 use anyhow::{anyhow, Context, Result};
 use bstr::ByteSlice;
 use nondestructive::yaml;
-use relative_path::{RelativePath, RelativePathBuf};
+use relative_path::RelativePath;
 
 use crate::changes::{Change, Warning, WorkflowChange};
+use crate::config::{WorkflowConfig, WorkflowFeature};
 use crate::ctxt::Ctxt;
 use crate::manifest::Package;
 use crate::model::Repo;
@@ -70,17 +71,26 @@ pub(crate) fn build(cx: &Ctxt<'_>, package: &Package, repo: &Repo, crates: &Crat
         crates,
     };
 
-    validate_weekly_yml(cx, &mut ci, repo)?;
-    validate_ci_yml(cx, &mut ci, repo)?;
+    for (id, config) in cx.config.workflows(repo)? {
+        validate_workflow(cx, &mut ci, id, repo, config)?;
+    }
+
     Ok(())
 }
 
 /// Validate the current model.
-fn validate_weekly_yml(cx: &Ctxt<'_>, ci: &mut Ci<'_>, repo: &Repo) -> Result<()> {
-    let path = ci.path.join("weekly.yml");
+fn validate_workflow(
+    cx: &Ctxt<'_>,
+    ci: &mut Ci<'_>,
+    id: String,
+    repo: &Repo,
+    config: WorkflowConfig,
+) -> Result<()> {
+    let path = ci.path.join(format!("{id}.yml"));
 
     if !path.to_path(cx.root).is_file() {
-        cx.change(Change::MissingWeeklyBuild {
+        cx.change(Change::MissingWorkflow {
+            id,
             path,
             repo: (**repo).clone(),
         });
@@ -96,95 +106,17 @@ fn validate_weekly_yml(cx: &Ctxt<'_>, ci: &mut Ci<'_>, repo: &Repo) -> Result<()
         .as_mapping()
         .and_then(|m| m.get("name")?.as_str())
         .ok_or_else(|| anyhow!("{path}: missing .name"))?;
-    let weekly_name = cx.config.string_variable(repo, "weekly_name")?;
 
-    if name != weekly_name {
+    if name != config.name {
         cx.warning(Warning::WrongWorkflowName {
             path: path.clone(),
             actual: name.to_owned(),
-            expected: weekly_name.to_owned(),
+            expected: config.name.clone(),
         });
     }
 
+    validate_jobs(cx, ci, &path, &value, &config)?;
     Ok(())
-}
-
-/// Validate the current model.
-fn validate_ci_yml(cx: &Ctxt<'_>, ci: &mut Ci<'_>, repo: &Repo) -> Result<()> {
-    let deprecated_yml = ci.path.join("rust.yml");
-    let expected_path = ci.path.join("ci.yml");
-
-    let candidates =
-        candidates(cx, ci).with_context(|| anyhow!("list candidates: {path}", path = ci.path))?;
-
-    let path = if !expected_path.to_path(cx.root).is_file() {
-        let path = match &candidates[..] {
-            [path] => Some(path.clone()),
-            _ => None,
-        };
-
-        cx.change(Change::MissingWorkflow {
-            path: expected_path,
-            repo: (**repo).clone(),
-            candidates: candidates.clone(),
-        });
-
-        match path {
-            Some(path) => path,
-            None => return Ok(()),
-        }
-    } else {
-        expected_path
-    };
-
-    if deprecated_yml.to_path(cx.root).is_file() && candidates.len() > 1 {
-        cx.warning(Warning::DeprecatedWorkflow {
-            path: deprecated_yml,
-        });
-    }
-
-    let bytes = std::fs::read(path.to_path(cx.root))?;
-    let value = yaml::from_slice(bytes).with_context(|| anyhow!("{path}"))?;
-
-    let name = value
-        .as_ref()
-        .as_mapping()
-        .and_then(|m| m.get("name")?.as_str())
-        .ok_or_else(|| anyhow!("{path}: missing .name"))?;
-
-    let ci_name = cx.config.string_variable(repo, "ci_name")?;
-
-    if name != ci_name {
-        cx.warning(Warning::WrongWorkflowName {
-            path: path.clone(),
-            actual: name.to_owned(),
-            expected: ci_name.to_owned(),
-        });
-    }
-
-    validate_jobs(cx, ci, &path, &value)?;
-    Ok(())
-}
-
-/// Get candidates.
-fn candidates(cx: &Ctxt<'_>, ci: &Ci<'_>) -> std::io::Result<Box<[RelativePathBuf]>> {
-    let dir = match std::fs::read_dir(ci.path.to_path(cx.root)) {
-        Ok(dir) => dir,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Box::from([])),
-        Err(e) => return Err(e),
-    };
-
-    let mut paths = Vec::new();
-
-    for e in dir {
-        let e = e?;
-
-        if let Some(name) = e.file_name().to_str() {
-            paths.push(ci.path.join(name));
-        }
-    }
-
-    Ok(paths.into())
 }
 
 /// Validate that jobs are modern.
@@ -193,13 +125,16 @@ fn validate_jobs(
     ci: &mut Ci<'_>,
     path: &RelativePath,
     doc: &yaml::Document,
+    config: &WorkflowConfig,
 ) -> Result<()> {
     let Some(table) = doc.as_ref().as_mapping() else {
         return Ok(());
     };
 
-    if let Some(value) = table.get("on") {
-        validate_on(cx, doc, value, path);
+    if config.features.contains(&WorkflowFeature::Push) {
+        if let Some(value) = table.get("on") {
+            validate_on(cx, doc, value, path);
+        }
     }
 
     let mut change = Vec::new();

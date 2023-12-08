@@ -26,9 +26,6 @@ pub(crate) fn report(warning: &Warning) -> Result<()> {
         Warning::MissingReadme { path } => {
             println!("{path}: Missing README");
         }
-        Warning::DeprecatedWorkflow { path } => {
-            println!("{path}: Reprecated Workflow");
-        }
         Warning::WrongWorkflowName {
             path,
             actual,
@@ -102,44 +99,7 @@ pub(crate) fn report(warning: &Warning) -> Result<()> {
 /// Report and apply a asingle change.
 pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
     match change {
-        Change::MissingWorkflow {
-            path,
-            repo,
-            candidates,
-        } => {
-            println!("{path}: Missing workflow");
-
-            for candidate in candidates.iter() {
-                println!("  Candidate: {candidate}");
-            }
-
-            if save {
-                if let [from] = candidates.as_ref() {
-                    println!("{path}: Rename from {from}",);
-                    std::fs::rename(from.to_path(cx.root), path.to_path(cx.root))?;
-                } else {
-                    let path = path.to_path(cx.root);
-
-                    if let Some(parent) = path.parent() {
-                        if !parent.is_dir() {
-                            std::fs::create_dir_all(parent)?;
-                        }
-                    }
-
-                    let workspace = repo.require_workspace(cx)?;
-                    let primary_package = workspace.primary_package()?;
-                    let params = cx.repo_params(&primary_package, repo)?;
-
-                    let Some(string) = cx.config.workflow(repo, params)? else {
-                        println!("  Missing default workflow!");
-                        return Ok(());
-                    };
-
-                    std::fs::write(path, string)?;
-                }
-            }
-        }
-        Change::MissingWeeklyBuild { path, repo } => {
+        Change::MissingWorkflow { id, path, repo } => {
             println!("{path}: Missing workflow");
 
             if save {
@@ -155,8 +115,8 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                 let primary_package = workspace.primary_package()?;
                 let params = cx.repo_params(&primary_package, repo)?;
 
-                let Some(string) = cx.config.weekly(repo, params)? else {
-                    println!("  Missing default weekly build!");
+                let Some(string) = cx.config.workflow(repo, id, params)? else {
+                    println!("  workflows.{id}: Missing workflow template!");
                     return Ok(());
                 };
 
@@ -494,9 +454,6 @@ pub(crate) enum Warning {
     MissingReadme {
         path: RelativePathBuf,
     },
-    DeprecatedWorkflow {
-        path: RelativePathBuf,
-    },
     WrongWorkflowName {
         path: RelativePathBuf,
         actual: String,
@@ -549,11 +506,7 @@ pub(crate) enum Warning {
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum Change {
     MissingWorkflow {
-        path: RelativePathBuf,
-        repo: RepoRef,
-        candidates: Box<[RelativePathBuf]>,
-    },
-    MissingWeeklyBuild {
+        id: String,
         path: RelativePathBuf,
         repo: RepoRef,
     },

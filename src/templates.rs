@@ -7,6 +7,7 @@ use handlebars::{
 use serde::Serialize;
 
 /// A compiled template.
+#[derive(Clone)]
 pub(crate) struct Template {
     handlebars: Arc<Handlebars<'static>>,
     template: handlebars::Template,

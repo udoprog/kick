@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::hash::Hash;
@@ -163,10 +163,8 @@ impl Replacement {
 
 #[derive(Default)]
 pub(crate) struct RepoConfig {
-    /// Workflow template.
-    pub(crate) ci: Option<Template>,
-    /// Weekly workflow template.
-    pub(crate) weekly: Option<Template>,
+    /// Workflows to incorporate.
+    pub(crate) workflows: HashMap<String, PartialWorkflowConfig>,
     /// License of the project.
     pub(crate) license: Option<String>,
     /// Authors of the project.
@@ -200,7 +198,10 @@ pub(crate) struct RepoConfig {
 impl RepoConfig {
     /// Merge this config with another.
     pub(crate) fn merge_with(&mut self, mut other: Self) {
-        self.ci = other.ci.or(self.ci.take());
+        for (id, workflow) in other.workflows {
+            self.workflows.entry(id).or_default().merge_with(workflow);
+        }
+
         self.license = other.license.or(self.license.take());
         self.authors.append(&mut other.authors);
         self.documentation = other.documentation.or(self.documentation.take());
@@ -233,6 +234,39 @@ impl RepoConfig {
 
         self.readme_badges.is_enabled(id, enabled)
     }
+}
+
+/// A workflow configuration.
+#[derive(Default, Clone)]
+pub struct PartialWorkflowConfig {
+    /// Workflow template.
+    pub(crate) template: Option<Template>,
+    /// The expected name of the workflow.
+    pub(crate) name: Option<String>,
+    /// Eanbled workflow features.
+    pub(crate) features: HashSet<WorkflowFeature>,
+}
+
+impl PartialWorkflowConfig {
+    fn merge_with(&mut self, other: Self) {
+        self.template = other.template.or(self.template.take());
+        self.name = other.name.or(self.name.take());
+        self.features.extend(other.features);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WorkflowFeature {
+    Push,
+}
+
+/// A workflow configuration.
+#[derive(Clone)]
+pub struct WorkflowConfig {
+    /// The expected name of the workflow.
+    pub(crate) name: String,
+    /// Features enabled in workflow configuration.
+    pub(crate) features: HashSet<WorkflowFeature>,
 }
 
 /// A badge configuration.
@@ -314,36 +348,70 @@ pub(crate) struct Config<'a> {
 }
 
 impl Config<'_> {
+    /// A workflow configuration.
+    pub(crate) fn workflows(&self, repo: &RepoRef) -> Result<BTreeMap<String, WorkflowConfig>> {
+        let mut partial = BTreeMap::<String, PartialWorkflowConfig>::new();
+
+        if let Some(repo) = self.repo.get(repo.path()) {
+            for (id, config) in &repo.workflows {
+                partial
+                    .entry(id.clone())
+                    .or_default()
+                    .merge_with(config.clone());
+            }
+        }
+
+        for (id, config) in &self.base.workflows {
+            partial
+                .entry(id.clone())
+                .or_default()
+                .merge_with(config.clone());
+        }
+
+        let mut out = BTreeMap::new();
+
+        for (id, config) in partial {
+            let name = config
+                .name
+                .with_context(|| anyhow!("workflows.{id}: Missing name"))?;
+
+            out.insert(
+                id,
+                WorkflowConfig {
+                    name,
+                    features: config.features,
+                },
+            );
+        }
+
+        Ok(out)
+    }
+
     /// Generate a default workflow.
     pub(crate) fn workflow(
         &self,
         repo: &RepoRef,
+        id: &str,
         params: RepoParams<'_>,
     ) -> Result<Option<String>> {
-        let Some(template) = &self
+        if let Some(template) = self
             .repo
             .get(repo.path())
-            .and_then(|r| r.ci.as_ref())
-            .or(self.base.ci.as_ref())
-        else {
-            return Ok(None);
-        };
+            .and_then(|r| r.workflows.get(id)?.template.as_ref())
+        {
+            return Ok(Some(template.render(&params)?));
+        }
 
-        Ok(Some(template.render(&params)?))
-    }
+        if let Some(template) = self
+            .base
+            .workflows
+            .get(id)
+            .and_then(|r| r.template.as_ref())
+        {
+            return Ok(Some(template.render(&params)?));
+        }
 
-    /// Generate a weekly workflow.
-    pub(crate) fn weekly(&self, repo: &RepoRef, params: RepoParams<'_>) -> Result<Option<String>> {
-        let Some(template) = &self
-            .repo
-            .get(repo.path())
-            .and_then(|r| r.weekly.as_ref())
-            .or(self.base.weekly.as_ref())
-        else {
-            return Ok(None);
-        };
-
-        Ok(Some(template.render(&params)?))
+        Ok(None)
     }
 
     /// Set up render parameters.
@@ -386,6 +454,7 @@ impl Config<'_> {
     }
 
     /// Get a string variable.
+    #[allow(unused)]
     pub(crate) fn string_variable(&self, repo: &RepoRef, key: &str) -> Result<&str> {
         let value = match self.variable(repo, key)? {
             toml::Value::String(value) => value,
@@ -867,19 +936,33 @@ impl<'a> ConfigCtxt<'a> {
         Ok(badges)
     }
 
-    fn repo_table(&mut self, config: &mut toml::Table) -> Result<RepoConfig> {
-        let ci = self.in_string(config, "ci", |cx, string| {
+    fn workflow_table(&mut self, config: &mut toml::Table) -> Result<PartialWorkflowConfig> {
+        let name = self.in_string(config, "name", |_, string| Ok(string))?;
+
+        let template = self.in_string(config, "template", |cx, string| {
             let path = cx.root.join(string);
             let template =
                 std::fs::read_to_string(&path).with_context(|| path.display().to_string())?;
             cx.compile(&template)
         })?;
 
-        let weekly = self.in_string(config, "weekly", |cx, string| {
-            let path = cx.root.join(string);
-            let template =
-                std::fs::read_to_string(&path).with_context(|| path.display().to_string())?;
-            cx.compile(&template)
+        let features = self.in_array(config, "features", |cx, value| {
+            match cx.string(value)?.as_ref() {
+                "push" => Ok(WorkflowFeature::Push),
+                other => Err(cx.bail(format_args!("Unknown workflow feature `{other}`"))),
+            }
+        })?;
+
+        Ok(PartialWorkflowConfig {
+            name,
+            template,
+            features: features.unwrap_or_default().into_iter().collect(),
+        })
+    }
+
+    fn repo_table(&mut self, config: &mut toml::Table) -> Result<RepoConfig> {
+        let workflows = self.in_table(config, "workflows", |cx, id, value| {
+            Ok((id, cx.workflow(value)?))
         })?;
 
         let license = self.in_string(config, "license", |_, string| Ok(string))?;
@@ -960,8 +1043,7 @@ impl<'a> ConfigCtxt<'a> {
         let upgrade = self.upgrade(upgrade)?;
 
         Ok(RepoConfig {
-            ci,
-            weekly,
+            workflows: workflows.unwrap_or_default(),
             license,
             authors,
             documentation,
@@ -982,6 +1064,13 @@ impl<'a> ConfigCtxt<'a> {
     fn repo(&mut self, config: toml::Value) -> Result<RepoConfig> {
         let mut config = self.table(config)?;
         let repo = self.repo_table(&mut config)?;
+        self.ensure_empty(config)?;
+        Ok(repo)
+    }
+
+    fn workflow(&mut self, config: toml::Value) -> Result<PartialWorkflowConfig> {
+        let mut config = self.table(config)?;
+        let repo = self.workflow_table(&mut config)?;
         self.ensure_empty(config)?;
         Ok(repo)
     }
