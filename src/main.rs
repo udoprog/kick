@@ -593,6 +593,8 @@ const KICK_TOML: &str = "Kick.toml";
 
 #[derive(Subcommand)]
 enum Action {
+    /// Manage sets.
+    Set(SharedAction<cli::set::Opts>),
     /// Checks each repo (default action).
     Check(SharedAction<cli::check::Opts>),
     /// Apply staged changes which have previously been saved by `check` unless
@@ -615,6 +617,7 @@ enum Action {
 impl Action {
     fn shared(&self) -> &SharedOptions {
         match self {
+            Action::Set(action) => &action.shared,
             Action::Check(action) => &action.shared,
             Action::For(action) => &action.shared,
             Action::Status(action) => &action.shared,
@@ -628,6 +631,7 @@ impl Action {
 
     fn repo(&self) -> Option<&RepoOptions> {
         match self {
+            Action::Set(action) => Some(&action.repo),
             Action::Check(action) => Some(&action.repo),
             Action::For(action) => Some(&action.repo),
             Action::Status(action) => Some(&action.repo),
@@ -669,6 +673,9 @@ struct RepoOptions {
     /// Only run the specified set of repos.
     #[arg(long = "repo", short = 'm', name = "repo")]
     repos: Vec<String>,
+    /// Test if the repository is outdated.
+    #[arg(long)]
+    outdated: bool,
     /// Only run over dirty modules with changes that have not been staged in
     /// cache.
     #[arg(long)]
@@ -685,18 +692,19 @@ struct RepoOptions {
     #[arg(long)]
     unreleased: bool,
     /// Load sets with the given ids.
-    #[arg(long)]
+    #[arg(long, value_name = "set")]
     set: Vec<String>,
-    /// Subtract sets with the given ids. This will remove any items in the
-    /// loaded set (as specified by one or more `--set <id>`) that exist in the
-    /// specified sets.
+    /// Intersect with the specified sets.
     #[arg(long)]
-    sub_set: Vec<String>,
+    set_intersect: Vec<String>,
+    /// Difference with the specified sets.
+    #[arg(long)]
+    set_difference: Vec<String>,
 }
 
 impl RepoOptions {
     fn needs_git(&self) -> bool {
-        self.dirty || self.cached || self.cached_only || self.unreleased
+        self.dirty || self.cached || self.cached_only || self.unreleased || self.outdated
     }
 }
 
@@ -843,12 +851,28 @@ async fn entry() -> Result<()> {
                     }
                 }
 
-                for id in &repo_opts.sub_set {
-                    if let Some(s) = sets.load(id)? {
-                        for repo in s.iter() {
-                            set.remove(repo);
+                if !repo_opts.set_intersect.is_empty() {
+                    let mut intersect = HashSet::new();
+
+                    for id in &repo_opts.set_intersect {
+                        if let Some(s) = sets.load(id)? {
+                            intersect.extend(s.iter().map(RelativePath::to_owned));
                         }
                     }
+
+                    set = &set & &intersect;
+                }
+
+                if !repo_opts.set_difference.is_empty() {
+                    let mut intersect = HashSet::new();
+
+                    for id in &repo_opts.set_difference {
+                        if let Some(s) = sets.load(id)? {
+                            intersect.extend(s.iter().map(RelativePath::to_owned));
+                        }
+                    }
+
+                    set = &set ^ &intersect;
                 }
 
                 Some(set)
@@ -882,6 +906,9 @@ async fn entry() -> Result<()> {
     };
 
     match &action {
+        Action::Set(opts) => {
+            cli::set::entry(&mut cx, &opts.action)?;
+        }
         Action::Check(opts) => {
             cli::check::entry(&cx, &opts.action).await?;
         }
@@ -1016,7 +1043,7 @@ fn filter_repos(
         }
 
         if repo_opts.needs_git() {
-            let git = git.context("no working git command")?;
+            let git = git.context("no working git command found")?;
             let repo_path = repo.path().to_path(root);
 
             let cached = git.is_cached(&repo_path)?;
@@ -1024,6 +1051,13 @@ fn filter_repos(
 
             let span = tracing::trace_span!("git", ?cached, ?dirty, repo = repo.path().to_string());
             let _enter = span.enter();
+
+            if repo_opts.outdated {
+                if !git.is_outdated(&repo_path)? {
+                    tracing::trace!("Directory is not outdated");
+                    repo.set_disabled(true);
+                }
+            }
 
             if repo_opts.dirty && !dirty {
                 tracing::trace!("Directory is not dirty");

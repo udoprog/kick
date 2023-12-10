@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 
 use crate::process::Command;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use reqwest::Url;
 
 #[cfg(windows)]
@@ -161,6 +161,52 @@ impl Git {
         }
 
         Ok(!output.stdout.is_empty())
+    }
+
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command))]
+    pub(crate) fn remote_update<P>(&self, dir: &P) -> Result<()>
+    where
+        P: ?Sized + AsRef<Path>,
+    {
+        tracing::trace!("git remote update");
+
+        let output = Command::new(&self.command)
+            .args(["remote", "update"])
+            .stdin(Stdio::null())
+            .current_dir(dir)
+            .output()?;
+
+        if !output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "Command didn't exit successfully: {}\nstdout: {stdout}\nstderr: {stderr}",
+                output.status
+            )
+        }
+
+        Ok(())
+    }
+
+    /// Test if the local branch is outdated.
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command))]
+    pub(crate) fn is_outdated<P>(&self, dir: &P) -> Result<bool>
+    where
+        P: ?Sized + AsRef<Path>,
+    {
+        self.remote_update(dir)?;
+
+        tracing::trace!("git diff --quiet main origin/main");
+
+        let status = Command::new(&self.command)
+            .args(["diff", "--quiet", "main", "origin/main"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .current_dir(dir)
+            .status()?;
+
+        Ok(!status.success())
     }
 
     /// Get HEAD commit.
