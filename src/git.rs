@@ -147,17 +147,20 @@ impl Git {
     where
         P: ?Sized + AsRef<Path>,
     {
-        tracing::trace!("git diff --quiet");
+        tracing::trace!("git status --short");
 
-        let status = Command::new(&self.command)
-            .args(["diff", "--quiet"])
+        let output = Command::new(&self.command)
+            .args(["status", "--short"])
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
             .stderr(Stdio::null())
             .current_dir(dir)
-            .status()?;
+            .output()?;
 
-        Ok(!status.success())
+        if !output.status.success() {
+            return Ok(true);
+        }
+
+        Ok(!output.stdout.is_empty())
     }
 
     /// Get HEAD commit.
