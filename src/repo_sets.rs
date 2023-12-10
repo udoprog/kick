@@ -12,7 +12,7 @@ use relative_path::{RelativePath, RelativePathBuf};
 use crate::model::Repo;
 
 /// Date format for sets.
-const DATE_FORMAT: &str = "%Y-%m-%d-%H%M%S";
+const DATE_FORMAT: &str = "%y%m%d%H%M%S";
 /// Prune the three last sets.
 const PRUNE: usize = 3;
 
@@ -53,16 +53,14 @@ impl RepoSets {
                 continue;
             };
 
-            let (id, date, path) = if let Some((head, tail)) = name.rsplit_once('-') {
-                let Ok(date) = NaiveDateTime::parse_from_str(tail, DATE_FORMAT) else {
-                    continue;
-                };
+            let (id, date, path) = 'out: {
+                if let Some((id, tail)) = name.rsplit_once('-') {
+                    if let Ok(date) = NaiveDateTime::parse_from_str(tail, DATE_FORMAT) {
+                        let base = path.with_file_name(id);
+                        break 'out (id, Some(date), base);
+                    }
+                }
 
-                let mut base = path.clone();
-                base.pop();
-                base.push(head);
-                (head, Some(date), base)
-            } else {
                 (name, None, path.clone())
             };
 
@@ -92,7 +90,7 @@ impl RepoSets {
                 .last()
                 .with_context(|| anyhow!("{id}: missing latest set"))?;
 
-            path.set_extension(latest.format(DATE_FORMAT).to_string());
+            path.set_file_name(format!("{id}-{}", latest.format(DATE_FORMAT)));
         }
 
         let file = match File::open(&path) {
@@ -191,8 +189,7 @@ impl RepoSets {
                     continue;
                 };
 
-                let mut path = self.path.join(id);
-                path.set_extension(date.format(DATE_FORMAT).to_string());
+                let path = self.path.join(format!("{id}-{}", date.format(DATE_FORMAT)));
                 tracing::trace!(path = path.display().to_string(), "Removing old set");
                 let _ = std::fs::remove_file(&path);
             }
