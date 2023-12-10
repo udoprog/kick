@@ -69,8 +69,8 @@ impl<'a> Package<'a> {
     }
 
     /// Rust version.
-    pub(crate) fn rust_version(&self) -> Option<&'a str> {
-        self.doc.get("rust-version").and_then(Item::as_str)
+    pub(crate) fn rust_version(&self) -> Option<RustVersion> {
+        RustVersion::parse(self.doc.get("rust-version").and_then(Item::as_str)?)
     }
 
     package_field!(version, "version");
@@ -86,10 +86,7 @@ impl<'a> Package<'a> {
             name: self.name()?,
             repo: repo.repo(),
             description: self.description(),
-            rust_version: match self.rust_version() {
-                Some(rust_version) => RustVersion::parse(rust_version),
-                None => None,
-            },
+            rust_version: self.rust_version(),
         })
     }
 }

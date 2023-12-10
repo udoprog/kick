@@ -2,7 +2,7 @@ use core::fmt;
 use std::collections::HashSet;
 
 use anyhow::{anyhow, Context, Result};
-use bstr::ByteSlice;
+use bstr::BStr;
 use nondestructive::yaml;
 use relative_path::RelativePath;
 
@@ -140,15 +140,12 @@ fn validate_jobs(
     let mut change = Vec::new();
 
     if let Some(jobs) = table.get("jobs").and_then(|v| v.as_mapping()) {
-        for (job_name, job) in jobs {
+        for (name, job) in jobs {
             let Some(job) = job.as_mapping() else {
                 continue;
             };
 
-            if matches!(job_name.to_str(), Ok("test" | "build")) {
-                check_strategy_rust_version(ci, &job, &mut change);
-            }
-
+            check_strategy_rust_version(ci, &job, &mut change, name);
             check_actions(cx, &job, &mut change)?;
 
             if ci.crates.is_single_crate() {
@@ -213,8 +210,13 @@ fn check_actions(cx: &Ctxt, job: &yaml::Mapping, change: &mut Vec<WorkflowChange
 }
 
 /// Check that the correct rust-version is used in a job.
-fn check_strategy_rust_version(ci: &mut Ci, job: &yaml::Mapping, change: &mut Vec<WorkflowChange>) {
-    let Some(rust_version) = ci.package.rust_version().and_then(RustVersion::parse) else {
+fn check_strategy_rust_version(
+    ci: &mut Ci,
+    job: &yaml::Mapping,
+    change: &mut Vec<WorkflowChange>,
+    name: &BStr,
+) {
+    let Some(rust_version) = ci.package.rust_version() else {
         return;
     };
 
@@ -222,11 +224,12 @@ fn check_strategy_rust_version(ci: &mut Ci, job: &yaml::Mapping, change: &mut Ve
         .get("strategy")
         .and_then(|v| v.as_mapping()?.get("matrix")?.as_mapping())
     {
-        for value in matrix
+        for (index, value) in matrix
             .get("rust")
             .and_then(|v| v.as_sequence())
             .into_iter()
             .flatten()
+            .enumerate()
         {
             let Some(string) = value.as_str() else {
                 continue;
@@ -246,7 +249,7 @@ fn check_strategy_rust_version(ci: &mut Ci, job: &yaml::Mapping, change: &mut Ve
             if rust_version != version {
                 change.push(WorkflowChange::ReplaceString {
                     reason: format!(
-                        "Wrong rust version: got `{version}` but expected `{rust_version}`"
+                        "build.{name}.strategy.matrix.rust[{index}]: Found rust version `{version}` but expected `{rust_version}`"
                     ),
                     string: rust_version.to_string(),
                     value: value.id(),

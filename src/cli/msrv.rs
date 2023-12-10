@@ -96,7 +96,7 @@ fn msrv(
     let primary = crates.primary_package()?;
 
     let current_dir = repo.path().to_path(cx.root);
-    let rust_version = primary.rust_version().and_then(RustVersion::parse);
+    let rust_version = primary.rust_version();
 
     let opts_earliest = parse_minor_version(cx, opts.earliest.as_deref(), rust_version.as_ref())?;
     let opts_latest = parse_minor_version(cx, opts.latest.as_deref(), rust_version.as_ref())?;
@@ -115,11 +115,11 @@ fn msrv(
     tracing::info!("Testing Rust {earliest}-{latest}");
     let mut candidates = Bisect::new(earliest, latest);
 
-    while let Some(current) = candidates.current() {
-        let version = format!("{current}");
+    while let Some(version) = candidates.current() {
+        let version_string = version.to_string();
 
         let output = Command::new("rustup")
-            .args(["run", &version, "rustc", "--version"])
+            .args(["run", &version_string, "rustc", "--version"])
             .stdout(Stdio::null())
             .output()?;
 
@@ -127,7 +127,13 @@ fn msrv(
             tracing::info!("Installing rust {version}");
 
             let status = Command::new("rustup")
-                .args(["toolchain", "install", "--profile", "minimal", &version])
+                .args([
+                    "toolchain",
+                    "install",
+                    "--profile",
+                    "minimal",
+                    &version_string,
+                ])
                 .status()?;
 
             if !status.success() {
@@ -150,7 +156,7 @@ fn msrv(
                 manifest.remove(manifest::DEV_DEPENDENCIES)
             };
 
-            save |= if current < RUST_VERSION_SUPPORTED {
+            save |= if version < RUST_VERSION_SUPPORTED {
                 manifest.set_rust_version(&version)?;
                 true
             } else {
@@ -173,7 +179,7 @@ fn msrv(
         tracing::trace!(?current_dir, "Testing against rust {version}");
 
         let mut rustup = Command::new("rustup");
-        rustup.args(["run", &version, "--"]);
+        rustup.args(["run", &version_string, "--"]);
 
         if !opts.command.is_empty() {
             rustup.args(&opts.command[..]);

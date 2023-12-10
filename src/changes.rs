@@ -241,9 +241,8 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                 }
 
                 let mut manifest = package.manifest().clone();
-                let version = version.to_string();
 
-                if package.rust_version() != Some(version.as_str()) {
+                if package.rust_version() != Some(*version) {
                     if save {
                         tracing::info!(
                             "Saving {} with rust-version = \"{version}\"",

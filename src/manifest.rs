@@ -14,6 +14,7 @@ use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Deserialize, Serialize};
 use toml_edit::{Array, Document, Formatted, Item, Table, Value};
 
+use crate::rust_version::RustVersion;
 use crate::workspace::Crates;
 
 pub(crate) use self::dependencies::Dependencies;
@@ -167,11 +168,11 @@ impl Manifest {
     }
 
     /// Set rust-version to the desirable value.
-    pub(crate) fn set_rust_version(&mut self, version: &str) -> Result<()> {
+    pub(crate) fn set_rust_version(&mut self, version: &RustVersion) -> Result<()> {
         let package = self.ensure_package_mut()?;
         package.insert(
             "rust-version",
-            Item::Value(Value::String(Formatted::new(String::from(version)))),
+            Item::Value(Value::String(Formatted::new(version.to_string()))),
         );
         Ok(())
     }
