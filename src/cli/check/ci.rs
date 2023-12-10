@@ -3,7 +3,7 @@ use std::collections::HashSet;
 
 use anyhow::{anyhow, Context, Result};
 use bstr::BStr;
-use nondestructive::yaml;
+use nondestructive::yaml::{self, Id, Mapping};
 use relative_path::RelativePath;
 
 use crate::changes::{Change, Warning, WorkflowChange};
@@ -146,7 +146,7 @@ fn validate_jobs(
             };
 
             check_strategy_rust_version(ci, &job, &mut change, name);
-            check_actions(cx, &job, &mut change)?;
+            check_actions(cx, ci, &job, &mut change)?;
 
             if ci.crates.is_single_crate() {
                 verify_single_project_build(cx, ci, path, job)?;
@@ -165,7 +165,12 @@ fn validate_jobs(
     Ok(())
 }
 
-fn check_actions(cx: &Ctxt, job: &yaml::Mapping, change: &mut Vec<WorkflowChange>) -> Result<()> {
+fn check_actions(
+    cx: &Ctxt,
+    ci: &mut Ci<'_>,
+    job: &yaml::Mapping,
+    change: &mut Vec<WorkflowChange>,
+) -> Result<()> {
     for action in job
         .get("steps")
         .and_then(|v| v.as_sequence())
@@ -173,37 +178,88 @@ fn check_actions(cx: &Ctxt, job: &yaml::Mapping, change: &mut Vec<WorkflowChange
         .flatten()
         .flat_map(|v| v.as_mapping())
     {
-        let Some((uses, name)) = action.get("uses").and_then(|v| Some((v.id(), v.as_str()?)))
-        else {
-            continue;
-        };
-
-        let Some((base, version)) = name.split_once('@') else {
-            continue;
-        };
-
-        if let Some(expected) = cx.actions.get_latest(base) {
-            if expected != version {
-                change.push(WorkflowChange::ReplaceString {
-                    reason: format!("Outdated action: got `{version}` but expected `{expected}`"),
-                    string: format!("{base}@{expected}"),
-                    value: uses,
-                    remove_keys: vec![],
-                    set_keys: vec![],
-                });
-            }
+        if let Some((uses, name)) = action.get("uses").and_then(|v| Some((v.id(), v.as_str()?))) {
+            check_action(cx, change, &action, uses, name)?;
         }
 
-        if let Some(reason) = cx.actions.get_deny(base) {
-            change.push(WorkflowChange::Error {
-                name: name.to_owned(),
-                reason: reason.into(),
+        if let Some((if_id, name)) = action.get("if").and_then(|v| Some((v.id(), v.as_str()?))) {
+            check_if(ci, change, if_id, name)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn check_action(
+    cx: &Ctxt,
+    change: &mut Vec<WorkflowChange>,
+    action: &Mapping<'_>,
+    uses: Id,
+    name: &str,
+) -> Result<()> {
+    let Some((base, version)) = name.split_once('@') else {
+        return Ok(());
+    };
+
+    if let Some(expected) = cx.actions.get_latest(base) {
+        if expected != version {
+            change.push(WorkflowChange::ReplaceString {
+                reason: format!("Outdated action: got `{version}` but expected `{expected}`"),
+                string: format!("{base}@{expected}"),
+                value: uses,
+                remove_keys: vec![],
+                set_keys: vec![],
             });
         }
+    }
 
-        if let Some(check) = cx.actions.get_check(base) {
-            check.check(name, action, change)?;
-        }
+    if let Some(reason) = cx.actions.get_deny(base) {
+        change.push(WorkflowChange::Error {
+            name: name.to_owned(),
+            reason: reason.into(),
+        });
+    }
+
+    if let Some(check) = cx.actions.get_check(base) {
+        check.check(name, action, change)?;
+    }
+
+    Ok(())
+}
+
+fn check_if(
+    ci: &mut Ci<'_>,
+    change: &mut Vec<WorkflowChange>,
+    if_id: Id,
+    value: &str,
+) -> Result<()> {
+    let Some(rust_version) = ci.package.rust_version() else {
+        return Ok(());
+    };
+
+    let Some((head, value)) = value.split_once("==") else {
+        return Ok(());
+    };
+
+    if head.trim() != "matrix.rust" {
+        return Ok(());
+    }
+
+    let Some(version) = RustVersion::parse(value.trim().trim_matches(|c| matches!(c, '\'' | '"')))
+    else {
+        return Ok(());
+    };
+
+    if rust_version != version {
+        change.push(WorkflowChange::ReplaceString {
+            reason: format!(
+                "Outdated matrix.rust condition: got `{version}` but expected `{rust_version}`"
+            ),
+            string: format!("matrix.rust == '{rust_version}'"),
+            value: if_id,
+            remove_keys: vec![],
+            set_keys: vec![],
+        });
     }
 
     Ok(())

@@ -10,7 +10,7 @@ pub(crate) trait ActionsCheck {
     fn check(
         &self,
         name: &str,
-        action: yaml::Mapping<'_>,
+        action: &yaml::Mapping<'_>,
         change: &mut Vec<WorkflowChange>,
     ) -> Result<()>;
 }
@@ -61,7 +61,7 @@ impl ActionsCheck for ActionsRsToolchainActionsCheck {
     fn check(
         &self,
         name: &str,
-        mapping: yaml::Mapping<'_>,
+        mapping: &yaml::Mapping<'_>,
         change: &mut Vec<WorkflowChange>,
     ) -> Result<()> {
         let Some(uses) = mapping.get("uses") else {
