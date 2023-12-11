@@ -601,7 +601,7 @@ enum Action {
     /// `--save` was specified.
     Changes(SharedOptions),
     /// Run a custom command for each repo.
-    For(SharedAction<cli::foreach::Opts>),
+    For(SharedAction<cli::r#for::Opts>),
     /// Fetch github actions build status for each repo.
     Status(SharedAction<cli::status::Opts>),
     /// Find the minimum supported rust version for each repo.
@@ -913,7 +913,7 @@ async fn entry() -> Result<()> {
             cli::check::entry(&cx, &opts.action).await?;
         }
         Action::For(opts) => {
-            cli::foreach::entry(&mut cx, &opts.action)?;
+            cli::r#for::entry(&mut cx, &opts.action)?;
         }
         Action::Status(opts) => {
             cli::status::entry(&mut cx, &opts.action).await?;
