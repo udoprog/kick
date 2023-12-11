@@ -1052,11 +1052,9 @@ fn filter_repos(
             let span = tracing::trace_span!("git", ?cached, ?dirty, repo = repo.path().to_string());
             let _enter = span.enter();
 
-            if repo_opts.outdated {
-                if !git.is_outdated(&repo_path)? {
-                    tracing::trace!("Directory is not outdated");
-                    repo.set_disabled(true);
-                }
+            if repo_opts.outdated && !git.is_outdated(&repo_path)? {
+                tracing::trace!("Directory is not outdated");
+                repo.set_disabled(true);
             }
 
             if repo_opts.dirty && !dirty {

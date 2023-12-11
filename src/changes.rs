@@ -248,7 +248,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                             "Saving {} with rust-version = \"{version}\"",
                             manifest.path()
                         );
-                        manifest.set_rust_version(&version)?;
+                        manifest.set_rust_version(version)?;
                         manifest.sort_package_keys()?;
                         manifest.save_to(manifest.path().to_path(cx.root))?;
                     } else {
