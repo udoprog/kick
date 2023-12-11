@@ -4,13 +4,16 @@ use std::io::Write;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local, TimeZone, Utc};
 use clap::Parser;
-use reqwest::{header, Client, IntoUrl, Method, RequestBuilder};
+use reqwest::{header, Client, IntoUrl, Method, RequestBuilder, StatusCode};
 use serde::{de::IntoDeserializer, Deserialize};
 use url::Url;
 
 use crate::ctxt::Ctxt;
-use crate::model::Repo;
+use crate::model::{Repo, RepoPath};
 use crate::repo_sets::RepoSet;
+
+/// GitHub base URL.
+const API_URL: &str = "https://api.github.com";
 
 #[derive(Debug, Default, Parser)]
 pub(crate) struct Opts {
@@ -23,13 +26,6 @@ pub(crate) struct Opts {
     /// Include information on individual jobs.
     #[arg(long)]
     jobs: bool,
-    #[arg(long)]
-    /// Store the outcome if this run into the sets `good` and `bad`, to be used
-    /// later with `--set <id>` command.
-    ///
-    /// The `good` set will contain repos for which the command exited
-    /// successfully, while the `bad` set for which they failed.
-    store_sets: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,7 +70,30 @@ pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     let mut bad = RepoSet::default();
 
     for repo in cx.repos() {
-        status(cx, opts, repo, today, &client, &limit, &mut good, &mut bad).await?;
+        let workflows = cx.config.workflows(repo)?;
+
+        if workflows.is_empty() {
+            continue;
+        }
+
+        let Some(repo_path) = repo.repo() else {
+            continue;
+        };
+
+        println!("{}: {}", repo.path(), repo.url());
+
+        let mut ok = true;
+
+        for id in workflows.into_keys() {
+            println!("Workflow `{id}`:");
+            ok &= status(cx, &id, opts, repo, repo_path, today, &client, &limit).await?;
+        }
+
+        if ok {
+            good.insert(repo);
+        } else {
+            bad.insert(repo);
+        }
     }
 
     let hint = format!("status: {:?}", opts);
@@ -86,18 +105,14 @@ pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 #[tracing::instrument(skip_all, fields(source = ?repo.source(), path = repo.path().as_str()))]
 async fn status(
     cx: &Ctxt<'_>,
+    id: &str,
     opts: &Opts,
     repo: &Repo,
+    repo_path: RepoPath<'_>,
     today: DateTime<Local>,
     client: &Client,
     limit: &str,
-    good: &mut RepoSet,
-    bad: &mut RepoSet,
-) -> Result<()> {
-    let Some(repo_path) = repo.repo() else {
-        return Ok(());
-    };
-
+) -> Result<bool> {
     let current_dir = repo.path().to_path(cx.root);
     let sha;
 
@@ -105,14 +120,14 @@ async fn status(
         Some(git) => {
             sha = git
                 .rev_parse(&current_dir, "HEAD")
-                .context("git rev-parse HEAD")?;
+                .context("Getting head commit")?;
             Some(sha.trim())
         }
         None => None,
     };
 
     let url = format!(
-        "https://api.github.com/repos/{owner}/{name}/actions/workflows/ci.yml/runs",
+        "{API_URL}/repos/{owner}/{name}/actions/workflows/{id}.yml/runs",
         owner = repo_path.owner,
         name = repo_path.name
     );
@@ -120,15 +135,18 @@ async fn status(
     let req = build_request(cx, client, url)
         .query(&[("exclude_pull_requests", "true"), ("per_page", limit)]);
 
-    println!("{}: {}", repo.path(), repo.url());
-
     let res = req.send().await?;
 
     tracing::trace!("  {:?}", res.headers());
 
+    if res.status() == StatusCode::NOT_FOUND {
+        println!("  Workflow `{id}` not found");
+        return Ok(false);
+    }
+
     if !res.status().is_success() {
-        println!("  {}", res.text().await?);
-        return Ok(());
+        println!("  {}: {}", res.status(), res.text().await?);
+        return Ok(false);
     }
 
     let runs: serde_json::Value = res.json().await?;
@@ -140,6 +158,13 @@ async fn status(
     }
 
     let runs: WorkflowRuns = WorkflowRuns::deserialize(runs.into_deserializer())?;
+
+    if runs.workflow_runs.is_empty() {
+        println!("  No runs");
+        return Ok(false);
+    }
+
+    let mut ok = true;
 
     for run in runs.workflow_runs {
         let updated_at = FormatTime::new(today, Some(run.updated_at.with_timezone(&Local)));
@@ -193,14 +218,10 @@ async fn status(
             }
         }
 
-        if failure {
-            bad.insert(repo);
-        } else {
-            good.insert(repo);
-        }
+        ok &= !failure;
     }
 
-    Ok(())
+    Ok(ok)
 }
 
 fn build_request<U>(cx: &Ctxt<'_>, client: &Client, url: U) -> RequestBuilder

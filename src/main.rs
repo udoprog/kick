@@ -657,7 +657,7 @@ impl Default for Action {
 #[derive(Default, Parser)]
 struct SharedOptions {
     /// Specify custom root folder for project hierarchy.
-    #[arg(long, name = "path")]
+    #[arg(long, name = "root", value_name = "path")]
     root: Option<PathBuf>,
     /// Save any proposed or loaded changes.
     #[arg(long)]
@@ -671,7 +671,7 @@ struct RepoOptions {
     #[arg(long)]
     all: bool,
     /// Only run the specified set of repos.
-    #[arg(long = "path", short = 'p', name = "path")]
+    #[arg(long = "path", short = 'p', name = "path", value_name = "path")]
     repos: Vec<String>,
     /// Test if the repository is outdated.
     #[arg(long)]

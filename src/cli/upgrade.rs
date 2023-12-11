@@ -14,13 +14,6 @@ pub(crate) struct Opts {
     /// Pass `--exclude <package>` to `cargo upgrade`.
     #[arg(long)]
     exclude: Vec<String>,
-    /// Store the outcome if this run into the sets `good` and `bad`, to be used
-    /// later with `--set <id>` command.
-    ///
-    /// The `good` set will contain repos for which the `cargo upgrade` command
-    /// exited successfully, while the `bad` set for which they failed.
-    #[arg(long)]
-    store_sets: bool,
     /// Extra upgrade arguments.
     upgrade_args: Vec<String>,
 }
