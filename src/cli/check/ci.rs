@@ -348,31 +348,28 @@ fn validate_on(
                 continue;
             };
 
-            match m.get("cron").map(|v| (v.id(), v.as_str())) {
-                Some((value, actual)) => {
-                    let random = ci.repo.random();
-                    let string = format!("{} {} * * {}", random.minute, random.hour, random.day);
+            if let Some((value, actual)) = m.get("cron").map(|v| (v.id(), v.as_str())) {
+                let random = ci.repo.random();
+                let string = format!("{} {} * * {}", random.minute, random.hour, random.day);
 
-                    if actual != Some(string.as_str()) {
-                        let reason = match actual {
-                            Some(actual) => format!(
-                                "Wrong cron schedule, got `{actual}` but expected `{string}`"
-                            ),
-                            None => {
-                                format!("Wrong cron schedule, got empty but expected `{string}`")
-                            }
-                        };
+                if actual != Some(string.as_str()) {
+                    let reason = match actual {
+                        Some(actual) => {
+                            format!("Wrong cron schedule, got `{actual}` but expected `{string}`")
+                        }
+                        None => {
+                            format!("Wrong cron schedule, got empty but expected `{string}`")
+                        }
+                    };
 
-                        ci.change.push(WorkflowChange::ReplaceString {
-                            reason,
-                            string,
-                            value,
-                            remove_keys: vec![],
-                            set_keys: vec![],
-                        });
-                    }
+                    ci.change.push(WorkflowChange::ReplaceString {
+                        reason,
+                        string,
+                        value,
+                        remove_keys: vec![],
+                        set_keys: vec![],
+                    });
                 }
-                None => {}
             }
         }
     }
