@@ -8,7 +8,7 @@ use nondestructive::yaml::{self, Id, Mapping};
 use relative_path::RelativePath;
 
 use crate::changes::{Change, Warning, WorkflowChange};
-use crate::config::{WorkflowConfig, WorkflowFeature};
+use crate::config::WorkflowConfig;
 use crate::ctxt::Ctxt;
 use crate::manifest::Package;
 use crate::model::Repo;
@@ -17,6 +17,7 @@ use crate::workspace::Crates;
 
 pub(crate) struct Ci<'a> {
     path: &'a RelativePath,
+    repo: &'a Repo,
     package: &'a Package<'a>,
     crates: &'a Crates,
     change: Vec<WorkflowChange>,
@@ -69,13 +70,14 @@ pub(crate) fn build(cx: &Ctxt<'_>, package: &Package, repo: &Repo, crates: &Crat
 
     let mut ci = Ci {
         path: &path,
+        repo,
         package,
         crates,
         change: Vec::new(),
     };
 
-    for (id, config) in cx.config.workflows(repo)? {
-        validate_workflow(cx, &mut ci, id, repo, config)?;
+    for (id, config) in cx.config.workflows(ci.repo)? {
+        validate_workflow(cx, &mut ci, &id, config)?;
     }
 
     Ok(())
@@ -85,17 +87,16 @@ pub(crate) fn build(cx: &Ctxt<'_>, package: &Package, repo: &Repo, crates: &Crat
 fn validate_workflow(
     cx: &Ctxt<'_>,
     ci: &mut Ci<'_>,
-    id: String,
-    repo: &Repo,
+    id: &str,
     config: WorkflowConfig,
 ) -> Result<()> {
     let path = ci.path.join(format!("{id}.yml"));
 
     if !path.to_path(cx.root).is_file() {
         cx.change(Change::MissingWorkflow {
-            id,
+            id: id.to_owned(),
             path,
-            repo: (**repo).clone(),
+            repo: (**ci.repo).clone(),
         });
 
         return Ok(());
@@ -118,7 +119,7 @@ fn validate_workflow(
         });
     }
 
-    validate_jobs(cx, ci, &path, &value, &config)?;
+    validate_jobs(cx, ci, &path, &value)?;
     Ok(())
 }
 
@@ -128,16 +129,13 @@ fn validate_jobs(
     ci: &mut Ci<'_>,
     path: &RelativePath,
     doc: &yaml::Document,
-    config: &WorkflowConfig,
 ) -> Result<()> {
     let Some(table) = doc.as_ref().as_mapping() else {
         return Ok(());
     };
 
-    if config.features.contains(&WorkflowFeature::Push) {
-        if let Some(value) = table.get("on") {
-            validate_on(cx, doc, value, path);
-        }
+    if let Some(value) = table.get("on") {
+        validate_on(cx, ci, doc, value, path);
     }
 
     if let Some(jobs) = table.get("jobs").and_then(|v| v.as_mapping()) {
@@ -325,7 +323,13 @@ fn check_strategy_rust_version(ci: &mut Ci, job_name: &BStr, job: &yaml::Mapping
     }
 }
 
-fn validate_on(cx: &Ctxt<'_>, doc: &yaml::Document, value: yaml::Value<'_>, path: &RelativePath) {
+fn validate_on(
+    cx: &Ctxt<'_>,
+    ci: &mut Ci<'_>,
+    doc: &yaml::Document,
+    value: yaml::Value<'_>,
+    path: &RelativePath,
+) {
     let Some(m) = value.as_mapping() else {
         cx.warning(Warning::ActionMissingKey {
             path: path.to_owned(),
@@ -338,28 +342,52 @@ fn validate_on(cx: &Ctxt<'_>, doc: &yaml::Document, value: yaml::Value<'_>, path
         return;
     };
 
-    match m.get("pull_request").map(yaml::Value::into_any) {
-        Some(yaml::Any::Mapping(m)) => {
-            if !m.is_empty() {
-                cx.warning(Warning::ActionExpectedEmptyMapping {
-                    path: path.to_owned(),
-                    key: Box::from("on.pull_request"),
-                });
+    if let Some(sequence) = m.get("schedule").and_then(|v| v.as_sequence()) {
+        for value in sequence.into_iter() {
+            let Some(m) = value.as_mapping() else {
+                continue;
+            };
+
+            match m.get("cron").map(|v| (v.id(), v.as_str())) {
+                Some((value, actual)) => {
+                    let random = ci.repo.random();
+                    let string = format!("{} {} * * {}", random.minute, random.hour, random.day);
+
+                    if actual != Some(string.as_str()) {
+                        let reason = match actual {
+                            Some(actual) => format!(
+                                "Wrong cron schedule, got `{actual}` but expected `{string}`"
+                            ),
+                            None => {
+                                format!("Wrong cron schedule, got empty but expected `{string}`")
+                            }
+                        };
+
+                        ci.change.push(WorkflowChange::ReplaceString {
+                            reason,
+                            string,
+                            value,
+                            remove_keys: vec![],
+                            set_keys: vec![],
+                        });
+                    }
+                }
+                None => {}
             }
         }
-        value => {
-            cx.warning(Warning::ActionMissingKey {
+    }
+
+    if let Some(m) = m.get("pull_request").and_then(|v| v.as_mapping()) {
+        if !m.is_empty() {
+            cx.warning(Warning::ActionExpectedEmptyMapping {
                 path: path.to_owned(),
                 key: Box::from("on.pull_request"),
-                expected: ActionExpected::Mapping,
-                doc: doc.clone(),
-                actual: value.map(|v| v.id()),
             });
         }
     }
 
-    match m.get("push").map(yaml::Value::into_any) {
-        Some(yaml::Any::Mapping(m)) => match m.get("branches").map(yaml::Value::into_any) {
+    if let Some(m) = m.get("push").and_then(|v| v.as_mapping()) {
+        match m.get("branches").map(yaml::Value::into_any) {
             Some(yaml::Any::Sequence(s)) => {
                 if !s.iter().flat_map(|v| v.as_str()).any(|b| b == "main") {
                     cx.warning(Warning::ActionOnMissingBranch {
@@ -378,15 +406,6 @@ fn validate_on(cx: &Ctxt<'_>, doc: &yaml::Document, value: yaml::Value<'_>, path
                     actual: value.map(|v| v.id()),
                 });
             }
-        },
-        value => {
-            cx.warning(Warning::ActionMissingKey {
-                path: path.to_owned(),
-                key: Box::from("on.push"),
-                expected: ActionExpected::Mapping,
-                doc: doc.clone(),
-                actual: value.map(|v| v.id()),
-            });
         }
     }
 }

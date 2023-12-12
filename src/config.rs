@@ -256,9 +256,7 @@ impl PartialWorkflowConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum WorkflowFeature {
-    Push,
-}
+pub enum WorkflowFeature {}
 
 /// A workflow configuration.
 #[derive(Clone)]
@@ -266,6 +264,7 @@ pub struct WorkflowConfig {
     /// The expected name of the workflow.
     pub(crate) name: String,
     /// Features enabled in workflow configuration.
+    #[allow(unused)]
     pub(crate) features: HashSet<WorkflowFeature>,
 }
 
@@ -518,25 +517,6 @@ impl Config<'_> {
         }
 
         variables
-    }
-
-    /// Generate random variables which are consistent for a given repo name.
-    pub(crate) fn random(&self, repo: &RepoRef) -> Random {
-        use rand::prelude::*;
-
-        let mut state = 0u64;
-
-        for c in repo.path().as_str().chars() {
-            state = state.wrapping_shl(16);
-            state ^= c as u64;
-        }
-
-        let mut rng = rand::rngs::StdRng::seed_from_u64(state);
-
-        Random {
-            hour: rng.gen_range(0..24),
-            day: rng.gen_range(0..7),
-        }
     }
 
     fn badges<F>(&self, path: &RelativePath, mut filter: F) -> impl Iterator<Item = &'_ ConfigBadge>
@@ -947,10 +927,9 @@ impl<'a> ConfigCtxt<'a> {
         })?;
 
         let features = self.in_array(config, "features", |cx, value| {
-            match cx.string(value)?.as_ref() {
-                "push" => Ok(WorkflowFeature::Push),
-                other => Err(cx.bail(format_args!("Unknown workflow feature `{other}`"))),
-            }
+            let value = cx.string(value)?;
+            let value: &str = value.as_ref();
+            Err(cx.bail(format_args!("Unknown workflow feature `{value}`")))
         })?;
 
         Ok(PartialWorkflowConfig {

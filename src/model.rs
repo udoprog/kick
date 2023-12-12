@@ -35,6 +35,8 @@ pub(crate) struct RenderRustVersions {
 /// Global version parameters.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub(crate) struct Random {
+    /// A random minute.
+    pub(crate) minute: u8,
     /// A random hour, ranging from 0 to 23.
     pub(crate) hour: u8,
     /// A random day of the week, ranging from 0 to 6.
@@ -137,6 +139,26 @@ impl RepoRef {
         };
 
         Ok(workspace)
+    }
+
+    /// Generate random variables which are consistent for a given repo name.
+    pub(crate) fn random(&self) -> Random {
+        use rand::prelude::*;
+
+        let mut state = 0u64;
+
+        for c in self.path().as_str().chars() {
+            state = state.wrapping_shl(11);
+            state ^= c as u64;
+        }
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(state);
+
+        Random {
+            minute: rng.gen_range(0..60),
+            hour: rng.gen_range(0..24),
+            day: rng.gen_range(0..7),
+        }
     }
 
     /// Open the workspace to this symbolic module.

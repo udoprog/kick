@@ -36,7 +36,7 @@ impl<'a> Ctxt<'a> {
     ) -> Result<RepoParams<'m>> {
         let variables = self.config.variables(repo);
         let package_params = package.package_params(repo)?;
-        let random = self.config.random(repo);
+        let random = repo.random();
         Ok(self
             .config
             .repo_params(self, package_params, random, variables))
