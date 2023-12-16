@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'release to perform'
+        required: true
+        default: 'nightly'
+        type: choice
+        options:
+        - nightly
+        - release
+  push:
+    branches:
+    - release
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: udoprog/github-release@channel
+      id: release
+      with:
+        channel: ${{github.event.inputs.channel}}
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+    - run: cargo build --release
+    - run: mv target/release/kick.exe kick-windows-x86_64.exe
+    - uses: actions/upload-artifact@v1
+      with:
+        name: dist-windows-latest
+        path: kick-windows-x86_64.exe
+
+  build-ubuntu:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: udoprog/github-release@channel
+      id: release
+      with:
+        channel: ${{github.event.inputs.channel}}
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+    - run: cargo build --release
+    - run: mv target/release/kick kick-linux-x86_64
+    - uses: actions/upload-artifact@v1
+      with:
+        name: dist-windows-latest
+        path: kick-linux-x86_64
+
+  publish:
+    permissions: write-all
+    needs: [build-windows, build-ubuntu]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/download-artifact@v1
+      with: {name: dist-windows-latest}
+    - uses: actions/download-artifact@v1
+      with: {name: dist-ubuntu-latest}
+    - uses: udoprog/github-release@channel
+      id: release
+      with:
+        channel: ${{github.event.inputs.channel}}
+    - uses: udoprog/github-release@v1
+      with:
+        files: "*"
+        name: ${{steps.release.outputs.channel}}
+        token: ${{secrets.GITHUB_TOKEN}}
+        prerelease: true
