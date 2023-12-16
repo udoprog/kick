@@ -68,7 +68,7 @@ fn msi(
     cx: &Ctxt<'_>,
     repo: &Repo,
     release: &Release,
-    file_version: &String,
+    file_version: &str,
 ) -> Result<(), anyhow::Error> {
     let root = repo.path().to_path(cx.root);
 

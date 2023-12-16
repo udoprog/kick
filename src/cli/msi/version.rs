@@ -102,7 +102,7 @@ pub(super) struct Version {
 impl Version {
     /// Open a version by matching it against the given string.
     pub(crate) fn parse(version: &str) -> Result<Version> {
-        let (head, pre) = if let Some((version, pre)) = version.rsplit_once("-") {
+        let (head, pre) = if let Some((version, pre)) = version.rsplit_once('-') {
             (version, Some(pre))
         } else {
             (version, None)
