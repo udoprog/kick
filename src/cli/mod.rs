@@ -1,5 +1,6 @@
 pub(crate) mod check;
 pub(crate) mod r#for;
+pub(crate) mod msi;
 pub(crate) mod msrv;
 pub(crate) mod publish;
 pub(crate) mod set;

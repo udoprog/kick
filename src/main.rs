@@ -567,6 +567,7 @@ mod repo_sets;
 mod rust_version;
 mod templates;
 mod urls;
+mod wix;
 mod workspace;
 
 use std::cell::RefCell;
@@ -593,13 +594,13 @@ const KICK_TOML: &str = "Kick.toml";
 
 #[derive(Subcommand)]
 enum Action {
+    /// Apply staged changes which have previously been saved by `check` unless
+    /// `--save` was specified.
+    Changes(SharedOptions),
     /// Manage sets.
     Set(SharedAction<cli::set::Opts>),
     /// Checks each repo (default action).
     Check(SharedAction<cli::check::Opts>),
-    /// Apply staged changes which have previously been saved by `check` unless
-    /// `--save` was specified.
-    Changes(SharedOptions),
     /// Run a custom command for each repo.
     For(SharedAction<cli::r#for::Opts>),
     /// Fetch github actions build status for each repo.
@@ -612,11 +613,14 @@ enum Action {
     Publish(SharedAction<cli::publish::Opts>),
     /// Perform repo-aware `cargo upgrade`.
     Upgrade(SharedAction<cli::upgrade::Opts>),
+    /// Build a wix-based installer.
+    Msi(SharedAction<cli::msi::Opts>),
 }
 
 impl Action {
     fn shared(&self) -> &SharedOptions {
         match self {
+            Action::Changes(shared) => shared,
             Action::Set(action) => &action.shared,
             Action::Check(action) => &action.shared,
             Action::For(action) => &action.shared,
@@ -625,12 +629,13 @@ impl Action {
             Action::Version(action) => &action.shared,
             Action::Publish(action) => &action.shared,
             Action::Upgrade(action) => &action.shared,
-            Action::Changes(shared) => shared,
+            Action::Msi(action) => &action.shared,
         }
     }
 
     fn repo(&self) -> Option<&RepoOptions> {
         match self {
+            Action::Changes(..) => None,
             Action::Set(action) => Some(&action.repo),
             Action::Check(action) => Some(&action.repo),
             Action::For(action) => Some(&action.repo),
@@ -639,7 +644,7 @@ impl Action {
             Action::Version(action) => Some(&action.repo),
             Action::Publish(action) => Some(&action.repo),
             Action::Upgrade(action) => Some(&action.repo),
-            Action::Changes(..) => None,
+            Action::Msi(action) => Some(&action.repo),
         }
     }
 }
@@ -929,6 +934,9 @@ async fn entry() -> Result<()> {
         }
         Action::Upgrade(opts) => {
             cli::upgrade::entry(&mut cx, &opts.action)?;
+        }
+        Action::Msi(opts) => {
+            cli::msi::entry(&mut cx, &opts.action)?;
         }
         Action::Changes(shared) => {
             let changes = load_changes(&changes_path)
