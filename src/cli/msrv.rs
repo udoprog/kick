@@ -21,7 +21,7 @@ const EARLIEST: RustVersion = RUST_VERSION_SUPPORTED;
 /// Final fallback version to use if *nothing* else can be figured out.
 const LATEST: RustVersion = RustVersion::new(1, 68, None);
 /// Default command to build.
-const DEFAULT_COMMAND: [&str; 2] = ["cargo", "build"];
+const DEFAULT_COMMAND: [&str; 3] = ["cargo", "build", "--workspace"];
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -33,9 +33,6 @@ pub(crate) struct Opts {
     /// dependencies which can compile.
     #[arg(long)]
     keep_cargo_lock: bool,
-    /// Don't save the new MSRV in project `Cargo.toml` files.
-    #[arg(long)]
-    no_save: bool,
     /// Do not remove [dev-dependencies].
     #[arg(long)]
     no_remove_dev_dependencies: bool,
@@ -48,7 +45,7 @@ pub(crate) struct Opts {
     ///   project. Note that the first version to support rust-version is 2021.
     /// * workspace - The first Rust version to support workspaces.
     /// * rustc - The version reported by your local rustc.
-    #[arg(long, verbatim_doc_comment)]
+    #[arg(long, verbatim_doc_comment, value_name = "version-spec")]
     earliest: Option<String>,
     /// Latest minor version to test. Default is `rustc`.
     ///
@@ -59,12 +56,13 @@ pub(crate) struct Opts {
     ///   project. Note that the first version to support rust-version is 2021.
     /// * workspace - The first Rust version to support workspaces.
     /// * rustc - The version reported by your local rustc.
-    #[arg(long, verbatim_doc_comment)]
+    #[arg(long, verbatim_doc_comment, value_name = "version-spec")]
     latest: Option<String>,
     /// Command to test with.
     ///
     /// This is run through `rustup run <version> <command>`, the default
-    /// command is `cargo build --all-targets`.
+    /// command is `cargo build --workspace`.
+    #[arg(value_name = "command")]
     command: Vec<String>,
 }
 

@@ -16,7 +16,8 @@ use crate::workspace::Crates;
 
 #[derive(Default, Parser)]
 pub(crate) struct Opts {
-    /// Perform URL checks where we go out and try and fetch every references URL.
+    /// Perform URL checks where we go out and try and fetch every references
+    /// URL.
     #[arg(long)]
     url_checks: bool,
 }

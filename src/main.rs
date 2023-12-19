@@ -698,14 +698,14 @@ struct RepoOptions {
     /// commit that doesn't have a tag as determined by `git describe --tags`.
     #[arg(long)]
     unreleased: bool,
-    /// Load sets with the given ids.
+    /// Load sets with the given id.
     #[arg(long, value_name = "set")]
     set: Vec<String>,
-    /// Intersect with the specified sets.
-    #[arg(long)]
+    /// Intersect with the specified set.
+    #[arg(long, value_name = "set")]
     set_intersect: Vec<String>,
-    /// Difference with the specified sets.
-    #[arg(long)]
+    /// Difference with the specified set.
+    #[arg(long, value_name = "set")]
     set_difference: Vec<String>,
 }
 
@@ -716,21 +716,21 @@ impl RepoOptions {
 }
 
 #[derive(Parser)]
+#[command(version = None)]
 struct SharedAction<A>
 where
     A: FromArgMatches + Args,
 {
     #[command(flatten)]
-    shared: SharedOptions,
+    action: A,
     #[command(flatten)]
     repo: RepoOptions,
     #[command(flatten)]
-    action: A,
+    shared: SharedOptions,
 }
 
 #[derive(Default, Parser)]
 #[command(author, version, about, long_about = None)]
-#[command(propagate_version = true)]
 struct Opts {
     /// Action to perform. Defaults to `check`.
     #[command(subcommand, name = "action")]

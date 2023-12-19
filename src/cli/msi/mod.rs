@@ -20,17 +20,17 @@ pub(crate) struct Opts {
     ///
     /// Valid channels are: nightly which will use the current date, or a valid
     /// naive date like `2023-12-11`.
-    #[clap(long)]
-    msi_channel: Option<String>,
+    #[clap(long, value_name = "channel")]
+    channel: Option<String>,
     /// Define a release version.
-    #[clap(long)]
-    msi_version: Option<String>,
+    #[clap(long, value_name = "version")]
+    version: Option<String>,
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     let mut release = None;
 
-    if let Some(channel) = &opts.msi_channel {
+    if let Some(channel) = &opts.channel {
         release = match (channel.as_str(), NaiveDate::from_str(channel.as_str())) {
             (_, Ok(date)) => Some(Release::Date(date)),
             ("nightly", _) => Some(Release::Nightly(Utc::now().naive_utc())),
@@ -38,7 +38,7 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
         };
     }
 
-    if let Some(version) = &opts.msi_version {
+    if let Some(version) = &opts.version {
         release = Some(Release::Version(Version::parse(version.as_str())?));
     }
 

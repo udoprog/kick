@@ -13,9 +13,9 @@ use crate::workspace;
 
 #[derive(Default, Parser)]
 pub(crate) struct Opts {
-    /// A version specification to set.
-    #[arg(long = "set", short = 's', name = "[<crate>=]version")]
-    set: Vec<String>,
+    /// An explicit version override.
+    #[arg(long, name = "[<crate>=]version")]
+    r#override: Vec<String>,
     /// Perform a major version bump. This will remove any existing pre-release setting.
     #[arg(long)]
     major: bool,
@@ -26,7 +26,7 @@ pub(crate) struct Opts {
     #[arg(long)]
     patch: bool,
     /// Set a prerelease string.
-    #[arg(long)]
+    #[arg(long, value_name = "pre")]
     pre: Option<String>,
     /// Use the existing crate version just so that we can perform all checks.
     #[arg(long = "existing")]
@@ -53,7 +53,7 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     };
 
     // Parse explicit version upgrades.
-    for version in &opts.set {
+    for version in &opts.r#override {
         if let Some((id, version)) = version.split_once('=') {
             version_set
                 .crates

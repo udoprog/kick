@@ -21,7 +21,7 @@ pub(crate) struct Opts {
     #[arg(long)]
     raw_json: bool,
     /// Limit number of workspace runs to inspect.
-    #[arg(long)]
+    #[arg(long, value_name = "number")]
     limit: Option<u32>,
     /// Include information on individual jobs.
     #[arg(long)]

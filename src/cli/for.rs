@@ -9,6 +9,7 @@ use crate::repo_sets::RepoSet;
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     /// Command to run.
+    #[arg(value_name = "command")]
     command: Vec<String>,
 }
 

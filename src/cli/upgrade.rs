@@ -12,10 +12,11 @@ pub(crate) struct Opts {
     #[arg(long)]
     workspace: bool,
     /// Pass `--exclude <package>` to `cargo upgrade`.
-    #[arg(long)]
+    #[arg(long, value_name = "package")]
     exclude: Vec<String>,
-    /// Extra upgrade arguments.
-    upgrade_args: Vec<String>,
+    /// Extra arguments to pass to `cargo upgrade`.
+    #[arg(value_name = "extra")]
+    extra: Vec<String>,
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
@@ -54,7 +55,7 @@ fn upgrade(
         command.arg("--workspace");
     }
 
-    for arg in &opts.upgrade_args {
+    for arg in &opts.extra {
         command.arg(arg);
     }
 
