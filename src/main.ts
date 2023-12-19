@@ -22,7 +22,7 @@ async function version(repo: string, key: string): Promise<string> {
 
     const response = await http.get(`https://api.github.com/repos/${repo}/releases/latest`);
     const body = await response.readBody();
-    return Promise.resolve(JSON.parse(body).tag_name);
+    return JSON.parse(body).tag_name;
 }
 
 /**
@@ -48,6 +48,8 @@ async function download(tag: string): Promise<string> {
     let name = `kick-${tag}-${platform}.${ext}`;
 
     const url = `https://github.com/udoprog/kick/releases/download/${tag}/${name}`;
+
+    core.info(`Downloading ${url}`);
     let directory = await tc.downloadTool(url);
 
     if (zip) {
