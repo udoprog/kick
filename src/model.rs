@@ -283,22 +283,24 @@ pub(crate) fn load_gitmodules(root: &Path) -> Result<Option<Vec<Repo>>> {
     }
 }
 
+#[tracing::instrument(skip_all, fields(root = ?root.display()))]
 pub(crate) fn load_from_git(root: &Path, git: Option<&Git>) -> Result<Vec<Repo>> {
+    tracing::trace!("Trying to load from git");
+
+    let mut out = Vec::new();
+
     let Some(git) = git else {
-        return Ok(Vec::new());
+        bail!("No working git command available");
     };
 
     let git_path = root.join(".git");
 
-    if git_path.is_dir() {
-        tracing::trace!("{}: using .git", git_path.display());
-
-        return Ok(vec![
-            module_from_git(git, &git_path).with_context(|| git_path.display().to_string())?
-        ]);
+    if git_path.exists() {
+        tracing::trace!("Using repository: {}", git_path.display());
+        out.push(from_git(git, &git_path).with_context(|| git_path.display().to_string())?);
     }
 
-    Ok(Vec::new())
+    Ok(out)
 }
 
 /// Parse a git module.
@@ -346,7 +348,7 @@ pub(crate) fn parse_git_modules(input: &[u8]) -> Result<Vec<Repo>> {
 }
 
 /// Process module information from a git repository.
-fn module_from_git<P>(git: &Git, root: &P) -> Result<Repo>
+fn from_git<P>(git: &Git, root: &P) -> Result<Repo>
 where
     P: ?Sized + AsRef<Path>,
 {
