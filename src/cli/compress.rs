@@ -2,6 +2,8 @@ use std::env::consts::{self, EXE_EXTENSION};
 use std::fs::{self, File};
 use std::io::{self, Cursor};
 #[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -173,9 +175,7 @@ impl Archive for GzipArchive {
         #[cfg(unix)]
         {
             header.set_mode(metadata.mode());
-            header.set_mtime(metadata.mtime());
-            header.set_gid(metadata.gid());
-            header.set_uid(metadata.uid());
+            header.set_mtime(metadata.mtime() as u64);
         }
 
         builder
