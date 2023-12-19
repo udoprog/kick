@@ -22,8 +22,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  windows:
-    runs-on: windows-latest
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+        - {os: windows-latest, method: zip}
+        - {os: macos-latest, method: gzip}
+        - {os: ubuntu-latest, method: gzip}
     steps:
     - uses: actions/checkout@v3
     - uses: udoprog/github-release@channel
@@ -33,36 +39,21 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
     - uses: Swatinem/rust-cache@v2
     - run: cargo build --release
-    - run: cargo run --release -- compress zip --output dist
+    - run: cargo run --release -- compress ${{matrix.method}} --version nightly --output dist
     - uses: actions/upload-artifact@v1
       with:
-        name: dist-windows-latest
-        path: dist
-
-  ubuntu:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v3
-    - uses: udoprog/github-release@channel
-      id: release
-      with:
-        channel: ${{github.event.inputs.channel}}
-    - uses: dtolnay/rust-toolchain@stable
-    - uses: Swatinem/rust-cache@v2
-    - run: cargo build --release
-    - run: cargo run --release -- compress gzip --output dist
-    - uses: actions/upload-artifact@v1
-      with:
-        name: dist-ubuntu-latest
+        name: dist-${{matrix.os}}
         path: dist
 
   publish:
     permissions: write-all
-    needs: [windows, ubuntu]
+    needs: build
     runs-on: ubuntu-latest
     steps:
     - uses: actions/download-artifact@v1
       with: {name: dist-windows-latest, path: dist}
+    - uses: actions/download-artifact@v1
+      with: {name: dist-macos-latest, path: dist}
     - uses: actions/download-artifact@v1
       with: {name: dist-ubuntu-latest, path: dist}
     - uses: udoprog/github-release@channel
