@@ -67,8 +67,11 @@ fn msi(
     let package = workspace.primary_package()?;
     let name = package.name()?;
 
-    let binary_name = format!("{name}{EXE_EXTENSION}");
-    let binary_path = root.join("target").join("release").join(&binary_name);
+    let binary_path = root
+        .join("target")
+        .join("release")
+        .join(name)
+        .with_extension(EXE_EXTENSION);
 
     let wix_dir = root.join("wix");
     let wsx_file = wix_dir.join(format!("{name}.wxs"));
@@ -86,7 +89,7 @@ fn msi(
         fs::create_dir_all(output)?;
     }
 
-    let builder = wix::Builder::new(binary_name, binary_path, output, name, release)?;
+    let builder = wix::Builder::new(binary_path, output, name, release)?;
     builder.build(wsx_file, file_version)?;
     builder.link()?;
     Ok(())
