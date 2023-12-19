@@ -11,6 +11,7 @@ use semver::Version;
 use time::OffsetDateTime;
 
 use crate::ctxt::Ctxt;
+use crate::glob::Glob;
 use crate::model::Repo;
 use crate::workspace;
 
@@ -41,9 +42,12 @@ pub(crate) struct Opts {
     /// If not specified, defaults to `std::env::consts::OS`,
     #[arg(long, value_name = "os")]
     os: Option<String>,
+    /// The output directory to write the archive to.
+    #[arg(long, value_name = "dir")]
+    output: Option<PathBuf>,
     /// Append the given extra files to the archive.
-    #[arg(value_name = "append")]
-    append: Vec<PathBuf>,
+    #[arg(value_name = "path")]
+    path: Vec<String>,
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
@@ -90,53 +94,79 @@ fn compress(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
         }
     };
 
-    let output_path = root.join(format!(
+    let output = match &opts.output {
+        Some(output) => {
+            let output = root.join(output);
+
+            if !output.is_dir() {
+                fs::create_dir_all(&output)
+                    .with_context(|| anyhow!("Create directory: {}", output.display()))?;
+            }
+
+            output
+        }
+        None => root.clone(),
+    };
+
+    let output_path = output.join(format!(
         "{name}-{version}-{arch}-{os}.{}",
         opts.ty.extension()
     ));
 
     tracing::info!("Writing {}", output_path.display());
 
-    let exe_path = root
-        .join("target")
-        .join("release")
-        .join(name)
-        .with_extension(EXE_EXTENSION);
+    let mut out = Vec::new();
 
-    for path in [&exe_path].into_iter().chain(&opts.append) {
+    out.push(
+        root.join("target")
+            .join("release")
+            .join(name)
+            .with_extension(EXE_EXTENSION),
+    );
+
+    for pattern in &opts.path {
+        let glob = Glob::new(&root, &pattern);
+
+        for path in glob.matcher() {
+            out.push(
+                path.with_context(|| anyhow!("Glob failed: {}", pattern))?
+                    .to_path(&root),
+            );
+        }
+    }
+
+    for path in out {
         tracing::info!("Appending: {}", path.display());
-
-        archive
-            .append(path)
-            .with_context(|| anyhow!("Appending {}", path.display()))?;
+        append(archive, &path).with_context(|| anyhow!("Appending {}", path.display()))?;
     }
 
     let contents = archive.finish()?;
-
     fs::write(&output_path, contents).with_context(|| output_path.display().to_string())?;
     Ok(())
 }
 
-trait Archive {
-    fn append(&mut self, path: &Path) -> Result<()> {
+fn append(archive: &mut dyn Archive, path: &Path) -> Result<()> {
+    let metadata = fs::metadata(path)?;
+
+    if metadata.is_file() {
+        let input = File::open(path)?;
+
         let file_name = path
             .file_name()
             .and_then(|name| name.to_str())
             .context("Missing file name")?;
 
-        let metadata = fs::metadata(path)?;
-        let input = File::open(path)?;
-
-        if metadata.is_file() {
-            self.append_file(&metadata, input, file_name)
-                .with_context(|| anyhow!("Append file {}", path.display()))?;
-        } else {
-            bail!("Not supported for archive");
-        }
-
-        Ok(())
+        archive
+            .append_file(&metadata, input, file_name)
+            .with_context(|| anyhow!("Append file {}", path.display()))?;
+    } else {
+        tracing::warn!("Ignoring non-file: {}", path.display());
     }
 
+    Ok(())
+}
+
+trait Archive {
     fn append_file(&mut self, metadata: &fs::Metadata, input: File, file_name: &str) -> Result<()>;
 
     fn finish(&mut self) -> Result<Vec<u8>>;

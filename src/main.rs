@@ -678,7 +678,7 @@ struct RepoOptions {
     #[arg(long)]
     all: bool,
     /// Only run the specified set of repos.
-    #[arg(long = "path", short = 'p', name = "path", value_name = "path")]
+    #[arg(long = "path", short = 'p', name = "repos", value_name = "path")]
     repos: Vec<String>,
     /// Test if the repository is outdated.
     #[arg(long)]
