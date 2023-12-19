@@ -52,7 +52,12 @@ impl<'a> Ctxt<'a> {
         &'ctx self,
         repo: &'ctx RepoRef,
     ) -> impl Fn() -> anyhow::Error + 'ctx {
-        move || anyhow!("In repo {}", self.to_path(repo.path()).display())
+        move || {
+            anyhow!(
+                "In repo {}",
+                empty_or_dot(self.to_path(repo.path())).display()
+            )
+        }
     }
 
     /// Get repo parameters for the given package.

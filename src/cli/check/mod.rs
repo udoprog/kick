@@ -7,12 +7,10 @@ use std::io::Write;
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 
-use crate::changes;
 use crate::ctxt::Ctxt;
-use crate::manifest::Package;
-use crate::model::{Repo, RepoParams, UpdateParams};
+use crate::model::{Repo, UpdateParams};
 use crate::urls::{UrlError, Urls};
-use crate::workspace::Crates;
+use crate::{changes, ctxt};
 
 #[derive(Default, Parser)]
 pub(crate) struct Opts {
@@ -26,13 +24,11 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     let mut urls = Urls::default();
 
     for repo in cx.repos() {
-        tracing::info!("checking: {}", repo.path());
-
-        let workspace = repo.workspace(cx)?;
-        let primary = workspace.primary_package()?;
-        let params = cx.repo_params(&primary, repo)?;
-
-        check(cx, repo, &workspace, &primary, params, &mut urls).with_context(cx.context(repo))?;
+        tracing::info!(
+            "Checking: {}",
+            ctxt::empty_or_dot(cx.to_path(repo.path())).display()
+        );
+        check(cx, repo, &mut urls).with_context(cx.context(repo))?;
     }
 
     let o = std::io::stdout();
@@ -61,14 +57,11 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
 
 /// Run checks for a single repo.
 #[tracing::instrument(skip_all, fields(source = ?repo.source(), path = repo.path().as_str()))]
-fn check(
-    cx: &Ctxt<'_>,
-    repo: &Repo,
-    crates: &Crates,
-    primary_crate: &Package<'_>,
-    primary_crate_params: RepoParams<'_>,
-    urls: &mut Urls,
-) -> Result<()> {
+fn check(cx: &Ctxt<'_>, repo: &Repo, urls: &mut Urls) -> Result<()> {
+    let crates = repo.workspace(cx)?;
+    let primary_crate = crates.primary_package()?;
+    let primary_crate_params = cx.repo_params(&primary_crate, repo)?;
+
     let documentation = match &cx.config.documentation(repo) {
         Some(documentation) => Some(documentation.render(&primary_crate_params)?),
         None => None,
@@ -87,12 +80,12 @@ fn check(
 
     for package in crates.packages() {
         if package.is_publish() {
-            cargo::work_cargo_toml(cx, crates, &package, &update_params)?;
+            cargo::work_cargo_toml(cx, &crates, &package, &update_params)?;
         }
     }
 
     if cx.config.is_enabled(repo.path(), "ci") {
-        ci::build(cx, primary_crate, repo, crates).with_context(|| anyhow!("ci change"))?;
+        ci::build(cx, &primary_crate, repo, &crates).with_context(|| anyhow!("ci change"))?;
     }
 
     if cx.config.is_enabled(repo.path(), "readme") {
