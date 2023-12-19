@@ -1,8 +1,6 @@
 import * as core from '@actions/core';
 import * as tc from '@actions/tool-cache';
 import * as httpm from '@actions/http-client';
-import * as fs from 'fs';
-import * as path from 'path';
 
 const USER_AGENT = 'udoprog/kick-action';
 
@@ -32,31 +30,31 @@ async function version(repo: string, key: string): Promise<string> {
  *
  * @param tag The tag to download.
  */
-async function download(tag: string): Promise<{ path: string, dir: string }> {
+async function download(tag: string): Promise<string> {
     let platform;
-    let ext = '';
+    let ext = 'tar.gz';
+    let zip = false;
 
     if (IS_WINDOWS) {
-        platform = 'x86_64-windows.exe';
-        ext = '.exe';
+        platform = 'windows';
+        ext = 'zip';
+        zip = true;
     } else if (IS_MAC) {
-        throw new Error("macOS is not supported");
+        platform = 'macos';
     } else {
-        platform = 'x86_64-linux';
+        platform = 'linux';
     }
 
-    const name = `kick-${platform}`;
+    let name = `kick-${tag}-${platform}.${ext}`;
+
     const url = `https://github.com/udoprog/kick/releases/download/${tag}/${name}`;
-    let toolPath = await tc.downloadTool(url);
-    let dir = path.dirname(toolPath);
-    let newName = path.join(dir, `kick${ext}`);
-    fs.renameSync(toolPath, newName);
+    let directory = await tc.downloadTool(url);
 
-    if (!IS_WINDOWS) {
-        fs.chmodSync(newName, '755');
+    if (zip) {
+        return await tc.extractZip(directory);
+    } else {
+        return await tc.extractTar(directory);
     }
-
-    return { path: newName, dir };
 }
 
 async function innerMain() {
@@ -67,13 +65,7 @@ async function innerMain() {
     }
 
     core.info(`Downloading 'kick' from tag '${tag}'`);
-    const tool = await download(tag);
-
-    if (!!process.env.GITHUB_PATH) {
-        fs.writeFileSync(process.env.GITHUB_PATH, `${tool.dir}\n`);
-    }
-
-    core.info(`Downloaded to ${tool.path} and added ${tool.dir} to GITHUB_PATH`);
+    core.addPath(await download(tag));
 }
 
 async function main() {
