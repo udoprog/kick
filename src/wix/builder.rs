@@ -8,6 +8,8 @@ use anyhow::{bail, ensure, Context, Result};
 use crate::process::Command;
 
 pub(crate) struct Builder {
+    binary_name: String,
+    binary_path: PathBuf,
     candle_bin: PathBuf,
     light_bin: PathBuf,
     wixobj_path: PathBuf,
@@ -16,11 +18,18 @@ pub(crate) struct Builder {
 
 impl Builder {
     /// Construct a new WIX builder.
-    pub(crate) fn new(
-        output: &Path,
+    pub(crate) fn new<B, N, O>(
+        binary_name: N,
+        binary_path: B,
+        output: O,
         name: impl fmt::Display,
         release: impl fmt::Display,
-    ) -> Result<Self> {
+    ) -> Result<Self>
+    where
+        N: AsRef<str>,
+        B: AsRef<Path>,
+        O: AsRef<Path>,
+    {
         let wix_env = env::var_os("WIX").context("Missing environment: WIX")?;
         let wix_bin = PathBuf::from(wix_env).join("bin");
 
@@ -38,10 +47,13 @@ impl Builder {
             arch = consts::ARCH
         );
 
+        let output = output.as_ref();
         let wixobj_path = output.join(format!("{base}.wixobj"));
         let installer_path = output.join(format!("{base}.msi"));
 
         Ok(Self {
+            binary_name: binary_name.as_ref().to_owned(),
+            binary_path: binary_path.as_ref().to_owned(),
             candle_bin,
             light_bin,
             wixobj_path,
@@ -59,9 +71,9 @@ impl Builder {
             return Ok(());
         }
 
-        let platform = match consts::ARCH {
-            "x86_64" => "x64",
-            "x86" => "x86",
+        let (program_files_folder, win64) = match consts::ARCH {
+            "x86_64" => ("ProgramFiles64Folder", "yes"),
+            "x86" => ("ProgramFilesFolder", "no"),
             arch => bail!("Unsupported arch: {arch}"),
         };
 
@@ -69,7 +81,10 @@ impl Builder {
 
         let status = command
             .arg(format!("-dVersion={}", file_version))
-            .arg(format!("-dPlatform={}", platform))
+            .arg(format!("-dBinaryName={}", self.binary_name))
+            .arg(format!("-dBinaryPath={}", self.binary_path.display()))
+            .arg(format!("-dProgramFilesFolder={}", program_files_folder))
+            .arg(format!("-dWin64={}", win64))
             .args(["-ext", "WixUtilExtension"])
             .arg("-o")
             .arg(&self.wixobj_path)

@@ -1,3 +1,4 @@
+use std::env::consts::EXE_EXTENSION;
 use std::fs;
 use std::path::PathBuf;
 
@@ -65,8 +66,12 @@ fn msi(
 
     let package = workspace.primary_package()?;
     let name = package.name()?;
+
+    let binary_name = format!("{name}{EXE_EXTENSION}");
+    let binary_path = root.join("target").join("release").join(&binary_name);
+
     let wix_dir = root.join("wix");
-    let wsx_file = wix_dir.join("main.wxs");
+    let wsx_file = wix_dir.join(format!("{name}.wxs"));
 
     if !wsx_file.is_file() {
         bail!("Missing: {}", wsx_file.display());
@@ -81,7 +86,7 @@ fn msi(
         fs::create_dir_all(output)?;
     }
 
-    let builder = wix::Builder::new(output, name, release)?;
+    let builder = wix::Builder::new(binary_name, binary_path, output, name, release)?;
     builder.build(wsx_file, file_version)?;
     builder.link()?;
     Ok(())

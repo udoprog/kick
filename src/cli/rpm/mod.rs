@@ -64,13 +64,13 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts, release: &Release) -> Result<(),
     let license = package.license().context("Missing license")?;
     let description = package.description().context("Missing description")?;
 
-    let binary = root
+    let binary_path = root
         .join("target")
         .join("release")
         .join(name)
         .with_extension(EXE_EXTENSION);
 
-    let requires = find_requires::find_requires(&binary)?;
+    let requires = find_requires::find_requires(&binary_path)?;
 
     let version = release.to_string();
 
@@ -88,11 +88,11 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts, release: &Release) -> Result<(),
 
     pkg = pkg
         .with_file(
-            &binary,
+            &binary_path,
             rpm::FileOptions::new(format!("/usr/bin/{}", name))
                 .mode(rpm::FileMode::Regular { permissions: 0o755 }),
         )
-        .with_context(|| anyhow!("Adding binary: {}", binary.display()))?;
+        .with_context(|| anyhow!("Adding binary: {}", binary_path.display()))?;
 
     for file in cx.config.rpm_files(repo) {
         let source = root.join(&file.source);

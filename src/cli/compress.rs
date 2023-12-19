@@ -107,6 +107,12 @@ fn compress(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
         None => root.clone(),
     };
 
+    let binary_path = root
+        .join("target")
+        .join("release")
+        .join(name)
+        .with_extension(EXE_EXTENSION);
+
     let output_path = output.join(format!(
         "{name}-{release}-{arch}-{os}.{}",
         opts.ty.extension()
@@ -116,12 +122,7 @@ fn compress(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
     let mut out = Vec::new();
 
-    out.push(
-        root.join("target")
-            .join("release")
-            .join(name)
-            .with_extension(EXE_EXTENSION),
-    );
+    out.push(binary_path);
 
     for pattern in &opts.path {
         let glob = Glob::new(&root, &pattern);
