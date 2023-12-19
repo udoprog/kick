@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Error, Result};
 use relative_path::{RelativePath, RelativePathBuf};
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
@@ -98,6 +99,53 @@ impl Upgrade {
     fn merge_with(&mut self, other: Self) {
         self.exclude.extend(other.exclude);
     }
+}
+
+#[derive(Default, Clone)]
+pub(crate) struct Rpm {
+    /// Packages to include in an rpm package.
+    pub(crate) files: Vec<RpmFile>,
+    /// Requirements to add to an rpm package.
+    pub(crate) requires: Vec<RpmRequire>,
+}
+
+impl Rpm {
+    fn merge_with(&mut self, other: Self) {
+        self.files.extend(other.files);
+        self.requires.extend(other.requires);
+    }
+}
+
+#[derive(Default, Clone)]
+pub(crate) struct RpmFile {
+    /// The source of an rpm file.
+    pub(crate) source: String,
+    /// Destination of an rpm file.
+    pub(crate) dest: String,
+    /// The mode of an rpm file.
+    pub(crate) mode: Option<rpm::FileMode>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum RpmOp {
+    /// Greater than.
+    Gt,
+    /// Greater than or equal to.
+    Ge,
+    /// Less than.
+    Lt,
+    /// Less than or equal to.
+    Le,
+    /// Equal to.
+    Eq,
+}
+
+#[derive(Default, Clone)]
+pub(crate) struct RpmRequire {
+    /// The package being required.
+    pub(crate) package: String,
+    /// The version being required.
+    pub(crate) version: Option<(RpmOp, Version)>,
 }
 
 #[derive(Clone)]
@@ -193,6 +241,8 @@ pub(crate) struct RepoConfig {
     pub(crate) version: Vec<Replacement>,
     /// Upgrade configuration.
     pub(crate) upgrade: Upgrade,
+    /// RPM configuration.
+    pub(crate) rpm: Rpm,
 }
 
 impl RepoConfig {
@@ -214,6 +264,7 @@ impl RepoConfig {
         self.readme_badges.merge_with(other.readme_badges);
         self.version.extend(other.version);
         self.upgrade.merge_with(other.upgrade);
+        self.rpm.merge_with(other.rpm);
         merge_map(&mut self.variables, other.variables);
     }
 
@@ -519,6 +570,28 @@ impl Config<'_> {
         variables
     }
 
+    /// Get all rpm files.
+    pub(crate) fn rpm_files(&self, repo: &RepoRef) -> Vec<&RpmFile> {
+        let mut files = self.base.rpm.files.iter().collect::<Vec<_>>();
+
+        if let Some(values) = self.repo.get(repo.path()).map(|r| &r.rpm.files) {
+            files.extend(values);
+        }
+
+        files
+    }
+
+    /// Get all rpm requires.
+    pub(crate) fn rpm_requires(&self, repo: &RepoRef) -> Vec<&RpmRequire> {
+        let mut requires = self.base.rpm.requires.iter().collect::<Vec<_>>();
+
+        if let Some(values) = self.repo.get(repo.path()).map(|r| &r.rpm.requires) {
+            requires.extend(values);
+        }
+
+        requires
+    }
+
     fn badges<F>(&self, path: &RelativePath, mut filter: F) -> impl Iterator<Item = &'_ ConfigBadge>
     where
         F: FnMut(&RepoConfig, &ConfigBadge, bool) -> bool,
@@ -748,14 +821,14 @@ impl<'a> ConfigCtxt<'a> {
     fn string(&mut self, value: toml::Value) -> Result<String> {
         match value {
             toml::Value::String(string) => Ok(string),
-            other => Err(self.bail(format_args!("expected string, got {other}"))),
+            other => Err(self.bail(format_args!("Expected string, got {other}"))),
         }
     }
 
     fn boolean(&mut self, value: toml::Value) -> Result<bool> {
         match value {
             toml::Value::Boolean(value) => Ok(value),
-            other => Err(self.bail(format_args!("expected boolean, got {other}"))),
+            other => Err(self.bail(format_args!("Expected boolean, got {other}"))),
         }
     }
 
@@ -839,7 +912,7 @@ impl<'a> ConfigCtxt<'a> {
 
     fn in_string<F, O>(&mut self, config: &mut toml::Table, key: &str, f: F) -> Result<Option<O>>
     where
-        F: FnOnce(&mut Self, String) -> Result<O>,
+        F: FnOnce(&mut Self, String) -> Result<Option<O>>,
     {
         let Some(value) = config.remove(key) else {
             return Ok(None);
@@ -856,11 +929,11 @@ impl<'a> ConfigCtxt<'a> {
         };
 
         self.parts.pop();
-        Ok(Some(out))
+        Ok(out)
     }
 
     fn as_string(&mut self, config: &mut toml::Table, key: &str) -> Result<Option<String>> {
-        self.in_string(config, key, |_, string| Ok(string))
+        self.in_string(config, key, |_, string| Ok(Some(string)))
     }
 
     fn as_boolean(&mut self, config: &mut toml::Table, key: &str) -> Result<Option<bool>> {
@@ -917,13 +990,13 @@ impl<'a> ConfigCtxt<'a> {
     }
 
     fn workflow_table(&mut self, config: &mut toml::Table) -> Result<PartialWorkflowConfig> {
-        let name = self.in_string(config, "name", |_, string| Ok(string))?;
+        let name = self.in_string(config, "name", |_, string| Ok(Some(string)))?;
 
         let template = self.in_string(config, "template", |cx, string| {
             let path = cx.root.join(string);
             let template =
                 std::fs::read_to_string(&path).with_context(|| path.display().to_string())?;
-            cx.compile(&template)
+            Ok(Some(cx.compile(&template)?))
         })?;
 
         let features = self.in_array(config, "features", |cx, value| {
@@ -944,27 +1017,28 @@ impl<'a> ConfigCtxt<'a> {
             Ok((id, cx.workflow(value)?))
         })?;
 
-        let license = self.in_string(config, "license", |_, string| Ok(string))?;
+        let license = self.in_string(config, "license", |_, string| Ok(Some(string)))?;
 
         let authors = self
             .in_array(config, "authors", |cx, item| cx.string(item))?
             .unwrap_or_default();
 
-        let documentation =
-            self.in_string(config, "documentation", |cx, source| cx.compile(&source))?;
+        let documentation = self.in_string(config, "documentation", |cx, source| {
+            Ok(Some(cx.compile(&source)?))
+        })?;
 
         let lib = self.in_string(config, "lib", |cx, string| {
             let path = cx.root.join(string);
             let template =
                 std::fs::read_to_string(&path).with_context(|| path.display().to_string())?;
-            cx.compile(&template)
+            Ok(Some(cx.compile(&template)?))
         })?;
 
         let readme = self.in_string(config, "readme", |cx, string| {
             let path = cx.root.join(string);
             let template =
                 std::fs::read_to_string(&path).with_context(|| path.display().to_string())?;
-            cx.compile(&template)
+            Ok(Some(cx.compile(&template)?))
         })?;
 
         let badges = self.badges(config)?.unwrap_or_default();
@@ -974,7 +1048,7 @@ impl<'a> ConfigCtxt<'a> {
         let name = self.as_string(config, "name")?;
 
         let cargo_toml = self.in_string(config, "cargo_toml", |_, string| {
-            Ok(RelativePathBuf::from(string))
+            Ok(Some(RelativePathBuf::from(string)))
         })?;
 
         let disabled = self.in_array(config, "disabled", |cx, item| cx.string(item))?;
@@ -1005,7 +1079,7 @@ impl<'a> ConfigCtxt<'a> {
 
             let pattern = cx
                 .in_string(&mut config, "pattern", |_, pattern| {
-                    Ok(regex::bytes::Regex::new(&pattern)?)
+                    Ok(Some(regex::bytes::Regex::new(&pattern)?))
                 })?
                 .context("missing `pattern`")?;
 
@@ -1020,6 +1094,9 @@ impl<'a> ConfigCtxt<'a> {
 
         let upgrade = self.as_table(config, "upgrade")?.unwrap_or_default();
         let upgrade = self.upgrade(upgrade)?;
+
+        let rpm = self.as_table(config, "rpm")?.unwrap_or_default();
+        let rpm = self.rpm(rpm)?;
 
         Ok(RepoConfig {
             workflows: workflows.unwrap_or_default(),
@@ -1037,6 +1114,7 @@ impl<'a> ConfigCtxt<'a> {
             variables,
             version: version.unwrap_or_default(),
             upgrade,
+            rpm,
         })
     }
 
@@ -1064,6 +1142,80 @@ impl<'a> ConfigCtxt<'a> {
         self.ensure_empty(config)?;
 
         Ok(Upgrade { exclude })
+    }
+
+    fn rpm_file(&mut self, value: toml::Value) -> Result<RpmFile> {
+        let mut config = self.table(value)?;
+
+        let Some(source) = self.in_string(&mut config, "source", |_, string| Ok(Some(string)))?
+        else {
+            return Err(self.bail("Missing source"));
+        };
+
+        let Some(dest) = self.in_string(&mut config, "dest", |_, string| Ok(Some(string)))? else {
+            return Err(self.bail("Missing dest"));
+        };
+
+        let mode = self.in_string(&mut config, "mode", |_, string| {
+            Ok(Some(rpm::FileMode::Regular {
+                permissions: u16::from_str_radix(&string, 8)?,
+            }))
+        })?;
+
+        self.ensure_empty(config)?;
+        Ok(RpmFile { source, dest, mode })
+    }
+
+    fn rpm_require(&mut self, value: toml::Value) -> Result<RpmRequire> {
+        let mut config = self.table(value)?;
+
+        let Some(package) = self.in_string(&mut config, "package", |_, string| Ok(Some(string)))?
+        else {
+            return Err(self.bail("Missing package"));
+        };
+
+        let version = self.in_string(&mut config, "version", |cx, string| {
+            if string == "*" {
+                return Ok(None);
+            }
+
+            let Some((op, version)) = string.split_once(' ') else {
+                return Err(cx.bail("Illegal version specification: {string}"));
+            };
+
+            let op = match op {
+                "<" => RpmOp::Lt,
+                "<=" => RpmOp::Le,
+                "=" => RpmOp::Eq,
+                ">=" => RpmOp::Ge,
+                ">" => RpmOp::Gt,
+                version => {
+                    return Err(cx.bail(format_args!("Illegal version specification: {version}")))
+                }
+            };
+
+            Ok(Some((op, Version::parse(version)?)))
+        })?;
+
+        self.ensure_empty(config)?;
+        Ok(RpmRequire { package, version })
+    }
+
+    fn rpm(&mut self, mut config: toml::Table) -> Result<Rpm> {
+        let files = self
+            .in_array(&mut config, "files", |cx, item| cx.rpm_file(item))?
+            .into_iter()
+            .flatten()
+            .collect();
+
+        let requires = self
+            .in_array(&mut config, "requires", |cx, item| cx.rpm_require(item))?
+            .into_iter()
+            .flatten()
+            .collect();
+
+        self.ensure_empty(config)?;
+        Ok(Rpm { files, requires })
     }
 }
 

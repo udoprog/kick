@@ -545,6 +545,36 @@
 //! ```toml
 //! disabled = ["readme"]
 //! ```
+//!
+//! <br>
+//!
+//! ## The `rpm` action
+//!
+//! The `rpm` action builds an RPM package for each repo. It is configured with
+//! the following section:
+//!
+//! ```toml
+//! [[rpm.files]]
+//! source = "desktop/se.tedro.JapaneseDictionary.desktop"
+//! dest = "/usr/share/applications/"
+//! mode = "600"
+//!
+//! [[rpm.requires]]
+//! package = "tesseract-langpack-jpn"
+//! version = ">= 4.1.1"
+//! ```
+//!
+//! Note that:
+//! * The default mode for files is inherited from the file.
+//! * The default version specification is `*`.
+//!
+//! Available version specifications are:
+//! * `*` - any version.
+//! * `= 1.2.3` - exact version.
+//! * `> 1.2.3` - greater than version.
+//! * `>= 1.2.3` - greater than or equal to version.
+//! * `< 1.2.3` - less than version.
+//! * `<= 1.2.3` - less than or equal to version.
 
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
@@ -565,6 +595,7 @@ mod repo_sets;
 mod rust_version;
 mod templates;
 mod urls;
+mod version;
 mod wix;
 mod workspace;
 
@@ -613,6 +644,8 @@ enum Action {
     Upgrade(SharedAction<cli::upgrade::Opts>),
     /// Build a wix-based installer.
     Msi(SharedAction<cli::msi::Opts>),
+    /// Build an rpjm-based installer.
+    Rpm(SharedAction<cli::rpm::Opts>),
     /// Build a compressed artifact (like a zip or tar.gz).
     Compress(SharedAction<cli::compress::Opts>),
 }
@@ -630,6 +663,7 @@ impl Action {
             Action::Publish(action) => &action.shared,
             Action::Upgrade(action) => &action.shared,
             Action::Msi(action) => &action.shared,
+            Action::Rpm(action) => &action.shared,
             Action::Compress(action) => &action.shared,
         }
     }
@@ -646,6 +680,7 @@ impl Action {
             Action::Publish(action) => Some(&action.repo),
             Action::Upgrade(action) => Some(&action.repo),
             Action::Msi(action) => Some(&action.repo),
+            Action::Rpm(action) => Some(&action.repo),
             Action::Compress(action) => Some(&action.repo),
         }
     }
@@ -935,6 +970,9 @@ async fn entry() -> Result<()> {
         Action::Msi(opts) => {
             cli::msi::entry(&mut cx, &opts.action)?;
         }
+        Action::Rpm(opts) => {
+            cli::rpm::entry(&mut cx, &opts.action)?;
+        }
         Action::Compress(opts) => {
             cli::compress::entry(&mut cx, &opts.action)?;
         }
@@ -1104,6 +1142,7 @@ fn find_from_current_dir() -> Result<(PathBuf, RelativePathBuf)> {
     let mut path = PathBuf::new();
     let mut relative = Vec::<String>::new();
 
+    let mut last_kick_toml = None;
     let mut first_git = None;
 
     loop {
@@ -1120,7 +1159,7 @@ fn find_from_current_dir() -> Result<(PathBuf, RelativePathBuf)> {
 
         if kick_toml.is_file() {
             tracing::trace!("Found {KICK_TOML} in {}", kick_toml.display());
-            return Ok((path, relative.into_iter().rev().collect()));
+            last_kick_toml = Some((path.clone(), relative.iter().rev().collect()));
         }
 
         let Some(Component::Normal(normal)) = parent.components().next_back() else {
@@ -1131,6 +1170,10 @@ fn find_from_current_dir() -> Result<(PathBuf, RelativePathBuf)> {
 
         path.push(Component::ParentDir);
         parent.pop();
+    }
+
+    if let Some((path, relative)) = last_kick_toml {
+        return Ok((path, relative));
     }
 
     let Some((first_git, relative_path)) = first_git else {

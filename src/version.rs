@@ -1,8 +1,45 @@
+use std::env;
 use std::ffi::OsStr;
 use std::fmt;
+use std::str::FromStr;
 
 use anyhow::{bail, Context, Result};
-use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike};
+use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike, Utc};
+use clap::Parser;
+
+#[derive(Default, Debug, Parser)]
+pub(crate) struct VersionOpts {
+    /// Define a release channel.
+    ///
+    /// Valid channels are: nightly which will use the current date, or a valid
+    /// naive date like `2023-12-11`.
+    #[clap(long, value_name = "channel")]
+    channel: Option<String>,
+    /// Define a release version.
+    #[clap(long, value_name = "version")]
+    version: Option<String>,
+}
+
+impl VersionOpts {
+    /// Construct a release from provided arguments.
+    pub(crate) fn release(&self) -> Result<Release> {
+        let mut release = None;
+
+        if let Some(channel) = &self.channel {
+            release = match (channel.as_str(), NaiveDate::from_str(channel.as_str())) {
+                (_, Ok(date)) => Some(Release::Date(date)),
+                ("nightly", _) => Some(Release::Nightly(Utc::now().naive_utc())),
+                _ => None,
+            };
+        }
+
+        if let Some(version) = &self.version {
+            release = Some(Release::Version(Version::parse(version.as_str())?));
+        }
+
+        Ok(release.unwrap_or_else(github_release))
+    }
+}
 
 pub(super) enum Release {
     Version(Version),
@@ -11,7 +48,7 @@ pub(super) enum Release {
 }
 
 impl Release {
-    pub(crate) fn file_version(&self) -> Result<String> {
+    pub(crate) fn msi_version(&self) -> Result<String> {
         /// Calculate an MSI-safe version number.
         /// Unfortunately this enforces some unfortunate constraints on the available
         /// version range.
@@ -150,4 +187,32 @@ impl AsRef<OsStr> for Version {
     fn as_ref(&self) -> &OsStr {
         self.base.as_ref()
     }
+}
+
+/// Get the github release to build.
+fn github_release() -> Release {
+    match github_ref_version() {
+        Err(error) => {
+            tracing::warn!("Assuming nightly release since we couldn't determine tag: {error}");
+            Release::Nightly(Utc::now().naive_local())
+        }
+        Ok(version) => Release::Version(version),
+    }
+}
+
+/// Get the version from GITHUB_REF.
+pub(crate) fn github_ref_version() -> Result<Version> {
+    let version = match env::var("GITHUB_REF") {
+        Ok(version) => version,
+        _ => bail!("Missing: GITHUB_REF"),
+    };
+
+    let mut it = version.split('/');
+
+    let version = match (it.next(), it.next(), it.next()) {
+        (Some("refs"), Some("tags"), Some(version)) => Version::parse(version)?,
+        _ => bail!("Expected GITHUB_REF: refs/tags/*"),
+    };
+
+    Ok(version)
 }

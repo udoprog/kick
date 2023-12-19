@@ -17,7 +17,7 @@ pub(crate) struct Builder {
 impl Builder {
     /// Construct a new WIX builder.
     pub(crate) fn new(
-        out: &Path,
+        output: &Path,
         name: impl fmt::Display,
         release: impl fmt::Display,
     ) -> Result<Self> {
@@ -38,8 +38,8 @@ impl Builder {
             arch = consts::ARCH
         );
 
-        let wixobj_path = out.join(format!("{base}.wixobj"));
-        let installer_path = out.join(format!("{base}.msi"));
+        let wixobj_path = output.join(format!("{base}.wixobj"));
+        let installer_path = output.join(format!("{base}.msi"));
 
         Ok(Self {
             candle_bin,
