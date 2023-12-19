@@ -591,11 +591,11 @@ mod glob;
 mod manifest;
 mod model;
 mod process;
+mod release;
 mod repo_sets;
 mod rust_version;
 mod templates;
 mod urls;
-mod version;
 mod wix;
 mod workspace;
 

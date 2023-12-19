@@ -6,12 +6,12 @@ use clap::Parser;
 
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
+use crate::release::Release;
 use crate::repo_sets::RepoSet;
-use crate::version::Release;
 use crate::wix;
 use crate::workspace;
 
-use crate::version::VersionOpts;
+use crate::release::VersionOpts;
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {

@@ -1,3 +1,5 @@
+mod find_requires;
+
 use std::env::consts::{ARCH, EXE_EXTENSION};
 use std::fs;
 use std::path::PathBuf;
@@ -8,11 +10,11 @@ use clap::Parser;
 use crate::config::RpmOp;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
+use crate::release::Release;
 use crate::repo_sets::RepoSet;
-use crate::version::Release;
 use crate::workspace;
 
-use crate::version::VersionOpts;
+use crate::release::VersionOpts;
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -68,6 +70,8 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts, release: &Release) -> Result<(),
         .join(name)
         .with_extension(EXE_EXTENSION);
 
+    let requires = find_requires::find_requires(&binary)?;
+
     let version = release.to_string();
 
     let output = match &opts.output {
@@ -85,7 +89,7 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts, release: &Release) -> Result<(),
     pkg = pkg
         .with_file(
             &binary,
-            rpm::FileOptions::new(&format!("/usr/bin/{}", name))
+            rpm::FileOptions::new(format!("/usr/bin/{}", name))
                 .mode(rpm::FileMode::Regular { permissions: 0o755 }),
         )
         .with_context(|| anyhow!("Adding binary: {}", binary.display()))?;
@@ -119,6 +123,10 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts, release: &Release) -> Result<(),
         } else {
             pkg = pkg.requires(rpm::Dependency::any(&require.package));
         }
+    }
+
+    for require in requires {
+        pkg = pkg.requires(rpm::Dependency::any(require));
     }
 
     if !output.is_dir() {

@@ -4,7 +4,9 @@ use std::fmt;
 use std::fmt::Write;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{ExitStatus, Output, Stdio};
+use std::process::{ChildStdin, ExitStatus, Output, Stdio};
+
+use anyhow::{Context, Result};
 
 pub(crate) struct Command {
     command: OsString,
@@ -58,6 +60,14 @@ impl Command {
     {
         self.current_dir = Some(dir.as_ref().to_owned());
         self
+    }
+
+    #[tracing::instrument(skip_all, fields(command = self.display().to_string(), current_dir = ?self.current_dir_repr()))]
+    pub(crate) fn spawn(&mut self) -> io::Result<Child> {
+        let mut command = self.command();
+        let child = command.spawn()?;
+
+        Ok(Child { child })
     }
 
     #[tracing::instrument(skip_all, fields(command = self.display().to_string(), current_dir = ?self.current_dir_repr()))]
@@ -142,6 +152,22 @@ impl fmt::Debug for Command {
             .field("args", &self.args)
             .field("current_dir", &self.current_dir)
             .finish()
+    }
+}
+
+pub(crate) struct Child {
+    child: std::process::Child,
+}
+
+impl Child {
+    pub(crate) fn stdin(&mut self) -> Result<ChildStdin> {
+        self.child.stdin.take().context("Missing stdin")
+    }
+
+    pub(crate) fn wait_with_output(self) -> io::Result<Output> {
+        let output = self.child.wait_with_output()?;
+        tracing::trace!(?output.status);
+        Ok(output)
     }
 }
 
