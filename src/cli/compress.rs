@@ -245,7 +245,7 @@ impl Archive for ZipArchive {
         use zip::write::FileOptions;
         use zip::{CompressionMethod, DateTime};
 
-        let mut options = FileOptions::default().compression_method(CompressionMethod::Bzip2);
+        let mut options = FileOptions::default().compression_method(CompressionMethod::Deflated);
 
         #[cfg(unix)]
         {
