@@ -74,8 +74,7 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 
     for repo in cx.repos() {
         let workspace = repo.workspace(cx)?;
-        msrv(cx, &workspace, repo, opts, &mut good, &mut bad)
-            .with_context(|| repo.path().to_owned())?;
+        msrv(cx, &workspace, repo, opts, &mut good, &mut bad).with_context(cx.context(repo))?;
     }
 
     let hint = format!("msrv: {:?}", opts);
@@ -95,7 +94,7 @@ fn msrv(
 ) -> Result<()> {
     let primary = crates.primary_package()?;
 
-    let current_dir = repo.path().to_path(cx.root);
+    let current_dir = cx.to_path(repo.path());
     let rust_version = primary.rust_version();
 
     let opts_earliest = parse_minor_version(cx, opts.earliest.as_deref(), rust_version.as_ref())?;
@@ -109,7 +108,7 @@ fn msrv(
         .unwrap_or(LATEST)
         .max(earliest);
 
-    let cargo_lock = primary.manifest().dir().join("Cargo.lock").to_path(cx.root);
+    let cargo_lock = cx.to_path(primary.manifest().dir().join("Cargo.lock"));
     let cargo_lock_original = cargo_lock.with_extension("lock.original");
 
     tracing::info!("Testing Rust {earliest}-{latest}");
@@ -145,8 +144,8 @@ fn msrv(
 
         for p in crates.packages() {
             let original = p.manifest().path().with_extension("toml.original");
-            let original_path = original.to_path(cx.root);
-            let manifest_path = p.manifest().path().to_path(cx.root);
+            let original_path = cx.to_path(original);
+            let manifest_path = cx.to_path(p.manifest().path());
 
             let mut manifest = p.manifest().clone();
 

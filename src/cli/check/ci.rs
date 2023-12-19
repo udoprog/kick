@@ -92,7 +92,7 @@ fn validate_workflow(
 ) -> Result<()> {
     let path = ci.path.join(format!("{id}.yml"));
 
-    if !path.to_path(cx.root).is_file() {
+    if !cx.to_path(&path).is_file() {
         cx.change(Change::MissingWorkflow {
             id: id.to_owned(),
             path,
@@ -102,7 +102,7 @@ fn validate_workflow(
         return Ok(());
     }
 
-    let bytes = std::fs::read(path.to_path(cx.root))?;
+    let bytes = std::fs::read(cx.to_path(&path))?;
     let value = yaml::from_slice(bytes).with_context(|| anyhow!("{path}"))?;
 
     let name = value

@@ -70,7 +70,7 @@ fn msi(
     release: &Release,
     file_version: &str,
 ) -> Result<(), anyhow::Error> {
-    let root = repo.path().to_path(cx.root);
+    let root = cx.to_path(repo.path());
 
     let Some(workspace) = workspace::open(cx, repo)? else {
         bail!("Not a workspace");

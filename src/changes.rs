@@ -103,7 +103,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
             println!("{path}: Missing workflow");
 
             if save {
-                let path = path.to_path(cx.root);
+                let path = cx.to_path(path);
 
                 if let Some(parent) = path.parent() {
                     if !parent.is_dir() {
@@ -176,7 +176,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
 
             if edited {
                 println!("{path}: Fixing");
-                std::fs::write(path.to_path(cx.root), doc.to_string())?;
+                std::fs::write(cx.to_path(path), doc.to_string())?;
             }
         }
         Change::UpdateLib {
@@ -185,7 +185,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
         } => {
             if save {
                 println!("{path}: Fixing");
-                std::fs::write(path.to_path(cx.root), new_file.as_str())?;
+                std::fs::write(cx.to_path(path), new_file.as_str())?;
             } else {
                 println!("{path}: Needs update");
             }
@@ -196,7 +196,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
         } => {
             if save {
                 println!("{path}: Fixing");
-                std::fs::write(path.to_path(cx.root), new_file.as_str())?;
+                std::fs::write(cx.to_path(path), new_file.as_str())?;
             } else {
                 println!("{path}: Needs update");
             }
@@ -214,7 +214,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
 
             if let Some(modified_cargo) = modified_cargo {
                 if save {
-                    modified_cargo.save_to(path.to_path(cx.root))?;
+                    modified_cargo.save_to(cx.to_path(path))?;
                 } else {
                     println!("Would save {path}");
                 }
@@ -250,7 +250,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                         );
                         manifest.set_rust_version(version)?;
                         manifest.sort_package_keys()?;
-                        manifest.save_to(manifest.path().to_path(cx.root))?;
+                        manifest.save_to(cx.to_path(manifest.path()))?;
                     } else {
                         tracing::info!(
                             "Would save {} with rust-version = \"{version}\"",
@@ -284,7 +284,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                             "Saving {} without rust-version (target version outdates rust-version)",
                             manifest.path()
                         );
-                        manifest.save_to(manifest.path().to_path(cx.root))?;
+                        manifest.save_to(cx.to_path(manifest.path()))?;
                     } else {
                         tracing::info!(
                             "Woudl save {} without rust-version (target version outdates rust-version)",
@@ -297,7 +297,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
         Change::SavePackage { manifest } => {
             if save {
                 tracing::info!("Saving {}", manifest.path());
-                let out = manifest.path().to_path(cx.root);
+                let out = cx.to_path(manifest.path());
                 manifest.save_to(out)?;
             } else {
                 tracing::info!("Would save {}", manifest.path());
@@ -324,7 +324,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
             if save {
                 let git = cx.require_git()?;
                 let version = version.to_string();
-                let path = path.to_path(cx.root);
+                let path = cx.to_path(path);
                 tracing::info!("Making commit `Release {version}`");
                 git.add(&path, ["-u"])?;
                 git.commit(&path, format_args!("Release {version}"))?;
@@ -359,7 +359,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                 command
                     .args(&args[..])
                     .stdin(Stdio::null())
-                    .current_dir(manifest_dir.to_path(cx.root));
+                    .current_dir(cx.to_path(manifest_dir));
 
                 let status = command.status()?;
 

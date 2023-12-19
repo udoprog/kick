@@ -31,8 +31,7 @@ pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
         let primary = workspace.primary_package()?;
         let params = cx.repo_params(&primary, repo)?;
 
-        check(cx, repo, &workspace, &primary, params, &mut urls)
-            .with_context(|| repo.path().to_owned())?;
+        check(cx, repo, &workspace, &primary, params, &mut urls).with_context(cx.context(repo))?;
     }
 
     let o = std::io::stdout();

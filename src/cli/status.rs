@@ -113,7 +113,7 @@ async fn status(
     client: &Client,
     limit: &str,
 ) -> Result<bool> {
-    let current_dir = repo.path().to_path(cx.root);
+    let current_dir = cx.to_path(repo.path());
     let sha;
 
     let sha = match &cx.git {

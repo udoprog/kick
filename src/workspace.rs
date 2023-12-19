@@ -31,8 +31,7 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Crates>> {
         .parent()
         .ok_or_else(|| anyhow!("missing parent directory"))?;
 
-    let Some(manifest) =
-        manifest::open(manifest_path.to_path(cx.root), manifest_dir, &manifest_path)?
+    let Some(manifest) = manifest::open(cx.to_path(&manifest_path), manifest_dir, &manifest_path)?
     else {
         return Ok(None);
     };
@@ -64,13 +63,10 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Crates>> {
             for manifest_dir in members {
                 let manifest_path = manifest_dir.join(CARGO_TOML);
 
-                let manifest = manifest::open(
-                    manifest_path.to_path(cx.root),
-                    &manifest_dir,
-                    &manifest_path,
-                )
-                .with_context(|| anyhow!("{manifest_path}"))?
-                .with_context(|| anyhow!("{manifest_path}: missing file"))?;
+                let manifest =
+                    manifest::open(cx.to_path(&manifest_path), &manifest_dir, &manifest_path)
+                        .with_context(|| anyhow!("{manifest_path}"))?
+                        .with_context(|| anyhow!("{manifest_path}: missing file"))?;
 
                 queue.push_back(manifest);
             }
@@ -98,12 +94,12 @@ fn expand_members<'a>(
 
     for path in iter {
         let manifest_dir = manifest.dir().join(path);
-        let glob = Glob::new(cx.root, &manifest_dir);
+        let glob = Glob::new(cx.root(), &manifest_dir);
 
         for path in glob.matcher() {
             let path = path?;
 
-            if !path.to_path(cx.root).is_dir() {
+            if !cx.to_path(&path).is_dir() {
                 continue;
             }
 

@@ -23,7 +23,7 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     let mut bad = RepoSet::default();
 
     for repo in cx.repos() {
-        upgrade(cx, opts, repo, &mut good, &mut bad).with_context(|| repo.path().to_owned())?;
+        upgrade(cx, opts, repo, &mut good, &mut bad).with_context(cx.context(repo))?;
     }
 
     let hint = format!("upgrade: {opts:?}");
@@ -40,7 +40,7 @@ fn upgrade(
     good: &mut RepoSet,
     bad: &mut RepoSet,
 ) -> Result<()> {
-    let current_dir = repo.path().to_path(cx.root);
+    let current_dir = cx.to_path(repo.path());
     let upgrade = cx.config.upgrade(repo.path());
 
     let mut command = Command::new("cargo");

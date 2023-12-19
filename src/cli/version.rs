@@ -64,7 +64,7 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     }
 
     for repo in cx.repos() {
-        version(cx, opts, repo, &version_set).with_context(|| repo.path().to_owned())?;
+        version(cx, opts, repo, &version_set).with_context(cx.context(repo))?;
     }
 
     Ok(())
@@ -143,7 +143,7 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo, version_set: &VersionSet) ->
             let name = package.name()?;
 
             if let Some(version) = versions.get(name) {
-                let root = modified.dir().to_path(cx.root);
+                let root = cx.to_path(modified.dir());
                 let version_string = version.to_string();
 
                 for replacement in cx.config.version(repo) {

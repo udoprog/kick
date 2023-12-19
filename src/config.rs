@@ -1106,8 +1106,8 @@ fn load_base<'a>(
         .unwrap_or_default();
 
     for repo in repos {
-        let Some(config) =
-            load_repo(cx.root, repo, templating).with_context(|| repo.path().to_owned())?
+        let Some(config) = load_repo(cx.root, repo, templating)
+            .with_context(|| anyhow!("In manifest {}", repo.path().to_path(cx.root).display()))?
         else {
             continue;
         };

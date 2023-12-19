@@ -2,7 +2,7 @@ use std::cell::{Ref, RefCell};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use relative_path::RelativePath;
 
 use crate::actions::Actions;
@@ -16,7 +16,7 @@ use crate::repo_sets::RepoSets;
 use crate::rust_version::RustVersion;
 
 pub(crate) struct Ctxt<'a> {
-    pub(crate) root: &'a Path,
+    pub(super) root: &'a Path,
     pub(crate) current_path: &'a RelativePath,
     pub(crate) config: &'a Config<'a>,
     pub(crate) actions: &'a Actions<'a>,
@@ -30,9 +30,18 @@ pub(crate) struct Ctxt<'a> {
 }
 
 impl<'a> Ctxt<'a> {
+    pub(crate) fn root(&self) -> &Path {
+        self.root
+    }
+
     /// Get a repo path.
-    pub(crate) fn repo_path(&self, repo: &RepoRef) -> PathBuf {
-        if let Ok(path) = self.current_path.strip_prefix(repo.path()) {
+    pub(crate) fn to_path<P>(&self, path: P) -> PathBuf
+    where
+        P: AsRef<RelativePath>,
+    {
+        let path = path.as_ref();
+
+        if let Ok(path) = self.current_path.strip_prefix(path) {
             if path.components().next().is_none() {
                 return PathBuf::from(".");
             } else {
@@ -40,7 +49,15 @@ impl<'a> Ctxt<'a> {
             }
         };
 
-        repo.path().to_path(self.root)
+        path.to_path(self.root)
+    }
+
+    /// Construct a reporting context for the given repo.
+    pub(crate) fn context<'ctx>(
+        &'ctx self,
+        repo: &'ctx RepoRef,
+    ) -> impl Fn() -> anyhow::Error + 'ctx {
+        move || anyhow!("In repo {}", self.to_path(repo.path()).display())
     }
 
     /// Get repo parameters for the given package.

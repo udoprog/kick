@@ -27,7 +27,7 @@ pub(crate) struct Opts {
 
 pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
     for repo in cx.repos() {
-        publish(cx, opts, repo).with_context(|| repo.path().to_owned())?;
+        publish(cx, opts, repo).with_context(cx.context(repo))?;
     }
 
     Ok(())

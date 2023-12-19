@@ -48,7 +48,7 @@ pub(crate) struct Opts {
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     for repo in cx.repos() {
-        compress(cx, repo, opts).with_context(|| cx.repo_path(repo).display().to_string())?;
+        compress(cx, repo, opts).with_context(cx.context(repo))?;
     }
 
     Ok(())
@@ -74,7 +74,7 @@ fn compress(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
         None => consts::OS,
     };
 
-    let root = cx.repo_path(repo);
+    let root = cx.to_path(repo.path());
 
     let mut zip_archive;
     let mut gzip_archive;
@@ -107,7 +107,7 @@ fn compress(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
         tracing::info!("Appending: {}", path.display());
 
         archive
-            .append(&path)
+            .append(path)
             .with_context(|| anyhow!("Appending {}", path.display()))?;
     }
 
