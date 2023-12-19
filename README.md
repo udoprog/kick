@@ -81,8 +81,9 @@ repos/kick/src/main.rs: Fixing
 
 ## Working with repo sets
 
-Commands can produce sets under certain circumstances. Look out for the
-switch named `--store-sets`.
+Commands can produce sets under certain circumstances, the sets are usually
+called `good` and `bad` depending on the outcome when performing the work
+over the repo.
 
 If this is set during a run, it will store sets of repos, such as the set
 for which a command failed. This set can then later be re-used through the
@@ -92,18 +93,15 @@ For a list of available sets, you can simply list the `sets` folder:
 
 ```text
 sets\bad
-sets\bad.2023-04-14-050517
-sets\bad.2023-04-14-050928
-sets\bad.2023-04-14-051046
-sets\good.2023-04-14-050517
-sets\good.2023-04-14-050928
-sets\good.2023-04-14-051046
+sets\bad-20230414050517
+sets\bad-20230414050928
+sets\bad-20230414051046
+sets\good-20230414050517
+sets\good-20230414050928
+sets\good-20230414051046
 ```
 
-> **Note** the three most recent versions of each set will be retained. If
-> you want to save a set make you can either rename it from its dated file
-> or make use of `--store-sets` while running a command. If there are no
-> non-dated versions of a set the latest one is used.
+> **Note** the three most recent versions of each set will be retained.
 
 Set files are simply lists of repositories, which supports comments by
 prefixing lines with `#`. They are intended to be edited by hand if needed.
