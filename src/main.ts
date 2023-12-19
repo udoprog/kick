@@ -34,6 +34,11 @@ async function download(tag: string): Promise<string> {
     let platform;
     let ext = 'tar.gz';
     let zip = false;
+    let arch = 'x86';
+
+    if (process.arch === 'x64') {
+        arch = 'x86_64';
+    }
 
     if (IS_WINDOWS) {
         platform = 'windows';
@@ -45,7 +50,7 @@ async function download(tag: string): Promise<string> {
         platform = 'linux';
     }
 
-    let name = `kick-${tag}-${platform}.${ext}`;
+    let name = `kick-${tag}-${arch}-${platform}.${ext}`;
 
     const url = `https://github.com/udoprog/kick/releases/download/${tag}/${name}`;
 
