@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use relative_path::RelativePathBuf;
 
-use crate::ctxt::Ctxt;
+use crate::ctxt::{self, Ctxt};
 use crate::model::Repo;
 use crate::release::Release;
 use crate::repo_sets::RepoSet;
@@ -94,7 +94,7 @@ fn msi(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts, release: &Release) -> Result<(),
     builder.build(
         wsx_path,
         &target_wixobj,
-        repo.path().to_path(cx.root),
+        ctxt::empty_or_dot(repo.path().to_path(cx.root)),
         binary_name,
         &binary_path,
         release.msi_version()?,

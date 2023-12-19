@@ -1168,7 +1168,7 @@ fn find_from_current_dir() -> Result<(PathBuf, RelativePathBuf)> {
 
             if git.exists() {
                 tracing::trace!("Found .git in {}", git.display());
-                first_git = Some((parent.clone(), relative.iter().rev().collect()));
+                first_git = Some((path.clone(), relative.iter().rev().collect()));
             }
         }
 

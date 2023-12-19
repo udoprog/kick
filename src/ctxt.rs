@@ -1,5 +1,5 @@
 use std::cell::{Ref, RefCell};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{anyhow, Context, Result};
@@ -105,6 +105,15 @@ impl<'a> Ctxt<'a> {
     /// Check if there's a change we can save.
     pub(crate) fn can_save(&self) -> bool {
         !self.changes.borrow().is_empty()
+    }
+}
+
+/// Coerce an empty buffer into the `.` path if necessary.
+pub(crate) fn empty_or_dot(path: PathBuf) -> PathBuf {
+    if path.components().next().is_none() {
+        PathBuf::from_iter([Component::CurDir])
+    } else {
+        path
     }
 }
 
