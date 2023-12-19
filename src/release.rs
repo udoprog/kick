@@ -177,6 +177,7 @@ impl ReleaseOpts {
     }
 }
 
+#[derive(Debug)]
 pub(super) enum ReleaseKind {
     Versioned(Version, Option<Box<str>>),
     Dated(Date, Option<Box<str>>),
@@ -240,20 +241,20 @@ impl Release {
 
 impl fmt::Display for Release {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let channel = match &self.kind {
+        let (prefix, channel) = match &self.kind {
             ReleaseKind::Versioned(version, channel) => {
                 version.fmt(f)?;
-                channel.as_deref()
+                ("-", channel.as_deref())
             }
             ReleaseKind::Dated(date, channel) => {
                 date.fmt(f)?;
-                channel.as_deref()
+                ("-", channel.as_deref())
             }
-            ReleaseKind::Channel(channel) => Some(channel.as_ref()),
+            ReleaseKind::Channel(channel) => ("", Some(channel.as_ref())),
         };
 
         if let Some(name) = channel {
-            write!(f, "-{name}")?;
+            write!(f, "{prefix}{name}")?;
 
             if self.revision != 0 {
                 self.revision.fmt(f)?;
