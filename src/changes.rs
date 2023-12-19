@@ -21,17 +21,22 @@ use crate::process::Command;
 use crate::rust_version::RustVersion;
 
 /// Report a warning.
-pub(crate) fn report(warning: &Warning) -> Result<()> {
+pub(crate) fn report(cx: &Ctxt<'_>, warning: &Warning) -> Result<()> {
     match warning {
         Warning::MissingReadme { path } => {
-            println!("{path}: Missing README");
+            let path = cx.to_path(path);
+            println!("{}: Missing README", path.display());
         }
         Warning::WrongWorkflowName {
             path,
             actual,
             expected,
         } => {
-            println!("{path}: Wrong workflow name: {actual} (actual) != {expected} (expected)");
+            let path = cx.to_path(path);
+            println!(
+                "{}: Wrong workflow name: {actual} (actual) != {expected} (expected)",
+                path.display()
+            );
         }
         Warning::ToplevelHeadings {
             path,
@@ -40,7 +45,11 @@ pub(crate) fn report(warning: &Warning) -> Result<()> {
             line_offset,
         } => {
             let (line, column, string) = temporary_line_fix(file, range.start, *line_offset)?;
-            println!("{path}:{line}:{column}: doc comment has toplevel headings");
+            let path = cx.to_path(path);
+            println!(
+                "{}:{line}:{column}: doc comment has toplevel headings",
+                path.display()
+            );
             println!("{string}");
         }
         Warning::MissingPreceedingBr {
@@ -50,20 +59,28 @@ pub(crate) fn report(warning: &Warning) -> Result<()> {
             line_offset,
         } => {
             let (line, column, string) = temporary_line_fix(file, range.start, *line_offset)?;
-            println!("{path}:{line}:{column}: missing preceeding <br>");
+            let path = cx.to_path(path);
+            println!(
+                "{}:{line}:{column}: missing preceeding <br>",
+                path.display()
+            );
             println!("{string}");
         }
         Warning::MissingFeature { path, feature } => {
-            println!("{path}: missing features `{feature}`");
+            let path = cx.to_path(path);
+            println!("{}: missing features `{feature}`", path.display());
         }
         Warning::NoFeatures { path } => {
-            println!("{path}: trying featured build (--all-features, --no-default-features), but no features present");
+            let path = cx.to_path(path);
+            println!("{}: trying featured build (--all-features, --no-default-features), but no features present", path.display());
         }
         Warning::MissingEmptyFeatures { path } => {
-            println!("{path}: missing empty features build");
+            let path = cx.to_path(path);
+            println!("{}: missing empty features build", path.display());
         }
         Warning::MissingAllFeatures { path } => {
-            println!("{path}: missing all features build");
+            let path = cx.to_path(path);
+            println!("{}: missing all features build", path.display());
         }
         Warning::ActionMissingKey {
             path,
@@ -72,7 +89,11 @@ pub(crate) fn report(warning: &Warning) -> Result<()> {
             doc,
             actual,
         } => {
-            println!("{path}: {key}: action missing key, expected {expected}");
+            let path = cx.to_path(path);
+            println!(
+                "{}: {key}: action missing key, expected {expected}",
+                path.display()
+            );
 
             match actual {
                 Some(value) => {
@@ -86,10 +107,15 @@ pub(crate) fn report(warning: &Warning) -> Result<()> {
             }
         }
         Warning::ActionOnMissingBranch { path, key, branch } => {
-            println!("{path}: {key}: action missing branch `{branch}`");
+            let path = cx.to_path(path);
+            println!(
+                "{}: {key}: action missing branch `{branch}`",
+                path.display()
+            );
         }
         Warning::ActionExpectedEmptyMapping { path, key } => {
-            println!("{path}: {key}: action expected empty mapping");
+            let path = cx.to_path(path);
+            println!("{}: {key}: action expected empty mapping", path.display());
         }
     }
 
@@ -100,11 +126,10 @@ pub(crate) fn report(warning: &Warning) -> Result<()> {
 pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
     match change {
         Change::MissingWorkflow { id, path, repo } => {
-            println!("{path}: Missing workflow");
+            let path = cx.to_path(path);
+            println!("{}: Missing workflow", path.display());
 
             if save {
-                let path = cx.to_path(path);
-
                 if let Some(parent) = path.parent() {
                     if !parent.is_dir() {
                         std::fs::create_dir_all(parent)?;
@@ -124,6 +149,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
             }
         }
         Change::BadWorkflow { path, doc, change } => {
+            let path = cx.to_path(path);
             let mut doc = doc.clone();
             let mut edited = false;
 
@@ -136,7 +162,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                         remove_keys,
                         set_keys,
                     } => {
-                        println!("{path}: {reason}");
+                        println!("{}: {reason}", path.display());
 
                         if save {
                             doc.value_mut(*uses).set_string(string);
@@ -144,7 +170,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                             for (id, key) in remove_keys {
                                 if let Some(mut m) = doc.value_mut(*id).into_mapping_mut() {
                                     if !m.remove(key) {
-                                        bail!("{path}: failed to remove key `{key}`");
+                                        bail!("{}: failed to remove key `{key}`", path.display());
                                     }
                                 }
                             }
@@ -156,7 +182,10 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                                     let Some(next) =
                                         m.into_mapping_mut().and_then(|m| m.get_into_mut(step))
                                     else {
-                                        bail!("{path}: missing step `{step}` in key `{key}`");
+                                        bail!(
+                                            "{}: missing step `{step}` in key `{key}`",
+                                            path.display()
+                                        );
                                     };
 
                                     m = next;
@@ -169,36 +198,40 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                         }
                     }
                     WorkflowChange::Error { name, reason } => {
-                        println!("{path}: {name}: {reason}");
+                        println!("{}: {name}: {reason}", path.display());
                     }
                 }
             }
 
             if edited {
-                println!("{path}: Fixing");
-                std::fs::write(cx.to_path(path), doc.to_string())?;
+                println!("{}: Fixing", path.display());
+                std::fs::write(path, doc.to_string())?;
             }
         }
         Change::UpdateLib {
             path,
             lib: new_file,
         } => {
+            let path = cx.to_path(path);
+
             if save {
-                println!("{path}: Fixing");
-                std::fs::write(cx.to_path(path), new_file.as_str())?;
+                println!("{}: Fixing", path.display());
+                std::fs::write(path, new_file.as_str())?;
             } else {
-                println!("{path}: Needs update");
+                println!("{}: Needs update", path.display());
             }
         }
         Change::UpdateReadme {
             path,
             readme: new_file,
         } => {
+            let path = cx.to_path(path);
+
             if save {
-                println!("{path}: Fixing");
-                std::fs::write(cx.to_path(path), new_file.as_str())?;
+                println!("{}: Fixing", path.display());
+                std::fs::write(path, new_file.as_str())?;
             } else {
-                println!("{path}: Needs update");
+                println!("{}: Needs update", path.display());
             }
         }
         Change::CargoTomlIssues {
@@ -206,7 +239,9 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
             cargo: modified_cargo,
             issues,
         } => {
-            println!("{path}:");
+            let path = cx.to_path(path);
+
+            println!("{}:", path.display());
 
             for issue in issues {
                 println!("  {issue}");
@@ -214,9 +249,9 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
 
             if let Some(modified_cargo) = modified_cargo {
                 if save {
-                    modified_cargo.save_to(cx.to_path(path))?;
+                    modified_cargo.save_to(path)?;
                 } else {
-                    println!("Would save {path}");
+                    println!("Would save {}", path.display());
                 }
             }
         }

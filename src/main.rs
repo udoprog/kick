@@ -808,8 +808,22 @@ async fn entry() -> Result<()> {
     let repo_opts = action.repo();
 
     let (root, current_path) = match &shared.root {
-        Some(root) => (root.to_owned(), RelativePathBuf::new()),
-        None => find_from_current_dir().context("Finding project root")?,
+        Some(root) => {
+            let root = root.canonicalize()?;
+            let current = std::env::current_dir()?.canonicalize()?;
+
+            let current_path = if let Ok(prefix) = current.strip_prefix(&root) {
+                Some(RelativePathBuf::from_path(prefix)?)
+            } else {
+                None
+            };
+
+            (root.to_owned(), current_path)
+        }
+        None => {
+            let (root, current_path) = find_from_current_dir().context("Finding project root")?;
+            (root, Some(current_path))
+        }
     };
 
     tracing::trace!(
@@ -863,12 +877,15 @@ async fn entry() -> Result<()> {
     );
 
     if let Some(repo_opts) = repo_opts {
-        let current_path =
+        let current_path = if let Some(current_path) = current_path.as_ref() {
             if !repo_opts.all && repos.iter().any(|m| current_path.starts_with(m.path())) {
                 Some(current_path.as_ref())
             } else {
                 None
-            };
+            }
+        } else {
+            None
+        };
 
         let mut filters = Vec::new();
 
@@ -930,7 +947,7 @@ async fn entry() -> Result<()> {
 
     let mut cx = ctxt::Ctxt {
         root: &root,
-        current_path: &current_path,
+        current_path: current_path.as_deref(),
         config: &config,
         actions: &actions,
         repos: &repos,
@@ -1004,7 +1021,7 @@ async fn entry() -> Result<()> {
     }
 
     for warning in cx.warnings().iter() {
-        crate::changes::report(warning)?;
+        crate::changes::report(&cx, warning)?;
     }
 
     for change in cx.changes().iter() {

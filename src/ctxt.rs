@@ -1,5 +1,5 @@
 use std::cell::{Ref, RefCell};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{anyhow, Context, Result};
@@ -17,7 +17,7 @@ use crate::rust_version::RustVersion;
 
 pub(crate) struct Ctxt<'a> {
     pub(super) root: &'a Path,
-    pub(crate) current_path: &'a RelativePath,
+    pub(crate) current_path: Option<&'a RelativePath>,
     pub(crate) config: &'a Config<'a>,
     pub(crate) actions: &'a Actions<'a>,
     pub(crate) repos: &'a [Repo],
@@ -39,17 +39,11 @@ impl<'a> Ctxt<'a> {
     where
         P: AsRef<RelativePath>,
     {
-        let path = path.as_ref();
+        if let Some(current_path) = self.current_path {
+            return PathBuf::from(current_path.relative(path).as_str());
+        }
 
-        if let Ok(path) = self.current_path.strip_prefix(path) {
-            if path.components().next().is_none() {
-                return PathBuf::from(".");
-            } else {
-                return path.components().map(|_| Component::ParentDir).collect();
-            }
-        };
-
-        path.to_path(self.root)
+        path.as_ref().to_path(self.root)
     }
 
     /// Construct a reporting context for the given repo.
