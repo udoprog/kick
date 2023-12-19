@@ -271,17 +271,19 @@ impl Deref for Repo {
 }
 
 /// Load git modules.
-pub(crate) fn load_modules(root: &Path, git: Option<&Git>) -> Result<Vec<Repo>> {
+pub(crate) fn load_gitmodules(root: &Path) -> Result<Option<Vec<Repo>>> {
     let gitmodules_path = root.join(".gitmodules");
 
     match std::fs::read(&gitmodules_path) {
-        Ok(buf) => {
-            return parse_git_modules(&buf).with_context(|| gitmodules_path.display().to_string());
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(buf) => Ok(Some(
+            parse_git_modules(&buf).with_context(|| gitmodules_path.display().to_string())?,
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => return Err(Error::from(e)).context(gitmodules_path.display().to_string()),
-    };
+    }
+}
 
+pub(crate) fn load_from_git(root: &Path, git: Option<&Git>) -> Result<Vec<Repo>> {
     let Some(git) = git else {
         return Ok(Vec::new());
     };

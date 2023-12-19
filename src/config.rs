@@ -101,7 +101,7 @@ impl Upgrade {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Debug, Clone)]
 pub(crate) struct Rpm {
     /// Packages to include in an rpm package.
     pub(crate) files: Vec<RpmFile>,
@@ -116,7 +116,7 @@ impl Rpm {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Debug, Clone)]
 pub(crate) struct RpmFile {
     /// The source of an rpm file.
     pub(crate) source: String,
@@ -126,7 +126,7 @@ pub(crate) struct RpmFile {
     pub(crate) mode: Option<rpm::FileMode>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug, Copy)]
 pub(crate) enum RpmOp {
     /// Greater than.
     Gt,
@@ -140,7 +140,7 @@ pub(crate) enum RpmOp {
     Eq,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Debug, Clone)]
 pub(crate) struct RpmRequire {
     /// The package being required.
     pub(crate) package: String,

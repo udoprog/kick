@@ -2,13 +2,15 @@ mod find_requires;
 
 use std::env::consts::{ARCH, EXE_EXTENSION};
 use std::fs;
+use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
-use relative_path::RelativePathBuf;
+use relative_path::{RelativePath, RelativePathBuf};
 
-use crate::config::RpmOp;
+use crate::config::{RpmFile, RpmOp};
 use crate::ctxt::Ctxt;
+use crate::glob::Glob;
 use crate::model::Repo;
 use crate::release::Release;
 use crate::repo_sets::RepoSet;
@@ -95,18 +97,53 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts, release: &Release) -> Result<(),
         .with_context(|| anyhow!("Adding binary: {}", binary_path.display()))?;
 
     for file in cx.config.rpm_files(repo) {
-        let source = root.join(&file.source);
-        tracing::info!("Adding file: {}", source.display());
+        let from = cx.to_path(repo.path());
 
-        let mut options = rpm::FileOptions::new(&file.dest);
+        let source = RelativePath::new(&file.source);
+        let glob = Glob::new(&from, source);
+        let dest = RelativePath::new(&file.dest);
+
+        if glob.is_exact() {
+            let Some(file_name) = source.file_name() else {
+                bail!("Missing file name: {source}");
+            };
+
+            let source = cx.to_path(repo.path().join(&file.source));
+            let dest = dest.join(file_name);
+            pkg = add_file(pkg, file, &source, &dest)?;
+        } else {
+            let matcher = glob.matcher();
+
+            for source in matcher {
+                let relative = source?;
+
+                let Some(file_name) = relative.file_name() else {
+                    bail!("Missing file name: {relative}");
+                };
+
+                let source = cx.to_path(repo.path().join(&relative));
+                let dest = dest.join(file_name);
+                pkg = add_file(pkg, file, &source, &dest)?;
+            }
+        }
+    }
+
+    fn add_file(
+        pkg: rpm::PackageBuilder,
+        file: &RpmFile,
+        source: &Path,
+        dest: &RelativePath,
+    ) -> Result<rpm::PackageBuilder> {
+        tracing::info!("Adding {} to {dest}", source.display());
+
+        let mut options = rpm::FileOptions::new(dest.as_str());
 
         if let Some(mode) = file.mode {
             options = options.mode(mode);
         }
 
-        pkg = pkg
-            .with_file(&source, options)
-            .with_context(|| anyhow!("Adding file: {}", source.display()))?;
+        pkg.with_file(source, options)
+            .with_context(|| anyhow!("Adding file: {}", source.display()))
     }
 
     for require in cx.config.rpm_requires(repo) {

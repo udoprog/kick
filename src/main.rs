@@ -848,7 +848,20 @@ async fn entry() -> Result<()> {
     let git = git::Git::find()?;
 
     let templating = templates::Templating::new()?;
-    let repos = model::load_modules(&root, git.as_ref())?;
+    let repos = model::load_gitmodules(&root)?;
+
+    let defaults = config::defaults();
+    let config = config::load(
+        &root,
+        &templating,
+        repos.as_deref().unwrap_or_default(),
+        &defaults,
+    )?;
+
+    let repos = match repos {
+        Some(repos) => repos,
+        None => model::load_from_git(&root, git.as_ref())?,
+    };
 
     tracing::trace!(
         modules = repos
@@ -858,9 +871,6 @@ async fn entry() -> Result<()> {
             .join(", "),
         "loaded modules"
     );
-
-    let defaults = config::defaults();
-    let config = config::load(&root, &templating, &repos, &defaults)?;
 
     let mut sets = repo_sets::RepoSets::new(root.join("sets"))?;
 
