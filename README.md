@@ -548,3 +548,33 @@ To disable, specify:
 ```toml
 disabled = ["readme"]
 ```
+
+<br>
+
+## The `rpm` action
+
+The `rpm` action builds an RPM package for each repo. It is configured with
+the following section:
+
+```toml
+[[rpm.files]]
+source = "desktop/se.tedro.JapaneseDictionary.desktop"
+dest = "/usr/share/applications/"
+mode = "600"
+
+[[rpm.requires]]
+package = "tesseract-langpack-jpn"
+version = ">= 4.1.1"
+```
+
+Note that:
+* The default mode for files is inherited from the file.
+* The default version specification is `*`.
+
+Available version specifications are:
+* `*` - any version.
+* `= 1.2.3` - exact version.
+* `> 1.2.3` - greater than version.
+* `>= 1.2.3` - greater than or equal to version.
+* `< 1.2.3` - less than version.
+* `<= 1.2.3` - less than or equal to version.

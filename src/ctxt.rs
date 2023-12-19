@@ -40,7 +40,8 @@ impl<'a> Ctxt<'a> {
         P: AsRef<RelativePath>,
     {
         if let Some(current_path) = self.current_path {
-            return PathBuf::from(current_path.relative(path).as_str());
+            let output = current_path.relative(path);
+            return PathBuf::from(output.as_str());
         }
 
         path.as_ref().to_path(self.root)
@@ -70,7 +71,10 @@ impl<'a> Ctxt<'a> {
 
     /// Iterate over non-disabled modules.
     pub(crate) fn repos(&self) -> impl Iterator<Item = &Repo> + '_ {
-        self.repos.iter().filter(move |m| !m.is_disabled())
+        Repos {
+            repos: self.repos,
+            index: 0,
+        }
     }
 
     /// Require a working git command.
@@ -119,4 +123,26 @@ pub(crate) fn rustc_version() -> Option<RustVersion> {
     tracing::trace!("rustc --version: {output}");
     let version = output.split(' ').nth(1)?;
     RustVersion::parse(version)
+}
+
+struct Repos<'a> {
+    repos: &'a [Repo],
+    index: usize,
+}
+
+impl<'a> Iterator for Repos<'a> {
+    type Item = &'a Repo;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let repo = self.repos.get(self.index)?;
+            self.index += 1;
+
+            if repo.is_disabled() {
+                continue;
+            }
+
+            return Some(repo);
+        }
+    }
 }

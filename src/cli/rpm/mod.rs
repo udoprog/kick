@@ -2,10 +2,10 @@ mod find_requires;
 
 use std::env::consts::{ARCH, EXE_EXTENSION};
 use std::fs;
-use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
+use relative_path::RelativePathBuf;
 
 use crate::config::RpmOp;
 use crate::ctxt::Ctxt;
@@ -22,7 +22,7 @@ pub(crate) struct Opts {
     release: ReleaseOpts,
     /// Output directory to write to.
     #[clap(long, value_name = "output")]
-    output: Option<PathBuf>,
+    output: Option<RelativePathBuf>,
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
@@ -75,8 +75,8 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts, release: &Release) -> Result<(),
     let version = release.to_string();
 
     let output = match &opts.output {
-        Some(output) => output,
-        None => &root,
+        Some(output) => cx.to_path(repo.path().join(output)),
+        None => root.join("target").join("rpm"),
     };
 
     let output_path = output.join(format!("{name}-{release}-{ARCH}.rpm"));

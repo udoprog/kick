@@ -1,15 +1,14 @@
-use std::env::consts::EXE_EXTENSION;
-use std::fs;
-use std::path::PathBuf;
+use std::env::consts::{self, EXE_EXTENSION};
 
 use anyhow::{bail, Result};
 use clap::Parser;
+use relative_path::RelativePathBuf;
 
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::release::Release;
 use crate::repo_sets::RepoSet;
-use crate::wix;
+use crate::wix::Wix;
 use crate::workspace;
 
 use crate::release::ReleaseOpts;
@@ -20,18 +19,17 @@ pub(crate) struct Opts {
     version: ReleaseOpts,
     /// Output directory to write to.
     #[clap(long, value_name = "output")]
-    output: Option<PathBuf>,
+    output: Option<RelativePathBuf>,
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     let release = opts.version.make()?;
-    let file_version = release.msi_version()?;
 
     let mut good = RepoSet::default();
     let mut bad = RepoSet::default();
 
     for repo in cx.repos() {
-        if let Err(error) = msi(cx, repo, opts, &release, &file_version) {
+        if let Err(error) = msi(cx, repo, opts, &release) {
             tracing::error!("Failed to build msi");
 
             for cause in error.chain() {
@@ -51,13 +49,7 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 }
 
 #[tracing::instrument(skip_all, fields(source = ?repo.source(), path = repo.path().as_str()))]
-fn msi(
-    cx: &Ctxt<'_>,
-    repo: &Repo,
-    opts: &Opts,
-    release: &Release,
-    file_version: &str,
-) -> Result<(), anyhow::Error> {
+fn msi(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts, release: &Release) -> Result<(), anyhow::Error> {
     let root = cx.to_path(repo.path());
 
     let Some(workspace) = workspace::open(cx, repo)? else {
@@ -73,24 +65,40 @@ fn msi(
         .join(name)
         .with_extension(EXE_EXTENSION);
 
-    let wix_dir = root.join("wix");
-    let wsx_file = wix_dir.join(format!("{name}.wxs"));
+    let target = root.join("target").join("wix");
+    let wsx_path = root.join("wix").join(format!("{name}.wxs"));
 
-    if !wsx_file.is_file() {
-        bail!("Missing: {}", wsx_file.display());
+    if !wsx_path.is_file() {
+        bail!("Missing: {}", wsx_path.display());
     }
 
     let output = match &opts.output {
-        Some(output) => output,
-        None => &wix_dir,
+        Some(output) => cx.to_path(repo.path().join(output)),
+        None => target.clone(),
     };
 
-    if !output.is_dir() {
-        fs::create_dir_all(output)?;
-    }
+    let base = format!(
+        "{name}-{release}-{os}-{arch}",
+        os = consts::OS,
+        arch = consts::ARCH
+    );
 
-    let builder = wix::Builder::new(binary_path, output, name, release)?;
-    builder.build(wsx_file, file_version)?;
-    builder.link()?;
+    let target_wixobj = target.join(format!("{base}.wixobj"));
+    let installer_path = output.join(format!("{base}.msi"));
+
+    let Some(binary_name) = binary_path.file_name().and_then(|name| name.to_str()) else {
+        bail!("Missing or invalid file name: {}", binary_path.display());
+    };
+
+    let builder = Wix::find()?;
+    builder.build(
+        wsx_path,
+        &target_wixobj,
+        repo.path().to_path(cx.root),
+        binary_name,
+        &binary_path,
+        release.msi_version()?,
+    )?;
+    builder.link(&target_wixobj, installer_path)?;
     Ok(())
 }

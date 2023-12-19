@@ -3,10 +3,11 @@ use std::fs::{self, File};
 use std::io::{self, Cursor};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, ValueEnum};
+use relative_path::RelativePathBuf;
 use time::OffsetDateTime;
 
 use crate::ctxt::Ctxt;
@@ -46,7 +47,7 @@ pub(crate) struct Opts {
     os: Option<String>,
     /// The output directory to write the archive to.
     #[arg(long, value_name = "dir")]
-    output: Option<PathBuf>,
+    output: Option<RelativePathBuf>,
     /// Append the given extra files to the archive.
     #[arg(value_name = "path")]
     path: Vec<String>,
@@ -95,7 +96,7 @@ fn compress(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
     let output = match &opts.output {
         Some(output) => {
-            let output = root.join(output);
+            let output = output.to_path(&root);
 
             if !output.is_dir() {
                 fs::create_dir_all(&output)
@@ -128,10 +129,8 @@ fn compress(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
         let glob = Glob::new(&root, &pattern);
 
         for path in glob.matcher() {
-            out.push(
-                path.with_context(|| anyhow!("Glob failed: {}", pattern))?
-                    .to_path(&root),
-            );
+            let path = path.with_context(|| anyhow!("Glob failed: {}", pattern))?;
+            out.push(path.to_path(&root));
         }
     }
 
