@@ -1,5 +1,4 @@
 use std::env::consts::{self, EXE_EXTENSION};
-use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Cursor};
 #[cfg(unix)]
@@ -13,6 +12,7 @@ use time::OffsetDateTime;
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::model::Repo;
+use crate::release::ReleaseOpts;
 use crate::workspace;
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -34,6 +34,8 @@ impl Kind {
 
 #[derive(Debug, Parser)]
 pub(crate) struct Opts {
+    #[clap(flatten)]
+    release: ReleaseOpts,
     /// The type of archive to build.
     #[arg(name = "type", value_name = "type")]
     ty: Kind,
@@ -48,13 +50,6 @@ pub(crate) struct Opts {
     /// Append the given extra files to the archive.
     #[arg(value_name = "path")]
     path: Vec<String>,
-    /// Include a custom version string in the archive name instead of using the
-    /// version found in the archive.
-    #[arg(long)]
-    version: Option<String>,
-    /// Build an archive without a version string.
-    #[arg(long)]
-    no_version: bool,
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
@@ -65,39 +60,15 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     Ok(())
 }
 
-struct FormatVersion(Option<String>);
-
-impl fmt::Display for FormatVersion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.0 {
-            Some(version) => write!(f, "-{version}"),
-            None => Ok(()),
-        }
-    }
-}
-
 fn compress(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     let Some(workspace) = workspace::open(cx, repo)? else {
         bail!("Not a workspace");
     };
 
+    let release = opts.release.make()?;
+
     let package = workspace.primary_package()?;
     let name = package.name()?;
-
-    let version = if opts.no_version {
-        FormatVersion(None)
-    } else {
-        match &opts.version {
-            Some(version) => FormatVersion(Some(version.clone())),
-            None => {
-                let Some(string) = package.version() else {
-                    bail!("No version in primary package");
-                };
-
-                FormatVersion(Some(string.to_owned()))
-            }
-        }
-    };
 
     let arch = consts::ARCH;
 
@@ -137,7 +108,7 @@ fn compress(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     };
 
     let output_path = output.join(format!(
-        "{name}{version}-{arch}-{os}.{}",
+        "{name}-{release}-{arch}-{os}.{}",
         opts.ty.extension()
     ));
 

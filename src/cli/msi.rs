@@ -11,19 +11,19 @@ use crate::repo_sets::RepoSet;
 use crate::wix;
 use crate::workspace;
 
-use crate::release::VersionOpts;
+use crate::release::ReleaseOpts;
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     #[clap(flatten)]
-    version: VersionOpts,
+    version: ReleaseOpts,
     /// Output directory to write to.
     #[clap(long, value_name = "output")]
     output: Option<PathBuf>,
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    let release = opts.version.release()?;
+    let release = opts.version.make()?;
     let file_version = release.msi_version()?;
 
     let mut good = RepoSet::default();

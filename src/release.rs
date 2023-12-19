@@ -79,7 +79,7 @@ impl FromStr for Date {
 }
 
 #[derive(Default, Debug, Parser)]
-pub(crate) struct VersionOpts {
+pub(crate) struct ReleaseOpts {
     /// Define a release channel.
     ///
     /// This is a very broad definition and supports a number of formats, the
@@ -89,12 +89,12 @@ pub(crate) struct VersionOpts {
     /// The supported formats are:
     /// * A simple naive date, like `2023-12-11`.
     /// * A version number, like `1.2.3-pre1`.
-    /// * A alphanumerical channel name, like `nightly` which will attach that
-    ///   channel name to the artefact and use the current date.
+    /// * A alphanumerical channel name, like `nightly` which will result in a
+    ///   dated release with the current naive date and the given channel name.
     /// * A alphanumerical channel suffixed with a date, like
-    ///   `nightly-2023-12-11` which will attach that channel name to the
-    ///   artefact and use the specified date.
-    #[clap(long, value_name = "channel")]
+    ///   `nightly-2023-12-11` which will make a dated release with the given
+    ///   channel name.
+    #[clap(long, verbatim_doc_comment, value_name = "channel")]
     channel: Option<String>,
     /// Define a release version.
     #[clap(long, value_name = "version")]
@@ -107,9 +107,9 @@ pub(crate) struct VersionOpts {
     revision: u32,
 }
 
-impl VersionOpts {
+impl ReleaseOpts {
     /// Construct a release from provided arguments.
-    pub(crate) fn release(&self) -> Result<Release> {
+    pub(crate) fn make(&self) -> Result<Release> {
         ensure!(
             self.revision < 100,
             "Revision must be less than 100: {}",
