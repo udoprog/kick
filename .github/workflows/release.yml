@@ -33,8 +33,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
     - uses: Swatinem/rust-cache@v2
     - run: cargo build --release
-    - run: mkdir dist
-    - run: mv target/release/kick.exe dist/kick-x86_64-windows.exe
+    - run: cargo run --release -- compress zip --output dist
     - uses: actions/upload-artifact@v1
       with:
         name: dist-windows-latest
@@ -51,8 +50,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
     - uses: Swatinem/rust-cache@v2
     - run: cargo build --release
-    - run: mkdir dist
-    - run: mv target/release/kick dist/kick-x86_64-linux
+    - run: cargo run --release -- compress gzip --output dist
     - uses: actions/upload-artifact@v1
       with:
         name: dist-ubuntu-latest
