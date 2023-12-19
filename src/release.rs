@@ -96,9 +96,15 @@ pub(crate) struct ReleaseOpts {
     ///   channel name.
     #[clap(long, verbatim_doc_comment, value_name = "channel")]
     channel: Option<String>,
+    /// Do not append a version string. By default a version number would be
+    /// derived from the current (or specified) date.
+    ///
+    /// This requires a channel to be specified.
+    #[clap(long)]
+    no_version: bool,
     /// Define a release version.
     #[clap(long, value_name = "version")]
-    version: Option<String>,
+    version: Option<Version>,
     /// Define a revision release.
     ///
     /// This only applies to date-based releases, and can be used to perform
@@ -122,38 +128,42 @@ impl ReleaseOpts {
             self.revision
         );
 
-        let mut channel = None;
-
         let kind = 'out: {
-            match (&self.version, &self.channel) {
+            if self.no_version {
+                if self.version.is_some() {
+                    bail!("Cannot use --no-version with --version");
+                }
+
+                match self.channel.as_deref() {
+                    Some(channel) => break 'out ReleaseKind::Channel(Box::from(channel)),
+                    None => bail!("Cannot use --no-version without a channel"),
+                }
+            }
+
+            match (self.version.as_ref(), self.channel.as_deref()) {
                 (Some(version), string) => {
-                    channel = string.as_deref().map(Box::from);
-                    ReleaseKind::Versioned(Version::parse(version.as_str())?)
+                    ReleaseKind::Versioned(version.clone(), string.map(Box::from))
                 }
                 (None, Some(string)) => {
-                    if let Ok(date) = Date::from_str(string.as_str()) {
-                        break 'out ReleaseKind::Dated(date);
+                    if let Ok(date) = Date::from_str(string) {
+                        break 'out ReleaseKind::Dated(date, None);
                     };
 
-                    if let Ok(version) = Version::parse(string) {
-                        break 'out ReleaseKind::Versioned(version);
+                    if let Ok(version) = Version::from_str(string) {
+                        break 'out ReleaseKind::Versioned(version, None);
                     }
 
                     let (string, date) = if let Some((string, date)) = string.split_once('-') {
                         (string, Date::from_str(date)?)
                     } else {
-                        (
-                            string.as_str(),
-                            Date::today().context("Getting today's date")?,
-                        )
+                        (string, Date::today().context("Getting today's date")?)
                     };
 
                     if !is_valid_channel(string) {
                         bail!("Invalid channel: {string}");
                     }
 
-                    channel = Some(Box::from(string));
-                    ReleaseKind::Dated(date)
+                    ReleaseKind::Dated(date, Some(Box::from(string)))
                 }
                 _ => github_release_kind()?,
             }
@@ -161,7 +171,6 @@ impl ReleaseOpts {
 
         Ok(Release {
             kind,
-            channel,
             revision: self.revision,
             append: self.append.clone(),
         })
@@ -169,13 +178,13 @@ impl ReleaseOpts {
 }
 
 pub(super) enum ReleaseKind {
-    Versioned(Version),
-    Dated(Date),
+    Versioned(Version, Option<Box<str>>),
+    Dated(Date, Option<Box<str>>),
+    Channel(Box<str>),
 }
 
 pub(super) struct Release {
     kind: ReleaseKind,
-    channel: Option<Box<str>>,
     revision: u32,
     append: Vec<String>,
 }
@@ -222,24 +231,28 @@ impl Release {
         }
 
         match &self.kind {
-            ReleaseKind::Versioned(version) => from_version(version),
-            ReleaseKind::Dated(date) => from_date_revision(*date, self.revision),
+            ReleaseKind::Versioned(version, _) => from_version(version),
+            ReleaseKind::Dated(date, _) => from_date_revision(*date, self.revision),
+            ReleaseKind::Channel(_) => bail!("Cannot compute MSI version from channel"),
         }
     }
 }
 
 impl fmt::Display for Release {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.kind {
-            ReleaseKind::Versioned(version) => {
+        let channel = match &self.kind {
+            ReleaseKind::Versioned(version, channel) => {
                 version.fmt(f)?;
+                channel.as_deref()
             }
-            ReleaseKind::Dated(date) => {
+            ReleaseKind::Dated(date, channel) => {
                 date.fmt(f)?;
+                channel.as_deref()
             }
-        }
+            ReleaseKind::Channel(channel) => Some(channel.as_ref()),
+        };
 
-        if let Some(name) = self.channel.as_deref() {
+        if let Some(name) = channel {
             write!(f, "-{name}")?;
 
             if self.revision != 0 {
@@ -259,16 +272,18 @@ impl fmt::Display for Release {
 
 #[derive(Debug, Clone)]
 pub(super) struct Version {
-    base: String,
+    bytes: Box<str>,
     major: u32,
     minor: u32,
     patch: u32,
     pre: Option<u32>,
 }
 
-impl Version {
+impl FromStr for Version {
+    type Err = anyhow::Error;
+
     /// Open a version by matching it against the given string.
-    pub(crate) fn parse(version: &str) -> Result<Version> {
+    fn from_str(version: &str) -> Result<Version> {
         let (head, pre) = if let Some((version, pre)) = version.rsplit_once('-') {
             (version, Some(pre))
         } else {
@@ -289,7 +304,7 @@ impl Version {
         let pre: Option<u32> = pre.map(str::parse).transpose().context("Bad pre version")?;
 
         Ok(Self {
-            base: version.to_string(),
+            bytes: version.into(),
             major,
             minor,
             patch,
@@ -301,21 +316,21 @@ impl Version {
 impl fmt::Display for Version {
     #[inline]
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.base.fmt(fmt)
+        self.bytes.fmt(fmt)
     }
 }
 
 impl AsRef<[u8]> for Version {
     #[inline]
     fn as_ref(&self) -> &[u8] {
-        self.base.as_bytes()
+        self.bytes.as_bytes()
     }
 }
 
 impl AsRef<OsStr> for Version {
     #[inline]
     fn as_ref(&self) -> &OsStr {
-        self.base.as_ref()
+        OsStr::new(self.bytes.as_ref())
     }
 }
 
@@ -324,9 +339,9 @@ fn github_release_kind() -> Result<ReleaseKind> {
     Ok(match github_ref_version() {
         Err(error) => {
             tracing::warn!("Assuming dated release since we couldn't determine tag: {error}");
-            ReleaseKind::Dated(Date::today()?)
+            ReleaseKind::Dated(Date::today()?, None)
         }
-        Ok(version) => ReleaseKind::Versioned(version),
+        Ok(version) => ReleaseKind::Versioned(version, None),
     })
 }
 
@@ -340,7 +355,7 @@ fn github_ref_version() -> Result<Version> {
     let mut it = version.split('/');
 
     let version = match (it.next(), it.next(), it.next()) {
-        (Some("refs"), Some("tags"), Some(version)) => Version::parse(version)?,
+        (Some("refs"), Some("tags"), Some(version)) => Version::from_str(version)?,
         _ => bail!("Expected GITHUB_REF: refs/tags/*"),
     };
 
