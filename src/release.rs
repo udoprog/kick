@@ -105,6 +105,12 @@ pub(crate) struct ReleaseOpts {
     /// multiple releases in a given day up to a maximum of 99.
     #[clap(long, value_name = "version", default_value_t)]
     revision: u32,
+    /// Append additional components to the release string, separated by dots.
+    ///
+    /// A use-case for this is to specify the fedora release, like `fc39` which
+    /// will then be appended verbatim to the version string.
+    #[clap(long, value_name = "part")]
+    append: Vec<String>,
 }
 
 impl ReleaseOpts {
@@ -157,6 +163,7 @@ impl ReleaseOpts {
             kind,
             channel,
             revision: self.revision,
+            append: self.append.clone(),
         })
     }
 }
@@ -170,6 +177,7 @@ pub(super) struct Release {
     kind: ReleaseKind,
     channel: Option<Box<str>>,
     revision: u32,
+    append: Vec<String>,
 }
 
 impl Release {
@@ -239,6 +247,10 @@ impl fmt::Display for Release {
             }
         } else if self.revision != 0 {
             write!(f, "-r{}", self.revision)?;
+        }
+
+        for additional in &self.append {
+            write!(f, ".{}", additional)?;
         }
 
         Ok(())
