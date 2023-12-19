@@ -1,8 +1,9 @@
 use std::cell::{Ref, RefCell};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result};
+use relative_path::RelativePath;
 
 use crate::actions::Actions;
 use crate::changes::{Change, Warning};
@@ -16,6 +17,7 @@ use crate::rust_version::RustVersion;
 
 pub(crate) struct Ctxt<'a> {
     pub(crate) root: &'a Path,
+    pub(crate) current_path: &'a RelativePath,
     pub(crate) config: &'a Config<'a>,
     pub(crate) actions: &'a Actions<'a>,
     pub(crate) repos: &'a [Repo],
@@ -28,6 +30,19 @@ pub(crate) struct Ctxt<'a> {
 }
 
 impl<'a> Ctxt<'a> {
+    /// Get a repo path.
+    pub(crate) fn repo_path(&self, repo: &RepoRef) -> PathBuf {
+        if let Ok(path) = self.current_path.strip_prefix(repo.path()) {
+            if path.components().next().is_none() {
+                return PathBuf::from(".");
+            } else {
+                return path.components().map(|_| Component::ParentDir).collect();
+            }
+        };
+
+        repo.path().to_path(self.root)
+    }
+
     /// Get repo parameters for the given package.
     pub(crate) fn repo_params<'m>(
         &'m self,

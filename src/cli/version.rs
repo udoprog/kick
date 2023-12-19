@@ -73,7 +73,7 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
 #[tracing::instrument(skip_all, fields(source = ?repo.source(), path = repo.path().as_str()))]
 fn version(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo, version_set: &VersionSet) -> Result<()> {
     let Some(workspace) = workspace::open(cx, repo)? else {
-        bail!("not a workspace");
+        bail!("Not a workspace");
     };
 
     let mut versions = HashMap::new();

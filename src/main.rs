@@ -576,7 +576,7 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use changes::Change;
 use clap::{Args, FromArgMatches, Parser, Subcommand};
 
@@ -615,6 +615,8 @@ enum Action {
     Upgrade(SharedAction<cli::upgrade::Opts>),
     /// Build a wix-based installer.
     Msi(SharedAction<cli::msi::Opts>),
+    /// Build a compressed artifact (like a zip or tar.gz).
+    Compress(SharedAction<cli::compress::Opts>),
 }
 
 impl Action {
@@ -630,6 +632,7 @@ impl Action {
             Action::Publish(action) => &action.shared,
             Action::Upgrade(action) => &action.shared,
             Action::Msi(action) => &action.shared,
+            Action::Compress(action) => &action.shared,
         }
     }
 
@@ -645,6 +648,7 @@ impl Action {
             Action::Publish(action) => Some(&action.repo),
             Action::Upgrade(action) => Some(&action.repo),
             Action::Msi(action) => Some(&action.repo),
+            Action::Compress(action) => Some(&action.repo),
         }
     }
 }
@@ -770,15 +774,9 @@ async fn entry() -> Result<()> {
     let shared = action.shared();
     let repo_opts = action.repo();
 
-    let current_dir = match &shared.root {
-        Some(root) => root.clone(),
-        None => PathBuf::new(),
-    };
-
-    let (root, current_path) = if let Some((root, current_path)) = find_root(current_dir.clone())? {
-        (root, current_path)
-    } else {
-        (current_dir, RelativePathBuf::new())
+    let (root, current_path) = match &shared.root {
+        Some(root) => (root.to_owned(), RelativePathBuf::new()),
+        None => find_from_current_dir().context("Finding project root")?,
     };
 
     tracing::trace!(
@@ -899,6 +897,7 @@ async fn entry() -> Result<()> {
 
     let mut cx = ctxt::Ctxt {
         root: &root,
+        current_path: &current_path,
         config: &config,
         actions: &actions,
         repos: &repos,
@@ -937,6 +936,9 @@ async fn entry() -> Result<()> {
         }
         Action::Msi(opts) => {
             cli::msi::entry(&mut cx, &opts.action)?;
+        }
+        Action::Compress(opts) => {
+            cli::compress::entry(&mut cx, &opts.action)?;
         }
         Action::Changes(shared) => {
             let changes = load_changes(&changes_path)
@@ -1021,7 +1023,7 @@ fn filter_repos(
     filters: &[Fragment<'_>],
     current_path: Option<&RelativePath>,
     set: Option<&HashSet<RelativePathBuf>>,
-) -> Result<(), anyhow::Error> {
+) -> Result<()> {
     // Test if repo should be skipped.
     let should_disable = |repo: &Repo| -> bool {
         if let Some(set) = set {
@@ -1098,40 +1100,44 @@ fn filter_repos(
 }
 
 /// Find root path to use.
-fn find_root(mut current_dir: PathBuf) -> Result<Option<(PathBuf, RelativePathBuf)>> {
-    let mut current = current_dir.clone();
-    let mut last = None;
-    let mut current_path = RelativePathBuf::new();
+fn find_from_current_dir() -> Result<(PathBuf, RelativePathBuf)> {
+    let mut parent = std::env::current_dir()?;
 
-    if !current_dir.is_absolute() {
-        if current.components().next().is_none() {
-            current_dir = std::env::current_dir()?;
-        } else {
-            current_dir = current_dir.canonicalize()?;
+    let mut path = PathBuf::new();
+    let mut relative = Vec::<String>::new();
+
+    let mut first_git = None;
+
+    loop {
+        if first_git.is_none() {
+            let git = parent.join(".git");
+
+            if git.exists() {
+                tracing::trace!("Found .git in {}", git.display());
+                first_git = Some((parent.clone(), relative.iter().rev().collect()));
+            }
         }
+
+        let kick_toml = parent.join(KICK_TOML);
+
+        if kick_toml.is_file() {
+            tracing::trace!("Found {KICK_TOML} in {}", kick_toml.display());
+            return Ok((path, relative.into_iter().rev().collect()));
+        }
+
+        let Some(Component::Normal(normal)) = parent.components().next_back() else {
+            break;
+        };
+
+        relative.push(normal.to_string_lossy().into_owned());
+
+        path.push(Component::ParentDir);
+        parent.pop();
     }
 
-    while current.components().next().is_none() || current.is_dir() {
-        if current.join(KICK_TOML).is_file() {
-            last = Some((current.clone(), current_path.components().rev().collect()));
-        }
-
-        if let Some(c) = current_dir.file_name() {
-            current_path.push(c.to_string_lossy().as_ref());
-            current_dir.pop();
-        }
-
-        if current.file_name().is_some() {
-            current.pop();
-        } else {
-            current.push(Component::ParentDir);
-        }
-    }
-
-    let Some((relative, current)) = last else {
-        tracing::trace!("no {KICK_TOML} found in hierarchy");
-        return Ok(None);
+    let Some((first_git, relative_path)) = first_git else {
+        bail!("Could not find project");
     };
 
-    Ok(Some((relative, current)))
+    Ok((first_git, relative_path))
 }

@@ -1,4 +1,5 @@
 pub(crate) mod check;
+pub(crate) mod compress;
 pub(crate) mod r#for;
 pub(crate) mod msi;
 pub(crate) mod msrv;

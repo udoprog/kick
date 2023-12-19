@@ -36,7 +36,7 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
 #[tracing::instrument(skip_all, fields(source = ?repo.source(), path = repo.path().as_str()))]
 fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
     let Some(workspace) = workspace::open(cx, repo)? else {
-        bail!("not a workspace");
+        bail!("Not a workspace");
     };
 
     let no_verify = opts.no_verify.iter().cloned().collect::<HashSet<_>>();
