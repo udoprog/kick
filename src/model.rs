@@ -5,7 +5,7 @@ use std::ops::Deref;
 use std::path::Path;
 use std::rc::Rc;
 
-use anyhow::{bail, Context, Error, Result};
+use anyhow::{anyhow, bail, Context, Error, Result};
 use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Deserialize, Serialize, Serializer};
 use url::Url;
@@ -302,10 +302,19 @@ pub(crate) fn load_from_git(root: &Path, git: Option<&Git>) -> Result<Vec<Repo>>
         return Ok(out);
     }
 
-    if let Some(url) = url_from_github_action() {
-        tracing::trace!("Using GitHub Actions URL: {url}");
-        out.push(Repo::new(RepoSource::Git, RelativePathBuf::from("."), url));
-        return Ok(out);
+    match url_from_github_action() {
+        Ok(url) => {
+            tracing::trace!("Using GitHub Actions URL: {url}");
+            out.push(Repo::new(RepoSource::Git, RelativePathBuf::from("."), url));
+            return Ok(out);
+        }
+        Err(error) => {
+            tracing::trace!("Could not build repo from GitHub Actions");
+
+            for error in error.chain() {
+                tracing::trace!("Caused by: {error}");
+            }
+        }
     }
 
     Ok(out)
@@ -364,19 +373,25 @@ where
     Ok(Repo::new(RepoSource::Git, RelativePathBuf::from("."), url))
 }
 
-fn url_from_github_action() -> Option<Url> {
-    let server_url = env::var_os("GITHUB_SERVER_URL")?;
-    let server_url = server_url.to_str()?;
+fn url_from_github_action() -> Result<Url> {
+    let server_url = env::var_os("GITHUB_SERVER_URL").context("Missing GITHUB_SERVER_URL")?;
+    let server_url = server_url
+        .to_str()
+        .context("GITHUB_SERVER_URL is not a legal string")?;
 
-    let repo = env::var_os("GITHUB_REPOSITORY")?;
-    let repo = repo.to_str()?;
+    let repo = env::var_os("GITHUB_REPOSITORY").context("Missing GITHUB_REPOSITORY")?;
+    let repo = repo
+        .to_str()
+        .context("GITHUB_REPOSITORY is not a legal string")?;
 
-    let mut url = Url::parse(server_url).ok()?;
+    let mut url = Url::parse(server_url).context("Parsing URL")?;
 
     {
-        let mut path = url.path_segments_mut().ok()?;
+        let mut path = url
+            .path_segments_mut()
+            .map_err(|_| anyhow!("Not a legal URL"))?;
         path.extend(repo.split('/'));
     }
 
-    Some(url)
+    Ok(url)
 }
