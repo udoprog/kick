@@ -1,5 +1,6 @@
 use core::fmt;
 use std::cell::{Cell, Ref, RefCell};
+use std::env;
 use std::ops::Deref;
 use std::path::Path;
 use std::rc::Rc;
@@ -298,6 +299,13 @@ pub(crate) fn load_from_git(root: &Path, git: Option<&Git>) -> Result<Vec<Repo>>
     if git_path.exists() {
         tracing::trace!("Using repository: {}", git_path.display());
         out.push(from_git(git, &git_path).with_context(|| git_path.display().to_string())?);
+        return Ok(out);
+    }
+
+    if let Some(url) = url_from_github_action() {
+        tracing::trace!("Using GitHub Actions URL: {url}");
+        out.push(Repo::new(RepoSource::Git, RelativePathBuf::from("."), url));
+        return Ok(out);
     }
 
     Ok(out)
@@ -353,6 +361,22 @@ where
     P: ?Sized + AsRef<Path>,
 {
     let url = git.get_url(root, "origin")?;
-
     Ok(Repo::new(RepoSource::Git, RelativePathBuf::from("."), url))
+}
+
+fn url_from_github_action() -> Option<Url> {
+    let server_url = env::var_os("GITHUB_SERVER_URL")?;
+    let server_url = server_url.to_str()?;
+
+    let repo = env::var_os("GITHUB_REPOSITORY")?;
+    let repo = repo.to_str()?;
+
+    let mut url = Url::parse(server_url).ok()?;
+
+    {
+        let mut path = url.path_segments_mut().ok()?;
+        path.extend(repo.split('/'));
+    }
+
+    Some(url)
 }
