@@ -13,7 +13,7 @@ use crate::config::{RpmFile, RpmOp};
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::model::Repo;
-use crate::release::Release;
+use crate::release::{Release, ReleaseEnv};
 use crate::workspace;
 
 use crate::release::ReleaseOpts;
@@ -28,7 +28,8 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    let release = opts.release.make()?;
+    let env = ReleaseEnv::new();
+    let release = opts.release.make(&env)?;
 
     with_repos!(
         cx,
@@ -41,7 +42,12 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 }
 
 #[tracing::instrument(skip_all, fields(source = ?repo.source(), path = repo.path().as_str()))]
-fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts, release: &Release) -> Result<(), anyhow::Error> {
+fn rpm(
+    cx: &Ctxt<'_>,
+    repo: &Repo,
+    opts: &Opts,
+    release: &Release<'_>,
+) -> Result<(), anyhow::Error> {
     let root = cx.to_path(repo.path());
 
     let Some(workspace) = workspace::open(cx, repo)? else {

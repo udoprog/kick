@@ -34,8 +34,10 @@ macro_rules! with_repos {
     };
 }
 
+pub(crate) mod changes;
 pub(crate) mod check;
 pub(crate) mod compress;
+pub(crate) mod define;
 pub(crate) mod r#for;
 pub(crate) mod msi;
 pub(crate) mod msrv;

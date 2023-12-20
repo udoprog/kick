@@ -1,6 +1,9 @@
 use std::ffi::OsString;
 use std::fmt;
+use std::fs;
+use std::io;
 use std::ops::Range;
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -19,6 +22,41 @@ use crate::manifest::Manifest;
 use crate::model::RepoRef;
 use crate::process::Command;
 use crate::rust_version::RustVersion;
+
+/// Save changes to the given path.
+pub(crate) fn load_changes(path: &Path) -> Result<Option<Vec<Change>>> {
+    use std::io::Read;
+
+    use flate2::read::GzDecoder;
+
+    let f = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+
+    let mut encoder = GzDecoder::new(f);
+
+    let mut buf = Vec::new();
+    encoder.read_to_end(&mut buf)?;
+    Ok(serde_json::from_slice(&buf)?)
+}
+
+/// Save changes to the given path.
+pub(crate) fn save_changes(cx: &Ctxt<'_>, path: &Path) -> Result<()> {
+    use std::io::Write;
+
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+
+    let f = fs::File::create(path)?;
+    let changes = cx.changes().iter().cloned().collect::<Vec<_>>();
+    let buf = serde_json::to_vec(&changes)?;
+    let mut encoder = GzEncoder::new(f, Compression::default());
+    encoder.write_all(&buf)?;
+    encoder.flush()?;
+    Ok(())
+}
 
 /// Report a warning.
 pub(crate) fn report(cx: &Ctxt<'_>, warning: &Warning) -> Result<()> {

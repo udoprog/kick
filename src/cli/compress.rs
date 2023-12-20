@@ -13,7 +13,7 @@ use time::OffsetDateTime;
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::model::Repo;
-use crate::release::ReleaseOpts;
+use crate::release::{ReleaseEnv, ReleaseOpts};
 use crate::workspace;
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -69,7 +69,8 @@ fn compress(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
         bail!("Not a workspace");
     };
 
-    let release = opts.release.make()?;
+    let env = ReleaseEnv::new();
+    let release = opts.release.make(&env)?;
 
     let package = workspace.primary_package()?;
     let name = package.name()?;

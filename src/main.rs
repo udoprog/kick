@@ -601,19 +601,13 @@ mod workspace;
 
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{anyhow, bail, Context, Result};
-use changes::Change;
 use clap::{Args, FromArgMatches, Parser, Subcommand};
 
 use actions::Actions;
-use flate2::read::GzDecoder;
-use flate2::write::GzEncoder;
-use flate2::Compression;
 use relative_path::{RelativePath, RelativePathBuf};
 use tracing::metadata::LevelFilter;
 
@@ -624,6 +618,8 @@ const KICK_TOML: &str = "Kick.toml";
 
 #[derive(Subcommand)]
 enum Action {
+    /// Collect and define release variables.
+    Define(SharedAction<cli::define::Opts>),
     /// Apply staged changes which have previously been saved by `check` unless
     /// `--save` was specified.
     Changes(SharedOptions),
@@ -654,6 +650,7 @@ enum Action {
 impl Action {
     fn shared(&self) -> &SharedOptions {
         match self {
+            Action::Define(action) => &action.shared,
             Action::Changes(shared) => shared,
             Action::Set(action) => &action.shared,
             Action::Check(action) => &action.shared,
@@ -671,6 +668,7 @@ impl Action {
 
     fn repo(&self) -> Option<&RepoOptions> {
         match self {
+            Action::Define(..) => None,
             Action::Changes(..) => None,
             Action::Set(action) => Some(&action.repo),
             Action::Check(action) => Some(&action.repo),
@@ -806,6 +804,7 @@ async fn entry() -> Result<ExitCode> {
 
     let action = opts.action.unwrap_or_default();
     let shared = action.shared();
+
     let repo_opts = action.repo();
 
     let (root, current_path) = match &shared.root {
@@ -832,6 +831,13 @@ async fn entry() -> Result<ExitCode> {
         ?current_path,
         "found project roots"
     );
+
+    let changes_path = root.join("changes.gz");
+
+    if let Action::Define(opts) = &action {
+        cli::define::entry(&opts.action)?;
+        return Ok(ExitCode::SUCCESS);
+    }
 
     let github_auth = root.join(".github-auth");
 
@@ -954,8 +960,6 @@ async fn entry() -> Result<ExitCode> {
         )?;
     }
 
-    let changes_path = root.join("changes.gz");
-
     let mut cx = ctxt::Ctxt {
         root: &root,
         current_path: current_path.as_deref(),
@@ -1005,29 +1009,11 @@ async fn entry() -> Result<ExitCode> {
             cli::compress::entry(&mut cx, &opts.action)?;
         }
         Action::Changes(shared) => {
-            let changes = load_changes(&changes_path)
-                .with_context(|| anyhow!("{}", changes_path.display()))?;
-
-            let Some(changes) = changes else {
-                tracing::info!("No changes found: {}", changes_path.display());
-                return Ok(ExitCode::SUCCESS);
-            };
-
-            if !shared.save {
-                tracing::warn!("Not writing changes since `--save` was not specified");
-            }
-
-            for change in changes {
-                crate::changes::apply(&cx, &change, shared.save)?;
-            }
-
-            if shared.save {
-                tracing::info!("Removing {}", changes_path.display());
-                std::fs::remove_file(&changes_path)
-                    .with_context(|| anyhow!("{}", changes_path.display()))?;
-            }
-
+            cli::changes::entry(&mut cx, shared, &changes_path)?;
             return Ok(ExitCode::SUCCESS);
+        }
+        _ => {
+            bail!("Unsupported action at this stage")
         }
     }
 
@@ -1045,38 +1031,13 @@ async fn entry() -> Result<ExitCode> {
             "Writing commit to {}, use `kick changes` to review it later",
             changes_path.display()
         );
-        save_changes(&cx, &changes_path).with_context(|| anyhow!("{}", changes_path.display()))?;
+        changes::save_changes(&cx, &changes_path)
+            .with_context(|| anyhow!("{}", changes_path.display()))?;
     }
 
     let outcome = cx.outcome();
     sets.commit()?;
     Ok(outcome)
-}
-
-/// Save changes to the given path.
-fn load_changes(path: &Path) -> Result<Option<Vec<Change>>> {
-    let f = match File::open(path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e.into()),
-    };
-
-    let mut encoder = GzDecoder::new(f);
-
-    let mut buf = Vec::new();
-    encoder.read_to_end(&mut buf)?;
-    Ok(serde_json::from_slice(&buf)?)
-}
-
-/// Save changes to the given path.
-fn save_changes(cx: &ctxt::Ctxt<'_>, path: &Path) -> Result<()> {
-    let f = File::create(path)?;
-    let changes = cx.changes().iter().cloned().collect::<Vec<_>>();
-    let buf = serde_json::to_vec(&changes)?;
-    let mut encoder = GzEncoder::new(f, Compression::default());
-    encoder.write_all(&buf)?;
-    encoder.flush()?;
-    Ok(())
 }
 
 /// Perform more advanced filtering over modules.
