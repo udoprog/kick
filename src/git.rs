@@ -295,7 +295,7 @@ fn git_version<P>(path: &P) -> Result<Option<ExitStatus>>
 where
     P: ?Sized + AsRef<Path>,
 {
-    match Command::new(path.as_ref())
+    match std::process::Command::new(path.as_ref())
         .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())

@@ -2,11 +2,10 @@ use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fmt::Write;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, ExitStatus, Output, Stdio};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 
 pub(crate) struct Command {
     command: OsString,
@@ -63,26 +62,28 @@ impl Command {
     }
 
     #[tracing::instrument(skip_all, fields(command = self.display().to_string(), current_dir = ?self.current_dir_repr()))]
-    pub(crate) fn spawn(&mut self) -> io::Result<Child> {
+    pub(crate) fn spawn(&mut self) -> Result<Child> {
         let mut command = self.command();
-        let child = command.spawn()?;
-
+        let result = command.spawn();
+        let child = result.with_context(|| anyhow!("Spawning `{}`", self.display()))?;
         Ok(Child { child })
     }
 
     #[tracing::instrument(skip_all, fields(command = self.display().to_string(), current_dir = ?self.current_dir_repr()))]
-    pub(crate) fn status(&mut self) -> io::Result<ExitStatus> {
+    pub(crate) fn status(&mut self) -> Result<ExitStatus> {
         let mut command = self.command();
-        let status = command.status()?;
-        tracing::trace!(?status);
+        let result = command.status();
+        let status = result.with_context(|| anyhow!("Executing `{}`", self.display()))?;
+        tracing::trace!(status = status.to_string());
         Ok(status)
     }
 
     #[tracing::instrument(skip_all, fields(command = self.display().to_string(), current_dir = ?self.current_dir_repr()))]
-    pub(crate) fn output(&mut self) -> io::Result<Output> {
+    pub(crate) fn output(&mut self) -> Result<Output> {
         let mut command = self.command();
-        let output = command.output()?;
-        tracing::trace!(?output.status);
+        let output = command.output();
+        let output = output.with_context(|| anyhow!("Executing `{}`", self.display()))?;
+        tracing::trace!(status = output.status.to_string());
         Ok(output)
     }
 
@@ -164,7 +165,7 @@ impl Child {
         self.child.stdin.take().context("Missing stdin")
     }
 
-    pub(crate) fn wait_with_output(self) -> io::Result<Output> {
+    pub(crate) fn wait_with_output(self) -> Result<Output> {
         let output = self.child.wait_with_output()?;
         tracing::trace!(?output.status);
         Ok(output)
