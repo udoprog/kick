@@ -15,7 +15,7 @@ use crate::release::ReleaseOpts;
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     #[clap(flatten)]
-    version: ReleaseOpts,
+    release: ReleaseOpts,
     /// Output directory to write to.
     #[clap(long, value_name = "output")]
     output: Option<RelativePathBuf>,
@@ -23,7 +23,7 @@ pub(crate) struct Opts {
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     let env = ReleaseEnv::new();
-    let release = opts.version.make(&env)?;
+    let release = opts.release.make(&env)?;
 
     with_repos!(cx, "Build MSI", format!("msi: {opts:?}"), |cx, repo| {
         msi(cx, repo, opts, &release)

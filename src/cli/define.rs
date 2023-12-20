@@ -64,15 +64,15 @@ pub(crate) fn entry(opts: &Opts) -> Result<()> {
         o = &mut stdout;
     }
 
-    let release = match opts.format {
+    let value = match opts.format {
         Format::Text => release.to_string(),
         Format::Json => serde_json::to_string(&release)?,
     };
 
     if let Some(name) = &opts.name {
-        writeln!(o, "{name}={release}").context("Could not write output")?;
+        writeln!(o, "{name}={value}").context("Could not write output")?;
     } else {
-        writeln!(o, "{release}").context("Could not write output")?;
+        writeln!(o, "{value}").context("Could not write output")?;
     }
 
     Ok(())

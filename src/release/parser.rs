@@ -45,7 +45,7 @@ macro_rules! ws {
 
 pub(super) struct Vars<'a> {
     today: Date,
-    values: HashMap<&'static str, &'a str>,
+    values: HashMap<&'a str, &'a str>,
 }
 
 impl<'a> Vars<'a> {
@@ -60,7 +60,7 @@ impl<'a> Vars<'a> {
         self.values.get(name).copied()
     }
 
-    pub(super) fn insert(&mut self, name: &'static str, value: &'a str) {
+    pub(super) fn insert(&mut self, name: &'a str, value: &'a str) {
         self.values.insert(name, value);
     }
 }

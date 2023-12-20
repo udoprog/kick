@@ -1,3 +1,5 @@
+use self::parser::Vars;
+#[macro_use]
 mod parser;
 
 use std::env;
@@ -8,8 +10,6 @@ use anyhow::{bail, ensure, Result};
 use chrono::{Datelike, Utc};
 use clap::Parser;
 use serde::Serialize;
-
-use self::parser::Vars;
 
 /// The base year. Cannot perform releases prior to this year.
 const BASE_YEAR: u32 = 2000;
@@ -31,25 +31,34 @@ pub(crate) struct ReleaseOpts {
     ///   channel suffixed with a number like `nightly1` will be treated as a
     ///   pre-release.
     /// * A date follow by a custom suffix, like `2023-12-11-nightly`.
-    /// * `%date` will be replaced with the current naive date in expressions
-    ///  like `%date` or `%date-nightly1`.
+    /// * It is also possible to use a variable like `%date` to get the custom
+    ///   date. For available variable see below.
     ///
-    /// Finally a channel can take a simple kind of expression, where each
-    /// candidate is separated from left to right using `||`. This allows the
-    /// use of variables which might evaluate to empty strings, like this:
+    /// A channel can also take a simple kind of expression, where each
+    /// candidate is separated from left to right using double pipes ('||'). The
+    /// first expression for which all variables are defined, and results in a
+    /// non-empty expansion will be used.
+    ///
+    /// This means that with Github Actions, you can uses something like this:
     ///
     /// --channel "${{github.event.inputs.release}} || %date-nightly"
     ///
     /// In this instance, the `release` input might be defined by a
     /// workflow_dispatch job, and if undefined the channel will default to a
-    /// nightly dated release.
+    /// "nightly" dated release.
     ///
     /// Available variables:
     /// * `%date` - The current date.
-    /// * `%{github-tag}` - The tag name of the current release, if any.
-    /// * `%{github-head}` - The branch name of the current release, if any.
+    /// * `%{github.tag}` - The tag name from GITHUB_REF.
+    /// * `%{github.head}` - The branch name from GITHUB_REF.
+    ///
+    /// You can also define your own variables using `--define <key>=<value>`.
+    /// If the value is empty, the variable will be considered undefined.
     #[clap(long, verbatim_doc_comment, value_name = "channel")]
     channel: Option<String>,
+    /// Define a custom variable. See `--channel` for more information.
+    #[clap(long, value_name = "<key>=<value>")]
+    define: Vec<String>,
     /// Append additional components to the release string, separated by dots.
     ///
     /// A use-case for this is to specify the fedora release, like `fc39` which
@@ -81,25 +90,26 @@ impl ReleaseOpts {
 
         let mut vars = Vars::new(Date::today()?);
 
-        let mut release = 'out: {
-            github_release(env, &mut vars);
+        for define in &self.define {
+            let Some((key, value)) = define.split_once('=') else {
+                bail!("Bad --define argument `{define}`");
+            };
 
-            if let Some(channel) = channel {
-                if let Some(release) = channel_to_release(channel, &vars)? {
-                    break 'out release;
-                }
+            if value.chars().all(|c| matches!(c, ws!() | '-' | '.')) {
+                continue;
             }
 
-            tracing::warn!("Assuming dated release since we couldn't determine other release kind");
+            vars.insert(key, value);
+        }
 
-            Release {
-                prefix: None,
-                kind: ReleaseKind::Date {
-                    date: Date::today()?,
-                    channel: None,
-                },
-                append: Vec::new(),
-            }
+        github_release(env, &mut vars);
+
+        let Some(channel) = channel else {
+            bail!("Must specify --channel");
+        };
+
+        let Some(mut release) = self::parser::expr(channel, &vars)? else {
+            bail!("Could not determine release from channel");
         };
 
         for append in &self.append {
@@ -129,10 +139,6 @@ impl ReleaseEnv {
             github_ref,
         }
     }
-}
-
-fn channel_to_release<'a>(string: &'a str, vars: &Vars<'a>) -> Result<Option<Release<'a>>> {
-    self::parser::expr(string, vars)
 }
 
 /// A valid year-month-day combination.
@@ -357,11 +363,11 @@ impl AsRef<OsStr> for Version<'_> {
 fn github_release<'a>(env: &'a ReleaseEnv, vars: &mut Vars<'a>) {
     if let Some(r#ref) = env.github_ref.as_deref() {
         if let Some(tag) = r#ref.strip_prefix("refs/tags/") {
-            vars.insert("github-tag", tag);
+            vars.insert("github.tag", tag);
         }
 
         if let Some(head) = r#ref.strip_prefix("refs/heads/") {
-            vars.insert("github-head", head);
+            vars.insert("githubhead", head);
         }
     }
 }
