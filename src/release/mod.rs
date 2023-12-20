@@ -9,6 +9,8 @@ use chrono::{Datelike, Utc};
 use clap::Parser;
 use serde::Serialize;
 
+use self::parser::Vars;
+
 /// The base year. Cannot perform releases prior to this year.
 const BASE_YEAR: u32 = 2000;
 const LAST_YEAR: u32 = 2255;
@@ -41,6 +43,11 @@ pub(crate) struct ReleaseOpts {
     /// In this instance, the `release` input might be defined by a
     /// workflow_dispatch job, and if undefined the channel will default to a
     /// nightly dated release.
+    ///
+    /// Available variables:
+    /// * `%date` - The current date.
+    /// * `%{github-tag}` - The tag name of the current release, if any.
+    /// * `%{github-head}` - The branch name of the current release, if any.
     #[clap(long, verbatim_doc_comment, value_name = "channel")]
     channel: Option<String>,
     /// Append additional components to the release string, separated by dots.
@@ -49,10 +56,13 @@ pub(crate) struct ReleaseOpts {
     /// will then be appended verbatim to the version string.
     #[clap(long, value_name = "part")]
     append: Vec<String>,
-    /// Do not process run as a release based on github information, such as
-    /// `GITHUB_REF`.
+    /// Never include a release prefix. Even if one is part of the input, it
+    /// will be stripped.
+    ///
+    /// So for example a channel of `v1.0.0` will become `1.0.0` with this
+    /// option enabled.
     #[clap(long)]
-    github_release: bool,
+    no_prefix: bool,
 }
 
 impl ReleaseOpts {
@@ -69,15 +79,13 @@ impl ReleaseOpts {
 
         let _span = span.entered();
 
-        let mut release = 'out: {
-            if let Some(channel) = channel {
-                if let Some(release) = channel_to_release(channel)? {
-                    break 'out release;
-                }
-            }
+        let mut vars = Vars::new(Date::today()?);
 
-            if self.github_release {
-                if let Some(release) = github_release(env)? {
+        let mut release = 'out: {
+            github_release(env, &mut vars);
+
+            if let Some(channel) = channel {
+                if let Some(release) = channel_to_release(channel, &vars)? {
                     break 'out release;
                 }
             }
@@ -96,6 +104,10 @@ impl ReleaseOpts {
 
         for append in &self.append {
             release.append.push(append);
+        }
+
+        if self.no_prefix {
+            release.prefix = None;
         }
 
         Ok(release)
@@ -119,8 +131,8 @@ impl ReleaseEnv {
     }
 }
 
-fn channel_to_release(string: &str) -> Result<Option<Release<'_>>> {
-    self::parser::expr(string)
+fn channel_to_release<'a>(string: &'a str, vars: &Vars<'a>) -> Result<Option<Release<'a>>> {
+    self::parser::expr(string, vars)
 }
 
 /// A valid year-month-day combination.
@@ -212,7 +224,15 @@ pub(super) struct Release<'a> {
     append: Vec<&'a str>,
 }
 
-impl Release<'_> {
+impl<'a> Release<'a> {
+    fn channel_mut(&mut self) -> Option<&mut Option<Channel<'a>>> {
+        match &mut self.kind {
+            ReleaseKind::Version { channel, .. } => Some(channel),
+            ReleaseKind::Date { channel, .. } => Some(channel),
+            ReleaseKind::Name { .. } => None,
+        }
+    }
+
     pub(crate) fn msi_version(&self) -> Result<String> {
         /// Calculate an MSI-safe version number.
         /// Unfortunately this enforces some unfortunate constraints on the available
@@ -334,28 +354,14 @@ impl AsRef<OsStr> for Version<'_> {
 }
 
 /// Define a github release.
-fn github_release(env: &ReleaseEnv) -> Result<Option<Release<'_>>> {
-    match (env.github_event_name.as_deref(), env.github_ref.as_deref()) {
-        (Some("push"), Some(r#ref)) => {
-            if let Some(tag) = r#ref.strip_prefix("refs/tags/") {
-                return Ok(channel_to_release(tag)?);
-            }
+fn github_release<'a>(env: &'a ReleaseEnv, vars: &mut Vars<'a>) {
+    if let Some(r#ref) = env.github_ref.as_deref() {
+        if let Some(tag) = r#ref.strip_prefix("refs/tags/") {
+            vars.insert("github-tag", tag);
+        }
 
-            if let Some(channel) = r#ref.strip_prefix("refs/heads/") {
-                return Ok(channel_to_release(channel)?);
-            }
-
-            tracing::warn!("Unsupported GITHUB_REF");
+        if let Some(head) = r#ref.strip_prefix("refs/heads/") {
+            vars.insert("github-head", head);
         }
-        (Some("schedule" | "workflow_dispatch"), _) => {}
-        (Some(value), _) => {
-            bail!("Unsupported GITHUB_EVENT_NAME='{value}'");
-        }
-        (None, Some(value)) => {
-            bail!("Specifying GITHUB_REF='{value}' without GITHUB_EVENT_NAME='push' does nothing");
-        }
-        _ => {}
     }
-
-    Ok(None)
 }

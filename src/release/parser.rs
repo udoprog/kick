@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::str;
 
 use anyhow::{bail, Context, Result};
@@ -42,39 +43,51 @@ macro_rules! ws {
     };
 }
 
-pub(super) fn expr(input: &str) -> Result<Option<Release<'_>>> {
-    let mut parser = Parser::new(input.as_bytes())?;
+pub(super) struct Vars<'a> {
+    today: Date,
+    values: HashMap<&'static str, &'a str>,
+}
+
+impl<'a> Vars<'a> {
+    pub(super) fn new(today: Date) -> Self {
+        Vars {
+            today,
+            values: HashMap::new(),
+        }
+    }
+
+    fn get(&self, name: &str) -> Option<&'a str> {
+        self.values.get(name).copied()
+    }
+
+    pub(super) fn insert(&mut self, name: &'static str, value: &'a str) {
+        self.values.insert(name, value);
+    }
+}
+
+pub(super) fn expr<'a>(input: &'a str, vars: &Vars<'a>) -> Result<Option<Release<'a>>> {
+    let mut parser = Parser::new(input.as_bytes(), vars);
     parser.expr()
 }
 
 #[cfg(test)]
-fn expr_with(input: &str, today: Date) -> Result<Option<Release<'_>>> {
-    let mut parser = Parser::new_with(input.as_bytes(), today);
-    parser.expr()
-}
-
-#[cfg(test)]
-fn parse_with(input: &str, today: Date) -> Result<Release<'_>> {
-    let mut parser = Parser::new_with(input.as_bytes(), today);
+fn parse<'a>(input: &'a str, vars: &'a Vars) -> Result<Option<Release<'a>>> {
+    let mut parser = Parser::new(input.as_bytes(), vars);
     parser.release()
 }
 
-struct Parser<'a> {
+struct Parser<'vars, 'a> {
     data: &'a [u8],
+    vars: &'vars Vars<'a>,
     index: usize,
-    today: Date,
 }
 
-impl<'a> Parser<'a> {
-    fn new(data: &'a [u8]) -> Result<Self> {
-        Ok(Self::new_with(data, Date::today()?))
-    }
-
-    fn new_with(data: &'a [u8], today: Date) -> Self {
+impl<'vars, 'a> Parser<'vars, 'a> {
+    fn new(data: &'a [u8], vars: &'vars Vars<'a>) -> Self {
         Parser {
             data,
+            vars,
             index: 0,
-            today,
         }
     }
 
@@ -129,8 +142,8 @@ impl<'a> Parser<'a> {
         Date::new(year, month, day)
     }
 
-    fn parse_channel(&mut self, start: usize) -> Result<Channel<'a>> {
-        let name = self.parse_ident(start)?;
+    fn channel(&mut self, start: usize) -> Result<Channel<'a>> {
+        let name = self.channel_ident(start)?;
 
         let pre = if self.peek().is_ascii_digit() {
             Some(self.parse_number()?)
@@ -141,8 +154,40 @@ impl<'a> Parser<'a> {
         Ok(Channel { name, pre })
     }
 
-    fn parse_ident(&mut self, start: usize) -> Result<&'a str> {
+    fn variable(&mut self) -> Result<&'a str> {
+        if self.peek() != '{' {
+            return self.parse_ident(self.index);
+        }
+
+        self.next();
+        let start = self.index;
+
+        while matches!(self.peek(), 'a'..='z' | '0'..='9' | '-' | '_' | '.') {
+            self.next();
+        }
+
+        let end = self.index;
+        expect!(self, '}');
+        Ok(str::from_utf8(&self.data[start..end])?)
+    }
+
+    fn channel_ident(&mut self, start: usize) -> Result<&'a str> {
         while self.peek().is_ascii_lowercase() {
+            self.next();
+        }
+
+        if start == self.index {
+            bail!("Identifier cannot be empty at {}", start);
+        }
+
+        let end = self.index;
+        Ok(str::from_utf8(&self.data[start..end])?)
+    }
+
+    fn parse_ident(&mut self, start: usize) -> Result<&'a str> {
+        expect!(self, 'a'..='z');
+
+        while let 'a'..='z' | '0'..='9' = self.peek() {
             self.next();
         }
 
@@ -187,13 +232,13 @@ impl<'a> Parser<'a> {
                 return Ok(None);
             }
 
-            Ok(Some(self.parse_channel(self.index)?))
+            Ok(Some(self.channel(self.index)?))
         } else {
             Ok(None)
         }
     }
 
-    fn release(&mut self) -> Result<Release<'a>> {
+    fn release(&mut self) -> Result<Option<Release<'a>>> {
         let start = self.index;
 
         while self.peek().is_ascii_lowercase() {
@@ -206,68 +251,97 @@ impl<'a> Parser<'a> {
             None
         };
 
-        let kind = match self.peek() {
-            '%' => {
-                self.next();
+        let mut release = 'release: {
+            let kind = match self.peek() {
+                '%' => {
+                    self.next();
 
-                match self.parse_ident(self.index)? {
-                    "date" => {
-                        let date = self.today;
-                        let channel = self.maybe_channel()?;
-                        ReleaseKind::Date { date, channel }
-                    }
-                    other => {
-                        bail!("Unknown variable `{}`", other);
-                    }
-                }
-            }
-            '0'..='9' => {
-                let start = self.index;
-                let first = self.parse_number()?;
+                    match self.variable()? {
+                        "date" => {
+                            let date = self.vars.today;
+                            let channel = self.maybe_channel()?;
+                            ReleaseKind::Date { date, channel }
+                        }
+                        other => {
+                            let Some(value) = self.vars.get(other) else {
+                                break 'release None;
+                            };
 
-                match self.peek() {
-                    '.' => {
-                        self.next();
-                        let version = self.parse_version(start, first)?;
-                        let channel = self.maybe_channel()?;
-                        ReleaseKind::Version { version, channel }
-                    }
-                    '-' => {
-                        self.next();
-                        let date = self.parse_date(first)?;
-                        let channel = self.maybe_channel()?;
-                        ReleaseKind::Date { date, channel }
-                    }
-                    _ => {
-                        let Some(name) = prefix.take() else {
-                            fail!(self, b'.' | b'-');
-                        };
-
-                        ReleaseKind::Name {
-                            channel: Channel {
-                                name,
-                                pre: Some(first),
-                            },
+                            let mut parser = Parser::new(value.as_bytes(), self.vars);
+                            break 'release parser.release()?;
                         }
                     }
                 }
-            }
-            'a'..='z' => {
-                let channel = self.parse_channel(self.index)?;
-                ReleaseKind::Name { channel }
-            }
-            _ => {
-                let Some(name) = prefix.take() else {
-                    fail!(self, b'0'..=b'9' | b'a'..=b'z');
-                };
+                '0'..='9' => {
+                    let start = self.index;
+                    let first = self.parse_number()?;
 
-                ReleaseKind::Name {
-                    channel: Channel { name, pre: None },
+                    match self.peek() {
+                        '.' => {
+                            self.next();
+                            let version = self.parse_version(start, first)?;
+                            ReleaseKind::Version {
+                                version,
+                                channel: None,
+                            }
+                        }
+                        '-' => {
+                            self.next();
+                            let date = self.parse_date(first)?;
+                            ReleaseKind::Date {
+                                date,
+                                channel: None,
+                            }
+                        }
+                        _ => {
+                            let Some(name) = prefix.take() else {
+                                fail!(self, b'.' | b'-');
+                            };
+
+                            ReleaseKind::Name {
+                                channel: Channel {
+                                    name,
+                                    pre: Some(first),
+                                },
+                            }
+                        }
+                    }
                 }
-            }
+                'a'..='z' => {
+                    let channel = self.channel(self.index)?;
+                    ReleaseKind::Name { channel }
+                }
+                _ => {
+                    let Some(name) = prefix.take() else {
+                        fail!(self, b'0'..=b'9' | b'a'..=b'z');
+                    };
+
+                    ReleaseKind::Name {
+                        channel: Channel { name, pre: None },
+                    }
+                }
+            };
+
+            Some(Release {
+                prefix: prefix.take(),
+                kind,
+                append: Vec::new(),
+            })
         };
 
-        let mut append = Vec::new();
+        if let Some(prefix) = prefix.take() {
+            if let Some(release) = &mut release {
+                release.prefix = Some(prefix);
+            }
+        }
+
+        if let Some(c) = self.maybe_channel()? {
+            if let Some(release) = &mut release {
+                if let Some(channel) = release.channel_mut() {
+                    *channel = Some(c);
+                }
+            }
+        }
 
         while self.peek() == '.' {
             self.next();
@@ -277,18 +351,19 @@ impl<'a> Parser<'a> {
                 self.next();
             }
 
-            append.push(str::from_utf8(&self.data[start..self.index])?);
+            if let Some(release) = &mut release {
+                release
+                    .append
+                    .push(str::from_utf8(&self.data[start..self.index])?);
+            }
         }
 
-        Ok(Release {
-            prefix,
-            kind,
-            append,
-        })
+        Ok(release)
     }
 
     fn expr(&mut self) -> Result<Option<Release<'a>>> {
         let mut last = None;
+        let mut needs_or = false;
 
         while self.peek() != EOF {
             match (self.peek(), self.peek2()) {
@@ -302,9 +377,10 @@ impl<'a> Parser<'a> {
                 ('|', '|') => {
                     self.next();
                     self.next();
+                    needs_or = false;
                     continue;
                 }
-                ('-' | '.', _) => {
+                ('-' | '.', _) if !needs_or => {
                     self.next();
 
                     while matches!(self.peek(), '-' | '.') {
@@ -313,12 +389,16 @@ impl<'a> Parser<'a> {
 
                     continue;
                 }
-                ('0'..='9' | 'a'..='z' | '%', _) => {
-                    let release = self.release()?;
+                ('0'..='9' | 'a'..='z' | '%', _) if !needs_or => {
+                    let Some(release) = self.release()? else {
+                        continue;
+                    };
 
                     if last.is_none() {
                         last = Some(release);
                     }
+
+                    needs_or = true;
                 }
                 _ => {
                     let b = self.peek();
@@ -370,23 +450,28 @@ fn parsing() {
         };
     }
 
-    let today = Date::new(2023, 1, 1).unwrap();
+    let mut vars = Vars {
+        today: Date::new(2023, 1, 1).unwrap(),
+        values: HashMap::new(),
+    };
+
+    vars.insert("fc39", "1.2.3-patch2.fc39");
 
     assert_eq!(
-        parse_with("1.2.3", today).unwrap(),
-        Release {
+        parse("1.2.3", &vars).unwrap(),
+        Some(Release {
             prefix: None,
             kind: ReleaseKind::Version {
                 version: version!(1, 2, 3),
                 channel: None
             },
             append: Vec::new()
-        }
+        })
     );
 
     assert_eq!(
-        parse_with("0000001.000000000.000003", today).unwrap(),
-        Release {
+        parse("0000001.000000000.000003", &vars).unwrap(),
+        Some(Release {
             prefix: None,
             kind: ReleaseKind::Version {
                 version: Version {
@@ -396,71 +481,47 @@ fn parsing() {
                 channel: None
             },
             append: Vec::new()
-        }
+        })
     );
 
     assert_eq!(
-        parse_with("v1.2.3", today).unwrap(),
-        Release {
+        parse("v1.2.3", &vars).unwrap(),
+        Some(Release {
             prefix: Some("v"),
             kind: ReleaseKind::Version {
                 version: version!(1, 2, 3),
                 channel: None
             },
             append: Vec::new()
-        }
+        })
     );
 
     assert_eq!(
-        parse_with("v1.2.3-pre1", today).unwrap(),
-        Release {
+        parse("v1.2.3-pre1", &vars).unwrap(),
+        Some(Release {
             prefix: Some("v"),
             kind: ReleaseKind::Version {
                 version: version!(1, 2, 3),
                 channel: Some(channel!(pre, 1)),
             },
             append: Vec::new()
-        }
+        })
     );
 
     assert_eq!(
-        parse_with("2023-1-1", today).unwrap(),
-        Release {
+        parse("2023-1-1", &vars).unwrap(),
+        Some(Release {
             prefix: None,
             kind: ReleaseKind::Date {
                 date: date!(2023, 1, 1),
                 channel: None,
             },
             append: Vec::new()
-        }
+        })
     );
 
     assert_eq!(
-        parse_with("2023-1-1-pre1", today).unwrap(),
-        Release {
-            prefix: None,
-            kind: ReleaseKind::Date {
-                date: date!(2023, 1, 1),
-                channel: Some(channel!(pre, 1)),
-            },
-            append: Vec::new()
-        }
-    );
-
-    assert_eq!(
-        parse_with("%date-pre1", today).unwrap(),
-        Release {
-            prefix: None,
-            kind: ReleaseKind::Date {
-                date: date!(2023, 1, 1),
-                channel: Some(channel!(pre, 1)),
-            },
-            append: Vec::new()
-        }
-    );
-
-    assert_eq!(
-        expr_with("|| %date-pre1\n|| ", today).unwrap(),
+        parse("2023-1-1-pre1", &vars).unwrap(),
         Some(Release {
             prefix: None,
             kind: ReleaseKind::Date {
@@ -472,7 +533,31 @@ fn parsing() {
     );
 
     assert_eq!(
-        expr_with(" ||   || 1.2.3- ||", today).unwrap(),
+        parse("%date-pre1", &vars).unwrap(),
+        Some(Release {
+            prefix: None,
+            kind: ReleaseKind::Date {
+                date: date!(2023, 1, 1),
+                channel: Some(channel!(pre, 1)),
+            },
+            append: Vec::new()
+        })
+    );
+
+    assert_eq!(
+        expr("|| %date-pre1\n|| ", &vars).unwrap(),
+        Some(Release {
+            prefix: None,
+            kind: ReleaseKind::Date {
+                date: date!(2023, 1, 1),
+                channel: Some(channel!(pre, 1)),
+            },
+            append: Vec::new()
+        })
+    );
+
+    assert_eq!(
+        expr(" ||   || 1.2.3- ||", &vars).unwrap(),
         Some(Release {
             prefix: None,
             kind: ReleaseKind::Version {
@@ -480,6 +565,18 @@ fn parsing() {
                 channel: None,
             },
             append: Vec::new()
+        })
+    );
+
+    assert_eq!(
+        expr("%fc39-patch1", &vars).unwrap(),
+        Some(Release {
+            prefix: None,
+            kind: ReleaseKind::Version {
+                version: version!(1, 2, 3),
+                channel: Some(channel!(patch, 1)),
+            },
+            append: vec!["fc39"]
         })
     );
 }
