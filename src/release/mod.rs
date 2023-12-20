@@ -72,6 +72,11 @@ pub(crate) struct ReleaseOpts {
     /// option enabled.
     #[clap(long)]
     no_prefix: bool,
+    /// Always ensure that the full version is included in the release string.
+    ///
+    /// This will pad any version seen with zeros. So `1.0` will become `1.0.0`.
+    #[clap(long)]
+    full_version: bool,
 }
 
 impl ReleaseOpts {
@@ -118,6 +123,14 @@ impl ReleaseOpts {
 
         if self.no_prefix {
             release.prefix = None;
+        }
+
+        if self.full_version {
+            if let ReleaseKind::Version(version) = &mut release.kind {
+                if version.patch.is_none() {
+                    version.patch = Some(0);
+                }
+            }
         }
 
         Ok(release)
@@ -184,21 +197,11 @@ impl fmt::Display for Date {
 }
 
 #[derive(Debug, PartialEq, Serialize)]
-#[serde(untagged)]
+#[serde(rename_all = "kebab-case")]
 enum ReleaseKind<'a> {
-    Version {
-        version: Version<'a>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        channel: Option<Channel<'a>>,
-    },
-    Date {
-        date: Date,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        channel: Option<Channel<'a>>,
-    },
-    Name {
-        channel: Channel<'a>,
-    },
+    Version(Version<'a>),
+    Date(Date),
+    Name(Box<str>),
 }
 
 #[derive(Debug, PartialEq, Serialize)]
@@ -226,19 +229,13 @@ pub(super) struct Release<'a> {
     prefix: Option<&'a str>,
     #[serde(flatten)]
     kind: ReleaseKind<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    channel: Option<Channel<'a>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     append: Vec<&'a str>,
 }
 
 impl<'a> Release<'a> {
-    fn channel_mut(&mut self) -> Option<&mut Option<Channel<'a>>> {
-        match &mut self.kind {
-            ReleaseKind::Version { channel, .. } => Some(channel),
-            ReleaseKind::Date { channel, .. } => Some(channel),
-            ReleaseKind::Name { .. } => None,
-        }
-    }
-
     pub(crate) fn msi_version(&self) -> Result<String> {
         /// Calculate an MSI-safe version number.
         /// Unfortunately this enforces some unfortunate constraints on the available
@@ -246,19 +243,15 @@ impl<'a> Release<'a> {
         ///
         /// The computed patch component must fit within 65535
         fn from_version(version: &Version, channel: Option<&Channel>) -> Result<String> {
-            if version.patch > 64 {
-                bail!(
-                    "patch version must not be greater than 64: {}",
-                    version.patch
-                );
+            let patch = version.patch.unwrap_or_default();
+
+            if patch > 64 {
+                bail!("patch version must not be greater than 64: {}", patch);
             }
 
             let pre = if let Some(pre) = channel.and_then(|c| c.pre) {
                 if pre >= 999 {
-                    bail!(
-                        "pre version must not be greater than 999: {}",
-                        version.patch
-                    );
+                    bail!("pre version must not be greater than 999: {}", pre);
                 }
 
                 pre
@@ -266,7 +259,7 @@ impl<'a> Release<'a> {
                 999
             };
 
-            let last = version.patch * 1000 + pre;
+            let last = patch * 1000 + pre;
             Ok(format!("{}.{}.{}", version.major, version.minor, last))
         }
 
@@ -290,11 +283,9 @@ impl<'a> Release<'a> {
         }
 
         match &self.kind {
-            ReleaseKind::Version {
-                version, channel, ..
-            } => from_version(version, channel.as_ref()),
-            ReleaseKind::Date { date, channel } => from_date_revision(*date, channel.as_ref()),
-            ReleaseKind::Name { .. } => bail!("Cannot compute MSI version from channel"),
+            ReleaseKind::Version(version) => from_version(version, self.channel.as_ref()),
+            ReleaseKind::Date(date) => from_date_revision(*date, self.channel.as_ref()),
+            ReleaseKind::Name(..) => bail!("Cannot compute MSI version from channel"),
         }
     }
 }
@@ -305,20 +296,20 @@ impl fmt::Display for Release<'_> {
             prefix.fmt(f)?;
         }
 
-        let (prefix, channel) = match &self.kind {
-            ReleaseKind::Version { version, channel } => {
+        match &self.kind {
+            ReleaseKind::Version(version) => {
                 version.fmt(f)?;
-                ("-", channel.as_ref())
             }
-            ReleaseKind::Date { date, channel } => {
+            ReleaseKind::Date(date) => {
                 date.fmt(f)?;
-                ("-", channel.as_ref())
             }
-            ReleaseKind::Name { channel } => ("", Some(channel)),
-        };
+            ReleaseKind::Name(name) => {
+                name.fmt(f)?;
+            }
+        }
 
-        if let Some(channel) = channel {
-            write!(f, "{prefix}{channel}")?;
+        if let Some(channel) = &self.channel {
+            write!(f, "-{channel}")?;
         }
 
         for additional in &self.append {
@@ -335,7 +326,8 @@ pub(super) struct Version<'a> {
     original: &'a str,
     major: u32,
     minor: u32,
-    patch: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    patch: Option<u32>,
 }
 
 impl fmt::Display for Version<'_> {
