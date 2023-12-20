@@ -4,6 +4,8 @@ use anyhow::{bail, Context, Result};
 
 use super::{Channel, Date, Release, ReleaseKind, Version};
 
+const EOF: char = '\0';
+
 macro_rules! fail {
     ($slf:expr, $pat:pat) => {{
         let b = $slf.peek();
@@ -34,15 +36,27 @@ macro_rules! expect {
     }};
 }
 
-pub(super) fn parse(input: &str) -> Result<Release<'_>> {
+macro_rules! ws {
+    () => {
+        ' ' | '\t' | '\n' | '\r'
+    };
+}
+
+pub(super) fn expr(input: &str) -> Result<Option<Release<'_>>> {
     let mut parser = Parser::new(input.as_bytes())?;
-    parser.parse()
+    parser.expr()
+}
+
+#[cfg(test)]
+fn expr_with(input: &str, today: Date) -> Result<Option<Release<'_>>> {
+    let mut parser = Parser::new_with(input.as_bytes(), today);
+    parser.expr()
 }
 
 #[cfg(test)]
 fn parse_with(input: &str, today: Date) -> Result<Release<'_>> {
     let mut parser = Parser::new_with(input.as_bytes(), today);
-    parser.parse()
+    parser.release()
 }
 
 struct Parser<'a> {
@@ -66,7 +80,19 @@ impl<'a> Parser<'a> {
 
     fn peek(&mut self) -> char {
         let Some(&b) = self.data.get(self.index) else {
-            return '\0';
+            return EOF;
+        };
+
+        b as char
+    }
+
+    fn peek2(&mut self) -> char {
+        let Some(index) = self.index.checked_add(1) else {
+            return EOF;
+        };
+
+        let Some(&b) = self.data.get(index) else {
+            return EOF;
         };
 
         b as char
@@ -75,7 +101,7 @@ impl<'a> Parser<'a> {
     fn next(&mut self) -> char {
         let b = self.peek();
 
-        if b != '\0' {
+        if b != EOF {
             self.index += 1;
         }
 
@@ -153,13 +179,29 @@ impl<'a> Parser<'a> {
         Ok(number)
     }
 
-    fn parse(&mut self) -> Result<Release<'a>> {
+    fn maybe_channel(&mut self) -> Result<Option<Channel<'a>>> {
+        if self.peek() == '-' {
+            self.next();
+
+            if matches!(self.peek(), EOF | ws!()) {
+                return Ok(None);
+            }
+
+            Ok(Some(self.parse_channel(self.index)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn release(&mut self) -> Result<Release<'a>> {
+        let start = self.index;
+
         while self.peek().is_ascii_lowercase() {
             self.next();
         }
 
-        let mut prefix = if self.index > 0 {
-            Some(str::from_utf8(&self.data[..self.index])?)
+        let mut prefix = if self.index != start {
+            Some(str::from_utf8(&self.data[start..self.index])?)
         } else {
             None
         };
@@ -171,7 +213,7 @@ impl<'a> Parser<'a> {
                 match self.parse_ident(self.index)? {
                     "date" => {
                         let date = self.today;
-                        let channel = self.maybe_parse_channel()?;
+                        let channel = self.maybe_channel()?;
                         ReleaseKind::Date { date, channel }
                     }
                     other => {
@@ -187,13 +229,13 @@ impl<'a> Parser<'a> {
                     '.' => {
                         self.next();
                         let version = self.parse_version(start, first)?;
-                        let channel = self.maybe_parse_channel()?;
+                        let channel = self.maybe_channel()?;
                         ReleaseKind::Version { version, channel }
                     }
                     '-' => {
                         self.next();
                         let date = self.parse_date(first)?;
-                        let channel = self.maybe_parse_channel()?;
+                        let channel = self.maybe_channel()?;
                         ReleaseKind::Date { date, channel }
                     }
                     _ => {
@@ -238,11 +280,6 @@ impl<'a> Parser<'a> {
             append.push(str::from_utf8(&self.data[start..self.index])?);
         }
 
-        if self.index != self.data.len() {
-            let b = self.peek();
-            bail!("Unexpected input at {}: {}", self.index, b);
-        }
-
         Ok(Release {
             prefix,
             kind,
@@ -250,13 +287,47 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn maybe_parse_channel(&mut self) -> Result<Option<Channel<'a>>> {
-        if self.peek() == '-' {
-            self.next();
-            Ok(Some(self.parse_channel(self.index)?))
-        } else {
-            Ok(None)
+    fn expr(&mut self) -> Result<Option<Release<'a>>> {
+        let mut last = None;
+
+        while self.peek() != EOF {
+            match (self.peek(), self.peek2()) {
+                (ws!(), _) => {
+                    self.next();
+
+                    while matches!(self.peek(), ws!()) {
+                        self.next();
+                    }
+                }
+                ('|', '|') => {
+                    self.next();
+                    self.next();
+                    continue;
+                }
+                ('-' | '.', _) => {
+                    self.next();
+
+                    while matches!(self.peek(), '-' | '.') {
+                        self.next();
+                    }
+
+                    continue;
+                }
+                ('0'..='9' | 'a'..='z' | '%', _) => {
+                    let release = self.release()?;
+
+                    if last.is_none() {
+                        last = Some(release);
+                    }
+                }
+                _ => {
+                    let b = self.peek();
+                    bail!("Unexpected input '{}' at {}", self.index, b);
+                }
+            }
         }
+
+        Ok(last)
     }
 }
 
@@ -299,8 +370,10 @@ fn parsing() {
         };
     }
 
+    let today = Date::new(2023, 1, 1).unwrap();
+
     assert_eq!(
-        parse("1.2.3").unwrap(),
+        parse_with("1.2.3", today).unwrap(),
         Release {
             prefix: None,
             kind: ReleaseKind::Version {
@@ -312,7 +385,7 @@ fn parsing() {
     );
 
     assert_eq!(
-        parse("0000001.000000000.000003").unwrap(),
+        parse_with("0000001.000000000.000003", today).unwrap(),
         Release {
             prefix: None,
             kind: ReleaseKind::Version {
@@ -327,7 +400,7 @@ fn parsing() {
     );
 
     assert_eq!(
-        parse("v1.2.3").unwrap(),
+        parse_with("v1.2.3", today).unwrap(),
         Release {
             prefix: Some("v"),
             kind: ReleaseKind::Version {
@@ -339,7 +412,7 @@ fn parsing() {
     );
 
     assert_eq!(
-        parse("v1.2.3-pre1").unwrap(),
+        parse_with("v1.2.3-pre1", today).unwrap(),
         Release {
             prefix: Some("v"),
             kind: ReleaseKind::Version {
@@ -351,7 +424,7 @@ fn parsing() {
     );
 
     assert_eq!(
-        parse("2023-1-1").unwrap(),
+        parse_with("2023-1-1", today).unwrap(),
         Release {
             prefix: None,
             kind: ReleaseKind::Date {
@@ -363,7 +436,7 @@ fn parsing() {
     );
 
     assert_eq!(
-        parse("2023-1-1-pre1").unwrap(),
+        parse_with("2023-1-1-pre1", today).unwrap(),
         Release {
             prefix: None,
             kind: ReleaseKind::Date {
@@ -373,8 +446,6 @@ fn parsing() {
             append: Vec::new()
         }
     );
-
-    let today = Date::new(2023, 1, 1).unwrap();
 
     assert_eq!(
         parse_with("%date-pre1", today).unwrap(),
@@ -386,5 +457,29 @@ fn parsing() {
             },
             append: Vec::new()
         }
+    );
+
+    assert_eq!(
+        expr_with("|| %date-pre1\n|| ", today).unwrap(),
+        Some(Release {
+            prefix: None,
+            kind: ReleaseKind::Date {
+                date: date!(2023, 1, 1),
+                channel: Some(channel!(pre, 1)),
+            },
+            append: Vec::new()
+        })
+    );
+
+    assert_eq!(
+        expr_with(" ||   || 1.2.3- ||", today).unwrap(),
+        Some(Release {
+            prefix: None,
+            kind: ReleaseKind::Version {
+                version: version!(1, 2, 3),
+                channel: None,
+            },
+            append: Vec::new()
+        })
     );
 }

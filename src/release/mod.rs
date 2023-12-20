@@ -31,6 +31,16 @@ pub(crate) struct ReleaseOpts {
     /// * A date follow by a custom suffix, like `2023-12-11-nightly`.
     /// * `%date` will be replaced with the current naive date in expressions
     ///  like `%date` or `%date-nightly1`.
+    ///
+    /// Finally a channel can take a simple kind of expression, where each
+    /// candidate is separated from left to right using `||`. This allows the
+    /// use of variables which might evaluate to empty strings, like this:
+    ///
+    /// --channel "${{github.event.inputs.release}} || %date-nightly"
+    ///
+    /// In this instance, the `release` input might be defined by a
+    /// workflow_dispatch job, and if undefined the channel will default to a
+    /// nightly dated release.
     #[clap(long, verbatim_doc_comment, value_name = "channel")]
     channel: Option<String>,
     /// Append additional components to the release string, separated by dots.
@@ -61,7 +71,9 @@ impl ReleaseOpts {
 
         let mut release = 'out: {
             if let Some(channel) = channel {
-                break 'out channel_to_release(channel)?;
+                if let Some(release) = channel_to_release(channel)? {
+                    break 'out release;
+                }
             }
 
             if self.github_release {
@@ -107,8 +119,8 @@ impl ReleaseEnv {
     }
 }
 
-fn channel_to_release(string: &str) -> Result<Release<'_>> {
-    self::parser::parse(string)
+fn channel_to_release(string: &str) -> Result<Option<Release<'_>>> {
+    self::parser::expr(string)
 }
 
 /// A valid year-month-day combination.
@@ -326,11 +338,11 @@ fn github_release(env: &ReleaseEnv) -> Result<Option<Release<'_>>> {
     match (env.github_event_name.as_deref(), env.github_ref.as_deref()) {
         (Some("push"), Some(r#ref)) => {
             if let Some(tag) = r#ref.strip_prefix("refs/tags/") {
-                return Ok(Some(channel_to_release(tag)?));
+                return Ok(channel_to_release(tag)?);
             }
 
             if let Some(channel) = r#ref.strip_prefix("refs/heads/") {
-                return Ok(Some(channel_to_release(channel)?));
+                return Ok(channel_to_release(channel)?);
             }
 
             tracing::warn!("Unsupported GITHUB_REF");

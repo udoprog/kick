@@ -12,6 +12,7 @@ use crate::process::Command;
 
 const FIND_REQUIRES: &str = "/usr/lib/rpm/find-requires";
 
+#[allow(unused)]
 pub(super) fn detect() -> bool {
     let Ok(m) = fs::metadata(FIND_REQUIRES) else {
         return false;
