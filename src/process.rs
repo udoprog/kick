@@ -3,7 +3,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
-use std::process::{ChildStdin, ExitStatus, Output, Stdio};
+use std::process::{ChildStdin, ChildStdout, ExitStatus, Output, Stdio};
 
 use anyhow::{anyhow, Context, Result};
 
@@ -163,6 +163,10 @@ pub(crate) struct Child {
 impl Child {
     pub(crate) fn stdin(&mut self) -> Result<ChildStdin> {
         self.child.stdin.take().context("Missing stdin")
+    }
+
+    pub(crate) fn stdout(&mut self) -> Result<ChildStdout> {
+        self.child.stdout.take().context("Missing stdout")
     }
 
     pub(crate) fn wait_with_output(self) -> Result<Output> {

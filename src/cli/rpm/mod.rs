@@ -1,4 +1,5 @@
 mod find_requires;
+mod find_requires_by_elf;
 
 use std::env::consts::{ARCH, EXE_EXTENSION};
 use std::fs;
@@ -58,7 +59,11 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts, release: &Release) -> Result<(),
         .join(name)
         .with_extension(EXE_EXTENSION);
 
-    let requires = find_requires::find_requires(&binary_path)?;
+    let requires = if find_requires::detect() {
+        find_requires::find(&binary_path)?
+    } else {
+        find_requires_by_elf::find(&binary_path)?
+    };
 
     let version = release.to_string();
 
