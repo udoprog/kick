@@ -54,9 +54,12 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    for repo in cx.repos() {
-        compress(cx, repo, opts).with_context(cx.context(repo))?;
-    }
+    with_repos!(
+        cx,
+        "Compress",
+        format_args!("compress: {opts:?}"),
+        |cx, repo| { compress(cx, repo, opts) }
+    );
 
     Ok(())
 }

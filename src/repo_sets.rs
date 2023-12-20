@@ -151,7 +151,7 @@ impl RepoSets {
         let timestamp = now.naive_local().format(DATE_FORMAT).to_string();
 
         for (id, set, hint) in self.updates.drain(..) {
-            tracing::info!(?id, ?timestamp, "Saving set");
+            tracing::trace!(?id, ?timestamp, "Saving set");
 
             let base_path = self.path.join(&id);
 

@@ -11,7 +11,7 @@ use crate::manifest;
 use crate::model::Repo;
 use crate::workspace;
 
-#[derive(Default, Parser)]
+#[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     /// An explicit version override.
     #[arg(long, name = "[<crate>=]version")]
@@ -36,7 +36,7 @@ pub(crate) struct Opts {
     commit: bool,
 }
 
-pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
+pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     let mut version_set = VersionSet {
         major: opts.major,
         minor: opts.minor,
@@ -63,9 +63,12 @@ pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
         }
     }
 
-    for repo in cx.repos() {
-        version(cx, opts, repo, &version_set).with_context(cx.context(repo))?;
-    }
+    with_repos!(
+        cx,
+        "Version",
+        format_args!("version: {opts:?}"),
+        |cx, repo| version(cx, opts, repo, &version_set),
+    );
 
     Ok(())
 }

@@ -168,13 +168,25 @@ impl RepoRef {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum State {
+    /// The repository is pending.
+    Pending,
+    /// The repository operation exited successfully.
+    Success,
+    /// An error occured while processing the repository.
+    Error,
+    /// The repository is disabled.
+    Disabled,
+}
+
 struct RepoInner {
     /// Source of module.
     source: RepoSource,
     /// Interior module stuff.
     symbolic: RepoRef,
-    /// If the module has been disabled for some reason.
-    disabled: Cell<bool>,
+    /// Running the repo operation errored.
+    state: Cell<State>,
     /// Whether we've tried to initialize the workspace.
     init: Cell<bool>,
     /// Initialized workspace.
@@ -192,7 +204,7 @@ impl fmt::Debug for Repo {
         f.debug_struct("Repo")
             .field("source", &self.inner.source)
             .field("symbolic", &self.inner.symbolic)
-            .field("disabled", &self.inner.disabled)
+            .field("state", &self.inner.state)
             .field("init", &self.inner.init)
             .field("workspace", &self.inner.crates)
             .finish()
@@ -205,7 +217,7 @@ impl Repo {
             inner: Rc::new(RepoInner {
                 source,
                 symbolic: RepoRef { path, url },
-                disabled: Cell::new(false),
+                state: Cell::new(State::Pending),
                 init: Cell::new(false),
                 crates: RefCell::new(None),
             }),
@@ -214,12 +226,27 @@ impl Repo {
 
     /// Test if module is disabled.
     pub(crate) fn is_disabled(&self) -> bool {
-        self.inner.disabled.get()
+        matches!(self.inner.state.get(), State::Disabled)
     }
 
     /// Set if module is disabled.
-    pub(crate) fn set_disabled(&self, disabled: bool) {
-        self.inner.disabled.set(disabled);
+    pub(crate) fn disable(&self) {
+        self.inner.state.set(State::Disabled);
+    }
+
+    /// Set the repo as errored.
+    pub(crate) fn set_error(&self) {
+        self.inner.state.set(State::Error);
+    }
+
+    /// Set the repo as succeeded.
+    pub(crate) fn set_success(&self) {
+        self.inner.state.set(State::Success);
+    }
+
+    /// Test if module errored.
+    pub(crate) fn state(&self) -> State {
+        self.inner.state.get()
     }
 
     /// Get the source of a module.

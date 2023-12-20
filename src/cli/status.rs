@@ -1,7 +1,7 @@
 use core::fmt;
 use std::io::Write;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Local, TimeZone, Utc};
 use clap::Parser;
 use reqwest::{header, Client, IntoUrl, Method, RequestBuilder, StatusCode};
@@ -10,7 +10,6 @@ use url::Url;
 
 use crate::ctxt::Ctxt;
 use crate::model::{Repo, RepoPath};
-use crate::repo_sets::RepoSet;
 
 /// GitHub base URL.
 const API_URL: &str = "https://api.github.com";
@@ -66,39 +65,47 @@ pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     let today = Local::now();
     let limit = opts.limit.unwrap_or(1).max(1).to_string();
 
-    let mut good = RepoSet::default();
-    let mut bad = RepoSet::default();
+    with_repos!(
+        cx,
+        "Status",
+        format_args!("status: {opts:?}"),
+        |cx, repo| do_status(cx, repo, &opts, &client, today, &limit).await,
+    );
 
-    for repo in cx.repos() {
-        let workflows = cx.config.workflows(repo)?;
+    Ok(())
+}
 
-        if workflows.is_empty() {
-            continue;
-        }
+async fn do_status(
+    cx: &Ctxt<'_>,
+    repo: &Repo,
+    opts: &Opts,
+    client: &Client,
+    today: DateTime<Local>,
+    limit: &str,
+) -> Result<()> {
+    let workflows = cx.config.workflows(repo)?;
 
-        let Some(repo_path) = repo.repo() else {
-            continue;
-        };
-
-        println!("{}: {}", repo.path(), repo.url());
-
-        let mut ok = true;
-
-        for id in workflows.into_keys() {
-            println!("Workflow `{id}`:");
-            ok &= status(cx, &id, opts, repo, repo_path, today, &client, &limit).await?;
-        }
-
-        if ok {
-            good.insert(repo);
-        } else {
-            bad.insert(repo);
-        }
+    if workflows.is_empty() {
+        return Ok(());
     }
 
-    let hint = format!("status: {:?}", opts);
-    cx.sets.save("good", good, &hint);
-    cx.sets.save("bad", bad, &hint);
+    let Some(repo_path) = repo.repo() else {
+        return Ok(());
+    };
+
+    println!("{}: {}", repo.path(), repo.url());
+
+    let mut ok = true;
+
+    for id in workflows.into_keys() {
+        println!("Workflow `{id}`:");
+        ok &= status(cx, &id, opts, repo, repo_path, today, &client, &limit).await?;
+    }
+
+    if !ok {
+        bail!("Status is not OK")
+    }
+
     Ok(())
 }
 

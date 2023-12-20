@@ -10,9 +10,7 @@ use crate::ctxt::Ctxt;
 use crate::manifest;
 use crate::model::Repo;
 use crate::process::Command;
-use crate::repo_sets::RepoSet;
 use crate::rust_version::{self, RustVersion};
-use crate::workspace::Crates;
 
 /// Oldest version where rust-version was introduced.
 const RUST_VERSION_SUPPORTED: RustVersion = RustVersion::new(1, 56, None);
@@ -67,29 +65,16 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    let mut good = RepoSet::default();
-    let mut bad = RepoSet::default();
+    with_repos!(cx, "MSRV", format_args!("msrv: {opts:?}"), |cx, repo| {
+        msrv(cx, repo, opts)
+    });
 
-    for repo in cx.repos() {
-        let workspace = repo.workspace(cx)?;
-        msrv(cx, &workspace, repo, opts, &mut good, &mut bad).with_context(cx.context(repo))?;
-    }
-
-    let hint = format!("msrv: {:?}", opts);
-    cx.sets.save("good", good, &hint);
-    cx.sets.save("bad", bad, &hint);
     Ok(())
 }
 
 #[tracing::instrument(skip_all, fields(source = ?repo.source(), path = repo.path().as_str()))]
-fn msrv(
-    cx: &Ctxt<'_>,
-    crates: &Crates,
-    repo: &Repo,
-    opts: &Opts,
-    good: &mut RepoSet,
-    bad: &mut RepoSet,
-) -> Result<()> {
+fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
+    let crates = repo.workspace(cx)?;
     let primary = crates.primary_package()?;
 
     let current_dir = cx.to_path(repo.path());
@@ -208,12 +193,8 @@ fn msrv(
     }
 
     let Some(version) = candidates.get() else {
-        tracing::warn!("No MSRV found");
-        bad.insert(repo);
-        return Ok(());
+        bail!("No MSRV found");
     };
-
-    good.insert(repo);
 
     if version >= RUST_VERSION_SUPPORTED {
         cx.change(Change::SetRustVersion {

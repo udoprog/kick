@@ -7,12 +7,12 @@ use std::io::Write;
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 
+use crate::changes;
 use crate::ctxt::Ctxt;
 use crate::model::{Repo, UpdateParams};
 use crate::urls::{UrlError, Urls};
-use crate::{changes, ctxt};
 
-#[derive(Default, Parser)]
+#[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     /// Perform URL checks where we go out and try and fetch every references
     /// URL.
@@ -20,16 +20,12 @@ pub(crate) struct Opts {
     url_checks: bool,
 }
 
-pub(crate) async fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
+pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     let mut urls = Urls::default();
 
-    for repo in cx.repos() {
-        tracing::info!(
-            "Checking: {}",
-            ctxt::empty_or_dot(cx.to_path(repo.path())).display()
-        );
-        check(cx, repo, &mut urls).with_context(cx.context(repo))?;
-    }
+    with_repos!(cx, "Check", format_args!("check: {opts:?}"), |cx, repo| {
+        check(cx, repo, &mut urls)
+    });
 
     let o = std::io::stdout();
     let mut o = o.lock();

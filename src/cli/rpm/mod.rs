@@ -13,7 +13,6 @@ use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::model::Repo;
 use crate::release::Release;
-use crate::repo_sets::RepoSet;
 use crate::workspace;
 
 use crate::release::ReleaseOpts;
@@ -30,26 +29,13 @@ pub(crate) struct Opts {
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     let release = opts.release.make()?;
 
-    let mut good = RepoSet::default();
-    let mut bad = RepoSet::default();
+    with_repos!(
+        cx,
+        "Build rpm",
+        format_args!("rpm: {:?}", opts),
+        |cx, repo| { rpm(cx, repo, opts, &release) }
+    );
 
-    for repo in cx.repos() {
-        if let Err(error) = rpm(cx, repo, opts, &release) {
-            tracing::error!("Failed to build rpm");
-
-            for cause in error.chain() {
-                tracing::error!("Caused by: {cause}");
-            }
-
-            bad.insert(repo);
-        } else {
-            good.insert(repo);
-        }
-    }
-
-    let hint = format!("for: {:?}", opts);
-    cx.sets.save("good", good, &hint);
-    cx.sets.save("bad", bad, &hint);
     Ok(())
 }
 

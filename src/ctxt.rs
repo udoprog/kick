@@ -1,6 +1,6 @@
 use std::cell::{Ref, RefCell};
 use std::path::{Component, Path, PathBuf};
-use std::process::Stdio;
+use std::process::{ExitCode, Stdio};
 
 use anyhow::{anyhow, Context, Result};
 use relative_path::RelativePath;
@@ -10,7 +10,7 @@ use crate::changes::{Change, Warning};
 use crate::config::Config;
 use crate::git::Git;
 use crate::manifest::Package;
-use crate::model::{Repo, RepoParams, RepoRef};
+use crate::model::{Repo, RepoParams, RepoRef, State};
 use crate::process::Command;
 use crate::repo_sets::RepoSets;
 use crate::rust_version::RustVersion;
@@ -32,6 +32,21 @@ pub(crate) struct Ctxt<'a> {
 impl<'a> Ctxt<'a> {
     pub(crate) fn root(&self) -> &Path {
         self.root
+    }
+
+    /// Convert a context into an outcome.
+    pub(crate) fn outcome(&self) -> ExitCode {
+        for repo in self.repos() {
+            if repo.is_disabled() {
+                continue;
+            }
+
+            if matches!(repo.state(), State::Error) {
+                return ExitCode::FAILURE;
+            }
+        }
+
+        ExitCode::SUCCESS
     }
 
     /// Get a repo path.

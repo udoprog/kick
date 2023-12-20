@@ -7,7 +7,6 @@ use relative_path::RelativePathBuf;
 use crate::ctxt::{self, Ctxt};
 use crate::model::Repo;
 use crate::release::Release;
-use crate::repo_sets::RepoSet;
 use crate::wix::Wix;
 use crate::workspace;
 
@@ -25,26 +24,10 @@ pub(crate) struct Opts {
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     let release = opts.version.make()?;
 
-    let mut good = RepoSet::default();
-    let mut bad = RepoSet::default();
+    with_repos!(cx, "Build MSI", format!("msi: {opts:?}"), |cx, repo| {
+        msi(cx, repo, opts, &release)
+    });
 
-    for repo in cx.repos() {
-        if let Err(error) = msi(cx, repo, opts, &release) {
-            tracing::error!("Failed to build msi");
-
-            for cause in error.chain() {
-                tracing::error!("Caused by: {cause}");
-            }
-
-            bad.insert(repo);
-        } else {
-            good.insert(repo);
-        }
-    }
-
-    let hint = format!("for: {:?}", opts);
-    cx.sets.save("good", good, &hint);
-    cx.sets.save("bad", bad, &hint);
     Ok(())
 }
 

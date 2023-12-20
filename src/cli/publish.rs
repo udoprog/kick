@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use clap::Parser;
 
 use crate::changes::Change;
@@ -9,7 +9,7 @@ use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::workspace;
 
-#[derive(Default, Parser)]
+#[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     /// Provide a list of crates which we do not verify locally by adding
     /// `--no-verify` to cargo publish.
@@ -25,10 +25,13 @@ pub(crate) struct Opts {
     cargo_publish: Vec<OsString>,
 }
 
-pub(crate) fn entry(cx: &Ctxt<'_>, opts: &Opts) -> Result<()> {
-    for repo in cx.repos() {
-        publish(cx, opts, repo).with_context(cx.context(repo))?;
-    }
+pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
+    with_repos!(
+        cx,
+        "publish",
+        format_args!("publish: {opts:?}"),
+        |cx, repo| { publish(cx, opts, repo) }
+    );
 
     Ok(())
 }

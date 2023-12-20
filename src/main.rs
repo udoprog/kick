@@ -604,6 +604,7 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::process::ExitCode;
 
 use anyhow::{anyhow, bail, Context, Result};
 use changes::Change;
@@ -773,7 +774,7 @@ struct Opts {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<ExitCode> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::builder()
@@ -786,12 +787,12 @@ async fn main() -> Result<()> {
     entry().await
 }
 
-async fn entry() -> Result<()> {
+async fn entry() -> Result<ExitCode> {
     let opts = match Opts::try_parse() {
         Ok(opts) => opts,
         Err(error) => {
             match error.kind() {
-                clap::error::ErrorKind::DisplayHelp => {
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
                     print!("{error}");
                 }
                 _ => {
@@ -799,7 +800,7 @@ async fn entry() -> Result<()> {
                 }
             }
 
-            return Ok(());
+            return Ok(ExitCode::SUCCESS);
         }
     };
 
@@ -974,7 +975,7 @@ async fn entry() -> Result<()> {
             cli::set::entry(&mut cx, &opts.action)?;
         }
         Action::Check(opts) => {
-            cli::check::entry(&cx, &opts.action).await?;
+            cli::check::entry(&mut cx, &opts.action).await?;
         }
         Action::For(opts) => {
             cli::r#for::entry(&mut cx, &opts.action)?;
@@ -986,10 +987,10 @@ async fn entry() -> Result<()> {
             cli::msrv::entry(&mut cx, &opts.action)?;
         }
         Action::Version(opts) => {
-            cli::version::entry(&cx, &opts.action)?;
+            cli::version::entry(&mut cx, &opts.action)?;
         }
         Action::Publish(opts) => {
-            cli::publish::entry(&cx, &opts.action)?;
+            cli::publish::entry(&mut cx, &opts.action)?;
         }
         Action::Upgrade(opts) => {
             cli::upgrade::entry(&mut cx, &opts.action)?;
@@ -1009,7 +1010,7 @@ async fn entry() -> Result<()> {
 
             let Some(changes) = changes else {
                 tracing::info!("No changes found: {}", changes_path.display());
-                return Ok(());
+                return Ok(ExitCode::SUCCESS);
             };
 
             if !shared.save {
@@ -1026,7 +1027,7 @@ async fn entry() -> Result<()> {
                     .with_context(|| anyhow!("{}", changes_path.display()))?;
             }
 
-            return Ok(());
+            return Ok(ExitCode::SUCCESS);
         }
     }
 
@@ -1047,8 +1048,9 @@ async fn entry() -> Result<()> {
         save_changes(&cx, &changes_path).with_context(|| anyhow!("{}", changes_path.display()))?;
     }
 
+    let outcome = cx.outcome();
     sets.commit()?;
-    Ok(())
+    Ok(outcome)
 }
 
 /// Save changes to the given path.
@@ -1109,7 +1111,9 @@ fn filter_repos(
     };
 
     for repo in repos {
-        repo.set_disabled(should_disable(repo));
+        if should_disable(repo) {
+            repo.disable();
+        }
 
         if repo.is_disabled() {
             continue;
@@ -1127,33 +1131,33 @@ fn filter_repos(
 
             if repo_opts.outdated && !git.is_outdated(&repo_path)? {
                 tracing::trace!("Directory is not outdated");
-                repo.set_disabled(true);
+                repo.disable();
             }
 
             if repo_opts.dirty && !dirty {
                 tracing::trace!("Directory is not dirty");
-                repo.set_disabled(true);
+                repo.disable();
             }
 
             if repo_opts.cached && !cached {
                 tracing::trace!("Directory has no cached changes");
-                repo.set_disabled(true);
+                repo.disable();
             }
 
             if repo_opts.cached_only && (!cached || dirty) {
                 tracing::trace!("Directory has no cached changes");
-                repo.set_disabled(true);
+                repo.disable();
             }
 
             if repo_opts.unreleased {
                 if let Some((tag, offset)) = git.describe_tags(&repo_path)? {
                     if offset.is_none() {
                         tracing::trace!("No offset detected (tag: {tag})");
-                        repo.set_disabled(true);
+                        repo.disable();
                     }
                 } else {
                     tracing::trace!("No tags to describe");
-                    repo.set_disabled(true);
+                    repo.disable();
                 }
             }
         }
