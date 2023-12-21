@@ -925,10 +925,10 @@ async fn entry() -> Result<ExitCode> {
 
             (root.to_owned(), current_path)
         }
-        None => {
-            let (root, current_path) = find_from_current_dir().context("Finding project root")?;
-            (root, Some(current_path))
-        }
+        None => match find_from_current_dir() {
+            Some((root, current_path)) => (root, Some(current_path)),
+            None => (std::env::current_dir()?, Some(RelativePathBuf::new())),
+        },
     };
 
     tracing::trace!(
@@ -1236,7 +1236,7 @@ fn filter_repos(
 }
 
 /// Find root path to use.
-fn find_from_current_dir() -> Result<(PathBuf, RelativePathBuf)> {
+fn find_from_current_dir() -> Option<(PathBuf, RelativePathBuf)> {
     let mut parent = std::env::current_dir()?;
 
     let mut path = PathBuf::new();
@@ -1273,12 +1273,12 @@ fn find_from_current_dir() -> Result<(PathBuf, RelativePathBuf)> {
     }
 
     if let Some((path, relative)) = last_kick_toml {
-        return Ok((path, relative));
+        return Some((path, relative));
     }
 
     let Some((first_git, relative_path)) = first_git else {
-        bail!("Could not find project");
+        return None;
     };
 
-    Ok((first_git, relative_path))
+    Some((first_git, relative_path))
 }
