@@ -266,7 +266,7 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
     }
 
     fn variable(&mut self) -> Result<&'a str> {
-        debug_assert_eq!(self.next(), '%');
+        expect!(self, '%');
 
         if self.peek() != '{' {
             return self.ident();

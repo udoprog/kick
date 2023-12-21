@@ -754,10 +754,7 @@ enum Action {
 
 impl Action {
     fn requires_token(&self) -> bool {
-        match self {
-            Action::GithubRelease(..) => true,
-            _ => false,
-        }
+        matches!(self, Action::GithubRelease(..))
     }
 
     fn shared(&self) -> &SharedOptions {
