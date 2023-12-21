@@ -82,7 +82,11 @@ pub(crate) struct ReleaseOpts {
 impl ReleaseOpts {
     /// Construct a release from provided arguments.
     pub(crate) fn version<'a>(&'a self, env: &'a ReleaseEnv) -> Result<Version<'_>> {
-        let version = self.version.as_deref().filter(|c| !c.is_empty());
+        let mut version = self.version.as_deref().filter(|c| !c.is_empty());
+
+        if version.is_none() {
+            version = env.kick_version.as_deref();
+        }
 
         let span = tracing::info_span! {
             "release",
@@ -113,7 +117,7 @@ impl ReleaseOpts {
         github_release(env, &mut vars);
 
         let Some(version) = version else {
-            bail!("Must specify --version");
+            bail!("Could not determine version from --version or KICK_VERSION");
         };
 
         let Some(mut release) = self::parser::expr(version, &vars, &prefixes)? else {
@@ -137,6 +141,7 @@ impl ReleaseOpts {
 }
 
 pub(crate) struct ReleaseEnv {
+    kick_version: Option<String>,
     github_event_name: Option<String>,
     github_ref: Option<String>,
     github_sha: Option<String>,
@@ -144,11 +149,13 @@ pub(crate) struct ReleaseEnv {
 
 impl ReleaseEnv {
     pub(crate) fn new() -> Self {
+        let kick_version = env::var("KICK_VERSION").ok().filter(|e| !e.is_empty());
         let github_event_name = env::var("GITHUB_EVENT_NAME").ok().filter(|e| !e.is_empty());
         let github_ref = env::var("GITHUB_REF").ok().filter(|e| !e.is_empty());
         let github_sha = env::var("GITHUB_SHA").ok().filter(|e| !e.is_empty());
 
         Self {
+            kick_version,
             github_event_name,
             github_ref,
             github_sha,

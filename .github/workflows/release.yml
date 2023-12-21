@@ -20,6 +20,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  KICK_VERSION: "${{github.event.inputs.channel}} || nightly"
+
 jobs:
   build:
     runs-on: ${{ matrix.os }}
