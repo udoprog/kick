@@ -301,28 +301,48 @@ impl<'a> Version<'a> {
         self.append.push(part);
     }
 
+    /// Ensures that the version is a valid ProductVersion, suitable for use in
+    /// an MSI installer.
+    ///
+    /// See:
+    /// <https://learn.microsoft.com/en-us/windows/win32/msi/productversion>.
     pub(crate) fn msi_version(&self) -> Result<String> {
+        /// Validate a pre-release.
+        fn validate_pre(pre: u32) -> Result<u32> {
+            ensure!(pre < 999, "Pre-release number must be less than 999: {pre}");
+            Ok(pre)
+        }
+
         /// Calculate an MSI-safe version number.
         /// Unfortunately this enforces some unfortunate constraints on the available
         /// version range.
         ///
         /// The computed patch component must fit within 65535
         fn from_version(version: &SemanticVersion, pre: Option<&Name>) -> Result<String> {
+            ensure!(
+                version.major <= 255,
+                "Major version must not be greater than 255: {}",
+                version.major
+            );
+
+            ensure!(
+                version.minor <= 255,
+                "Minor version must not be greater than 255: {}",
+                version.minor
+            );
+
             let patch = version.patch.unwrap_or_default();
 
-            if patch > 64 {
-                bail!("patch version must not be greater than 64: {}", patch);
-            }
+            ensure!(
+                patch <= 64,
+                "Patch version must not be greater than 64: {patch}"
+            );
 
             let pre = if let Some(pre) = pre
                 .and_then(|c| c.tail.as_ref())
                 .and_then(|tail| tail.as_number())
             {
-                if pre >= 999 {
-                    bail!("pre version must not be greater than 999: {}", pre);
-                }
-
-                pre
+                validate_pre(pre)?
             } else {
                 999
             };
@@ -336,11 +356,7 @@ impl<'a> Version<'a> {
                 .and_then(|c| c.tail.as_ref())
                 .and_then(|tail| tail.as_number())
             {
-                if pre >= 999 {
-                    bail!("pre version must not be greater than 999: {pre}");
-                }
-
-                pre
+                validate_pre(pre)?
             } else {
                 999
             };
@@ -353,10 +369,20 @@ impl<'a> Version<'a> {
             ))
         }
 
+        fn from_name(tail: Option<&Tail>) -> Result<String> {
+            let pre = if let Some(Tail::Number(pre)) = tail {
+                validate_pre(*pre)?
+            } else {
+                999
+            };
+
+            Ok(format!("0.0.{}", pre))
+        }
+
         match &self.kind {
             VersionKind::SemanticVersion(version) => from_version(version, self.names.first()),
             VersionKind::Date(date) => from_date_revision(*date, self.names.first()),
-            VersionKind::Name(..) => bail!("Cannot compute MSI version from channel"),
+            VersionKind::Name(name) => from_name(name.tail.as_ref()),
         }
     }
 }

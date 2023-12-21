@@ -46,25 +46,35 @@ pub(crate) struct Opts {
     /// Available formats are: text, json.
     #[arg(long, value_name = "format", default_value_t = Format::Text)]
     format: Format,
-    /// If specified, the value will be written to the specified name.
+    /// If specified, the version will be written to the specified name.
     ///
-    /// For example, an argument of `--value-to channel` would cause `channel=<release>\n` to be written
+    /// For example, an argument of `--value-to version` would cause
+    /// `version=<release>\n` to be written.
     #[arg(long, value_name = "name")]
     version_to: Option<String>,
+    /// If specified, the version in MSI format will be written to the specified
+    /// name.
+    ///
+    /// For example, an argument of `--msi-version-to msi_version` would cause
+    /// `msi_version=<value>\n` to be written.
+    ///
+    /// Note that the MSI version follows the ProductVersion specification.
+    ///
+    /// See: https://learn.microsoft.com/en-us/windows/win32/msi/productversion
+    #[arg(long, verbatim_doc_comment, value_name = "name")]
+    msi_version_to: Option<String>,
     /// If specified, the a `yes` or a `no` will be written to the specified
     /// variable depending on if it's a prerelease or not.
     ///
     /// Pre-releases are versions which are anything beyond strictly a semantic
     /// version or dated release.
     ///
-    /// For example, an argument of `--is-pre-to prerelease` would cause `prerelease=yes\n` to be written
+    /// For example, an argument of `--is-pre-to prerelease` would cause `prerelease=yes\n` to be written.
     #[arg(long, value_name = "name")]
     is_pre_to: Option<String>,
-    /// Sets the following options:
+    /// Set default settings for defining variables inside of a github release.
     ///
-    /// - `--version-to version`
-    /// - `--is-pre-to pre`
-    /// - `--output-from-env GITHUB_OUTPUT`
+    /// Sets `--version-to version`, `--is-pre-to pre`, and `--output-from-env GITHUB_OUTPUT`.
     ///
     /// Causing a file to be written to the path specified by GITHUB_OUTPUT,
     /// containing the `version` and `pre` definitions.
@@ -129,7 +139,8 @@ pub(crate) fn entry(env: &Env, opts: &Opts) -> Result<()> {
     tracing::info! {
         output = opts.output.as_deref().map(|s| s.to_string_lossy().into_owned()),
         format = opts.format.to_string(),
-        version = opts.version_to.as_deref().map(|key| format!("{key}={version}")),
+        version = opts.version_to.as_deref(),
+        msi_version = opts.msi_version_to.as_deref(),
         pre = opts.is_pre_to.as_deref().map(|key| format!("{key}={}", if version.is_pre() { "yes" } else { "no" })),
         "Defining",
     };
@@ -144,6 +155,11 @@ pub(crate) fn entry(env: &Env, opts: &Opts) -> Result<()> {
                 let is_pre = version.is_pre();
                 writeln!(o, "{key}={}", if is_pre { "yes" } else { "no" })?;
             }
+
+            if let Some(key) = &opts.msi_version_to {
+                let msi_version = version.msi_version().context("Calculating MSI version")?;
+                writeln!(o, "{key}={msi_version}")?;
+            }
         }
         Format::Json => {
             let mut payload = serde_json::Map::new();
@@ -155,6 +171,11 @@ pub(crate) fn entry(env: &Env, opts: &Opts) -> Result<()> {
             if let Some(key) = &opts.is_pre_to {
                 let is_pre = version.is_pre();
                 payload.insert(key.clone(), serde_json::Value::Bool(is_pre));
+            }
+
+            if let Some(key) = &opts.msi_version_to {
+                let msi_version = version.msi_version().context("Calculating MSI version")?;
+                payload.insert(key.clone(), serde_json::Value::String(msi_version));
             }
 
             serde_json::to_writer(&mut *o, &payload)?;
