@@ -263,13 +263,6 @@ impl fmt::Display for Name<'_> {
     }
 }
 
-impl<'a> AsRef<Name<'a>> for Name<'a> {
-    #[inline]
-    fn as_ref(&self) -> &Name<'a> {
-        self
-    }
-}
-
 #[derive(Debug, PartialEq, Serialize)]
 pub(super) struct Version<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -373,12 +366,9 @@ impl<'a> Version<'a> {
 
         fn find_pre<'a, 'b: 'a, I>(names: I) -> Option<u32>
         where
-            I: IntoIterator,
-            I::Item: AsRef<Name<'b>>,
+            I: IntoIterator<Item = &'a Name<'b>>,
         {
             for name in names {
-                let name = name.as_ref();
-
                 let Some(tail) = &name.tail else {
                     continue;
                 };

@@ -1,10 +1,11 @@
 use std::env;
+use std::ffi::OsStr;
 use std::fs::OpenOptions;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{ffi::OsString, fmt};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{ensure, Context, Result};
 use clap::{Parser, ValueEnum};
 
 use crate::env::Env;
@@ -22,6 +23,21 @@ impl fmt::Display for Format {
         match self {
             Format::Text => write!(f, "text"),
             Format::Json => write!(f, "json"),
+        }
+    }
+}
+
+enum Name<'a> {
+    Path(&'a Path),
+    Env(&'a OsStr),
+}
+
+impl fmt::Display for Name<'_> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Name::Path(path) => path.display().fmt(f),
+            Name::Env(env) => env.to_string_lossy().fmt(f),
         }
     }
 }
@@ -85,50 +101,50 @@ pub(crate) struct Opts {
 pub(crate) fn entry(env: &Env, opts: &Opts) -> Result<()> {
     let version = opts.release.version(env)?;
 
-    let mut opts = opts.clone();
-
-    if opts.github_action {
-        if opts.output_from_env.is_none() {
-            opts.output_from_env = Some("GITHUB_OUTPUT".into());
+    let output_from_env = 'out: {
+        if let Some(key) = opts.output_from_env.as_deref() {
+            break 'out Some(key);
         }
 
-        if opts.version_to.is_none() {
-            opts.version_to = Some("version".into());
+        if opts.github_action {
+            break 'out Some(OsStr::new("GITHUB_OUTPUT"));
         }
 
-        if opts.is_pre_to.is_none() {
-            opts.is_pre_to = Some("pre".into());
+        None
+    };
+
+    let env_path;
+
+    let output = 'out: {
+        if let Some(env) = output_from_env {
+            if let Some(path) = env::var_os(env).map(PathBuf::from) {
+                ensure!(
+                    opts.output.is_none(),
+                    "Cannot use --output and --output-from-env together"
+                );
+
+                env_path = path;
+                break 'out Some((Name::Env(env), env_path.as_path()));
+            }
         }
-    }
 
-    if let Some(env) = &opts.output_from_env {
-        let Some(path) = env::var_os(env).map(PathBuf::from) else {
-            bail!(
-                "Environment variable `{}` is not set",
-                env.to_string_lossy()
-            );
-        };
+        opts.output.as_deref().map(|path| (Name::Path(path), path))
+    };
 
-        if opts.output.is_some() {
-            bail!("Cannot use --output and --output-from-env together")
-        }
-
-        opts.output = Some(path);
-    }
-
-    let mut output;
+    let mut output_file;
     let mut stdout;
     let o: &mut dyn io::Write;
 
-    match opts.output.as_deref() {
-        Some(path) => {
-            output = OpenOptions::new()
+    match output {
+        Some((ref name, path)) => {
+            output_file = OpenOptions::new()
                 .append(true)
                 .create(true)
                 .open(path)
                 .with_context(|| path.display().to_string())?;
 
-            o = &mut output;
+            tracing::info!("Writing information on version `{version}` to {name}",);
+            o = &mut output_file;
         }
         _ => {
             stdout = io::stdout();
@@ -136,8 +152,9 @@ pub(crate) fn entry(env: &Env, opts: &Opts) -> Result<()> {
         }
     }
 
-    tracing::info! {
-        output = opts.output.as_deref().map(|s| s.to_string_lossy().into_owned()),
+    tracing::trace! {
+        output = output.as_ref().map(|(name, _)| name.to_string()),
+        output_from_env = output_from_env.as_deref().map(|s| s.to_string_lossy().into_owned()),
         format = opts.format.to_string(),
         version = opts.version_to.as_deref(),
         msi_version = opts.msi_version_to.as_deref(),
@@ -145,16 +162,14 @@ pub(crate) fn entry(env: &Env, opts: &Opts) -> Result<()> {
         "Defining",
     };
 
+    let version_key = opts.version_to.as_deref().unwrap_or("version");
+    let is_pre_key = opts.is_pre_to.as_deref().unwrap_or("pre");
+    let is_pre = version.is_pre();
+
     match opts.format {
         Format::Text => {
-            if let Some(key) = &opts.version_to {
-                writeln!(o, "{key}={version}")?;
-            }
-
-            if let Some(key) = &opts.is_pre_to {
-                let is_pre = version.is_pre();
-                writeln!(o, "{key}={}", if is_pre { "yes" } else { "no" })?;
-            }
+            writeln!(o, "{version_key}={version}")?;
+            writeln!(o, "{is_pre_key}={}", if is_pre { "yes" } else { "no" })?;
 
             if let Some(key) = &opts.msi_version_to {
                 let msi_version = version.msi_version().context("Calculating MSI version")?;
@@ -163,15 +178,8 @@ pub(crate) fn entry(env: &Env, opts: &Opts) -> Result<()> {
         }
         Format::Json => {
             let mut payload = serde_json::Map::new();
-
-            if let Some(key) = &opts.version_to {
-                payload.insert(key.clone(), serde_json::to_value(&version)?);
-            }
-
-            if let Some(key) = &opts.is_pre_to {
-                let is_pre = version.is_pre();
-                payload.insert(key.clone(), serde_json::Value::Bool(is_pre));
-            }
+            payload.insert(version_key.to_owned(), serde_json::to_value(&version)?);
+            payload.insert(is_pre_key.to_owned(), serde_json::Value::Bool(is_pre));
 
             if let Some(key) = &opts.msi_version_to {
                 let msi_version = version.msi_version().context("Calculating MSI version")?;
