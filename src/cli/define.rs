@@ -154,7 +154,7 @@ pub(crate) fn entry(env: &Env, opts: &Opts) -> Result<()> {
 
     tracing::trace! {
         output = output.as_ref().map(|(name, _)| name.to_string()),
-        output_from_env = output_from_env.as_deref().map(|s| s.to_string_lossy().into_owned()),
+        output_from_env = output_from_env.map(|s| s.to_string_lossy().into_owned()),
         format = opts.format.to_string(),
         version = opts.version_to.as_deref(),
         msi_version = opts.msi_version_to.as_deref(),
