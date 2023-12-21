@@ -61,6 +61,11 @@ impl<'a> Ctxt<'a> {
 
         if let Some(current_path) = self.current_path {
             let output = current_path.relative(path);
+
+            if output.components().next().is_none() {
+                return PathBuf::from_iter([Component::CurDir]);
+            }
+
             return PathBuf::from(output.as_str());
         }
 
