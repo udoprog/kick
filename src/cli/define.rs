@@ -73,49 +73,49 @@ pub(crate) struct Opts {
 
 pub(crate) fn entry(opts: &Opts) -> Result<()> {
     let env = ReleaseEnv::new();
-    let release = opts.release.make(&env)?;
+    let version = opts.release.make(&env)?;
 
-    let mut copy;
+    let mut opts = opts.clone();
 
-    let opts = if opts.github_action {
-        copy = opts.clone();
-        copy.output_from_env = Some("GITHUB_OUTPUT".into());
-        copy.version_to = Some("version".into());
-        copy.is_pre_to = Some("pre".into());
-        &copy
-    } else {
-        opts
-    };
+    if opts.github_action {
+        if opts.output_from_env.is_none() {
+            opts.output_from_env = Some("GITHUB_OUTPUT".into());
+        }
+
+        if opts.version_to.is_none() {
+            opts.version_to = Some("version".into());
+        }
+
+        if opts.is_pre_to.is_none() {
+            opts.is_pre_to = Some("pre".into());
+        }
+    }
+
+    if let Some(env) = &opts.output_from_env {
+        let Some(path) = env::var_os(env).map(PathBuf::from) else {
+            bail!(
+                "Environment variable `{}` is not set",
+                env.to_string_lossy()
+            );
+        };
+
+        if opts.output.is_some() {
+            bail!("Cannot use --output and --output-from-env together")
+        }
+
+        opts.output = Some(path);
+    }
 
     let mut output;
     let mut stdout;
     let o: &mut dyn io::Write;
 
-    match (opts.output.as_deref(), opts.output_from_env.as_deref()) {
-        (Some(_), Some(_)) => {
-            bail!("--output and --output-from-env cannot be used together")
-        }
-        (Some(path), None) => {
+    match opts.output.as_deref() {
+        Some(path) => {
             output = OpenOptions::new()
                 .append(true)
                 .create(true)
                 .open(path)
-                .with_context(|| path.display().to_string())?;
-
-            o = &mut output;
-        }
-        (None, Some(env)) => {
-            let Some(path) = env::var_os(env).map(PathBuf::from) else {
-                bail!(
-                    "Environment variable `{}` is not set",
-                    env.to_string_lossy()
-                );
-            };
-
-            output = OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(&path)
                 .with_context(|| path.display().to_string())?;
 
             o = &mut output;
@@ -126,14 +126,22 @@ pub(crate) fn entry(opts: &Opts) -> Result<()> {
         }
     }
 
+    tracing::info! {
+        output = opts.output.as_deref().map(|s| s.to_string_lossy().into_owned()),
+        format = opts.format.to_string(),
+        version = opts.version_to.as_deref().map(|key| format!("{key}={version}")),
+        pre = opts.is_pre_to.as_deref().map(|key| format!("{key}={}", if version.is_pre() { "yes" } else { "no" })),
+        "Defining",
+    };
+
     match opts.format {
         Format::Text => {
             if let Some(key) = &opts.version_to {
-                writeln!(o, "{key}={release}")?;
+                writeln!(o, "{key}={version}")?;
             }
 
             if let Some(key) = &opts.is_pre_to {
-                let is_pre = release.is_pre();
+                let is_pre = version.is_pre();
                 writeln!(o, "{key}={}", if is_pre { "yes" } else { "no" })?;
             }
         }
@@ -141,11 +149,11 @@ pub(crate) fn entry(opts: &Opts) -> Result<()> {
             let mut payload = serde_json::Map::new();
 
             if let Some(key) = &opts.version_to {
-                payload.insert(key.clone(), serde_json::to_value(&release)?);
+                payload.insert(key.clone(), serde_json::to_value(&version)?);
             }
 
             if let Some(key) = &opts.is_pre_to {
-                let is_pre = release.is_pre();
+                let is_pre = version.is_pre();
                 payload.insert(key.clone(), serde_json::Value::Bool(is_pre));
             }
 

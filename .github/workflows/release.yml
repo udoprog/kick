@@ -34,7 +34,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
     - uses: Swatinem/rust-cache@v2
     #- uses: udoprog/kick@nightly
-    #- run: kick define --version "${{github.event.inputs.channel}} || nightly" --version-to version --github-output
+    #- run: kick define --version "${{github.event.inputs.channel}} || nightly" --github-action
     #  id: release
     - run: cargo build --release
     - run: cargo run --release -- compress ${{matrix.method}} --version "${{github.event.inputs.channel}} || nightly" --output dist
@@ -60,6 +60,6 @@ jobs:
     - uses: udoprog/github-release@v1
       with:
         files: "dist/*"
-        name: ${{steps.release.outputs.version}}
+        name: nightly
         token: ${{secrets.GITHUB_TOKEN}}
         prerelease: true
