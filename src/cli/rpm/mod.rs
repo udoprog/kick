@@ -13,7 +13,7 @@ use crate::config::{RpmFile, RpmOp};
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::model::Repo;
-use crate::release::{Release, ReleaseEnv};
+use crate::release::{ReleaseEnv, Version};
 use crate::workspace;
 
 use crate::release::ReleaseOpts;
@@ -46,7 +46,7 @@ fn rpm(
     cx: &Ctxt<'_>,
     repo: &Repo,
     opts: &Opts,
-    release: &Release<'_>,
+    release: &Version<'_>,
 ) -> Result<(), anyhow::Error> {
     let root = cx.to_path(repo.path());
 

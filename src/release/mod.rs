@@ -17,34 +17,34 @@ const LAST_YEAR: u32 = 2255;
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct ReleaseOpts {
-    /// Define a release channel.
+    /// Define a version.
     ///
-    /// This is a very broad definition and supports a number of formats, the
-    /// idea would be that you can use a single input variable for most if not
-    /// all of your release needs.
+    /// This supports a number of formats, the idea would be that you can use a
+    /// single input variable for most if not all of your release needs.
     ///
     /// The supported formats are:
+    /// * A version number potentially with a custom prerelease, like
+    ///   `1.2.3-pre1`.
     /// * A simple naive date, like `2023-12-11`.
-    /// * A version number potentially with a custom suffix, like `1.2.3-pre1`.
-    /// * A alphanumerical channel name, like `nightly` which will result in a
-    ///   dated version number where version numbers are strictly required. A
-    ///   channel suffixed with a number like `nightly1` will be treated as a
+    /// * An alphabetical name, like `nightly` which will result in a dated
+    ///   version number where version numbers are strictly required. A version
+    ///   suffixed with a number like `nightly1` will be treated as a
     ///   pre-release.
     /// * A date follow by a custom suffix, like `2023-12-11-nightly`.
     /// * It is also possible to use a variable like `%date` to get the custom
     ///   date. For available variable see below.
     ///
-    /// A channel can also take a simple kind of expression, where each
+    /// A version can also take a simple kind of expression, where each
     /// candidate is separated from left to right using double pipes ('||'). The
     /// first expression for which all variables are defined, and results in a
     /// non-empty expansion will be used.
     ///
     /// This means that with Github Actions, you can uses something like this:
     ///
-    /// --channel "${{github.event.inputs.release}} || %date-nightly"
+    /// --version "${{github.event.inputs.release}} || %date-nightly"
     ///
     /// In this instance, the `release` input might be defined by a
-    /// workflow_dispatch job, and if undefined the channel will default to a
+    /// workflow_dispatch job, and if undefined the version will default to a
     /// "nightly" dated release.
     ///
     /// Available variables:
@@ -54,17 +54,11 @@ pub(crate) struct ReleaseOpts {
     ///
     /// You can also define your own variables using `--define <key>=<value>`.
     /// If the value is empty, the variable will be considered undefined.
-    #[clap(long, verbatim_doc_comment, value_name = "channel")]
-    channel: Option<String>,
+    #[clap(long, verbatim_doc_comment, value_name = "version")]
+    version: Option<String>,
     /// Define a custom variable. See `--channel` for more information.
     #[clap(long, value_name = "<key>=<value>")]
     define: Vec<String>,
-    /// Append additional components to the release string, separated by dots.
-    ///
-    /// A use-case for this is to specify the fedora release, like `fc39` which
-    /// will then be appended verbatim to the version string.
-    #[clap(long, value_name = "part")]
-    append: Vec<String>,
     /// Never include a release prefix. Even if one is part of the input, it
     /// will be stripped.
     ///
@@ -81,8 +75,8 @@ pub(crate) struct ReleaseOpts {
 
 impl ReleaseOpts {
     /// Construct a release from provided arguments.
-    pub(crate) fn make<'a>(&'a self, env: &'a ReleaseEnv) -> Result<Release<'_>> {
-        let channel = self.channel.as_deref().filter(|c| !c.is_empty());
+    pub(crate) fn make<'a>(&'a self, env: &'a ReleaseEnv) -> Result<Version<'_>> {
+        let channel = self.version.as_deref().filter(|c| !c.is_empty());
 
         let span = tracing::info_span! {
             "release",
@@ -117,16 +111,12 @@ impl ReleaseOpts {
             bail!("Could not determine release from channel");
         };
 
-        for append in &self.append {
-            release.append.push(append);
-        }
-
         if self.no_prefix {
             release.prefix = None;
         }
 
         if self.full_version {
-            if let ReleaseKind::Version(version) = &mut release.kind {
+            if let VersionKind::SemanticVersion(version) = &mut release.kind {
                 if version.patch.is_none() {
                     version.patch = Some(0);
                 }
@@ -198,25 +188,25 @@ impl fmt::Display for Date {
 
 #[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-enum ReleaseKind<'a> {
-    Version(Version<'a>),
+enum VersionKind<'a> {
+    SemanticVersion(SemanticVersion<'a>),
     Date(Date),
-    Name(Box<str>),
+    Name(Name<'a>),
 }
 
 #[derive(Debug, PartialEq, Serialize)]
-struct Channel<'a> {
+struct Name<'a> {
     name: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pre: Option<u32>,
+    number: Option<u32>,
 }
 
-impl fmt::Display for Channel<'_> {
+impl fmt::Display for Name<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.name.fmt(f)?;
 
-        if let Some(pre) = self.pre {
-            pre.fmt(f)?;
+        if let Some(number) = self.number {
+            number.fmt(f)?;
         }
 
         Ok(())
@@ -224,32 +214,37 @@ impl fmt::Display for Channel<'_> {
 }
 
 #[derive(Debug, PartialEq, Serialize)]
-pub(super) struct Release<'a> {
+pub(super) struct Version<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     prefix: Option<&'a str>,
     #[serde(flatten)]
-    kind: ReleaseKind<'a>,
+    kind: VersionKind<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    channel: Option<Channel<'a>>,
+    pre: Option<Name<'a>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     append: Vec<&'a str>,
 }
 
-impl<'a> Release<'a> {
+impl<'a> Version<'a> {
+    /// Check if release is a pre-release.
+    pub(crate) fn is_pre(&self) -> bool {
+        self.pre.is_some() || matches!(&self.kind, VersionKind::Name(name) if name.number.is_some())
+    }
+
     pub(crate) fn msi_version(&self) -> Result<String> {
         /// Calculate an MSI-safe version number.
         /// Unfortunately this enforces some unfortunate constraints on the available
         /// version range.
         ///
         /// The computed patch component must fit within 65535
-        fn from_version(version: &Version, channel: Option<&Channel>) -> Result<String> {
+        fn from_version(version: &SemanticVersion, pre: Option<&Name>) -> Result<String> {
             let patch = version.patch.unwrap_or_default();
 
             if patch > 64 {
                 bail!("patch version must not be greater than 64: {}", patch);
             }
 
-            let pre = if let Some(pre) = channel.and_then(|c| c.pre) {
+            let pre = if let Some(pre) = pre.and_then(|c| c.number) {
                 if pre >= 999 {
                     bail!("pre version must not be greater than 999: {}", pre);
                 }
@@ -263,8 +258,8 @@ impl<'a> Release<'a> {
             Ok(format!("{}.{}.{}", version.major, version.minor, last))
         }
 
-        fn from_date_revision(ymd: Date, channel: Option<&Channel>) -> Result<String> {
-            let pre = if let Some(pre) = channel.and_then(|c| c.pre) {
+        fn from_date_revision(ymd: Date, pre: Option<&Name>) -> Result<String> {
+            let pre = if let Some(pre) = pre.and_then(|c| c.number) {
                 if pre >= 999 {
                     bail!("pre version must not be greater than 999: {pre}");
                 }
@@ -283,32 +278,32 @@ impl<'a> Release<'a> {
         }
 
         match &self.kind {
-            ReleaseKind::Version(version) => from_version(version, self.channel.as_ref()),
-            ReleaseKind::Date(date) => from_date_revision(*date, self.channel.as_ref()),
-            ReleaseKind::Name(..) => bail!("Cannot compute MSI version from channel"),
+            VersionKind::SemanticVersion(version) => from_version(version, self.pre.as_ref()),
+            VersionKind::Date(date) => from_date_revision(*date, self.pre.as_ref()),
+            VersionKind::Name(..) => bail!("Cannot compute MSI version from channel"),
         }
     }
 }
 
-impl fmt::Display for Release<'_> {
+impl fmt::Display for Version<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(prefix) = self.prefix {
             prefix.fmt(f)?;
         }
 
         match &self.kind {
-            ReleaseKind::Version(version) => {
+            VersionKind::SemanticVersion(version) => {
                 version.fmt(f)?;
             }
-            ReleaseKind::Date(date) => {
+            VersionKind::Date(date) => {
                 date.fmt(f)?;
             }
-            ReleaseKind::Name(name) => {
+            VersionKind::Name(name) => {
                 name.fmt(f)?;
             }
         }
 
-        if let Some(channel) = &self.channel {
+        if let Some(channel) = &self.pre {
             write!(f, "-{channel}")?;
         }
 
@@ -321,7 +316,7 @@ impl fmt::Display for Release<'_> {
 }
 
 #[derive(Debug, PartialEq, Serialize)]
-pub(super) struct Version<'a> {
+pub(super) struct SemanticVersion<'a> {
     #[serde(skip)]
     original: &'a str,
     major: u32,
@@ -330,21 +325,21 @@ pub(super) struct Version<'a> {
     patch: Option<u32>,
 }
 
-impl fmt::Display for Version<'_> {
+impl fmt::Display for SemanticVersion<'_> {
     #[inline]
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.original.fmt(fmt)
     }
 }
 
-impl AsRef<[u8]> for Version<'_> {
+impl AsRef<[u8]> for SemanticVersion<'_> {
     #[inline]
     fn as_ref(&self) -> &[u8] {
         self.original.as_bytes()
     }
 }
 
-impl AsRef<OsStr> for Version<'_> {
+impl AsRef<OsStr> for SemanticVersion<'_> {
     #[inline]
     fn as_ref(&self) -> &OsStr {
         OsStr::new(self.original)

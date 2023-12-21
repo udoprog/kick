@@ -3,7 +3,7 @@ use std::str;
 
 use anyhow::{bail, Context, Result};
 
-use super::{Channel, Date, Release, ReleaseKind, Version};
+use super::{Date, Name, SemanticVersion, Version, VersionKind};
 
 const EOF: char = '\0';
 
@@ -48,13 +48,13 @@ impl<'a> Vars<'a> {
     }
 }
 
-pub(super) fn expr<'a>(input: &'a str, vars: &Vars<'a>) -> Result<Option<Release<'a>>> {
+pub(super) fn expr<'a>(input: &'a str, vars: &Vars<'a>) -> Result<Option<Version<'a>>> {
     let mut parser = Parser::new(input, vars);
     parser.expr()
 }
 
 #[cfg(test)]
-fn parse<'a>(input: &'a str, vars: &'a Vars) -> Result<Option<Release<'a>>> {
+fn parse<'a>(input: &'a str, vars: &'a Vars) -> Result<Option<Version<'a>>> {
     let mut parser = Parser::new(input, vars);
     parser.release()
 }
@@ -111,7 +111,7 @@ impl<'vars, 'a> Parser<'vars, 'a> {
         b
     }
 
-    fn version(&mut self) -> Result<Version<'a>> {
+    fn version(&mut self) -> Result<SemanticVersion<'a>> {
         let start = self.index;
 
         let major = self.number()?.context("Expected major version")?;
@@ -130,7 +130,7 @@ impl<'vars, 'a> Parser<'vars, 'a> {
             (self.index, None)
         };
 
-        Ok(Version {
+        Ok(SemanticVersion {
             original: &self.data[start..end],
             major,
             minor,
@@ -152,10 +152,10 @@ impl<'vars, 'a> Parser<'vars, 'a> {
         Date::new(year, month, day)
     }
 
-    fn channel(&mut self, start: usize) -> Result<Channel<'a>> {
+    fn channel(&mut self, start: usize) -> Result<Name<'a>> {
         let name = self.channel_ident(start)?;
-        let pre = self.number()?;
-        Ok(Channel { name, pre })
+        let number = self.number()?;
+        Ok(Name { name, number })
     }
 
     fn variable(&mut self) -> Result<&'a str> {
@@ -234,7 +234,7 @@ impl<'vars, 'a> Parser<'vars, 'a> {
         Ok(number)
     }
 
-    fn maybe_channel(&mut self) -> Result<Option<Channel<'a>>> {
+    fn maybe_channel(&mut self) -> Result<Option<Name<'a>>> {
         if self.peek() == '-' {
             self.next();
 
@@ -248,7 +248,7 @@ impl<'vars, 'a> Parser<'vars, 'a> {
         }
     }
 
-    fn release(&mut self) -> Result<Option<Release<'a>>> {
+    fn release(&mut self) -> Result<Option<Version<'a>>> {
         let start = self.index;
 
         while self.peek().is_ascii_lowercase() {
@@ -268,7 +268,7 @@ impl<'vars, 'a> Parser<'vars, 'a> {
                         self.next();
 
                         match self.variable()? {
-                            "date" => break 'kind ReleaseKind::Date(self.vars.today),
+                            "date" => break 'kind VersionKind::Date(self.vars.today),
                             other => {
                                 let Some(value) = self.vars.get(other) else {
                                     break 'release None;
@@ -283,24 +283,16 @@ impl<'vars, 'a> Parser<'vars, 'a> {
                         let stored = self.index;
 
                         if let Ok(version) = self.version() {
-                            break 'kind ReleaseKind::Version(version);
+                            break 'kind VersionKind::SemanticVersion(version);
                         }
 
                         self.index = stored;
 
                         if let Ok(date) = self.date() {
-                            break 'kind ReleaseKind::Date(date);
+                            break 'kind VersionKind::Date(date);
                         }
 
                         self.index = stored;
-                    }
-                    'a'..='z' => {
-                        while let 'a'..='z' | '0'..='9' = self.peek() {
-                            self.next();
-                        }
-
-                        let name = &self.data[start..self.index];
-                        break 'kind ReleaseKind::Name(name.into());
                     }
                     _ => {}
                 }
@@ -312,18 +304,16 @@ impl<'vars, 'a> Parser<'vars, 'a> {
                     );
                 };
 
-                while let 'a'..='z' | '0'..='9' = self.peek() {
-                    self.next();
-                }
-
                 let name = &self.data[start..self.index];
-                ReleaseKind::Name(name.into())
+                let number = self.number()?;
+
+                VersionKind::Name(Name { name, number })
             };
 
-            Some(Release {
+            Some(Version {
                 prefix: prefix.take().map(|(_, prefix)| prefix),
                 kind,
-                channel: None,
+                pre: None,
                 append: Vec::new(),
             })
         };
@@ -336,7 +326,7 @@ impl<'vars, 'a> Parser<'vars, 'a> {
 
         if let Some(c) = self.maybe_channel()? {
             if let Some(release) = &mut release {
-                release.channel = Some(c);
+                release.pre = Some(c);
             }
         }
 
@@ -356,7 +346,7 @@ impl<'vars, 'a> Parser<'vars, 'a> {
         Ok(release)
     }
 
-    fn expr(&mut self) -> Result<Option<Release<'a>>> {
+    fn expr(&mut self) -> Result<Option<Version<'a>>> {
         let mut last = None;
         let mut needs_or = false;
 
@@ -408,9 +398,9 @@ impl<'vars, 'a> Parser<'vars, 'a> {
 
 #[test]
 fn parsing() {
-    macro_rules! version {
+    macro_rules! semver {
         ($major:expr, $minor:expr) => {
-            Version {
+            SemanticVersion {
                 original: concat!($major, ".", $minor),
                 major: $major,
                 minor: $minor,
@@ -419,7 +409,7 @@ fn parsing() {
         };
 
         ($major:expr, $minor:expr, $patch:expr) => {
-            Version {
+            SemanticVersion {
                 original: concat!($major, ".", $minor, ".", $patch),
                 major: $major,
                 minor: $minor,
@@ -438,18 +428,18 @@ fn parsing() {
         };
     }
 
-    macro_rules! channel {
-        ($name:ident, $pre:expr) => {
-            Channel {
-                name: stringify!($name),
-                pre: Some($pre),
+    macro_rules! name {
+        ($name:expr, $number:expr) => {
+            Name {
+                name: $name,
+                number: Some($number),
             }
         };
 
-        ($name:ident) => {
-            Channel {
-                name: stringify!($name),
-                pre: None,
+        ($name:expr) => {
+            Name {
+                name: $name,
+                number: None,
             }
         };
     }
@@ -463,143 +453,143 @@ fn parsing() {
 
     assert_eq!(
         parse("1.2", &vars).unwrap(),
-        Some(Release {
+        Some(Version {
             prefix: None,
-            kind: ReleaseKind::Version(version!(1, 2)),
-            channel: None,
+            kind: VersionKind::SemanticVersion(semver!(1, 2)),
+            pre: None,
             append: Vec::new()
         })
     );
 
     assert_eq!(
         parse("1.2.", &vars).unwrap(),
-        Some(Release {
+        Some(Version {
             prefix: None,
-            kind: ReleaseKind::Version(version!(1, 2)),
-            channel: None,
+            kind: VersionKind::SemanticVersion(semver!(1, 2)),
+            pre: None,
             append: Vec::new()
         })
     );
 
     assert_eq!(
         parse("1.2.3", &vars).unwrap(),
-        Some(Release {
+        Some(Version {
             prefix: None,
-            kind: ReleaseKind::Version(version!(1, 2, 3)),
-            channel: None,
+            kind: VersionKind::SemanticVersion(semver!(1, 2, 3)),
+            pre: None,
             append: Vec::new()
         })
     );
 
     assert_eq!(
         parse("0000001.000000000.000003", &vars).unwrap(),
-        Some(Release {
+        Some(Version {
             prefix: None,
-            kind: ReleaseKind::Version(Version {
+            kind: VersionKind::SemanticVersion(SemanticVersion {
                 original: "0000001.000000000.000003",
-                ..version!(1, 0, 3)
+                ..semver!(1, 0, 3)
             }),
-            channel: None,
+            pre: None,
             append: Vec::new()
         })
     );
 
     assert_eq!(
         parse("v1.2.3", &vars).unwrap(),
-        Some(Release {
+        Some(Version {
             prefix: Some("v"),
-            kind: ReleaseKind::Version(version!(1, 2, 3)),
-            channel: None,
+            kind: VersionKind::SemanticVersion(semver!(1, 2, 3)),
+            pre: None,
             append: Vec::new()
         })
     );
 
     assert_eq!(
         parse("v1.2.3-pre1", &vars).unwrap(),
-        Some(Release {
+        Some(Version {
             prefix: Some("v"),
-            kind: ReleaseKind::Version(version!(1, 2, 3)),
-            channel: Some(channel!(pre, 1)),
+            kind: VersionKind::SemanticVersion(semver!(1, 2, 3)),
+            pre: Some(name!("pre", 1)),
             append: Vec::new()
         })
     );
 
     assert_eq!(
         parse("2023-1-1", &vars).unwrap(),
-        Some(Release {
+        Some(Version {
             prefix: None,
-            kind: ReleaseKind::Date(date!(2023, 1, 1)),
-            channel: None,
+            kind: VersionKind::Date(date!(2023, 1, 1)),
+            pre: None,
             append: Vec::new()
         })
     );
 
     assert_eq!(
         parse("2023-1-1-pre1", &vars).unwrap(),
-        Some(Release {
+        Some(Version {
             prefix: None,
-            kind: ReleaseKind::Date(date!(2023, 1, 1)),
-            channel: Some(channel!(pre, 1)),
+            kind: VersionKind::Date(date!(2023, 1, 1)),
+            pre: Some(name!("pre", 1)),
             append: Vec::new()
         })
     );
 
     assert_eq!(
         parse("%date-pre1", &vars).unwrap(),
-        Some(Release {
+        Some(Version {
             prefix: None,
-            kind: ReleaseKind::Date(date!(2023, 1, 1)),
-            channel: Some(channel!(pre, 1)),
+            kind: VersionKind::Date(date!(2023, 1, 1)),
+            pre: Some(name!("pre", 1)),
             append: Vec::new()
         })
     );
 
     assert_eq!(
         expr("|| %date-pre1\n|| ", &vars).unwrap(),
-        Some(Release {
+        Some(Version {
             prefix: None,
-            kind: ReleaseKind::Date(date!(2023, 1, 1)),
-            channel: Some(channel!(pre, 1)),
+            kind: VersionKind::Date(date!(2023, 1, 1)),
+            pre: Some(name!("pre", 1)),
             append: Vec::new()
         })
     );
 
     assert_eq!(
         expr(" ||   || 1.2.3- ||", &vars).unwrap(),
-        Some(Release {
+        Some(Version {
             prefix: None,
-            kind: ReleaseKind::Version(version!(1, 2, 3)),
-            channel: None,
+            kind: VersionKind::SemanticVersion(semver!(1, 2, 3)),
+            pre: None,
             append: Vec::new()
         })
     );
 
     assert_eq!(
         expr("%fc39-patch1", &vars).unwrap(),
-        Some(Release {
+        Some(Version {
             prefix: None,
-            kind: ReleaseKind::Version(version!(1, 2, 3)),
-            channel: Some(channel!(patch, 1)),
+            kind: VersionKind::SemanticVersion(semver!(1, 2, 3)),
+            pre: Some(name!("patch", 1)),
             append: vec!["fc39"]
         })
     );
 
     assert_eq!(
         expr("name-patch1", &vars).unwrap(),
-        Some(Release {
+        Some(Version {
             prefix: None,
-            kind: ReleaseKind::Name("name".into()),
-            channel: Some(channel!(patch, 1)),
+            kind: VersionKind::Name(name!("name")),
+            pre: Some(name!("patch", 1)),
             append: Vec::new(),
         })
     );
 
     assert_eq!(
-        expr("name42-patch1", &vars).unwrap(),
-        Some(Release {
+        expr("name-patch1", &vars).unwrap(),
+        Some(Version {
             prefix: None,
-            kind: ReleaseKind::Name("name42".into()),
-            channel: Some(channel!(patch, 1)),
+            kind: VersionKind::Name(name!("name")),
+            pre: Some(name!("patch", 1)),
             append: Vec::new(),
         })
     );

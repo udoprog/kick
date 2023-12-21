@@ -31,14 +31,10 @@ jobs:
         - {os: ubuntu-latest, method: gzip}
     steps:
     - uses: actions/checkout@v3
-    - uses: udoprog/github-release@channel
-      id: release
-      with:
-        channel: ${{github.event.inputs.channel}}
     - uses: dtolnay/rust-toolchain@stable
     - uses: Swatinem/rust-cache@v2
     - run: cargo build --release
-    - run: cargo run --release -- compress ${{matrix.method}} --channel ${{github.event.inputs.channel}} --output dist
+    - run: cargo run --release -- compress ${{matrix.method}} --version "${{github.event.inputs.channel}} || nightly" --output dist
     - uses: actions/upload-artifact@v1
       with:
         name: dist-${{matrix.os}}
@@ -55,13 +51,9 @@ jobs:
       with: {name: dist-macos-latest, path: dist}
     - uses: actions/download-artifact@v1
       with: {name: dist-ubuntu-latest, path: dist}
-    - uses: udoprog/github-release@channel
-      id: release
-      with:
-        channel: ${{github.event.inputs.channel}}
     - uses: udoprog/github-release@v1
       with:
         files: "dist/*"
-        name: ${{steps.release.outputs.channel}}
+        name: nightly
         token: ${{secrets.GITHUB_TOKEN}}
         prerelease: true

@@ -6,7 +6,7 @@ use relative_path::RelativePathBuf;
 
 use crate::ctxt::{self, Ctxt};
 use crate::model::Repo;
-use crate::release::{Release, ReleaseEnv};
+use crate::release::{ReleaseEnv, Version};
 use crate::wix::Wix;
 use crate::workspace;
 
@@ -37,7 +37,7 @@ fn msi(
     cx: &Ctxt<'_>,
     repo: &Repo,
     opts: &Opts,
-    release: &Release<'_>,
+    release: &Version<'_>,
 ) -> Result<(), anyhow::Error> {
     let root = cx.to_path(repo.path());
 
