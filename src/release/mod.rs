@@ -2,14 +2,16 @@ use self::parser::Vars;
 #[macro_use]
 mod parser;
 
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fmt;
-use std::{collections::HashSet, env};
 
 use anyhow::{bail, ensure, Result};
 use chrono::{Datelike, Utc};
 use clap::Parser;
 use serde::Serialize;
+
+use crate::env::Env;
 
 /// The base year. Cannot perform releases prior to this year.
 const BASE_YEAR: u32 = 2000;
@@ -81,7 +83,7 @@ pub(crate) struct ReleaseOpts {
 
 impl ReleaseOpts {
     /// Construct a release from provided arguments.
-    pub(crate) fn version<'a>(&'a self, env: &'a ReleaseEnv) -> Result<Version<'_>> {
+    pub(crate) fn version<'a>(&'a self, env: &'a Env) -> Result<Version<'_>> {
         let mut version = self.version.as_deref().filter(|c| !c.is_empty());
 
         if version.is_none() {
@@ -137,29 +139,6 @@ impl ReleaseOpts {
         }
 
         Ok(release)
-    }
-}
-
-pub(crate) struct ReleaseEnv {
-    kick_version: Option<String>,
-    github_event_name: Option<String>,
-    github_ref: Option<String>,
-    github_sha: Option<String>,
-}
-
-impl ReleaseEnv {
-    pub(crate) fn new() -> Self {
-        let kick_version = env::var("KICK_VERSION").ok().filter(|e| !e.is_empty());
-        let github_event_name = env::var("GITHUB_EVENT_NAME").ok().filter(|e| !e.is_empty());
-        let github_ref = env::var("GITHUB_REF").ok().filter(|e| !e.is_empty());
-        let github_sha = env::var("GITHUB_SHA").ok().filter(|e| !e.is_empty());
-
-        Self {
-            kick_version,
-            github_event_name,
-            github_ref,
-            github_sha,
-        }
     }
 }
 
@@ -411,7 +390,7 @@ impl AsRef<OsStr> for SemanticVersion<'_> {
 }
 
 /// Define a github release.
-fn github_release<'a>(env: &'a ReleaseEnv, vars: &mut Vars<'a>) {
+fn github_release<'a>(env: &'a Env, vars: &mut Vars<'a>) {
     if let Some(r#ref) = env.github_ref.as_deref() {
         if let Some(tag) = r#ref.strip_prefix("refs/tags/") {
             vars.insert("github.tag", tag);

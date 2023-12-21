@@ -680,6 +680,7 @@ mod changes;
 mod cli;
 mod config;
 mod ctxt;
+mod env;
 mod file;
 mod git;
 mod gitmodules;
@@ -709,6 +710,7 @@ use actions::Actions;
 use relative_path::{RelativePath, RelativePathBuf};
 use tracing::metadata::LevelFilter;
 
+use crate::env::Env;
 use crate::{glob::Fragment, model::Repo};
 
 /// Name of project configuration files.
@@ -941,10 +943,13 @@ async fn entry() -> Result<ExitCode> {
         "Using project root"
     );
 
+    let env = Env::new();
+    tracing::trace!(?env, "Using environment");
+
     let changes_path = root.join("changes.gz");
 
     if let Action::Define(opts) = &action {
-        cli::define::entry(&opts.action)?;
+        cli::define::entry(&env, &opts.action)?;
         return Ok(ExitCode::SUCCESS);
     };
 
@@ -1081,6 +1086,7 @@ async fn entry() -> Result<ExitCode> {
         warnings: RefCell::new(Vec::new()),
         changes: RefCell::new(Vec::new()),
         sets: &mut sets,
+        env: &env,
     };
 
     match &action {

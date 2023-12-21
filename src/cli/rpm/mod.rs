@@ -13,7 +13,7 @@ use crate::config::{RpmFile, RpmOp};
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::model::Repo;
-use crate::release::{ReleaseEnv, Version};
+use crate::release::Version;
 use crate::workspace;
 
 use crate::release::ReleaseOpts;
@@ -28,8 +28,7 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    let env = ReleaseEnv::new();
-    let release = opts.release.version(&env)?;
+    let release = opts.release.version(cx.env)?;
 
     with_repos!(
         cx,

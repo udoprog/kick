@@ -7,7 +7,8 @@ use std::{ffi::OsString, fmt};
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 
-use crate::release::{ReleaseEnv, ReleaseOpts};
+use crate::env::Env;
+use crate::release::ReleaseOpts;
 
 #[derive(Default, Debug, Clone, Copy, ValueEnum)]
 enum Format {
@@ -71,9 +72,8 @@ pub(crate) struct Opts {
     github_action: bool,
 }
 
-pub(crate) fn entry(opts: &Opts) -> Result<()> {
-    let env = ReleaseEnv::new();
-    let version = opts.release.version(&env)?;
+pub(crate) fn entry(env: &Env, opts: &Opts) -> Result<()> {
+    let version = opts.release.version(env)?;
 
     let mut opts = opts.clone();
 

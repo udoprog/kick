@@ -19,6 +19,7 @@ on:
 
 env:
   KICK_VERSION: "${{github.event.inputs.version}} || nightly"
+  RUST_LOG: kick=trace
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

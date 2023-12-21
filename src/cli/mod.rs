@@ -4,21 +4,24 @@ macro_rules! with_repos {
         let mut bad = $crate::repo_sets::RepoSet::default();
 
         for $repo in $c.repos() {
+            let span = tracing::info_span!("repo", path = ?$repo.path());
+            let _span = span.enter();
+
             if $repo.is_disabled() {
-                tracing::trace!(repo = ?$repo.path(), "Skipping disabled");
+                tracing::trace!("Skipping disabled");
                 continue;
             }
 
             let $cx = &*$c;
             let result = $block;
 
-            tracing::trace!(repo = ?$repo.path(), "Running `{}`", $what);
+            tracing::trace!("Running `{}`", $what);
 
             if let Err(error) = ::anyhow::Context::with_context(result, $cx.context($repo)) {
-                tracing::error!(repo = ?$repo.path(), "Failed `{}`", $what);
+                tracing::error!("Failed `{}`", $what);
 
                 for cause in error.chain() {
-                    tracing::error!(repo = ?$repo.path(), "Caused by: {}", cause);
+                    tracing::error!("Caused by: {}", cause);
                 }
 
                 $repo.set_error();

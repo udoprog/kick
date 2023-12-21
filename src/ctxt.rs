@@ -8,6 +8,7 @@ use relative_path::RelativePath;
 use crate::actions::Actions;
 use crate::changes::{Change, Warning};
 use crate::config::Config;
+use crate::env::Env;
 use crate::git::Git;
 use crate::manifest::Package;
 use crate::model::{Repo, RepoParams, RepoRef, State};
@@ -27,6 +28,7 @@ pub(crate) struct Ctxt<'a> {
     pub(crate) warnings: RefCell<Vec<Warning>>,
     pub(crate) changes: RefCell<Vec<Change>>,
     pub(crate) sets: &'a mut RepoSets,
+    pub(crate) env: &'a Env,
 }
 
 impl<'a> Ctxt<'a> {
@@ -69,7 +71,7 @@ impl<'a> Ctxt<'a> {
     ) -> impl Fn() -> anyhow::Error + 'ctx {
         move || {
             anyhow!(
-                "In repo {}",
+                "Error in repo {}",
                 empty_or_dot(self.to_path(repo.path())).display()
             )
         }

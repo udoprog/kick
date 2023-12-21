@@ -11,7 +11,7 @@ use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::model::Repo;
 use crate::octokit::Client;
-use crate::release::{ReleaseEnv, ReleaseOpts};
+use crate::release::ReleaseOpts;
 
 #[derive(Default, Debug, Clone, Parser)]
 pub(crate) struct Opts {
@@ -56,8 +56,7 @@ pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
         }
     }
 
-    let env = ReleaseEnv::new();
-    let version = opts.release.version(&env)?;
+    let version = opts.release.version(cx.env)?;
 
     let Some(token) = opts.token.as_deref().or(cx.github_auth.as_deref()) else {
         bail!("Missing access token");
