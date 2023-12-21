@@ -837,7 +837,7 @@ async fn entry() -> Result<ExitCode> {
     if let Action::Define(opts) = &action {
         cli::define::entry(&opts.action)?;
         return Ok(ExitCode::SUCCESS);
-    }
+    };
 
     let github_auth = root.join(".github-auth");
 

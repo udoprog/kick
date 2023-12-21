@@ -15,7 +15,7 @@ use serde::Serialize;
 const BASE_YEAR: u32 = 2000;
 const LAST_YEAR: u32 = 2255;
 
-#[derive(Default, Debug, Parser)]
+#[derive(Default, Debug, Clone, Parser)]
 pub(crate) struct ReleaseOpts {
     /// Define a version.
     ///

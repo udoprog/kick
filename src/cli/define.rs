@@ -1,9 +1,10 @@
-use std::fmt;
+use std::env;
 use std::fs::OpenOptions;
 use std::io;
 use std::path::PathBuf;
+use std::{ffi::OsString, fmt};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 
 use crate::release::{ReleaseEnv, ReleaseOpts};
@@ -24,13 +25,21 @@ impl fmt::Display for Format {
     }
 }
 
-#[derive(Default, Debug, Parser)]
+#[derive(Default, Debug, Clone, Parser)]
 pub(crate) struct Opts {
     #[clap(flatten)]
     release: ReleaseOpts,
     /// A location to write the output to.
     #[arg(long, value_name = "path")]
     output: Option<PathBuf>,
+    /// If specified, the output will be written to the path specified by the
+    /// given environment variable.
+    ///
+    /// For example, an argument of `--output-from-env GITHUB_OUTPUT` would
+    /// cause the values to be written to the path specified by the
+    /// `GITHUB_OUTPUT` environment variable.
+    #[arg(long, value_name = "env")]
+    output_from_env: Option<OsString>,
     /// The format to write the output in.
     ///
     /// Available formats are: text, json.
@@ -50,28 +59,71 @@ pub(crate) struct Opts {
     /// For example, an argument of `--is-pre-to prerelease` would cause `prerelease=yes\n` to be written
     #[arg(long, value_name = "name")]
     is_pre_to: Option<String>,
+    /// Sets the following options:
+    ///
+    /// - `--version-to version`
+    /// - `--is-pre-to pre`
+    /// - `--output-from-env GITHUB_OUTPUT`
+    ///
+    /// Causing a file to be written to the path specified by GITHUB_OUTPUT,
+    /// containing the `version` and `pre` definitions.
+    #[arg(long, verbatim_doc_comment)]
+    github_action: bool,
 }
 
 pub(crate) fn entry(opts: &Opts) -> Result<()> {
     let env = ReleaseEnv::new();
     let release = opts.release.make(&env)?;
 
+    let mut copy;
+
+    let opts = if opts.github_action {
+        copy = opts.clone();
+        copy.output_from_env = Some("GITHUB_OUTPUT".into());
+        copy.version_to = Some("version".into());
+        copy.is_pre_to = Some("pre".into());
+        &copy
+    } else {
+        opts
+    };
+
     let mut output;
     let mut stdout;
     let o: &mut dyn io::Write;
 
-    if let Some(path) = &opts.output {
-        output = OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(path)
-            .with_context(|| path.display().to_string())?;
+    match (opts.output.as_deref(), opts.output_from_env.as_deref()) {
+        (Some(_), Some(_)) => {
+            bail!("--output and --output-from-env cannot be used together")
+        }
+        (Some(path), None) => {
+            output = OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(path)
+                .with_context(|| path.display().to_string())?;
 
-        o = &mut output;
-    } else {
-        stdout = io::stdout();
+            o = &mut output;
+        }
+        (None, Some(env)) => {
+            let Some(path) = env::var_os(env).map(PathBuf::from) else {
+                bail!(
+                    "Environment variable `{}` is not set",
+                    env.to_string_lossy()
+                );
+            };
 
-        o = &mut stdout;
+            output = OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&path)
+                .with_context(|| path.display().to_string())?;
+
+            o = &mut output;
+        }
+        _ => {
+            stdout = io::stdout();
+            o = &mut stdout;
+        }
     }
 
     match opts.format {
