@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str;
 
 use anyhow::{bail, Context, Result};
 
-use super::{Date, Name, SemanticVersion, Version, VersionKind};
+use super::{Date, Name, SemanticVersion, Tail, Version, VersionKind};
 
 const EOF: char = '\0';
 
@@ -48,29 +48,43 @@ impl<'a> Vars<'a> {
     }
 }
 
-pub(super) fn expr<'a>(input: &'a str, vars: &Vars<'a>) -> Result<Option<Version<'a>>> {
-    let mut parser = Parser::new(input, vars);
+pub(super) fn expr<'a, 'b>(
+    input: &'a str,
+    vars: &Vars<'a>,
+    prefixes: &'b HashSet<String>,
+) -> Result<Option<Version<'a>>> {
+    let mut parser = Parser::new(input, vars, prefixes);
     parser.expr()
 }
 
 #[cfg(test)]
-fn parse<'a>(input: &'a str, vars: &'a Vars) -> Result<Option<Version<'a>>> {
-    let mut parser = Parser::new(input, vars);
+fn parse<'a, 'b>(
+    input: &'a str,
+    vars: &'a Vars,
+    prefixes: &'b HashSet<String>,
+) -> Result<Option<Version<'a>>> {
+    let mut parser = Parser::new(input, vars, prefixes);
     parser.release()
 }
 
-struct Parser<'vars, 'a> {
+struct Parser<'vars, 'a, 'b> {
     data: &'a str,
     vars: &'vars Vars<'a>,
     index: usize,
+    prefixes: &'b HashSet<String>,
+    max_prefix: usize,
 }
 
-impl<'vars, 'a> Parser<'vars, 'a> {
-    fn new(data: &'a str, vars: &'vars Vars<'a>) -> Self {
+impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
+    fn new(data: &'a str, vars: &'vars Vars<'a>, prefixes: &'b HashSet<String>) -> Self {
+        let max_prefix = prefixes.iter().map(|s| s.len()).max().unwrap_or(0);
+
         Parser {
             data,
             vars,
             index: 0,
+            prefixes,
+            max_prefix,
         }
     }
 
@@ -152,12 +166,6 @@ impl<'vars, 'a> Parser<'vars, 'a> {
         Date::new(year, month, day)
     }
 
-    fn channel(&mut self, start: usize) -> Result<Name<'a>> {
-        let name = self.channel_ident(start)?;
-        let number = self.number()?;
-        Ok(Name { name, number })
-    }
-
     fn variable(&mut self) -> Result<&'a str> {
         if self.peek() != '{' {
             return self.ident(self.index);
@@ -175,17 +183,49 @@ impl<'vars, 'a> Parser<'vars, 'a> {
         Ok(&self.data[start..end])
     }
 
-    fn channel_ident(&mut self, start: usize) -> Result<&'a str> {
+    fn prefix(&mut self) -> Option<&'a str> {
+        if self.prefixes.is_empty() {
+            return None;
+        }
+
+        let start = self.index;
+
         while self.peek().is_ascii_lowercase() {
+            self.next();
+
+            let value = &self.data[start..self.index];
+
+            if self.prefixes.contains(value) {
+                return Some(value);
+            }
+
+            if self.index - start >= self.max_prefix {
+                self.index = start;
+                return None;
+            }
+        }
+
+        self.index = start;
+        None
+    }
+
+    fn channel_ident(&mut self) -> Option<&'a str> {
+        let start = self.index;
+
+        while self.peek().is_ascii_lowercase() {
+            match &self.data[start..self.index] {
+                "git" => break,
+                _ => {}
+            }
+
             self.next();
         }
 
         if start == self.index {
-            bail!("Identifier cannot be empty at {}", start);
+            return None;
         }
 
-        let end = self.index;
-        Ok(&self.data[start..end])
+        Some(&self.data[start..self.index])
     }
 
     fn ident(&mut self, start: usize) -> Result<&'a str> {
@@ -218,6 +258,33 @@ impl<'vars, 'a> Parser<'vars, 'a> {
         Ok(Some(self.number_rem(start)?))
     }
 
+    fn hex(&mut self) -> Result<Option<&'a str>> {
+        let start = self.index;
+
+        if self.peek() == '%' {
+            self.next();
+
+            let name = self.variable()?;
+
+            let Some(value) = self.vars.get(name) else {
+                return Ok(None);
+            };
+
+            let mut parser = Parser::new(value, self.vars, self.prefixes);
+            return parser.hex();
+        }
+
+        while self.peek().is_ascii_hexdigit() {
+            self.next();
+        }
+
+        if start == self.index {
+            return Ok(None);
+        }
+
+        Ok(Some(&self.data[start..self.index]))
+    }
+
     fn number_rem(&mut self, start: usize) -> Result<u32> {
         let mut number = 0u32;
 
@@ -242,24 +309,40 @@ impl<'vars, 'a> Parser<'vars, 'a> {
                 return Ok(None);
             }
 
-            Ok(Some(self.channel(self.index)?))
+            Ok(self.channel()?)
         } else {
             Ok(None)
         }
     }
 
-    fn release(&mut self) -> Result<Option<Version<'a>>> {
+    fn channel(&mut self) -> Result<Option<Name<'a>>> {
         let start = self.index;
 
-        while self.peek().is_ascii_lowercase() {
-            self.next();
-        }
-
-        let mut prefix = if self.index != start {
-            Some((start, &self.data[start..self.index]))
-        } else {
-            None
+        let Some(name) = self.channel_ident() else {
+            bail!("Identifier cannot be empty at `{}`", &self.data[start..]);
         };
+
+        self.make_name(name)
+    }
+
+    fn make_name(&mut self, name: &'a str) -> Result<Option<Name<'a>>, anyhow::Error> {
+        let tail = match name {
+            "git" => {
+                let Some(hex) = self.hex()? else {
+                    return Ok(None);
+                };
+
+                Some(Tail::Hash(hex))
+            }
+            _ => self.number()?.map(Tail::Number),
+        };
+
+        Ok(Some(Name { name, tail }))
+    }
+
+    fn release(&mut self) -> Result<Option<Version<'a>>> {
+        let start = self.index;
+        let mut prefix = self.prefix().map(move |prefix| (start, prefix));
 
         let mut release = 'release: {
             let kind = 'kind: {
@@ -274,7 +357,7 @@ impl<'vars, 'a> Parser<'vars, 'a> {
                                     break 'release None;
                                 };
 
-                                let mut parser = Parser::new(value, self.vars);
+                                let mut parser = Parser::new(value, self.vars, self.prefixes);
                                 break 'release parser.release()?;
                             }
                         }
@@ -297,23 +380,20 @@ impl<'vars, 'a> Parser<'vars, 'a> {
                     _ => {}
                 }
 
-                let Some((start, ..)) = prefix.take() else {
-                    bail!(
-                        "Expected valid version or date at '{}'",
-                        &self.data[self.index..],
-                    );
+                let start = prefix.take().map(|(index, _)| index).unwrap_or(self.index);
+                self.index = start;
+
+                let Some(name) = self.channel()? else {
+                    break 'release None;
                 };
 
-                let name = &self.data[start..self.index];
-                let number = self.number()?;
-
-                VersionKind::Name(Name { name, number })
+                VersionKind::Name(name)
             };
 
             Some(Version {
                 prefix: prefix.take().map(|(_, prefix)| prefix),
                 kind,
-                pre: None,
+                names: Vec::new(),
                 append: Vec::new(),
             })
         };
@@ -326,7 +406,7 @@ impl<'vars, 'a> Parser<'vars, 'a> {
 
         if let Some(c) = self.maybe_channel()? {
             if let Some(release) = &mut release {
-                release.pre = Some(c);
+                release.names.push(c);
             }
         }
 
@@ -386,8 +466,7 @@ impl<'vars, 'a> Parser<'vars, 'a> {
                     needs_or = true;
                 }
                 _ => {
-                    let b = self.peek();
-                    bail!("Unexpected input '{}' at {}", self.index, b);
+                    bail!("Unexpected input '{}'", &self.data[self.index..]);
                 }
             }
         }
@@ -398,6 +477,8 @@ impl<'vars, 'a> Parser<'vars, 'a> {
 
 #[test]
 fn parsing() {
+    use crate::release::Tail;
+
     macro_rules! semver {
         ($major:expr, $minor:expr) => {
             SemanticVersion {
@@ -429,17 +510,24 @@ fn parsing() {
     }
 
     macro_rules! name {
+        ($name:expr, {$hash:expr}) => {
+            Name {
+                name: $name,
+                tail: Some(Tail::Hash($hash)),
+            }
+        };
+
         ($name:expr, $number:expr) => {
             Name {
                 name: $name,
-                number: Some($number),
+                tail: Some(Tail::Number($number)),
             }
         };
 
         ($name:expr) => {
             Name {
                 name: $name,
-                number: None,
+                tail: None,
             }
         };
     }
@@ -450,146 +538,182 @@ fn parsing() {
     };
 
     vars.insert("fc39", "1.2.3-patch2.fc39");
+    vars.insert("sha", "99aabbcceeff");
+
+    let mut prefixes = HashSet::new();
+    prefixes.insert(String::from("v"));
+
+    macro_rules! parse {
+        ($input:expr) => {
+            parse($input, &vars, &prefixes).unwrap()
+        };
+    }
+
+    macro_rules! expr {
+        ($input:expr) => {
+            expr($input, &vars, &prefixes).unwrap()
+        };
+    }
 
     assert_eq!(
-        parse("1.2", &vars).unwrap(),
+        parse!("1.2"),
         Some(Version {
             prefix: None,
             kind: VersionKind::SemanticVersion(semver!(1, 2)),
-            pre: None,
+            names: Vec::new(),
             append: Vec::new()
         })
     );
 
     assert_eq!(
-        parse("1.2.", &vars).unwrap(),
+        parse!("1.2."),
         Some(Version {
             prefix: None,
             kind: VersionKind::SemanticVersion(semver!(1, 2)),
-            pre: None,
+            names: Vec::new(),
             append: Vec::new()
         })
     );
 
     assert_eq!(
-        parse("1.2.3", &vars).unwrap(),
+        parse!("1.2.3"),
         Some(Version {
             prefix: None,
             kind: VersionKind::SemanticVersion(semver!(1, 2, 3)),
-            pre: None,
+            names: Vec::new(),
             append: Vec::new()
         })
     );
 
     assert_eq!(
-        parse("0000001.000000000.000003", &vars).unwrap(),
+        parse!("0000001.000000000.000003"),
         Some(Version {
             prefix: None,
             kind: VersionKind::SemanticVersion(SemanticVersion {
                 original: "0000001.000000000.000003",
                 ..semver!(1, 0, 3)
             }),
-            pre: None,
+            names: Vec::new(),
             append: Vec::new()
         })
     );
 
     assert_eq!(
-        parse("v1.2.3", &vars).unwrap(),
+        parse!("v1.2.3"),
         Some(Version {
             prefix: Some("v"),
             kind: VersionKind::SemanticVersion(semver!(1, 2, 3)),
-            pre: None,
+            names: Vec::new(),
             append: Vec::new()
         })
     );
 
     assert_eq!(
-        parse("v1.2.3-pre1", &vars).unwrap(),
+        parse!("v1.2.3-pre1"),
         Some(Version {
             prefix: Some("v"),
             kind: VersionKind::SemanticVersion(semver!(1, 2, 3)),
-            pre: Some(name!("pre", 1)),
+            names: vec![name!("pre", 1)],
             append: Vec::new()
         })
     );
 
     assert_eq!(
-        parse("2023-1-1", &vars).unwrap(),
+        parse!("2023-1-1"),
         Some(Version {
             prefix: None,
             kind: VersionKind::Date(date!(2023, 1, 1)),
-            pre: None,
+            names: Vec::new(),
             append: Vec::new()
         })
     );
 
     assert_eq!(
-        parse("2023-1-1-pre1", &vars).unwrap(),
+        parse!("2023-1-1-pre1"),
         Some(Version {
             prefix: None,
             kind: VersionKind::Date(date!(2023, 1, 1)),
-            pre: Some(name!("pre", 1)),
+            names: vec![name!("pre", 1)],
             append: Vec::new()
         })
     );
 
     assert_eq!(
-        parse("%date-pre1", &vars).unwrap(),
+        parse!("%date-pre1"),
         Some(Version {
             prefix: None,
             kind: VersionKind::Date(date!(2023, 1, 1)),
-            pre: Some(name!("pre", 1)),
+            names: vec![name!("pre", 1)],
             append: Vec::new()
         })
     );
 
     assert_eq!(
-        expr("|| %date-pre1\n|| ", &vars).unwrap(),
+        expr!("|| %date-pre1\n|| "),
         Some(Version {
             prefix: None,
             kind: VersionKind::Date(date!(2023, 1, 1)),
-            pre: Some(name!("pre", 1)),
+            names: vec![name!("pre", 1)],
             append: Vec::new()
         })
     );
 
     assert_eq!(
-        expr(" ||   || 1.2.3- ||", &vars).unwrap(),
+        expr!(" ||   || 1.2.3- ||"),
         Some(Version {
             prefix: None,
             kind: VersionKind::SemanticVersion(semver!(1, 2, 3)),
-            pre: None,
+            names: Vec::new(),
             append: Vec::new()
         })
     );
 
     assert_eq!(
-        expr("%fc39-patch1", &vars).unwrap(),
+        expr!("%fc39-patch1"),
         Some(Version {
             prefix: None,
             kind: VersionKind::SemanticVersion(semver!(1, 2, 3)),
-            pre: Some(name!("patch", 1)),
+            names: vec![name!("patch", 2), name!("patch", 1)],
             append: vec!["fc39"]
         })
     );
 
     assert_eq!(
-        expr("name-patch1", &vars).unwrap(),
+        expr!("name-patch1"),
         Some(Version {
             prefix: None,
             kind: VersionKind::Name(name!("name")),
-            pre: Some(name!("patch", 1)),
+            names: vec![name!("patch", 1)],
             append: Vec::new(),
         })
     );
 
     assert_eq!(
-        expr("name-patch1", &vars).unwrap(),
+        expr!("name-patch1"),
         Some(Version {
             prefix: None,
             kind: VersionKind::Name(name!("name")),
-            pre: Some(name!("patch", 1)),
+            names: vec![name!("patch", 1)],
+            append: Vec::new(),
+        })
+    );
+
+    assert_eq!(
+        expr!("name-gitffcc11"),
+        Some(Version {
+            prefix: None,
+            kind: VersionKind::Name(name!("name")),
+            names: vec![name!("git", { "ffcc11" })],
+            append: Vec::new(),
+        })
+    );
+
+    assert_eq!(
+        expr!("name-git%sha"),
+        Some(Version {
+            prefix: None,
+            kind: VersionKind::Name(name!("name")),
+            names: vec![name!("git", { "99aabbcceeff" })],
             append: Vec::new(),
         })
     );

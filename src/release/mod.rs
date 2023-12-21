@@ -2,9 +2,9 @@ use self::parser::Vars;
 #[macro_use]
 mod parser;
 
-use std::env;
 use std::ffi::OsStr;
 use std::fmt;
+use std::{collections::HashSet, env};
 
 use anyhow::{bail, ensure, Result};
 use chrono::{Datelike, Utc};
@@ -50,9 +50,13 @@ pub(crate) struct ReleaseOpts {
     /// "nightly" dated release.
     ///
     /// Available variables:
+    ///
     /// * `%date` - The current date.
-    /// * `%{github.tag}` - The tag name from GITHUB_REF.
-    /// * `%{github.head}` - The branch name from GITHUB_REF.
+    /// * `%{github.tag}` - The tag name from GITHUB_REF if it matches
+    ///   `refs/tags/*`.
+    /// * `%{github.head}` - The branch name from GITHUB_REF if it matches
+    ///   `refs/heads/*`.
+    /// * `%{github.sha}` - The sha fetched from GITHUB_SHA.
     ///
     /// You can also define your own variables using `--define <key>=<value>`.
     /// If the value is empty, the variable will be considered undefined.
@@ -91,6 +95,9 @@ impl ReleaseOpts {
 
         let mut vars = Vars::new(Date::today()?);
 
+        let mut prefixes = HashSet::new();
+        prefixes.insert(String::from("v"));
+
         for define in &self.define {
             let Some((key, value)) = define.split_once('=') else {
                 bail!("Bad --define argument `{define}`");
@@ -109,7 +116,7 @@ impl ReleaseOpts {
             bail!("Must specify --version");
         };
 
-        let Some(mut release) = self::parser::expr(version, &vars)? else {
+        let Some(mut release) = self::parser::expr(version, &vars, &prefixes)? else {
             bail!("Could not determine release from version");
         };
 
@@ -132,16 +139,19 @@ impl ReleaseOpts {
 pub(crate) struct ReleaseEnv {
     github_event_name: Option<String>,
     github_ref: Option<String>,
+    github_sha: Option<String>,
 }
 
 impl ReleaseEnv {
     pub(crate) fn new() -> Self {
         let github_event_name = env::var("GITHUB_EVENT_NAME").ok().filter(|e| !e.is_empty());
         let github_ref = env::var("GITHUB_REF").ok().filter(|e| !e.is_empty());
+        let github_sha = env::var("GITHUB_SHA").ok().filter(|e| !e.is_empty());
 
         Self {
             github_event_name,
             github_ref,
+            github_sha,
         }
     }
 }
@@ -197,18 +207,53 @@ enum VersionKind<'a> {
 }
 
 #[derive(Debug, PartialEq, Serialize)]
+#[serde(tag = "type", content = "value", rename_all = "kebab-case")]
+enum Tail<'a> {
+    Hash(&'a str),
+    Number(u32),
+}
+
+impl Tail<'_> {
+    fn as_number(&self) -> Option<u32> {
+        match self {
+            Tail::Number(number) => Some(*number),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for Tail<'_> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Tail::Hash(tail) => tail.fmt(f),
+            Tail::Number(tail) => tail.fmt(f),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Serialize)]
 struct Name<'a> {
     name: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    number: Option<u32>,
+    tail: Option<Tail<'a>>,
+}
+
+impl Name<'_> {
+    fn is_pre(&self) -> bool {
+        match &self.tail {
+            Some(Tail::Number(..)) => true,
+            _ => false,
+        }
+    }
 }
 
 impl fmt::Display for Name<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.name.fmt(f)?;
 
-        if let Some(number) = self.number {
-            number.fmt(f)?;
+        if let Some(tail) = &self.tail {
+            tail.fmt(f)?;
         }
 
         Ok(())
@@ -221,8 +266,8 @@ pub(super) struct Version<'a> {
     prefix: Option<&'a str>,
     #[serde(flatten)]
     kind: VersionKind<'a>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pre: Option<Name<'a>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    names: Vec<Name<'a>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     append: Vec<&'a str>,
 }
@@ -230,7 +275,13 @@ pub(super) struct Version<'a> {
 impl<'a> Version<'a> {
     /// Check if release is a pre-release.
     pub(crate) fn is_pre(&self) -> bool {
-        self.pre.is_some() || matches!(&self.kind, VersionKind::Name(name) if name.number.is_some())
+        if let Some(first) = self.names.first() {
+            if first.is_pre() {
+                return true;
+            }
+        }
+
+        matches!(&self.kind, VersionKind::Name(name) if name.is_pre())
     }
 
     pub(crate) fn msi_version(&self) -> Result<String> {
@@ -246,7 +297,10 @@ impl<'a> Version<'a> {
                 bail!("patch version must not be greater than 64: {}", patch);
             }
 
-            let pre = if let Some(pre) = pre.and_then(|c| c.number) {
+            let pre = if let Some(pre) = pre
+                .and_then(|c| c.tail.as_ref())
+                .and_then(|tail| tail.as_number())
+            {
                 if pre >= 999 {
                     bail!("pre version must not be greater than 999: {}", pre);
                 }
@@ -261,7 +315,10 @@ impl<'a> Version<'a> {
         }
 
         fn from_date_revision(ymd: Date, pre: Option<&Name>) -> Result<String> {
-            let pre = if let Some(pre) = pre.and_then(|c| c.number) {
+            let pre = if let Some(pre) = pre
+                .and_then(|c| c.tail.as_ref())
+                .and_then(|tail| tail.as_number())
+            {
                 if pre >= 999 {
                     bail!("pre version must not be greater than 999: {pre}");
                 }
@@ -280,8 +337,8 @@ impl<'a> Version<'a> {
         }
 
         match &self.kind {
-            VersionKind::SemanticVersion(version) => from_version(version, self.pre.as_ref()),
-            VersionKind::Date(date) => from_date_revision(*date, self.pre.as_ref()),
+            VersionKind::SemanticVersion(version) => from_version(version, self.names.first()),
+            VersionKind::Date(date) => from_date_revision(*date, self.names.first()),
             VersionKind::Name(..) => bail!("Cannot compute MSI version from channel"),
         }
     }
@@ -305,8 +362,8 @@ impl fmt::Display for Version<'_> {
             }
         }
 
-        if let Some(channel) = &self.pre {
-            write!(f, "-{channel}")?;
+        for name in &self.names {
+            write!(f, "-{name}")?;
         }
 
         for additional in &self.append {
@@ -356,7 +413,11 @@ fn github_release<'a>(env: &'a ReleaseEnv, vars: &mut Vars<'a>) {
         }
 
         if let Some(head) = r#ref.strip_prefix("refs/heads/") {
-            vars.insert("githubhead", head);
+            vars.insert("github.head", head);
         }
+    }
+
+    if let Some(sha) = env.github_sha.as_deref() {
+        vars.insert("github.sha", sha);
     }
 }
