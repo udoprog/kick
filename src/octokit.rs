@@ -8,6 +8,8 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use url::Url;
 
+use crate::env::SecretString;
+
 const UPLOADS_URL: &str = "https://uploads.github.com";
 const API_URL: &str = "https://api.github.com";
 static ACCEPT: header::HeaderValue = header::HeaderValue::from_static("application/json");
@@ -18,12 +20,12 @@ static OCTET_STREAM: header::HeaderValue =
 pub(crate) struct Client {
     uploads_url: Url,
     url: Url,
-    token: String,
+    token: SecretString,
     client: reqwest::Client,
 }
 
 impl Client {
-    pub(crate) fn new(token: String) -> Result<Self> {
+    pub(crate) fn new(token: SecretString) -> Result<Self> {
         let uploads_url = Url::parse(UPLOADS_URL)?;
         let url = Url::parse(API_URL)?;
 
@@ -279,7 +281,10 @@ impl Client {
         self.client
             .request(method, url.clone())
             .header(header::ACCEPT, &ACCEPT)
-            .header(header::AUTHORIZATION, format!("Bearer {}", self.token))
+            .header(
+                header::AUTHORIZATION,
+                format!("Bearer {}", self.token.as_secret()),
+            )
     }
 }
 

@@ -238,8 +238,11 @@ where
         .request(Method::GET, url)
         .header(header::USER_AGENT, &crate::USER_AGENT);
 
-    match &cx.github_token {
-        Some(auth) => req.header(header::AUTHORIZATION, &format!("Bearer {auth}")),
+    match &cx.env.github_token {
+        Some(auth) => req.header(
+            header::AUTHORIZATION,
+            &format!("Bearer {}", auth.as_secret()),
+        ),
         None => req,
     }
 }

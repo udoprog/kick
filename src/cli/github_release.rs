@@ -53,7 +53,7 @@ pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 
     let version = opts.release.version(cx.env)?;
 
-    let Some(token) = &cx.github_token else {
+    let Some(token) = &cx.env.github_token else {
         bail!("Missing access token");
     };
 
@@ -61,7 +61,7 @@ pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
         bail!("Missing SHA to update the commit to, either provide --sha or set GITHUB_SHA and use --github-action");
     };
 
-    let client = Client::new(token.to_owned())?;
+    let client = Client::new(token.clone())?;
     let name = version.to_string();
     let prerelease = version.is_pre();
 

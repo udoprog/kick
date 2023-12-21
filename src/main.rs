@@ -699,7 +699,6 @@ mod workspace;
 
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
@@ -707,6 +706,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, FromArgMatches, Parser, Subcommand};
 
 use actions::Actions;
+use env::SecretString;
 use relative_path::{RelativePath, RelativePathBuf};
 use tracing::metadata::LevelFilter;
 
@@ -815,8 +815,12 @@ struct SharedOptions {
     #[arg(long)]
     save: bool,
     /// Provide an access token to use to access the Github API.
+    ///
+    /// This can also be set through the `GITHUB_TOKEN` environment variable, or
+    /// by writing the token to a `.github-token` file in the root of the
+    /// project.
     #[arg(long, value_name = "token")]
-    token: Option<String>,
+    github_token: Option<SecretString>,
 }
 
 #[derive(Default, Parser)]
@@ -950,7 +954,7 @@ async fn entry() -> Result<ExitCode> {
         "Using project root"
     );
 
-    let env = Env::new();
+    let mut env = Env::new();
     tracing::trace!(?env, "Using environment");
 
     if let Action::Define(opts) = &action {
@@ -958,21 +962,16 @@ async fn entry() -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     };
 
-    let mut github_token = shared.token.clone();
-
-    if github_token.is_none() {
-        let path = root.join(".github-token");
-
-        github_token = match fs::read_to_string(&path) {
-            Ok(auth) => Some(auth.trim().to_owned()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => {
-                return Err(anyhow::Error::from(e)).with_context(|| path.display().to_string())
-            }
-        };
+    if let Some(github_token) = &shared.github_token {
+        env.github_token = Some(github_token.clone());
     }
 
-    if github_token.is_none() {
+    if env.github_token.is_none() {
+        let path = root.join(".github-token");
+        env.github_token = crate::env::read_secret_string(path)?;
+    }
+
+    if env.github_token.is_none() {
         if action.requires_token() {
             tracing::warn!("No .github-token or --token argument found");
         } else {
@@ -1096,7 +1095,6 @@ async fn entry() -> Result<ExitCode> {
         config: &config,
         actions: &actions,
         repos: &repos,
-        github_token,
         rustc_version: ctxt::rustc_version(),
         git,
         warnings: RefCell::new(Vec::new()),

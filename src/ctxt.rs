@@ -22,7 +22,6 @@ pub(crate) struct Ctxt<'a> {
     pub(crate) config: &'a Config<'a>,
     pub(crate) actions: &'a Actions<'a>,
     pub(crate) repos: &'a [Repo],
-    pub(crate) github_token: Option<String>,
     pub(crate) rustc_version: Option<RustVersion>,
     pub(crate) git: Option<Git>,
     pub(crate) warnings: RefCell<Vec<Warning>>,
