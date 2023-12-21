@@ -1,3 +1,5 @@
+#![allow(clippy::manual_is_ascii_check)]
+
 use std::collections::{HashMap, HashSet};
 use std::str;
 
@@ -99,20 +101,20 @@ impl<'a> Vars<'a> {
     }
 }
 
-pub(super) fn expr<'a, 'b>(
+pub(super) fn expr<'a>(
     input: &'a str,
     vars: &Vars<'a>,
-    prefixes: &'b HashSet<String>,
+    prefixes: &HashSet<String>,
 ) -> Result<Option<Version<'a>>> {
     let mut parser = Parser::new(input, vars, prefixes);
     parser.expr()
 }
 
 #[cfg(test)]
-fn parse<'a, 'b>(
+fn parse<'a>(
     input: &'a str,
     vars: &'a Vars,
-    prefixes: &'b HashSet<String>,
+    prefixes: &HashSet<String>,
 ) -> Result<Option<Version<'a>>> {
     let mut parser = Parser::new(input, vars, prefixes);
     Ok(parser.release()?.some())
@@ -172,7 +174,7 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
             return Ok(Outcome::MissingVar);
         };
 
-        return self.parse(value, parse);
+        self.parse(value, parse)
     }
 
     fn peek(&mut self) -> char {
@@ -312,9 +314,8 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
         let start = self.index;
 
         while matches!(self.peek(), ident_start!()) {
-            match &self.data[start..self.index] {
-                "git" => break,
-                _ => {}
+            if matches!(&self.data[start..self.index], "git") {
+                break;
             }
 
             self.next();

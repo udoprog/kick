@@ -240,11 +240,9 @@ struct Name<'a> {
 }
 
 impl Name<'_> {
+    #[inline]
     fn is_pre(&self) -> bool {
-        match &self.tail {
-            Some(Tail::Number(..)) => true,
-            _ => false,
-        }
+        matches!(&self.tail, Some(Tail::Number(..)))
     }
 }
 
