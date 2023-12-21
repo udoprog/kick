@@ -925,16 +925,20 @@ async fn entry() -> Result<ExitCode> {
 
             (root.to_owned(), current_path)
         }
-        None => match find_from_current_dir() {
-            Some((root, current_path)) => (root, Some(current_path)),
-            None => (std::env::current_dir()?, Some(RelativePathBuf::new())),
-        },
+        None => {
+            let current_dir = std::env::current_dir().context("Getting current directory")?;
+
+            match find_from_current_dir(&current_dir) {
+                Some((root, current_path)) => (root, Some(current_path)),
+                None => (current_dir, Some(RelativePathBuf::new())),
+            }
+        }
     };
 
     tracing::trace!(
         root = root.display().to_string(),
         ?current_path,
-        "found project roots"
+        "Using project root"
     );
 
     let changes_path = root.join("changes.gz");
@@ -1236,8 +1240,8 @@ fn filter_repos(
 }
 
 /// Find root path to use.
-fn find_from_current_dir() -> Option<(PathBuf, RelativePathBuf)> {
-    let mut parent = std::env::current_dir()?;
+fn find_from_current_dir(current_dir: &Path) -> Option<(PathBuf, RelativePathBuf)> {
+    let mut parent = current_dir.to_owned();
 
     let mut path = PathBuf::new();
     let mut relative = Vec::<String>::new();
