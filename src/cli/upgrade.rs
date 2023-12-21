@@ -29,7 +29,7 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     Ok(())
 }
 
-#[tracing::instrument(skip_all, fields(source = ?repo.source(), path = repo.path().as_str()))]
+#[tracing::instrument(skip_all)]
 fn upgrade(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
     let current_dir = cx.to_path(repo.path());
     let upgrade = cx.config.upgrade(repo.path());

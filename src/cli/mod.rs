@@ -4,7 +4,11 @@ macro_rules! with_repos {
         let mut bad = $crate::repo_sets::RepoSet::default();
 
         for $repo in $c.repos() {
-            let span = tracing::info_span!("repo", path = ?$repo.path());
+            let span = tracing::info_span!(
+                "repo",
+                source = $repo.source().to_string(),
+                path = $c.to_path($repo.path()).display().to_string()
+            );
             let _span = span.enter();
 
             if $repo.is_disabled() {

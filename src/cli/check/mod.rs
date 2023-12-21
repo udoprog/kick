@@ -51,8 +51,7 @@ pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     Ok(())
 }
 
-/// Run checks for a single repo.
-#[tracing::instrument(skip_all, fields(source = ?repo.source(), path = repo.path().as_str()))]
+#[tracing::instrument(skip_all)]
 fn check(cx: &Ctxt<'_>, repo: &Repo, urls: &mut Urls) -> Result<()> {
     let crates = repo.workspace(cx)?;
     let primary_crate = crates.primary_package()?;

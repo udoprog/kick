@@ -64,6 +64,7 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     Ok(())
 }
 
+#[tracing::instrument(skip_all)]
 fn compress(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     let Some(workspace) = workspace::open(cx, repo)? else {
         bail!("Not a workspace");

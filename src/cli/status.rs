@@ -109,7 +109,7 @@ async fn do_status(
     Ok(())
 }
 
-#[tracing::instrument(skip_all, fields(source = ?repo.source(), path = repo.path().as_str()))]
+#[tracing::instrument(skip_all)]
 async fn status(
     cx: &Ctxt<'_>,
     id: &str,

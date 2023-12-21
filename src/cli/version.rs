@@ -73,7 +73,7 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     Ok(())
 }
 
-#[tracing::instrument(skip_all, fields(source = ?repo.source(), path = repo.path().as_str()))]
+#[tracing::instrument(skip_all)]
 fn version(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo, version_set: &VersionSet) -> Result<()> {
     let Some(workspace) = workspace::open(cx, repo)? else {
         bail!("Not a workspace");

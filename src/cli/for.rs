@@ -24,7 +24,7 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     Ok(())
 }
 
-#[tracing::instrument(name = "for", skip_all, fields(path = repo.path().as_str()))]
+#[tracing::instrument(name = "for", skip_all)]
 fn r#for(cx: &Ctxt<'_>, repo: &Repo, command: &str, args: &[String]) -> Result<()> {
     let mut command = Command::new(command);
     command.args(args);

@@ -103,6 +103,15 @@ pub(crate) enum RepoSource {
     Git,
 }
 
+impl fmt::Display for RepoSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RepoSource::Gitmodules => write!(f, ".gitmodules"),
+            RepoSource::Git => write!(f, "git repo"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RepoRef {
     /// Path to module.

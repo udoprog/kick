@@ -75,7 +75,7 @@ pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     Ok(())
 }
 
-#[tracing::instrument(skip_all, fields(source = ?repo.source(), path = repo.path().as_str()))]
+#[tracing::instrument(skip_all)]
 async fn github_publish(
     cx: &Ctxt<'_>,
     opts: &Opts,
