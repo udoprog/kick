@@ -290,19 +290,12 @@ pub(crate) struct Release {
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct Object {
-    pub(crate) sha: String,
-}
-
-#[derive(Debug, Deserialize)]
 pub(crate) struct ReleaseUpdate {
     pub(crate) id: u64,
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct ReferenceUpdate {
-    pub(crate) object: Object,
-}
+pub(crate) struct ReferenceUpdate {}
 
 #[derive(Deserialize)]
 pub(crate) struct Releases {

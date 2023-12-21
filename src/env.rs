@@ -22,4 +22,14 @@ impl Env {
             github_sha,
         }
     }
+
+    /// The tag GITHUB_REF refers to.
+    pub(crate) fn github_tag(&self) -> Option<&str> {
+        self.github_ref.as_ref()?.strip_prefix("refs/tags/")
+    }
+
+    /// The head GITHUB_REF refers to.
+    pub(crate) fn github_head(&self) -> Option<&str> {
+        self.github_ref.as_ref()?.strip_prefix("refs/heads/")
+    }
 }

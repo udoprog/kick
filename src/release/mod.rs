@@ -424,14 +424,12 @@ impl AsRef<OsStr> for SemanticVersion<'_> {
 
 /// Define a github release.
 fn github_release<'a>(env: &'a Env, vars: &mut Vars<'a>) {
-    if let Some(r#ref) = env.github_ref.as_deref() {
-        if let Some(tag) = r#ref.strip_prefix("refs/tags/") {
-            vars.insert("github.tag", tag);
-        }
+    if let Some(tag) = env.github_tag() {
+        vars.insert("github.tag", tag);
+    }
 
-        if let Some(head) = r#ref.strip_prefix("refs/heads/") {
-            vars.insert("github.head", head);
-        }
+    if let Some(head) = env.github_head() {
+        vars.insert("github.head", head);
     }
 
     if let Some(sha) = env.github_sha.as_deref() {

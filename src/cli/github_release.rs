@@ -1,11 +1,9 @@
 use std::env;
-use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use relative_path::RelativePathBuf;
 use tokio::fs::File;
-use tokio::time::sleep;
 
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
@@ -31,7 +29,7 @@ pub(crate) struct Opts {
     draft: bool,
     /// Pattern of release assets to upload.
     #[arg(long, value_name = "glob")]
-    upload: Option<RelativePathBuf>,
+    upload: Vec<RelativePathBuf>,
     /// Get details from the GitHub action context.
     #[arg(long)]
     github_action: bool,
@@ -69,7 +67,7 @@ pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 
     with_repos!(
         cx,
-        "github-release",
+        "Github Release",
         format_args!("github-release: {opts:?}"),
         |cx, repo| { github_publish(cx, &opts, repo, &client, &name, sha, prerelease).await }
     );
@@ -129,35 +127,32 @@ async fn github_publish(
             .context("Deleting old release")?;
     }
 
-    let r#ref = format!("tags/{}", name);
+    if cx.env.github_tag() != Some(name) {
+        tracing::info!("Trying to update tag '{}'", name);
+        let r#ref = format!("tags/{}", name);
+        let update = client
+            .git_ref_update(path.owner, path.name, &r#ref, sha, true)
+            .await
+            .with_context(|| anyhow!("Updating tag '{}'", r#ref))?;
 
-    tracing::info!("Trying to update tag '{}'", name);
-    let update = client
-        .git_ref_update(path.owner, path.name, &r#ref, sha, true)
-        .await
-        .with_context(|| anyhow!("Updating tag '{}'", r#ref))?;
-
-    let update = match update {
-        Some(update) => update,
-        None => {
+        if update.is_none() {
             tracing::info!("Creating tag '{}'", name);
             let r#ref = format!("refs/tags/{}", name);
 
             client
                 .git_ref_create(path.owner, path.name, &r#ref, sha)
                 .await
-                .with_context(|| anyhow!("Creating tag '{}'", r#ref))?
+                .with_context(|| anyhow!("Creating tag '{}'", r#ref))?;
         }
-    };
+    }
 
     tracing::info!("Creating release '{}'", name);
-
     let release = client
         .create_release(
             path.owner,
             path.name,
             name,
-            &update.object.sha,
+            sha,
             name,
             opts.body.as_deref(),
             prerelease,
@@ -165,7 +160,7 @@ async fn github_publish(
         )
         .await?;
 
-    if let Some(upload) = opts.upload.as_deref() {
+    for upload in &opts.upload {
         let root = cx.to_path(repo.path());
 
         let glob = Glob::new(&root, &upload);
@@ -178,30 +173,22 @@ async fn github_publish(
                 continue;
             };
 
-            tracing::info!("Uploading asset '{m}'");
             let m = m.to_path(&root);
+
+            tracing::info!("Uploading asset {}", m.display());
 
             let meta = tokio::fs::metadata(&m)
                 .await
                 .with_context(|| m.display().to_string())?;
 
-            for _ in 0..10 {
-                let m = File::open(&m)
-                    .await
-                    .with_context(|| m.display().to_string())?;
+            let f = File::open(&m)
+                .await
+                .with_context(|| m.display().to_string())?;
 
-                let result = client
-                    .upload_release_asset(path.owner, path.name, release.id, name, m, meta.len())
-                    .await;
-
-                if let Err(error) = result {
-                    tracing::warn!("Failed to upload: {}", error);
-                    sleep(Duration::from_secs(1)).await;
-                    continue;
-                }
-
-                break;
-            }
+            client
+                .upload_release_asset(path.owner, path.name, release.id, name, f, meta.len())
+                .await
+                .with_context(|| anyhow!("Uploading asset {}", m.display()))?;
         }
     }
 
