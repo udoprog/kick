@@ -753,6 +753,13 @@ enum Action {
 }
 
 impl Action {
+    fn requires_token(&self) -> bool {
+        match self {
+            Action::GithubRelease(..) => true,
+            _ => false,
+        }
+    }
+
     fn shared(&self) -> &SharedOptions {
         match self {
             Action::Define(action) => &action.shared,
@@ -810,6 +817,9 @@ struct SharedOptions {
     /// Save any proposed or loaded changes.
     #[arg(long)]
     save: bool,
+    /// Provide an access token to use to access the Github API.
+    #[arg(long, value_name = "token")]
+    token: Option<String>,
 }
 
 #[derive(Default, Parser)]
@@ -946,25 +956,32 @@ async fn entry() -> Result<ExitCode> {
     let env = Env::new();
     tracing::trace!(?env, "Using environment");
 
-    let changes_path = root.join("changes.gz");
-
     if let Action::Define(opts) = &action {
         cli::define::entry(&env, &opts.action)?;
         return Ok(ExitCode::SUCCESS);
     };
 
-    let github_auth = root.join(".github-auth");
+    let mut github_token = shared.token.clone();
 
-    let github_auth = match fs::read_to_string(&github_auth) {
-        Ok(auth) => Some(auth.trim().to_owned()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            tracing::trace!("no .github-auth found, heavy rate limiting will apply");
-            None
+    if github_token.is_none() {
+        let path = root.join(".github-token");
+
+        github_token = match fs::read_to_string(&path) {
+            Ok(auth) => Some(auth.trim().to_owned()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                return Err(anyhow::Error::from(e)).with_context(|| path.display().to_string())
+            }
+        };
+    }
+
+    if github_token.is_none() {
+        if action.requires_token() {
+            tracing::warn!("No .github-token or --token argument found");
+        } else {
+            tracing::trace!("No .github-token or --token argument found, heavy rate limiting will apply and unless specified some actions will not work")
         }
-        Err(e) => {
-            return Err(anyhow::Error::from(e)).with_context(|| github_auth.display().to_string())
-        }
-    };
+    }
 
     let git = git::Git::find()?;
 
@@ -1074,13 +1091,15 @@ async fn entry() -> Result<ExitCode> {
         )?;
     }
 
+    let changes_path = root.join("changes.gz");
+
     let mut cx = ctxt::Ctxt {
         root: &root,
         current_path: current_path.as_deref(),
         config: &config,
         actions: &actions,
         repos: &repos,
-        github_auth,
+        github_token,
         rustc_version: ctxt::rustc_version(),
         git,
         warnings: RefCell::new(Vec::new()),
@@ -1247,6 +1266,14 @@ fn filter_repos(
 
 /// Find root path to use.
 fn find_from_current_dir(current_dir: &Path) -> Option<(PathBuf, RelativePathBuf)> {
+    fn clone_or_current(path: &Path) -> PathBuf {
+        if path.components().next().is_none() {
+            PathBuf::from_iter([Component::CurDir])
+        } else {
+            path.to_owned()
+        }
+    }
+
     let mut parent = current_dir.to_owned();
 
     let mut path = PathBuf::new();
@@ -1261,7 +1288,7 @@ fn find_from_current_dir(current_dir: &Path) -> Option<(PathBuf, RelativePathBuf
 
             if git.exists() {
                 tracing::trace!("Found .git in {}", git.display());
-                first_git = Some((path.clone(), relative.iter().rev().collect()));
+                first_git = Some((clone_or_current(&path), relative.iter().rev().collect()));
             }
         }
 
@@ -1269,7 +1296,7 @@ fn find_from_current_dir(current_dir: &Path) -> Option<(PathBuf, RelativePathBuf
 
         if kick_toml.is_file() {
             tracing::trace!("Found {KICK_TOML} in {}", kick_toml.display());
-            last_kick_toml = Some((path.clone(), relative.iter().rev().collect()));
+            last_kick_toml = Some((clone_or_current(&path), relative.iter().rev().collect()));
         }
 
         let Some(Component::Normal(normal)) = parent.components().next_back() else {

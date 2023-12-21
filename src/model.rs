@@ -324,8 +324,8 @@ pub(crate) fn load_from_git(root: &Path, git: Option<&Git>) -> Result<Vec<Repo>>
     let git_path = root.join(".git");
 
     if git_path.exists() {
-        tracing::trace!("Using repository: {}", git_path.display());
-        out.push(from_git(git, &git_path).with_context(|| git_path.display().to_string())?);
+        tracing::trace!("Using repository: {}", root.display());
+        out.push(from_git(git, root).with_context(|| root.display().to_string())?);
         return Ok(out);
     }
 
@@ -392,9 +392,9 @@ pub(crate) fn parse_git_modules(input: &[u8]) -> Result<Vec<Repo>> {
 }
 
 /// Process module information from a git repository.
-fn from_git<P>(git: &Git, root: &P) -> Result<Repo>
+fn from_git<P>(git: &Git, root: P) -> Result<Repo>
 where
-    P: ?Sized + AsRef<Path>,
+    P: AsRef<Path>,
 {
     let url = git.get_url(root, "origin")?;
     Ok(Repo::new(RepoSource::Git, RelativePathBuf::from("."), url))

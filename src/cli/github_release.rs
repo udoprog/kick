@@ -23,9 +23,6 @@ pub(crate) struct Opts {
     /// Get sha from the specified environment variable.
     #[arg(long, value_name = "env")]
     sha_from_env: Option<String>,
-    /// Provide an access token to use to access the API.
-    #[arg(long, value_name = "token")]
-    token: Option<String>,
     /// The body of the release.
     #[arg(long, value_name = "text")]
     body: Option<String>,
@@ -58,7 +55,7 @@ pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 
     let version = opts.release.version(cx.env)?;
 
-    let Some(token) = opts.token.as_deref().or(cx.github_auth.as_deref()) else {
+    let Some(token) = &cx.github_token else {
         bail!("Missing access token");
     };
 

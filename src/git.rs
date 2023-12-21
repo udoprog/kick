@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 
 use crate::process::Command;
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{ensure, Context, Result};
 use reqwest::Url;
 
 #[cfg(windows)]
@@ -58,19 +58,16 @@ impl Git {
         A: IntoIterator,
         A::Item: AsRef<OsStr>,
     {
-        let output = Command::new(&self.command)
+        let status = Command::new(&self.command)
             .arg("add")
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::null())
             .current_dir(dir)
-            .output()?;
+            .status()?;
 
-        if !output.status.success() {
-            return Err(anyhow!("status: {}", output.status));
-        }
-
+        ensure!(status.success(), status);
         Ok(())
     }
 
@@ -81,21 +78,16 @@ impl Git {
         P: ?Sized + AsRef<Path>,
         M: Display,
     {
-        tracing::trace!("git commit -m \"{message}\"");
-
-        let output = Command::new(&self.command)
+        let status = Command::new(&self.command)
             .args(["commit", "-m"])
             .arg(message.to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::null())
             .current_dir(dir)
-            .output()?;
+            .status()?;
 
-        if !output.status.success() {
-            return Err(anyhow!("status: {}", output.status));
-        }
-
+        ensure!(status.success(), status);
         Ok(())
     }
 
@@ -106,21 +98,16 @@ impl Git {
         P: ?Sized + AsRef<Path>,
         M: Display,
     {
-        tracing::trace!("git tag \"{tag}\"");
-
-        let output = Command::new(&self.command)
+        let status = Command::new(&self.command)
             .args(["tag"])
             .arg(tag.to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::null())
             .current_dir(dir)
-            .output()?;
+            .status()?;
 
-        if !output.status.success() {
-            return Err(anyhow!("status: {}", output.status));
-        }
-
+        ensure!(status.success(), status);
         Ok(())
     }
 
@@ -129,8 +116,6 @@ impl Git {
     where
         P: ?Sized + AsRef<Path>,
     {
-        tracing::trace!("git diff --cached --exit-code --quiet");
-
         let status = Command::new(&self.command)
             .args(["diff", "--cached", "--exit-code", "--quiet"])
             .stdin(Stdio::null())
@@ -147,8 +132,6 @@ impl Git {
     where
         P: ?Sized + AsRef<Path>,
     {
-        tracing::trace!("git status --short");
-
         let output = Command::new(&self.command)
             .args(["status", "--short"])
             .stdin(Stdio::null())
@@ -164,39 +147,29 @@ impl Git {
     }
 
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command))]
-    pub(crate) fn remote_update<P>(&self, dir: &P) -> Result<()>
+    pub(crate) fn remote_update<P>(&self, dir: P) -> Result<()>
     where
-        P: ?Sized + AsRef<Path>,
+        P: AsRef<Path>,
     {
-        tracing::trace!("git remote update");
-
-        let output = Command::new(&self.command)
+        let status = Command::new(&self.command)
             .args(["remote", "update"])
             .stdin(Stdio::null())
             .current_dir(dir)
-            .output()?;
+            .status()?;
 
-        if !output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!(
-                "Command didn't exit successfully: {}\nstdout: {stdout}\nstderr: {stderr}",
-                output.status
-            )
-        }
-
+        ensure!(status.success(), status);
         Ok(())
     }
 
     /// Test if the local branch is outdated.
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command))]
-    pub(crate) fn is_outdated<P>(&self, dir: &P) -> Result<bool>
+    pub(crate) fn is_outdated<P>(&self, dir: P) -> Result<bool>
     where
-        P: ?Sized + AsRef<Path>,
+        P: AsRef<Path>,
     {
-        self.remote_update(dir)?;
+        let dir = dir.as_ref();
 
-        tracing::trace!("git diff --quiet main origin/main");
+        self.remote_update(dir)?;
 
         let status = Command::new(&self.command)
             .args(["diff", "--quiet", "main", "origin/main"])
@@ -211,12 +184,10 @@ impl Git {
 
     /// Get HEAD commit.
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command))]
-    pub(crate) fn rev_parse<P>(&self, dir: &P, rev: &str) -> Result<String>
+    pub(crate) fn rev_parse<P>(&self, dir: P, rev: &str) -> Result<String>
     where
-        P: ?Sized + AsRef<Path>,
+        P: AsRef<Path>,
     {
-        tracing::trace!("git rev-parse {rev}");
-
         let output = Command::new(&self.command)
             .args(["rev-parse", rev])
             .stdin(Stdio::null())
@@ -225,10 +196,7 @@ impl Git {
             .current_dir(dir)
             .output()?;
 
-        if !output.status.success() {
-            return Err(anyhow!("status: {}", output.status));
-        }
-
+        ensure!(output.status.success(), output.status);
         Ok(String::from_utf8(output.stdout)?)
     }
 
@@ -241,8 +209,6 @@ impl Git {
     where
         P: ?Sized + AsRef<Path>,
     {
-        tracing::trace!("git describe --tags");
-
         let output = Command::new(&self.command)
             .args(["describe", "--tags"])
             .stdin(Stdio::null())
@@ -271,9 +237,9 @@ impl Git {
     }
 
     /// Get remote url.
-    pub(crate) fn get_url<P>(&self, dir: &P, remote: &str) -> Result<Url>
+    pub(crate) fn get_url<P>(&self, dir: P, remote: &str) -> Result<Url>
     where
-        P: ?Sized + AsRef<Path>,
+        P: AsRef<Path>,
     {
         let output = Command::new(&self.command)
             .args(["remote", "get-url", remote])
@@ -281,11 +247,7 @@ impl Git {
             .stdout(Stdio::piped())
             .output()?;
 
-        anyhow::ensure!(
-            output.status.success(),
-            "failed to get git remote `{remote}`"
-        );
-
+        ensure!(output.status.success(), output.status);
         let url = String::from_utf8(output.stdout)?;
         Ok(Url::parse(url.trim())?)
     }

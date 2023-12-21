@@ -120,13 +120,12 @@ async fn status(
     client: &Client,
     limit: &str,
 ) -> Result<bool> {
-    let current_dir = cx.to_path(repo.path());
     let sha;
 
     let sha = match &cx.git {
         Some(git) => {
             sha = git
-                .rev_parse(&current_dir, "HEAD")
+                .rev_parse(cx.to_path(repo.path()), "HEAD")
                 .context("Getting head commit")?;
             Some(sha.trim())
         }
@@ -239,7 +238,7 @@ where
         .request(Method::GET, url)
         .header(header::USER_AGENT, &crate::USER_AGENT);
 
-    match &cx.github_auth {
+    match &cx.github_token {
         Some(auth) => req.header(header::AUTHORIZATION, &format!("Bearer {auth}")),
         None => req,
     }

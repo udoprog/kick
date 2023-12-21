@@ -22,7 +22,7 @@ pub(crate) struct Ctxt<'a> {
     pub(crate) config: &'a Config<'a>,
     pub(crate) actions: &'a Actions<'a>,
     pub(crate) repos: &'a [Repo],
-    pub(crate) github_auth: Option<String>,
+    pub(crate) github_token: Option<String>,
     pub(crate) rustc_version: Option<RustVersion>,
     pub(crate) git: Option<Git>,
     pub(crate) warnings: RefCell<Vec<Warning>>,
@@ -51,11 +51,15 @@ impl<'a> Ctxt<'a> {
         ExitCode::SUCCESS
     }
 
-    /// Get a repo path.
+    /// Get a repo path that is used as the base to other paths.
     pub(crate) fn to_path<P>(&self, path: P) -> PathBuf
     where
         P: AsRef<RelativePath>,
     {
+        if self.root.components().eq([Component::CurDir]) {
+            return PathBuf::from(path.as_ref().as_str());
+        }
+
         if let Some(current_path) = self.current_path {
             let output = current_path.relative(path);
             return PathBuf::from(output.as_str());
@@ -69,12 +73,7 @@ impl<'a> Ctxt<'a> {
         &'ctx self,
         repo: &'ctx RepoRef,
     ) -> impl Fn() -> anyhow::Error + 'ctx {
-        move || {
-            anyhow!(
-                "Error in repo {}",
-                empty_or_dot(self.to_path(repo.path())).display()
-            )
-        }
+        move || anyhow!("Error in repo {}", self.to_path(repo.path()).display())
     }
 
     /// Get repo parameters for the given package.
@@ -127,15 +126,6 @@ impl<'a> Ctxt<'a> {
     /// Check if there's a change we can save.
     pub(crate) fn can_save(&self) -> bool {
         !self.changes.borrow().is_empty()
-    }
-}
-
-/// Coerce an empty buffer into the `.` path if necessary.
-pub(crate) fn empty_or_dot(path: PathBuf) -> PathBuf {
-    if path.components().next().is_none() {
-        PathBuf::from_iter([Component::CurDir])
-    } else {
-        path
     }
 }
 
