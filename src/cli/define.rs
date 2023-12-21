@@ -73,7 +73,7 @@ pub(crate) struct Opts {
 
 pub(crate) fn entry(opts: &Opts) -> Result<()> {
     let env = ReleaseEnv::new();
-    let version = opts.release.make(&env)?;
+    let version = opts.release.version(&env)?;
 
     let mut opts = opts.clone();
 

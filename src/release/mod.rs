@@ -77,7 +77,7 @@ pub(crate) struct ReleaseOpts {
 
 impl ReleaseOpts {
     /// Construct a release from provided arguments.
-    pub(crate) fn make<'a>(&'a self, env: &'a ReleaseEnv) -> Result<Version<'_>> {
+    pub(crate) fn version<'a>(&'a self, env: &'a ReleaseEnv) -> Result<Version<'_>> {
         let channel = self.version.as_deref().filter(|c| !c.is_empty());
 
         let span = tracing::info_span! {

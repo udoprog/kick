@@ -70,7 +70,7 @@ fn compress(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     };
 
     let env = ReleaseEnv::new();
-    let release = opts.release.make(&env)?;
+    let release = opts.release.version(&env)?;
 
     let package = workspace.primary_package()?;
     let name = package.name()?;

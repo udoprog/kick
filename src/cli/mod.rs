@@ -39,7 +39,7 @@ pub(crate) mod check;
 pub(crate) mod compress;
 pub(crate) mod define;
 pub(crate) mod r#for;
-pub(crate) mod github_publish;
+pub(crate) mod github_release;
 pub(crate) mod msi;
 pub(crate) mod msrv;
 pub(crate) mod publish;

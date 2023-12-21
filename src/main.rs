@@ -746,8 +746,8 @@ enum Action {
     Rpm(SharedAction<cli::rpm::Opts>),
     /// Build a compressed artifact (like a zip or tar.gz).
     Compress(SharedAction<cli::compress::Opts>),
-    /// Publish a github release.
-    GithubPublish(SharedAction<cli::github_publish::Opts>),
+    /// Build a github release.
+    GithubRelease(SharedAction<cli::github_release::Opts>),
 }
 
 impl Action {
@@ -766,7 +766,7 @@ impl Action {
             Action::Msi(action) => &action.shared,
             Action::Rpm(action) => &action.shared,
             Action::Compress(action) => &action.shared,
-            Action::GithubPublish(action) => &action.shared,
+            Action::GithubRelease(action) => &action.shared,
         }
     }
 
@@ -785,7 +785,7 @@ impl Action {
             Action::Msi(action) => Some(&action.repo),
             Action::Rpm(action) => Some(&action.repo),
             Action::Compress(action) => Some(&action.repo),
-            Action::GithubPublish(action) => Some(&action.repo),
+            Action::GithubRelease(action) => Some(&action.repo),
         }
     }
 }
@@ -1117,8 +1117,8 @@ async fn entry() -> Result<ExitCode> {
         Action::Compress(opts) => {
             cli::compress::entry(&mut cx, &opts.action)?;
         }
-        Action::GithubPublish(opts) => {
-            cli::github_publish::entry(&mut cx, &opts.action).await?;
+        Action::GithubRelease(opts) => {
+            cli::github_release::entry(&mut cx, &opts.action).await?;
         }
         _ => {
             bail!("Unsupported action at this stage")

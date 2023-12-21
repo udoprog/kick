@@ -161,7 +161,7 @@ impl Client {
         tag_name: &str,
         target_commitish: &str,
         name: &str,
-        body: &str,
+        body: Option<&str>,
         prerelease: bool,
         draft: bool,
     ) -> Result<ReleaseUpdate> {
@@ -170,7 +170,8 @@ impl Client {
             tag_name: &'a str,
             target_commitish: &'a str,
             name: &'a str,
-            body: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            body: Option<&'a str>,
             draft: bool,
             prerelease: bool,
             generate_release_notes: bool,
@@ -229,8 +230,6 @@ impl Client {
         ]);
 
         url.query_pairs_mut().append_pair("name", name);
-
-        dbg!(url.to_string());
 
         let body = reqwest::Body::wrap_stream(stream_body(input));
 
@@ -292,9 +291,7 @@ pub(crate) struct Release {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct Object {
-    pub(crate) r#type: String,
     pub(crate) sha: String,
-    pub(crate) url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -304,9 +301,6 @@ pub(crate) struct ReleaseUpdate {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct ReferenceUpdate {
-    pub(crate) r#ref: String,
-    pub(crate) node_id: String,
-    pub(crate) url: String,
     pub(crate) object: Object,
 }
 
