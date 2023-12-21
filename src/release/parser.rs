@@ -7,6 +7,45 @@ use super::{Date, Name, SemanticVersion, Tail, Version, VersionKind};
 
 const EOF: char = '\0';
 
+enum Outcome<T> {
+    Some(T),
+    None,
+    MissingVar,
+}
+
+impl<T> Outcome<T> {
+    /// Map an outcome's inner value to a different type.
+    fn map<U, F>(self, f: F) -> Outcome<U>
+    where
+        F: FnOnce(T) -> U,
+    {
+        match self {
+            Outcome::Some(value) => Outcome::Some(f(value)),
+            Outcome::None => Outcome::None,
+            Outcome::MissingVar => Outcome::MissingVar,
+        }
+    }
+
+    /// Coerce an outcome into an option.
+    #[cfg(test)]
+    fn some(self) -> Option<T> {
+        match self {
+            Outcome::Some(value) => Some(value),
+            _ => None,
+        }
+    }
+}
+
+macro_rules! propagate {
+    ($expr:expr) => {
+        match $expr {
+            Outcome::MissingVar => return Ok(Outcome::MissingVar),
+            Outcome::Some(value) => Some(value),
+            Outcome::None => None,
+        }
+    };
+}
+
 macro_rules! expect {
     ($slf:expr, $pat:pat) => {{
         let b = $slf.peek();
@@ -24,6 +63,18 @@ macro_rules! ws {
     () => {
         ' ' | '\t' | '\n' | '\r'
     };
+}
+
+macro_rules! ident_start {
+    () => {
+        'a'..='z' | 'A'..='Z'
+    }
+}
+
+macro_rules! ident_cont {
+    () => {
+        'a'..='z' | 'A'..='Z' | '0'..='9'
+    }
 }
 
 pub(super) struct Vars<'a> {
@@ -64,7 +115,7 @@ fn parse<'a, 'b>(
     prefixes: &'b HashSet<String>,
 ) -> Result<Option<Version<'a>>> {
     let mut parser = Parser::new(input, vars, prefixes);
-    parser.release()
+    Ok(parser.release()?.some())
 }
 
 struct Parser<'vars, 'a, 'b> {
@@ -86,6 +137,42 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
             prefixes,
             max_prefix,
         }
+    }
+
+    fn ws(&mut self) {
+        while matches!(self.peek(), ws!()) {
+            self.next();
+        }
+    }
+
+    /// Inner parsing.
+    fn parse<P, O>(&self, input: &'a str, parse: P) -> Result<Outcome<O>>
+    where
+        P: FnOnce(&mut Parser<'vars, 'a, 'b>) -> Result<Outcome<O>>,
+    {
+        let mut parser = Parser::new(input, self.vars, self.prefixes);
+        parser.ws();
+        let output = parse(&mut parser)?;
+        parser.ws();
+
+        if parser.peek() != EOF {
+            bail!("Unexpected input '{}'", &parser.data[parser.index..]);
+        }
+
+        Ok(output)
+    }
+
+    fn expand<P, O>(&mut self, parse: P) -> Result<Outcome<O>>
+    where
+        P: FnOnce(&mut Parser<'vars, 'a, 'b>) -> Result<Outcome<O>>,
+    {
+        let name = self.variable()?;
+
+        let Some(value) = self.vars.get(name) else {
+            return Ok(Outcome::MissingVar);
+        };
+
+        return self.parse(value, parse);
     }
 
     fn peek(&mut self) -> char {
@@ -125,56 +212,68 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
         b
     }
 
-    fn version(&mut self) -> Result<SemanticVersion<'a>> {
+    fn version(&mut self) -> Result<Outcome<SemanticVersion<'a>>> {
         let start = self.index;
 
-        let major = self.number()?.context("Expected major version")?;
+        let major = self.number()?;
         expect!(self, '.');
-        let minor = self.number()?.context("Expected minor version")?;
+        let minor = self.number()?;
 
-        let (end, patch) = if self.peek() == '.' {
+        let patch = if self.peek() == '.' {
             let at = self.index;
             self.next();
 
             match self.number()? {
-                Some(patch) => (self.index, Some(patch)),
-                None => (at, None),
+                Outcome::Some(patch) => Outcome::Some((self.index, Some(patch))),
+                Outcome::None => Outcome::Some((at, None)),
+                Outcome::MissingVar => Outcome::MissingVar,
             }
         } else {
-            (self.index, None)
+            Outcome::None
         };
 
-        Ok(SemanticVersion {
+        let (end, patch) = match propagate!(patch) {
+            Some((at, patch)) => (at, patch),
+            None => (self.index, None),
+        };
+
+        Ok(Outcome::Some(SemanticVersion {
             original: &self.data[start..end],
-            major,
-            minor,
+            major: propagate!(major).context("Expected major")?,
+            minor: propagate!(minor).context("Expected minor")?,
             patch,
-        })
+        }))
     }
 
-    fn date(&mut self) -> Result<Date> {
-        let year = self.number()?.context("Expected year")?;
+    fn date(&mut self) -> Result<Outcome<Date>> {
+        let year = self.number()?;
+        expect!(self, '-');
+        let month = self.number()?;
+        expect!(self, '-');
+        let day = self.number()?;
+
+        let year = propagate!(year).context("Expected year")?;
+        let month = propagate!(month).context("Expected month")?;
+        let day = propagate!(day).context("Expected day")?;
 
         let Ok(year) = i32::try_from(year) else {
             bail!("Year is out of range");
         };
 
-        expect!(self, '-');
-        let month = self.number()?.context("Expected month")?;
-        expect!(self, '-');
-        let day = self.number()?.context("Expected day")?;
-        Date::new(year, month, day)
+        Ok(Outcome::Some(Date::new(year, month, day)?))
     }
 
     fn variable(&mut self) -> Result<&'a str> {
+        debug_assert_eq!(self.next(), '%');
+
         if self.peek() != '{' {
-            return self.ident(self.index);
+            return self.ident();
         }
 
         self.next();
         let start = self.index;
 
-        while matches!(self.peek(), 'a'..='z' | '0'..='9' | '-' | '_' | '.') {
+        while matches!(self.peek(), ident_cont!() | '-' | '_' | '.') {
             self.next();
         }
 
@@ -190,7 +289,7 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
 
         let start = self.index;
 
-        while self.peek().is_ascii_lowercase() {
+        while matches!(self.peek(), ident_start!()) {
             self.next();
 
             let value = &self.data[start..self.index];
@@ -212,7 +311,7 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
     fn channel_ident(&mut self) -> Option<&'a str> {
         let start = self.index;
 
-        while self.peek().is_ascii_lowercase() {
+        while matches!(self.peek(), ident_start!()) {
             match &self.data[start..self.index] {
                 "git" => break,
                 _ => {}
@@ -228,23 +327,29 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
         Some(&self.data[start..self.index])
     }
 
-    fn ident(&mut self, start: usize) -> Result<&'a str> {
-        expect!(self, 'a'..='z');
+    fn ident(&mut self) -> Result<&'a str> {
+        let start = self.index;
 
-        while let 'a'..='z' | '0'..='9' = self.peek() {
+        expect!(self, ident_start!());
+
+        while let ident_cont!() = self.peek() {
             self.next();
         }
 
         if start == self.index {
-            bail!("Identifier cannot be empty at {}", start);
+            bail!("Identifier cannot be empty at '{}'", &self.data[start..]);
         }
 
         let end = self.index;
         Ok(&self.data[start..end])
     }
 
-    fn number(&mut self) -> Result<Option<u32>> {
+    fn number(&mut self) -> Result<Outcome<u32>> {
         let start = self.index;
+
+        if self.peek() == '%' {
+            return self.expand(Parser::number);
+        }
 
         // NB: Ignore zero-prefixing.
         if self.peek() == '0' {
@@ -252,26 +357,17 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
                 self.next();
             }
         } else if !matches!(self.peek(), '1'..='9') {
-            return Ok(None);
+            return Ok(Outcome::None);
         };
 
-        Ok(Some(self.number_rem(start)?))
+        Ok(Outcome::Some(self.number_rem(start)?))
     }
 
-    fn hex(&mut self) -> Result<Option<&'a str>> {
+    fn hex(&mut self) -> Result<Outcome<&'a str>> {
         let start = self.index;
 
         if self.peek() == '%' {
-            self.next();
-
-            let name = self.variable()?;
-
-            let Some(value) = self.vars.get(name) else {
-                return Ok(None);
-            };
-
-            let mut parser = Parser::new(value, self.vars, self.prefixes);
-            return parser.hex();
+            return self.expand(Parser::hex);
         }
 
         while self.peek().is_ascii_hexdigit() {
@@ -279,10 +375,10 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
         }
 
         if start == self.index {
-            return Ok(None);
+            return Ok(Outcome::None);
         }
 
-        Ok(Some(&self.data[start..self.index]))
+        Ok(Outcome::Some(&self.data[start..self.index]))
     }
 
     fn number_rem(&mut self, start: usize) -> Result<u32> {
@@ -301,21 +397,25 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
         Ok(number)
     }
 
-    fn maybe_channel(&mut self) -> Result<Option<Name<'a>>> {
+    fn maybe_channel(&mut self) -> Result<Outcome<Name<'a>>> {
         if self.peek() == '-' {
             self.next();
 
             if matches!(self.peek(), EOF | ws!()) {
-                return Ok(None);
+                return Ok(Outcome::None);
             }
 
             Ok(self.channel()?)
         } else {
-            Ok(None)
+            Ok(Outcome::None)
         }
     }
 
-    fn channel(&mut self) -> Result<Option<Name<'a>>> {
+    fn channel(&mut self) -> Result<Outcome<Name<'a>>> {
+        if self.peek() == '%' {
+            return self.expand(Parser::channel);
+        }
+
         let start = self.index;
 
         let Some(name) = self.channel_ident() else {
@@ -325,54 +425,43 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
         self.make_name(name)
     }
 
-    fn make_name(&mut self, name: &'a str) -> Result<Option<Name<'a>>, anyhow::Error> {
+    fn make_name(&mut self, name: &'a str) -> Result<Outcome<Name<'a>>> {
         let tail = match name {
-            "git" => {
-                let Some(hex) = self.hex()? else {
-                    return Ok(None);
-                };
-
-                Some(Tail::Hash(hex))
-            }
-            _ => self.number()?.map(Tail::Number),
+            "git" => propagate!(self.hex()?).map(Tail::Hash),
+            _ => propagate!(self.number()?).map(Tail::Number),
         };
 
-        Ok(Some(Name { name, tail }))
+        Ok(Outcome::Some(Name { name, tail }))
     }
 
-    fn release(&mut self) -> Result<Option<Version<'a>>> {
+    fn release(&mut self) -> Result<Outcome<Version<'a>>> {
         let start = self.index;
         let mut prefix = self.prefix().map(move |prefix| (start, prefix));
 
         let mut release = 'release: {
             let kind = 'kind: {
                 match self.peek() {
-                    '%' => {
-                        self.next();
+                    '%' => match self.variable()? {
+                        "date" => break 'kind Outcome::Some(VersionKind::Date(self.vars.today)),
+                        other => {
+                            let Some(value) = self.vars.get(other) else {
+                                break 'release Outcome::MissingVar;
+                            };
 
-                        match self.variable()? {
-                            "date" => break 'kind VersionKind::Date(self.vars.today),
-                            other => {
-                                let Some(value) = self.vars.get(other) else {
-                                    break 'release None;
-                                };
-
-                                let mut parser = Parser::new(value, self.vars, self.prefixes);
-                                break 'release parser.release()?;
-                            }
+                            break 'release self.parse(value, Parser::release)?;
                         }
-                    }
+                    },
                     '0'..='9' => {
                         let stored = self.index;
 
-                        if let Ok(version) = self.version() {
-                            break 'kind VersionKind::SemanticVersion(version);
+                        if let Ok(Outcome::Some(version)) = self.version() {
+                            break 'kind Outcome::Some(VersionKind::SemanticVersion(version));
                         }
 
                         self.index = stored;
 
-                        if let Ok(date) = self.date() {
-                            break 'kind VersionKind::Date(date);
+                        if let Ok(Outcome::Some(date)) = self.date() {
+                            break 'kind Outcome::Some(VersionKind::Date(date));
                         }
 
                         self.index = stored;
@@ -382,16 +471,13 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
 
                 let start = prefix.take().map(|(index, _)| index).unwrap_or(self.index);
                 self.index = start;
-
-                let Some(name) = self.channel()? else {
-                    break 'release None;
-                };
-
-                VersionKind::Name(name)
+                self.channel()?.map(VersionKind::Name)
             };
 
-            Some(Version {
-                prefix: prefix.take().map(|(_, prefix)| prefix),
+            let prefix = prefix.take().map(|(_, prefix)| prefix);
+
+            kind.map(|kind| Version {
+                prefix,
                 kind,
                 names: Vec::new(),
                 append: Vec::new(),
@@ -399,13 +485,19 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
         };
 
         if let Some((_, prefix)) = prefix.take() {
-            if let Some(release) = &mut release {
+            if let Outcome::Some(release) = &mut release {
                 release.prefix = Some(prefix);
             }
         }
 
-        if let Some(c) = self.maybe_channel()? {
-            if let Some(release) = &mut release {
+        loop {
+            let c = match self.maybe_channel()? {
+                Outcome::Some(c) => c,
+                Outcome::None => break,
+                Outcome::MissingVar => continue,
+            };
+
+            if let Outcome::Some(release) = &mut release {
                 release.names.push(c);
             }
         }
@@ -414,11 +506,11 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
             self.next();
             let start = self.index;
 
-            while matches!(self.peek(), '0'..='9' | 'a'..='z') {
+            while matches!(self.peek(), ident_cont!()) {
                 self.next();
             }
 
-            if let Some(release) = &mut release {
+            if let Outcome::Some(release) = &mut release {
                 release.append.push(&self.data[start..self.index]);
             }
         }
@@ -427,17 +519,13 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
     }
 
     fn expr(&mut self) -> Result<Option<Version<'a>>> {
-        let mut last = None;
+        let mut first = None;
         let mut needs_or = false;
 
         while self.peek() != EOF {
             match self.peek2() {
                 (ws!(), _) => {
-                    self.next();
-
-                    while matches!(self.peek(), ws!()) {
-                        self.next();
-                    }
+                    self.ws();
                 }
                 ('|', '|') => {
                     self.next();
@@ -454,13 +542,14 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
 
                     continue;
                 }
-                ('0'..='9' | 'a'..='z' | '%', _) if !needs_or => {
-                    let Some(release) = self.release()? else {
-                        continue;
+                (ident_cont!() | '%', _) if !needs_or => {
+                    let release = match self.release()? {
+                        Outcome::Some(release) => release,
+                        _ => continue,
                     };
 
-                    if last.is_none() {
-                        last = Some(release);
+                    if first.is_none() {
+                        first = Some(release);
                     }
 
                     needs_or = true;
@@ -471,7 +560,7 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
             }
         }
 
-        Ok(last)
+        Ok(first)
     }
 }
 
@@ -539,6 +628,8 @@ fn parsing() {
 
     vars.insert("fc39", "1.2.3-patch2.fc39");
     vars.insert("sha", "99aabbcceeff");
+    vars.insert("channel", "patch");
+    vars.insert("channel.2", "patch1");
 
     let mut prefixes = HashSet::new();
     prefixes.insert(String::from("v"));
@@ -714,6 +805,26 @@ fn parsing() {
             prefix: None,
             kind: VersionKind::Name(name!("name")),
             names: vec![name!("git", { "99aabbcceeff" })],
+            append: Vec::new(),
+        })
+    );
+
+    assert_eq!(
+        expr!("1.2.3-%channel"),
+        Some(Version {
+            prefix: None,
+            kind: VersionKind::SemanticVersion(semver!(1, 2, 3)),
+            names: vec![name!("patch")],
+            append: Vec::new(),
+        })
+    );
+
+    assert_eq!(
+        expr!("1.2.3-%{channel.2}"),
+        Some(Version {
+            prefix: None,
+            kind: VersionKind::SemanticVersion(semver!(1, 2, 3)),
+            names: vec![name!("patch", 1)],
             append: Vec::new(),
         })
     );
