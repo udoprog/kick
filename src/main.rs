@@ -686,6 +686,7 @@ mod gitmodules;
 mod glob;
 mod manifest;
 mod model;
+mod octokit;
 mod process;
 mod release;
 mod repo_sets;
@@ -697,6 +698,7 @@ mod workspace;
 
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
@@ -711,6 +713,9 @@ use crate::{glob::Fragment, model::Repo};
 
 /// Name of project configuration files.
 const KICK_TOML: &str = "Kick.toml";
+/// User agent to use for http requests.
+static USER_AGENT: reqwest::header::HeaderValue =
+    reqwest::header::HeaderValue::from_static("kick/0.0");
 
 #[derive(Subcommand)]
 enum Action {
@@ -741,6 +746,8 @@ enum Action {
     Rpm(SharedAction<cli::rpm::Opts>),
     /// Build a compressed artifact (like a zip or tar.gz).
     Compress(SharedAction<cli::compress::Opts>),
+    /// Publish a github release.
+    GithubPublish(SharedAction<cli::github_publish::Opts>),
 }
 
 impl Action {
@@ -759,6 +766,7 @@ impl Action {
             Action::Msi(action) => &action.shared,
             Action::Rpm(action) => &action.shared,
             Action::Compress(action) => &action.shared,
+            Action::GithubPublish(action) => &action.shared,
         }
     }
 
@@ -777,6 +785,7 @@ impl Action {
             Action::Msi(action) => Some(&action.repo),
             Action::Rpm(action) => Some(&action.repo),
             Action::Compress(action) => Some(&action.repo),
+            Action::GithubPublish(action) => Some(&action.repo),
         }
     }
 }
@@ -937,10 +946,10 @@ async fn entry() -> Result<ExitCode> {
 
     let github_auth = root.join(".github-auth");
 
-    let github_auth = match std::fs::read_to_string(&github_auth) {
+    let github_auth = match fs::read_to_string(&github_auth) {
         Ok(auth) => Some(auth.trim().to_owned()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            tracing::warn!("no .github-auth found, heavy rate limiting will apply");
+            tracing::trace!("no .github-auth found, heavy rate limiting will apply");
             None
         }
         Err(e) => {
@@ -1071,6 +1080,10 @@ async fn entry() -> Result<ExitCode> {
     };
 
     match &action {
+        Action::Changes(shared) => {
+            cli::changes::entry(&mut cx, shared, &changes_path)?;
+            return Ok(ExitCode::SUCCESS);
+        }
         Action::Set(opts) => {
             cli::set::entry(&mut cx, &opts.action)?;
         }
@@ -1104,9 +1117,8 @@ async fn entry() -> Result<ExitCode> {
         Action::Compress(opts) => {
             cli::compress::entry(&mut cx, &opts.action)?;
         }
-        Action::Changes(shared) => {
-            cli::changes::entry(&mut cx, shared, &changes_path)?;
-            return Ok(ExitCode::SUCCESS);
+        Action::GithubPublish(opts) => {
+            cli::github_publish::entry(&mut cx, &opts.action).await?;
         }
         _ => {
             bail!("Unsupported action at this stage")

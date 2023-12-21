@@ -237,7 +237,7 @@ where
 {
     let req = client
         .request(Method::GET, url)
-        .header(header::USER_AGENT, "udoprog projects");
+        .header(header::USER_AGENT, &crate::USER_AGENT);
 
     match &cx.github_auth {
         Some(auth) => req.header(header::AUTHORIZATION, &format!("Bearer {auth}")),

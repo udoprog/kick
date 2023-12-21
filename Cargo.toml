@@ -15,18 +15,21 @@ categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0.70"
+async-stream = "0.3.5"
 bstr = "1.4.0"
+bytes = "1.5.0"
 chrono = { version = "0.4.24", features = ["serde"] }
 clap = { version = "4.2.2", features = ["derive"] }
 elf = "0.7.4"
 flate2 = "1.0.25"
+futures-core = "0.3.29"
 handlebars = "4.3.6"
 nondestructive = { version = "0.0.18", features = ["serde-edits"] }
 pulldown-cmark = "0.9.2"
 rand = "0.8.5"
 regex = "1.7.3"
 relative-path = { version = "1.8.0", features = ["serde"] }
-reqwest = { version = "0.11.16", features = ["json"] }
+reqwest = { version = "0.11.16", features = ["json", "stream"] }
 rpm = "0.13.1"
 semver = { version = "1.0.17", features = ["serde"] }
 serde = { version = "1.0.160", features = ["derive", "rc"] }
