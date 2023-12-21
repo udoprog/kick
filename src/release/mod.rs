@@ -227,15 +227,6 @@ enum Tail<'a> {
     Number(u32),
 }
 
-impl Tail<'_> {
-    fn as_number(&self) -> Option<u32> {
-        match self {
-            Tail::Number(number) => Some(*number),
-            _ => None,
-        }
-    }
-}
-
 impl fmt::Display for Tail<'_> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -269,6 +260,13 @@ impl fmt::Display for Name<'_> {
         }
 
         Ok(())
+    }
+}
+
+impl<'a> AsRef<Name<'a>> for Name<'a> {
+    #[inline]
+    fn as_ref(&self) -> &Name<'a> {
+        self
     }
 }
 
@@ -318,7 +316,7 @@ impl<'a> Version<'a> {
         /// version range.
         ///
         /// The computed patch component must fit within 65535
-        fn from_version(version: &SemanticVersion, pre: Option<&Name>) -> Result<String> {
+        fn from_version(version: &SemanticVersion, pre: Option<u32>) -> Result<String> {
             ensure!(
                 version.major <= 255,
                 "Major version must not be greater than 255: {}",
@@ -338,10 +336,7 @@ impl<'a> Version<'a> {
                 "Patch version must not be greater than 64: {patch}"
             );
 
-            let pre = if let Some(pre) = pre
-                .and_then(|c| c.tail.as_ref())
-                .and_then(|tail| tail.as_number())
-            {
+            let pre = if let Some(pre) = pre {
                 validate_pre(pre)?
             } else {
                 999
@@ -351,11 +346,8 @@ impl<'a> Version<'a> {
             Ok(format!("{}.{}.{}", version.major, version.minor, last))
         }
 
-        fn from_date_revision(ymd: Date, pre: Option<&Name>) -> Result<String> {
-            let pre = if let Some(pre) = pre
-                .and_then(|c| c.tail.as_ref())
-                .and_then(|tail| tail.as_number())
-            {
+        fn from_date_revision(ymd: Date, pre: Option<u32>) -> Result<String> {
+            let pre = if let Some(pre) = pre {
                 validate_pre(pre)?
             } else {
                 999
@@ -369,9 +361,9 @@ impl<'a> Version<'a> {
             ))
         }
 
-        fn from_name(tail: Option<&Tail>) -> Result<String> {
-            let pre = if let Some(Tail::Number(pre)) = tail {
-                validate_pre(*pre)?
+        fn from_name(pre: Option<u32>) -> Result<String> {
+            let pre = if let Some(pre) = pre {
+                validate_pre(pre)?
             } else {
                 999
             };
@@ -379,10 +371,30 @@ impl<'a> Version<'a> {
             Ok(format!("0.0.{}", pre))
         }
 
+        fn find_pre<'a, 'b: 'a, I>(names: I) -> Option<u32>
+        where
+            I: IntoIterator,
+            I::Item: AsRef<Name<'b>>,
+        {
+            for name in names {
+                let name = name.as_ref();
+
+                let Some(tail) = &name.tail else {
+                    continue;
+                };
+
+                if let Tail::Number(number) = tail {
+                    return Some(*number);
+                }
+            }
+
+            None
+        }
+
         match &self.kind {
-            VersionKind::SemanticVersion(version) => from_version(version, self.names.first()),
-            VersionKind::Date(date) => from_date_revision(*date, self.names.first()),
-            VersionKind::Name(name) => from_name(name.tail.as_ref()),
+            VersionKind::SemanticVersion(version) => from_version(version, find_pre(&self.names)),
+            VersionKind::Date(date) => from_date_revision(*date, find_pre(&self.names)),
+            VersionKind::Name(name) => from_name(find_pre([name].into_iter().chain(&self.names))),
         }
     }
 }
