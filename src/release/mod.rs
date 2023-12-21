@@ -41,9 +41,11 @@ pub(crate) struct ReleaseOpts {
     ///
     /// This means that with Github Actions, you can uses something like this:
     ///
+    /// ```text
     /// --version "${{github.event.inputs.release}} || %date-nightly"
+    /// ```
     ///
-    /// In this instance, the `release` input might be defined by a
+    /// In this example, the `release` input might be defined by a
     /// workflow_dispatch job, and if undefined the version will default to a
     /// "nightly" dated release.
     ///

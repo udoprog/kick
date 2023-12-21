@@ -115,9 +115,9 @@ pub(crate) struct Crates {
     primary_package: Option<Box<str>>,
     /// List of loaded packages and their associated manifests.
     manifests: Vec<Manifest>,
-    /// Index of manifests which have a [package] declaration in them.
+    /// Index of manifests which have a package declaration in them.
     packages: Vec<usize>,
-    /// Index of manifests which have a [workspace] declaration in them.
+    /// Index of manifests which have a workspace declaration in them.
     workspaces: Vec<usize>,
 }
 

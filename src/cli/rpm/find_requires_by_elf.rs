@@ -29,10 +29,10 @@ where
     Ok(requires)
 }
 
-/// This method is copied and adapted from
-/// https://github.com/cat-in-136/cargo-generate-rpm under the MIT license
-///
-/// Copyright (c) 2020 @cat_in_136
+// This method is copied and adapted from
+// <https://github.com/cat-in-136/cargo-generate-rpm> under the MIT license
+//
+// Copyright (c) 2020 @cat_in_136
 fn elf_header<P>(path: P) -> Result<ElfHeader>
 where
     P: AsRef<Path>,

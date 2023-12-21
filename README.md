@@ -32,9 +32,9 @@ Kick can also be used without configuration in any standalone repository.
 This is really all you need to get started, I frequently make use of `kick`
 commands in regular repositories.
 
-<br>
-
 [my `projects` repo]: https://github.com/udoprog/projects
+
+<br>
 
 ## Available commands
 
@@ -50,6 +50,132 @@ available commands.
 * `version` - Update package versions.
 * `publish` - Publish packages in reverse order of dependencies.
 * `upgrade` - Perform repo-aware `cargo upgrade`.
+* `compress` - Compress files.
+* `msi` - Build MSI packages.
+* `rpm` - Build RPM packages.
+* `define` - Define variables from versions.
+
+<br>
+
+## The `rpm` action
+
+The `rpm` action builds an RPM package for each repo. It is configured with
+the following section:
+
+```toml
+[[rpm.files]]
+source = "desktop/se.tedro.JapaneseDictionary.desktop"
+dest = "/usr/share/applications/"
+mode = "600"
+
+[[rpm.requires]]
+package = "tesseract-langpack-jpn"
+version = ">= 4.1.1"
+```
+
+Note that:
+* The default mode for files is inherited from the file.
+* The default version specification is `*`.
+
+Available version specifications are:
+* `*` - any version.
+* `= 1.2.3` - exact version.
+* `> 1.2.3` - greater than version.
+* `>= 1.2.3` - greater than or equal to version.
+* `< 1.2.3` - less than version.
+* `<= 1.2.3` - less than or equal to version.
+
+<br>
+
+## The `msi` action
+
+The `msi` action builds an MSI package for each repo.
+
+It is configured by a single `wix/<main>.wsx` file in the repo. For an
+example, [see the `jpv` project].
+
+When building a wix package, we define the following variables that should
+be used:
+* `Root` - The root directory of the project. Use this for all files
+  referenced.
+* `Version` - The version of the package being build in the correct format
+  the MSI expects.
+* `Platform` - The platform the package is being built for. Either `x86` or
+  `x64`. This is simply expected to be passed along to the `Platform`
+  attribute in the `Package` element.
+* `Win64` - Is either `x86_64` or `x86`. This is simply expected to be
+  passed along to any elements with a `Win64` attribute.
+* `ProgramFilesFolder` - The directory that corresponds to the
+  platform-specific program files folder to use.
+* `BinaryName` - The name of the main binary.
+* `BinaryPath` - The path to the main binary. Should not be `Root` prefixed.
+
+[see the `jpv` project]: https://github.com/udoprog/jpv/tree/main/wix
+
+<br>
+
+## Version selection
+
+Kick comes with a flexible version-selection mechanism, this is available
+for the following actions:
+
+* `compress`
+* `msi`
+* `rpm`
+* `define` (see [Defining variables from
+  versions](#defining-variables-from-versions))
+
+The way it works is that the `--version` argument has a very flexible
+parsing mechanism.
+
+The supported formats are:
+* A version number potentially with a custom prerelease, like `1.2.3-pre1`.
+* A simple naive date, like `2023-12-11`.
+* An alphabetical name, like `nightly` which will result in a dated version
+  number where version numbers are strictly required. A version suffixed
+  with a number like `nightly1` will be treated as a pre-release.
+* A date follow by a custom suffix, like `2023-12-11-nightly`.
+* It is also possible to use a variable like `%date` to get the custom date.
+  For available variable see below.
+
+A version can also take a simple kind of expression, where each candidate is
+separated from left to right using double pipes ('||'). The first expression
+for which all variables are defined, and results in a non-empty expansion
+will be used.
+
+This means that with Github Actions, you can uses something like this:
+
+```text
+--version "${{github.event.inputs.release}} || %date-nightly"
+```
+
+In this example, the `release` input might be defined by a workflow_dispatch
+job, and if undefined the version will default to a "nightly" dated release.
+
+Available variables:
+* `%date` - The current date.
+* `%{github.tag}` - The tag name from GITHUB_REF.
+* `%{github.head}` - The branch name from GITHUB_REF.
+
+You can also define your own variables using `--define <key>=<value>`. If
+the value is empty, the variable will be considered undefined.
+
+<br>
+
+## Defining variables from versions
+
+The `define` command can be used to define a variable in a Github action to
+extract the version being selected:
+
+```yaml
+- uses: udoprog/kick@nightly
+- run: kick define --version "${{github.event.inputs.channel}} || %date" --github-action
+  id: release
+# echo the selected version
+- run: echo ${{steps.release.outputs.version}}
+# echo "yes" or "no" depending on if the version is a pre-release or not.
+- run: echo ${{steps.release.outputs.pre}}
+```
 
 <br>
 
@@ -156,7 +282,7 @@ override, or as part of its own repo-specific configuration.
 
 <br>
 
-## `crate`
+### `crate`
 
 Overrides the detected crate name.
 
@@ -171,7 +297,7 @@ crate = "oxidize"
 
 <br>
 
-## `variables`
+### `variables`
 
 Defines an arbitrary collection of extra variables that can be used in templates.
 
@@ -195,7 +321,7 @@ badge_height = 20
 
 <br>
 
-## `job_name`
+### `job_name`
 
 Defines the name of the default workflow, this can be used to link to in
 badges later and is also validated by the `ci` module.
@@ -210,7 +336,7 @@ job_name = "CI"
 
 <br>
 
-## `workflow`
+### `workflow`
 
 Defines the default workflow template to use when a workflow is missing.
 
@@ -224,7 +350,7 @@ workflow = "data/workflow.yml"
 
 <br>
 
-## `license`
+### `license`
 
 Defines the license for the current repo.
 
@@ -238,7 +364,7 @@ license = "MIT/Apache-2.0"
 
 <br>
 
-## `authors`
+### `authors`
 
 Defines a list of authors that should be present wherever appropriate, such
 as in a `Cargo.toml`.
@@ -255,7 +381,7 @@ authors = ["John-John Tedro <udoprog@tedro.se>"]
 
 <br>
 
-## `documentation`
+### `documentation`
 
 Defines the documentation link to use.
 
@@ -269,7 +395,7 @@ documentation = "{{docs_rs}}/{{package.name}}"
 
 <br>
 
-## `readme_badges`
+### `readme_badges`
 
 Defines a set of badges to use for readmes.
 
@@ -283,7 +409,7 @@ readme_badges = ["+build"]
 
 <br>
 
-## `disabled`
+### `disabled`
 
 A list of kick modules to disable.
 
@@ -350,7 +476,7 @@ enabled = false
 
 <br>
 
-## `lib_badges` and `readme_badges`
+### `lib_badges` and `readme_badges`
 
 Defines set of badges to use, either for the `lib` or `readme` file (see
 below).
@@ -369,7 +495,7 @@ readme_badges = ["-docs.rs", "-crates.io", "+discord"]
 
 <br>
 
-## `lib` and `readme`
+### `lib` and `readme`
 
 Path to templates:
 * `lib` generates the documentation header for `main.rs` or `lib.rs` entrypoints.
@@ -470,7 +596,7 @@ The following is an example `readme` template stored in `data/rune.readme.md`:
 
 <br>
 
-## `[[version]]`
+### `[[version]]`
 
 Defines a list of files for which we match a regular expression for version replacements.
 
@@ -548,33 +674,3 @@ To disable, specify:
 ```toml
 disabled = ["readme"]
 ```
-
-<br>
-
-## The `rpm` action
-
-The `rpm` action builds an RPM package for each repo. It is configured with
-the following section:
-
-```toml
-[[rpm.files]]
-source = "desktop/se.tedro.JapaneseDictionary.desktop"
-dest = "/usr/share/applications/"
-mode = "600"
-
-[[rpm.requires]]
-package = "tesseract-langpack-jpn"
-version = ">= 4.1.1"
-```
-
-Note that:
-* The default mode for files is inherited from the file.
-* The default version specification is `*`.
-
-Available version specifications are:
-* `*` - any version.
-* `= 1.2.3` - exact version.
-* `> 1.2.3` - greater than version.
-* `>= 1.2.3` - greater than or equal to version.
-* `< 1.2.3` - less than version.
-* `<= 1.2.3` - less than or equal to version.
