@@ -64,6 +64,18 @@ pub(crate) struct ReleaseOpts {
     /// If the value is empty, the variable will be considered undefined.
     #[clap(long, verbatim_doc_comment, value_name = "version")]
     version: Option<String>,
+    /// Append additional components to the version.
+    ///
+    /// For example, if we start with a version like `1.2.3-beta1`, appending
+    /// `fc39` would result in `1.2.3-beta1.fc39`.
+    ///
+    /// A component must be a valid identifier, so it can only contain ascii
+    /// characters and digits and must start with a character.
+    ///
+    /// Empty components will be ignored and invalid components will cause an
+    /// error.
+    #[clap(long, verbatim_doc_comment, value_name = "component")]
+    append: Vec<String>,
     /// Define a custom variable. See `--version` for more information.
     #[clap(long, value_name = "<key>=<value>")]
     define: Vec<String>,
@@ -122,23 +134,39 @@ impl ReleaseOpts {
             bail!("Could not determine version from --version or KICK_VERSION");
         };
 
-        let Some(mut release) = self::parser::expr(version, &vars, &prefixes)? else {
+        let Some(mut version) = self::parser::expr(version, &vars, &prefixes)? else {
             bail!("Could not determine release from version");
         };
 
         if self.no_prefix {
-            release.prefix = None;
+            version.prefix = None;
         }
 
         if self.full_version {
-            if let VersionKind::SemanticVersion(version) = &mut release.kind {
+            if let VersionKind::SemanticVersion(version) = &mut version.kind {
                 if version.patch.is_none() {
                     version.patch = Some(0);
                 }
             }
         }
 
-        Ok(release)
+        for append in &self.append {
+            let append = append.trim();
+
+            if append.is_empty() {
+                continue;
+            }
+
+            ensure!(
+                append.chars().all(|c| matches!(c, ident_cont!())),
+                "Illegal appended component '{}', must only contain ascii characters or digits",
+                append
+            );
+
+            version.push(append);
+        }
+
+        Ok(version)
     }
 }
 
@@ -266,6 +294,11 @@ impl<'a> Version<'a> {
         }
 
         matches!(&self.kind, VersionKind::Name(name) if name.is_pre())
+    }
+
+    /// Append a verbatim component to the version.
+    pub(crate) fn push(&mut self, part: &'a str) {
+        self.append.push(part);
     }
 
     pub(crate) fn msi_version(&self) -> Result<String> {
