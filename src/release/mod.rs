@@ -58,7 +58,7 @@ pub(crate) struct ReleaseOpts {
     /// If the value is empty, the variable will be considered undefined.
     #[clap(long, verbatim_doc_comment, value_name = "version")]
     version: Option<String>,
-    /// Define a custom variable. See `--channel` for more information.
+    /// Define a custom variable. See `--version` for more information.
     #[clap(long, value_name = "<key>=<value>")]
     define: Vec<String>,
     /// Never include a release prefix. Even if one is part of the input, it
@@ -78,13 +78,13 @@ pub(crate) struct ReleaseOpts {
 impl ReleaseOpts {
     /// Construct a release from provided arguments.
     pub(crate) fn version<'a>(&'a self, env: &'a ReleaseEnv) -> Result<Version<'_>> {
-        let channel = self.version.as_deref().filter(|c| !c.is_empty());
+        let version = self.version.as_deref().filter(|c| !c.is_empty());
 
         let span = tracing::info_span! {
             "release",
             GITHUB_EVENT_NAME = env.github_event_name.as_deref(),
             GITHUB_REF = env.github_ref.as_deref(),
-            channel,
+            version,
         };
 
         let _span = span.entered();
@@ -105,12 +105,12 @@ impl ReleaseOpts {
 
         github_release(env, &mut vars);
 
-        let Some(channel) = channel else {
-            bail!("Must specify --channel");
+        let Some(version) = version else {
+            bail!("Must specify --version");
         };
 
-        let Some(mut release) = self::parser::expr(channel, &vars)? else {
-            bail!("Could not determine release from channel");
+        let Some(mut release) = self::parser::expr(version, &vars)? else {
+            bail!("Could not determine release from version");
         };
 
         if self.no_prefix {
