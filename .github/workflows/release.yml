@@ -13,9 +13,6 @@ on:
         options:
         - nightly
         - "%date"
-  push:
-    branches:
-    - release
 
 env:
   KICK_VERSION: "${{github.event.inputs.version}} || nightly"
