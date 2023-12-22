@@ -32,12 +32,7 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 }
 
 #[tracing::instrument(skip_all)]
-fn msi(
-    cx: &Ctxt<'_>,
-    repo: &Repo,
-    opts: &Opts,
-    release: &Version<'_>,
-) -> Result<(), anyhow::Error> {
+fn msi(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts, release: &Version<'_>) -> Result<()> {
     let root = cx.to_path(repo.path());
 
     let Some(workspace) = workspace::open(cx, repo)? else {

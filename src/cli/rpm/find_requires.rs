@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -32,12 +31,12 @@ pub(super) fn detect() -> bool {
     true
 }
 
-pub(super) fn find<P>(exe: P) -> Result<BTreeSet<String>>
+pub(super) fn find<P>(exe: P) -> Result<Vec<String>>
 where
     P: AsRef<Path>,
 {
     let exe = exe.as_ref();
-    let mut set = BTreeSet::new();
+    let mut set = Vec::new();
 
     let mut child = Command::new(FIND_REQUIRES)
         .stdin(Stdio::piped())
@@ -59,7 +58,7 @@ where
             continue;
         }
 
-        set.insert(String::from_utf8(line.to_vec())?);
+        set.push(String::from_utf8(line.to_vec())?);
     }
 
     Ok(set)

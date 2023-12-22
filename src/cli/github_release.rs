@@ -199,7 +199,7 @@ async fn github_publish(
         release
     } else {
         tracing::info!("Creating release '{}'", name);
-        let release = client
+        client
             .create_release(
                 path.owner,
                 path.name,
@@ -210,9 +210,7 @@ async fn github_publish(
                 prerelease,
                 opts.draft,
             )
-            .await?;
-
-        release
+            .await?
     };
 
     if opts.delete_assets {

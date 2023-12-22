@@ -220,7 +220,7 @@ enum VersionKind<'a> {
     Name(Name<'a>),
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(tag = "type", content = "value", rename_all = "kebab-case")]
 enum Tail<'a> {
     Hash(&'a str),
@@ -237,7 +237,7 @@ impl fmt::Display for Tail<'_> {
     }
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 struct Name<'a> {
     name: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -260,6 +260,13 @@ impl fmt::Display for Name<'_> {
         }
 
         Ok(())
+    }
+}
+
+impl<'a> AsRef<Name<'a>> for Name<'a> {
+    #[inline]
+    fn as_ref(&self) -> &Name<'a> {
+        self
     }
 }
 
@@ -290,6 +297,45 @@ impl<'a> Version<'a> {
     /// Append a verbatim component to the version.
     pub(crate) fn push(&mut self, part: &'a str) {
         self.append.push(part);
+    }
+
+    /// Coerce into a debian version.
+    pub(crate) fn debian_version(&self) -> Result<String> {
+        match &self.kind {
+            VersionKind::SemanticVersion(version) => {
+                if let (Some(name), other) = find_pre(&self.names) {
+                    return Ok(format!("{version}~{name}{}", dot_extend(&other)));
+                }
+
+                Ok(format!("{version}{}", dot_extend(&self.names)))
+            }
+            VersionKind::Date(date) => {
+                if let (Some(name), other) = find_pre(&self.names) {
+                    return Ok(format!(
+                        "{}.{}.{}~{name}{}",
+                        date.year,
+                        date.month,
+                        date.day,
+                        dot_extend(&other)
+                    ));
+                }
+
+                Ok(format!(
+                    "{}.{}.{}{}",
+                    date.year,
+                    date.month,
+                    date.day,
+                    dot_extend(&self.names)
+                ))
+            }
+            VersionKind::Name(name) => {
+                let (Some(name), other) = find_pre([name].into_iter().chain(&self.names)) else {
+                    bail!("Could not determine debian version");
+                };
+
+                Ok(format!("0.0.0~{name}{}", dot_extend(&other)))
+            }
+        }
     }
 
     /// Ensures that the version is a valid ProductVersion, suitable for use in
@@ -364,27 +410,14 @@ impl<'a> Version<'a> {
             Ok(format!("0.0.{}", pre))
         }
 
-        fn find_pre<'a, 'b: 'a, I>(names: I) -> Option<u32>
-        where
-            I: IntoIterator<Item = &'a Name<'b>>,
-        {
-            for name in names {
-                let Some(tail) = &name.tail else {
-                    continue;
-                };
-
-                if let Tail::Number(number) = tail {
-                    return Some(*number);
-                }
-            }
-
-            None
-        }
-
         match &self.kind {
-            VersionKind::SemanticVersion(version) => from_version(version, find_pre(&self.names)),
-            VersionKind::Date(date) => from_date_revision(*date, find_pre(&self.names)),
-            VersionKind::Name(name) => from_name(find_pre([name].into_iter().chain(&self.names))),
+            VersionKind::SemanticVersion(version) => {
+                from_version(version, find_pre_only(&self.names))
+            }
+            VersionKind::Date(date) => from_date_revision(*date, find_pre_only(&self.names)),
+            VersionKind::Name(name) => {
+                from_name(find_pre_only([name].into_iter().chain(&self.names)))
+            }
         }
     }
 }
@@ -462,5 +495,65 @@ fn github_release<'a>(env: &'a Env, vars: &mut Vars<'a>) {
 
     if let Some(sha) = env.github_sha.as_deref() {
         vars.insert("github.sha", sha);
+    }
+}
+
+/// Find the first plausible pre-release version in the version string.
+fn find_pre_only<'a, I>(names: I) -> Option<u32>
+where
+    I: IntoIterator,
+    I::Item: AsRef<Name<'a>>,
+{
+    for name in names {
+        if let Some(Tail::Number(number)) = name.as_ref().tail {
+            return Some(number);
+        }
+    }
+
+    None
+}
+
+/// Find pre-release including full name.
+fn find_pre<'a, I>(names: I) -> (Option<Name<'a>>, Vec<Name<'a>>)
+where
+    I: IntoIterator,
+    I::Item: AsRef<Name<'a>>,
+{
+    let mut found = None;
+    let mut other = Vec::new();
+
+    for name in names {
+        let name = *name.as_ref();
+
+        if found.is_none() && matches!(name.tail, Some(Tail::Number(..))) {
+            found = Some(name);
+            continue;
+        }
+
+        other.push(name);
+    }
+
+    (found, other)
+}
+
+fn dot_extend<I>(iter: I) -> DotExtend<I> {
+    DotExtend { iter }
+}
+
+struct DotExtend<I> {
+    iter: I,
+}
+
+impl<I> fmt::Display for DotExtend<I>
+where
+    I: Copy + IntoIterator,
+    I::Item: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for name in self.iter {
+            write!(f, ".{}", name)?;
+        }
+
+        Ok(())
     }
 }

@@ -5,6 +5,7 @@ use std::hash::Hash;
 use std::io::{self, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use anyhow::{anyhow, bail, Context, Error, Result};
 use relative_path::{RelativePath, RelativePathBuf};
@@ -12,7 +13,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
-use crate::ctxt::Ctxt;
+use crate::ctxt::{Ctxt, Paths};
 use crate::glob::Glob;
 use crate::model::{PackageParams, Random, RenderRustVersions, Repo, RepoParams, RepoRef};
 use crate::rust_version::{self};
@@ -102,32 +103,47 @@ impl Upgrade {
 }
 
 #[derive(Default, Debug, Clone)]
-pub(crate) struct Rpm {
-    /// Packages to include in an rpm package.
-    pub(crate) files: Vec<RpmFile>,
+pub(crate) struct RpmPackage {
     /// Requirements to add to an rpm package.
     pub(crate) requires: Vec<RpmRequire>,
 }
 
-impl Rpm {
+#[derive(Default, Debug, Clone)]
+pub(crate) struct DebPackage {
+    /// Dependencies to add to a debian package.
+    pub(crate) depends: Vec<DebDependency>,
+}
+
+#[derive(Default, Debug, Clone)]
+pub(crate) struct Package {
+    /// Packages to include in an rpm package.
+    pub(crate) files: Vec<PackageFile>,
+    /// Options specific to rpm packages.
+    pub(crate) rpm: RpmPackage,
+    /// Options specific to deb packages.
+    pub(crate) deb: DebPackage,
+}
+
+impl Package {
     fn merge_with(&mut self, other: Self) {
         self.files.extend(other.files);
-        self.requires.extend(other.requires);
+        self.rpm.requires.extend(other.rpm.requires);
+        self.deb.depends.extend(other.deb.depends);
     }
 }
 
 #[derive(Default, Debug, Clone)]
-pub(crate) struct RpmFile {
+pub(crate) struct PackageFile {
     /// The source of an rpm file.
     pub(crate) source: String,
     /// Destination of an rpm file.
     pub(crate) dest: String,
-    /// The mode of an rpm file.
-    pub(crate) mode: Option<rpm::FileMode>,
+    /// The mode of a file.
+    pub(crate) mode: Option<u16>,
 }
 
 #[derive(Clone, Debug, Copy)]
-pub(crate) enum RpmOp {
+pub(crate) enum VersionConstraint {
     /// Greater than.
     Gt,
     /// Greater than or equal to.
@@ -140,12 +156,65 @@ pub(crate) enum RpmOp {
     Eq,
 }
 
+impl fmt::Display for VersionConstraint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            VersionConstraint::Gt => write!(f, ">"),
+            VersionConstraint::Ge => write!(f, ">="),
+            VersionConstraint::Lt => write!(f, "<"),
+            VersionConstraint::Le => write!(f, "<="),
+            VersionConstraint::Eq => write!(f, "="),
+        }
+    }
+}
+
+#[derive(Default, Debug, Clone)]
+pub(crate) enum VersionRequirement {
+    #[default]
+    Any,
+    Constraint(VersionConstraint, Version),
+}
+
+impl FromStr for VersionRequirement {
+    type Err = anyhow::Error;
+
+    #[inline]
+    fn from_str(string: &str) -> Result<Self, Self::Err> {
+        if string == "*" {
+            return Ok(VersionRequirement::Any);
+        }
+
+        let Some((op, version)) = string.split_once(' ') else {
+            return Err(anyhow!("Illegal version specification: {string}"));
+        };
+
+        let op = match op {
+            "<" => VersionConstraint::Lt,
+            "<=" => VersionConstraint::Le,
+            "=" => VersionConstraint::Eq,
+            ">=" => VersionConstraint::Ge,
+            ">" => VersionConstraint::Gt,
+            version => return Err(anyhow!("Illegal version constraint: {version}")),
+        };
+
+        Ok(VersionRequirement::Constraint(op, Version::parse(version)?))
+    }
+}
+
 #[derive(Default, Debug, Clone)]
 pub(crate) struct RpmRequire {
     /// The package being required.
     pub(crate) package: String,
     /// The version being required.
-    pub(crate) version: Option<(RpmOp, Version)>,
+    pub(crate) version: VersionRequirement,
+}
+
+#[derive(Default, Debug, Clone)]
+pub(crate) struct DebDependency {
+    /// The package being required.
+    pub(crate) package: String,
+    /// The version being required.
+    pub(crate) version: VersionRequirement,
 }
 
 #[derive(Clone)]
@@ -242,7 +311,7 @@ pub(crate) struct RepoConfig {
     /// Upgrade configuration.
     pub(crate) upgrade: Upgrade,
     /// RPM configuration.
-    pub(crate) rpm: Rpm,
+    pub(crate) package: Package,
 }
 
 impl RepoConfig {
@@ -264,7 +333,7 @@ impl RepoConfig {
         self.readme_badges.merge_with(other.readme_badges);
         self.version.extend(other.version);
         self.upgrade.merge_with(other.upgrade);
-        self.rpm.merge_with(other.rpm);
+        self.package.merge_with(other.package);
         merge_map(&mut self.variables, other.variables);
     }
 
@@ -571,21 +640,24 @@ impl Config<'_> {
     }
 
     /// Get all rpm files.
-    pub(crate) fn rpm_files(&self, repo: &RepoRef) -> Vec<&RpmFile> {
-        let mut files = self.base.rpm.files.iter().collect::<Vec<_>>();
+    pub(crate) fn package_files(&self, repo: &RepoRef) -> Vec<&PackageFile> {
+        let mut files = self.base.package.files.iter().collect::<Vec<_>>();
 
-        if let Some(values) = self.repo.get(repo.path()).map(|r| &r.rpm.files) {
+        if let Some(values) = self.repo.get(repo.path()).map(|r| &r.package.files) {
             files.extend(values);
         }
 
         files
     }
 
-    /// Get all rpm requires.
-    pub(crate) fn rpm_requires(&self, repo: &RepoRef) -> Vec<&RpmRequire> {
-        let mut requires = self.base.rpm.requires.iter().collect::<Vec<_>>();
+    /// Get all elements corresponding to the given field.
+    pub(crate) fn get_all<'a, G, O>(&'a self, repo: &RepoRef, get: G) -> Vec<&'a O>
+    where
+        G: Fn(&'a RepoConfig) -> &'a [O],
+    {
+        let mut requires = get(&self.base).iter().collect::<Vec<_>>();
 
-        if let Some(values) = self.repo.get(repo.path()).map(|r| &r.rpm.requires) {
+        if let Some(values) = self.repo.get(repo.path()).map(get) {
             requires.extend(values);
         }
 
@@ -738,17 +810,19 @@ impl fmt::Display for Part {
 
 /// Context used when parsing configuration.
 struct ConfigCtxt<'a> {
-    root: &'a Path,
+    paths: Paths<'a>,
+    current: &'a RelativePath,
     kick_path: PathBuf,
     parts: Vec<Part>,
     templating: &'a Templating,
 }
 
 impl<'a> ConfigCtxt<'a> {
-    fn new(root: &'a Path, templating: &'a Templating) -> Self {
+    fn new(paths: Paths<'a>, current: &'a RelativePath, templating: &'a Templating) -> Self {
         Self {
-            root,
-            kick_path: root.join(KICK_TOML),
+            paths,
+            current,
+            kick_path: paths.to_path(current.join(KICK_TOML)),
             parts: Vec::new(),
             templating,
         }
@@ -796,10 +870,14 @@ impl<'a> ConfigCtxt<'a> {
         out
     }
 
-    fn bail(&self, args: impl fmt::Display) -> anyhow::Error {
+    fn context<E>(&self, error: E) -> anyhow::Error
+    where
+        anyhow::Error: From<E>,
+    {
         let parts = self.format_parts();
-        anyhow::Error::msg(format!(
-            "{path}: {parts}: {args}",
+
+        anyhow::Error::from(error).context(anyhow!(
+            "In {path}: {parts}",
             path = self.kick_path.display()
         ))
     }
@@ -807,42 +885,56 @@ impl<'a> ConfigCtxt<'a> {
     /// Ensure table is empty.
     fn ensure_empty(&self, table: toml::Table) -> Result<()> {
         if let Some((key, value)) = table.into_iter().next() {
-            return Err(self.bail(format_args!("got unsupported key `{key}`: {value}")));
+            bail!("got unsupported key `{key}`: {value}");
         }
 
         Ok(())
     }
 
+    /// Compile a template from a path.
+    fn compile_path<S>(&mut self, path: S) -> Result<Template>
+    where
+        S: AsRef<str>,
+    {
+        let path = self.paths.root.join(path.as_ref());
+        let template =
+            std::fs::read_to_string(&path).with_context(|| path.display().to_string())?;
+        self.compile(template)
+    }
+
     /// Compile a template.
-    fn compile(&mut self, source: &str) -> Result<Template> {
-        self.templating.compile(source)
+    fn compile<S>(&mut self, source: S) -> Result<Template>
+    where
+        S: AsRef<str>,
+    {
+        self.templating.compile(source.as_ref())
     }
 
     fn string(&mut self, value: toml::Value) -> Result<String> {
         match value {
             toml::Value::String(string) => Ok(string),
-            other => Err(self.bail(format_args!("Expected string, got {other}"))),
+            other => Err(anyhow!("Expected string, got {other}")),
         }
     }
 
     fn boolean(&mut self, value: toml::Value) -> Result<bool> {
         match value {
             toml::Value::Boolean(value) => Ok(value),
-            other => Err(self.bail(format_args!("Expected boolean, got {other}"))),
+            other => Err(anyhow!("Expected boolean, got {other}")),
         }
     }
 
     fn array(&mut self, value: toml::Value) -> Result<Vec<toml::Value>> {
         match value {
             toml::Value::Array(array) => Ok(array),
-            other => Err(self.bail(format_args!("expected array, got {other}"))),
+            other => Err(anyhow!("Expected array, got {other}")),
         }
     }
 
     fn table(&mut self, value: toml::Value) -> Result<toml::Table> {
         match value {
             toml::Value::Table(table) => Ok(table),
-            other => return Err(self.bail(format_args!("expected table, got {other}"))),
+            other => Err(anyhow!("Expected table, got {other}")),
         }
     }
 
@@ -902,17 +994,24 @@ impl<'a> ConfigCtxt<'a> {
         Ok(Some(out))
     }
 
-    fn as_table(&mut self, config: &mut toml::Table, key: &str) -> Result<Option<toml::Table>> {
+    fn as_table<F, O>(&mut self, config: &mut toml::Table, key: &str, f: F) -> Result<Option<O>>
+    where
+        F: FnOnce(&mut Self, toml::Table) -> Result<O>,
+    {
         let Some(value) = config.remove(key) else {
             return Ok(None);
         };
 
-        Ok(Some(self.table(value)?))
+        self.key(key);
+        let table = self.table(value)?;
+        let output = f(self, table)?;
+        self.parts.pop();
+        Ok(Some(output))
     }
 
     fn in_string<F, O>(&mut self, config: &mut toml::Table, key: &str, f: F) -> Result<Option<O>>
     where
-        F: FnOnce(&mut Self, String) -> Result<Option<O>>,
+        F: FnOnce(&mut Self, String) -> Result<O>,
     {
         let Some(value) = config.remove(key) else {
             return Ok(None);
@@ -920,20 +1019,13 @@ impl<'a> ConfigCtxt<'a> {
 
         self.key(key);
         let out = self.string(value)?;
-
-        let out = match f(self, out) {
-            Ok(out) => out,
-            Err(e) => {
-                return Err(e.context(self.bail(format_args!("failed to process string"))));
-            }
-        };
-
+        let out = f(self, out)?;
         self.parts.pop();
-        Ok(out)
+        Ok(Some(out))
     }
 
     fn as_string(&mut self, config: &mut toml::Table, key: &str) -> Result<Option<String>> {
-        self.in_string(config, key, |_, string| Ok(Some(string)))
+        self.in_string(config, key, |_, string| Ok(string))
     }
 
     fn as_boolean(&mut self, config: &mut toml::Table, key: &str) -> Result<Option<bool>> {
@@ -947,10 +1039,7 @@ impl<'a> ConfigCtxt<'a> {
         Ok(Some(out))
     }
 
-    fn badges(
-        &mut self,
-        config: &mut toml::Table,
-    ) -> Result<Option<Vec<ConfigBadge>>, anyhow::Error> {
+    fn badges(&mut self, config: &mut toml::Table) -> Result<Option<Vec<ConfigBadge>>> {
         let badges = self.in_array(config, "badges", |cx, value| {
             let mut value = cx.table(value)?;
 
@@ -965,10 +1054,10 @@ impl<'a> ConfigCtxt<'a> {
 
             let (markdown, html) =
                 if let (Some(src), Some(href), Some(height)) = (src, href, height) {
-                    let markdown = cx.compile(&format!(
+                    let markdown = cx.compile(format!(
                         "[<img{alt} src=\"{src}\" height=\"{height}\">]({href})"
                     ))?;
-                    let html = cx.compile(&format!(
+                    let html = cx.compile(format!(
                         "<a href=\"{href}\"><img{alt} src=\"{src}\" height=\"{height}\"></a>"
                     ))?;
                     (Some(markdown), Some(html))
@@ -990,19 +1079,14 @@ impl<'a> ConfigCtxt<'a> {
     }
 
     fn workflow_table(&mut self, config: &mut toml::Table) -> Result<PartialWorkflowConfig> {
-        let name = self.in_string(config, "name", |_, string| Ok(Some(string)))?;
+        let name = self.in_string(config, "name", |_, string| Ok(string))?;
 
-        let template = self.in_string(config, "template", |cx, string| {
-            let path = cx.root.join(string);
-            let template =
-                std::fs::read_to_string(&path).with_context(|| path.display().to_string())?;
-            Ok(Some(cx.compile(&template)?))
-        })?;
+        let template = self.in_string(config, "template", Self::compile_path)?;
 
         let features = self.in_array(config, "features", |cx, value| {
             let value = cx.string(value)?;
             let value: &str = value.as_ref();
-            Err(cx.bail(format_args!("Unknown workflow feature `{value}`")))
+            Err(anyhow!("Unknown workflow feature `{value}`"))
         })?;
 
         Ok(PartialWorkflowConfig {
@@ -1017,29 +1101,17 @@ impl<'a> ConfigCtxt<'a> {
             Ok((id, cx.workflow(value)?))
         })?;
 
-        let license = self.in_string(config, "license", |_, string| Ok(Some(string)))?;
+        let license = self.in_string(config, "license", |_, string| Ok(string))?;
 
         let authors = self
             .in_array(config, "authors", |cx, item| cx.string(item))?
             .unwrap_or_default();
 
-        let documentation = self.in_string(config, "documentation", |cx, source| {
-            Ok(Some(cx.compile(&source)?))
-        })?;
+        let documentation = self.in_string(config, "documentation", Self::compile)?;
 
-        let lib = self.in_string(config, "lib", |cx, string| {
-            let path = cx.root.join(string);
-            let template =
-                std::fs::read_to_string(&path).with_context(|| path.display().to_string())?;
-            Ok(Some(cx.compile(&template)?))
-        })?;
+        let lib = self.in_string(config, "lib", Self::compile_path)?;
 
-        let readme = self.in_string(config, "readme", |cx, string| {
-            let path = cx.root.join(string);
-            let template =
-                std::fs::read_to_string(&path).with_context(|| path.display().to_string())?;
-            Ok(Some(cx.compile(&template)?))
-        })?;
+        let readme = self.in_string(config, "readme", Self::compile_path)?;
 
         let badges = self.badges(config)?.unwrap_or_default();
         let _ = self
@@ -1048,7 +1120,7 @@ impl<'a> ConfigCtxt<'a> {
         let name = self.as_string(config, "name")?;
 
         let cargo_toml = self.in_string(config, "cargo_toml", |_, string| {
-            Ok(Some(RelativePathBuf::from(string)))
+            Ok(RelativePathBuf::from(string))
         })?;
 
         let disabled = self.in_array(config, "disabled", |cx, item| cx.string(item))?;
@@ -1065,7 +1137,9 @@ impl<'a> ConfigCtxt<'a> {
 
         let readme_badges = readme_badges.unwrap_or_default().into_iter().collect();
 
-        let variables = self.as_table(config, "variables")?.unwrap_or_default();
+        let variables = self
+            .as_table(config, "variables", |_, table| Ok(table))?
+            .unwrap_or_default();
 
         let version = self.in_array(config, "version", |cx, item| {
             let mut config = cx.table(item)?;
@@ -1079,7 +1153,7 @@ impl<'a> ConfigCtxt<'a> {
 
             let pattern = cx
                 .in_string(&mut config, "pattern", |_, pattern| {
-                    Ok(Some(regex::bytes::Regex::new(&pattern)?))
+                    Ok(regex::bytes::Regex::new(&pattern)?)
                 })?
                 .context("missing `pattern`")?;
 
@@ -1092,11 +1166,12 @@ impl<'a> ConfigCtxt<'a> {
             })
         })?;
 
-        let upgrade = self.as_table(config, "upgrade")?.unwrap_or_default();
-        let upgrade = self.upgrade(upgrade)?;
-
-        let rpm = self.as_table(config, "rpm")?.unwrap_or_default();
-        let rpm = self.rpm(rpm)?;
+        let upgrade = self
+            .as_table(config, "upgrade", Self::upgrade)?
+            .unwrap_or_default();
+        let package = self
+            .as_table(config, "package", Self::package)?
+            .unwrap_or_default();
 
         Ok(RepoConfig {
             workflows: workflows.unwrap_or_default(),
@@ -1114,7 +1189,7 @@ impl<'a> ConfigCtxt<'a> {
             variables,
             version: version.unwrap_or_default(),
             upgrade,
-            rpm,
+            package,
         })
     }
 
@@ -1144,92 +1219,113 @@ impl<'a> ConfigCtxt<'a> {
         Ok(Upgrade { exclude })
     }
 
-    fn rpm_file(&mut self, value: toml::Value) -> Result<RpmFile> {
+    fn package_file(&mut self, value: toml::Value) -> Result<PackageFile> {
         let mut config = self.table(value)?;
 
-        let Some(source) = self.in_string(&mut config, "source", |_, string| Ok(Some(string)))?
-        else {
-            return Err(self.bail("Missing source"));
+        let Some(source) = self.in_string(&mut config, "source", |_, string| Ok(string))? else {
+            bail!("Missing source");
         };
 
-        let Some(dest) = self.in_string(&mut config, "dest", |_, string| Ok(Some(string)))? else {
-            return Err(self.bail("Missing dest"));
+        let Some(dest) = self.in_string(&mut config, "dest", |_, string| Ok(string))? else {
+            bail!("Missing dest");
         };
 
         let mode = self.in_string(&mut config, "mode", |_, string| {
-            Ok(Some(rpm::FileMode::Regular {
-                permissions: u16::from_str_radix(&string, 8)?,
-            }))
+            Ok(u16::from_str_radix(&string, 8)?)
         })?;
 
         self.ensure_empty(config)?;
-        Ok(RpmFile { source, dest, mode })
+        Ok(PackageFile { source, dest, mode })
+    }
+
+    fn version_requirement(&mut self, string: String) -> Result<VersionRequirement> {
+        VersionRequirement::from_str(&string)
     }
 
     fn rpm_require(&mut self, value: toml::Value) -> Result<RpmRequire> {
         let mut config = self.table(value)?;
 
-        let Some(package) = self.in_string(&mut config, "package", |_, string| Ok(Some(string)))?
-        else {
-            return Err(self.bail("Missing package"));
+        let Some(package) = self.in_string(&mut config, "package", |_, string| Ok(string))? else {
+            return Err(anyhow!("Missing package"));
         };
 
-        let version = self.in_string(&mut config, "version", |cx, string| {
-            if string == "*" {
-                return Ok(None);
-            }
-
-            let Some((op, version)) = string.split_once(' ') else {
-                return Err(cx.bail("Illegal version specification: {string}"));
-            };
-
-            let op = match op {
-                "<" => RpmOp::Lt,
-                "<=" => RpmOp::Le,
-                "=" => RpmOp::Eq,
-                ">=" => RpmOp::Ge,
-                ">" => RpmOp::Gt,
-                version => {
-                    return Err(cx.bail(format_args!("Illegal version specification: {version}")))
-                }
-            };
-
-            Ok(Some((op, Version::parse(version)?)))
-        })?;
+        let version = self
+            .in_string(&mut config, "version", Self::version_requirement)?
+            .unwrap_or_default();
 
         self.ensure_empty(config)?;
         Ok(RpmRequire { package, version })
     }
 
-    fn rpm(&mut self, mut config: toml::Table) -> Result<Rpm> {
-        let files = self
-            .in_array(&mut config, "files", |cx, item| cx.rpm_file(item))?
-            .into_iter()
-            .flatten()
-            .collect();
+    fn deb_dependency(&mut self, value: toml::Value) -> Result<DebDependency> {
+        let mut config = self.table(value)?;
 
+        let Some(package) = self.in_string(&mut config, "package", |_, string| Ok(string))? else {
+            bail!("Missing package");
+        };
+
+        let version = self
+            .in_string(&mut config, "version", Self::version_requirement)?
+            .unwrap_or_default();
+
+        self.ensure_empty(config)?;
+        Ok(DebDependency { package, version })
+    }
+
+    fn rpm(&mut self, mut config: toml::Table) -> Result<RpmPackage> {
         let requires = self
-            .in_array(&mut config, "requires", |cx, item| cx.rpm_require(item))?
+            .in_array(&mut config, "requires", Self::rpm_require)?
             .into_iter()
             .flatten()
             .collect();
 
         self.ensure_empty(config)?;
-        Ok(Rpm { files, requires })
+        Ok(RpmPackage { requires })
+    }
+
+    fn deb(&mut self, mut config: toml::Table) -> Result<DebPackage> {
+        let depends = self
+            .in_array(&mut config, "depends", Self::deb_dependency)?
+            .into_iter()
+            .flatten()
+            .collect();
+
+        self.ensure_empty(config)?;
+        Ok(DebPackage { depends })
+    }
+
+    fn package(&mut self, mut config: toml::Table) -> Result<Package> {
+        let files = self
+            .in_array(&mut config, "files", Self::package_file)?
+            .into_iter()
+            .flatten()
+            .collect();
+
+        let rpm = self
+            .as_table(&mut config, "rpm", Self::rpm)?
+            .unwrap_or_default();
+
+        let deb = self
+            .as_table(&mut config, "deb", Self::deb)?
+            .unwrap_or_default();
+
+        self.ensure_empty(config)?;
+        Ok(Package { files, rpm, deb })
     }
 }
 
 /// Load a configuration from the given path.
 pub(crate) fn load<'a>(
-    root: &Path,
+    paths: Paths<'a>,
     templating: &Templating,
     repos: &[Repo],
     defaults: &'a toml::Table,
 ) -> Result<Config<'a>> {
-    let mut cx = ConfigCtxt::new(root, templating);
+    let mut cx = ConfigCtxt::new(paths, RelativePath::new(""), templating);
 
     let Some(config) = cx.kick_config()? else {
-        tracing::trace!("{}: missing configuration file", cx.kick_path.display());
+        tracing::trace!("{}: Missing configuration file", cx.kick_path.display());
+
         return Ok(Config {
             base: RepoConfig::default(),
             repo: HashMap::new(),
@@ -1237,30 +1333,28 @@ pub(crate) fn load<'a>(
         });
     };
 
-    load_base(&mut cx, templating, repos, config, defaults)
-        .with_context(|| cx.kick_path.display().to_string())
+    load_merged(&mut cx, templating, repos, config, defaults)
 }
 
-fn load_base<'a>(
+/// Load merged configuration with base and repo-specific configurations loaded
+/// recursively.
+fn load_merged<'a>(
     cx: &mut ConfigCtxt<'_>,
     templating: &Templating,
     repos: &[Repo],
     config: toml::Value,
     defaults: &'a toml::Table,
 ) -> Result<Config<'a>> {
-    let mut config = cx.table(config)?;
-    let base = cx.repo_table(&mut config)?;
-
-    let mut repo_configs = cx
-        .in_table(&mut config, "repo", |cx, id, value| {
-            Ok((RelativePathBuf::from(id), cx.repo(value)?))
-        })?
-        .unwrap_or_default();
+    let (base, mut repo_configs) = match load_base(cx, config) {
+        Ok(output) => output,
+        Err(error) => return Err(cx.context(error)),
+    };
 
     for repo in repos {
-        let Some(config) = load_repo(cx.root, repo, templating)
-            .with_context(|| anyhow!("In manifest {}", repo.path().to_path(cx.root).display()))?
-        else {
+        let result = load_repo(cx.paths, cx.current, repo, templating)
+            .with_context(|| anyhow!("In repo {}", cx.paths.to_path(repo.path()).display()))?;
+
+        let Some(config) = result else {
             continue;
         };
 
@@ -1271,8 +1365,6 @@ fn load_base<'a>(
         original.merge_with(config);
     }
 
-    cx.ensure_empty(config)?;
-
     Ok(Config {
         base,
         repo: repo_configs,
@@ -1280,16 +1372,40 @@ fn load_base<'a>(
     })
 }
 
-fn load_repo(root: &Path, repo: &Repo, templating: &Templating) -> Result<Option<RepoConfig>> {
-    let root = repo.path().to_path(root);
-    let mut cx = ConfigCtxt::new(&root, templating);
+fn load_base(
+    cx: &mut ConfigCtxt<'_>,
+    config: toml::Value,
+) -> Result<(RepoConfig, HashMap<RelativePathBuf, RepoConfig>)> {
+    let mut config = cx.table(config)?;
+    let base = cx.repo_table(&mut config)?;
+
+    let repo_configs = cx
+        .in_table(&mut config, "repo", |cx, id, value| {
+            Ok((RelativePathBuf::from(id), cx.repo(value)?))
+        })?
+        .unwrap_or_default();
+
+    cx.ensure_empty(config)?;
+    Ok((base, repo_configs))
+}
+
+fn load_repo(
+    paths: Paths<'_>,
+    current: &RelativePath,
+    repo: &Repo,
+    templating: &Templating,
+) -> Result<Option<RepoConfig>> {
+    let current = current.join(repo.path());
+    let mut cx = ConfigCtxt::new(paths, &current, templating);
 
     let Some(config) = cx.kick_config()? else {
         return Ok(None);
     };
 
-    let repo = cx.repo(config)?;
-    Ok(Some(repo))
+    match cx.repo(config) {
+        Ok(repo) => Ok(Some(repo)),
+        Err(error) => Err(cx.context(error)),
+    }
 }
 
 struct FormatOptional<T, F>(Option<T>, F)
@@ -1329,4 +1445,14 @@ fn merge_map(target: &mut toml::Table, source: toml::Table) {
             },
         }
     }
+}
+
+/// Access `rpm.requies` through [`Config::get_all`].
+pub(crate) fn rpm_requires(config: &RepoConfig) -> &[RpmRequire] {
+    &config.package.rpm.requires
+}
+
+/// Access `deb.depends` through [`Config::get_all`].
+pub(crate) fn deb_depends(config: &RepoConfig) -> &[DebDependency] {
+    &config.package.deb.depends
 }

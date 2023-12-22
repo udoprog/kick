@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -13,7 +12,7 @@ use elf::ElfStream;
 
 use crate::process::Command;
 
-pub(crate) fn find<P>(exe: P) -> Result<BTreeSet<String>>
+pub(crate) fn find<P>(exe: P) -> Result<Vec<String>>
 where
     P: AsRef<Path>,
 {
@@ -23,7 +22,7 @@ where
     let mut requires = find_requires_by_ldd(exe, header.marker())?;
 
     if header.sht_gnu_hash && !header.sht_hash {
-        requires.insert("rtld(GNU_HASH)".to_string());
+        requires.push("rtld(GNU_HASH)".to_string());
     }
 
     Ok(requires)
@@ -71,7 +70,7 @@ impl ElfHeader {
     }
 }
 
-fn find_requires_by_ldd(path: &Path, marker: &[u8]) -> Result<BTreeSet<String>> {
+fn find_requires_by_ldd(path: &Path, marker: &[u8]) -> Result<Vec<String>> {
     enum State {
         Initial,
         Header,
@@ -88,7 +87,7 @@ fn find_requires_by_ldd(path: &Path, marker: &[u8]) -> Result<BTreeSet<String>> 
 
     let mut line = Vec::new();
 
-    let mut requires = BTreeSet::new();
+    let mut requires = Vec::new();
     let mut state = State::Initial;
 
     loop {
@@ -147,7 +146,7 @@ fn find_requires_by_ldd(path: &Path, marker: &[u8]) -> Result<BTreeSet<String>> 
         let mut line = lib.to_vec();
         line.extend(version);
         line.extend(marker);
-        requires.insert(BStr::new(&line).to_str_lossy().into_owned());
+        requires.push(BStr::new(&line).to_str_lossy().into_owned());
     }
 
     Ok(requires)

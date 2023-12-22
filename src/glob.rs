@@ -39,10 +39,6 @@ impl<'a> Glob<'a> {
                 .collect(),
         }
     }
-
-    pub(crate) fn is_exact(&self) -> bool {
-        self.components.iter().all(|f| f.is_exact())
-    }
 }
 
 impl<'a> Matcher<'a> {
@@ -181,18 +177,6 @@ enum Component<'a> {
     StarStar,
 }
 
-impl Component<'_> {
-    /// Test if the component is an exact match.
-    fn is_exact(&self) -> bool {
-        match self {
-            Component::ParentDir => true,
-            Component::Normal(..) => true,
-            Component::Fragment(fragment) => fragment.parts.iter().all(|f| f.is_exact()),
-            Component::StarStar => false,
-        }
-    }
-}
-
 fn compile_pattern<P>(pattern: &P) -> Vec<Component<'_>>
 where
     P: ?Sized + AsRef<RelativePath>,
@@ -225,15 +209,6 @@ where
 enum Part<'a> {
     Star,
     Literal(&'a str),
-}
-
-impl Part<'_> {
-    fn is_exact(&self) -> bool {
-        match self {
-            Part::Star => false,
-            Part::Literal(..) => true,
-        }
-    }
 }
 
 /// A match fragment.

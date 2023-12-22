@@ -126,12 +126,7 @@ impl RepoSets {
 
     /// Commit updates.
     pub(crate) fn commit(&mut self) -> Result<()> {
-        fn write_set(
-            set: &RepoSet,
-            hint: &str,
-            now: DateTime<Local>,
-            mut f: File,
-        ) -> Result<(), anyhow::Error> {
+        fn write_set(set: &RepoSet, hint: &str, now: DateTime<Local>, mut f: File) -> Result<()> {
             writeln!(f, "# {hint}")?;
             writeln!(f, "# date: {now}")?;
 

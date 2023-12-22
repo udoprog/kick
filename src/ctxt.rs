@@ -16,9 +16,39 @@ use crate::process::Command;
 use crate::repo_sets::RepoSets;
 use crate::rust_version::RustVersion;
 
-pub(crate) struct Ctxt<'a> {
+/// Paths being used.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Paths<'a> {
     pub(super) root: &'a Path,
     pub(crate) current_path: Option<&'a RelativePath>,
+}
+
+impl Paths<'_> {
+    /// Get a repo path that is used as the base to other paths.
+    pub(crate) fn to_path<P>(self, path: P) -> PathBuf
+    where
+        P: AsRef<RelativePath>,
+    {
+        if self.root.components().eq([Component::CurDir]) {
+            return PathBuf::from(path.as_ref().as_str());
+        }
+
+        if let Some(current_path) = self.current_path {
+            let output = current_path.relative(path);
+
+            if output.components().next().is_none() {
+                return PathBuf::from_iter([Component::CurDir]);
+            }
+
+            return PathBuf::from(output.as_str());
+        }
+
+        path.as_ref().to_path(self.root)
+    }
+}
+
+pub(crate) struct Ctxt<'a> {
+    pub(crate) paths: Paths<'a>,
     pub(crate) config: &'a Config<'a>,
     pub(crate) actions: &'a Actions<'a>,
     pub(crate) repos: &'a [Repo],
@@ -32,7 +62,7 @@ pub(crate) struct Ctxt<'a> {
 
 impl<'a> Ctxt<'a> {
     pub(crate) fn root(&self) -> &Path {
-        self.root
+        self.paths.root
     }
 
     /// Convert a context into an outcome.
@@ -55,21 +85,7 @@ impl<'a> Ctxt<'a> {
     where
         P: AsRef<RelativePath>,
     {
-        if self.root.components().eq([Component::CurDir]) {
-            return PathBuf::from(path.as_ref().as_str());
-        }
-
-        if let Some(current_path) = self.current_path {
-            let output = current_path.relative(path);
-
-            if output.components().next().is_none() {
-                return PathBuf::from_iter([Component::CurDir]);
-            }
-
-            return PathBuf::from(output.as_str());
-        }
-
-        path.as_ref().to_path(self.root)
+        self.paths.to_path(path)
     }
 
     /// Construct a reporting context for the given repo.

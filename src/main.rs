@@ -680,6 +680,7 @@ mod changes;
 mod cli;
 mod config;
 mod ctxt;
+mod deb;
 mod env;
 mod file;
 mod git;
@@ -688,6 +689,7 @@ mod glob;
 mod manifest;
 mod model;
 mod octokit;
+mod packaging;
 mod process;
 mod release;
 mod repo_sets;
@@ -710,6 +712,7 @@ use env::SecretString;
 use relative_path::{RelativePath, RelativePathBuf};
 use tracing::metadata::LevelFilter;
 
+use crate::ctxt::Paths;
 use crate::env::Env;
 use crate::{glob::Fragment, model::Repo};
 
@@ -744,8 +747,10 @@ enum Action {
     Upgrade(SharedAction<cli::upgrade::Opts>),
     /// Build a wix-based installer.
     Msi(SharedAction<cli::msi::Opts>),
-    /// Build an rpjm-based installer.
+    /// Build an rpm-based installer.
     Rpm(SharedAction<cli::rpm::Opts>),
+    /// Build an deb-based installer.
+    Deb(SharedAction<cli::deb::Opts>),
     /// Build a compressed artifact (like a zip or tar.gz).
     Compress(SharedAction<cli::compress::Opts>),
     /// Build a github release.
@@ -771,6 +776,7 @@ impl Action {
             Action::Upgrade(action) => &action.shared,
             Action::Msi(action) => &action.shared,
             Action::Rpm(action) => &action.shared,
+            Action::Deb(action) => &action.shared,
             Action::Compress(action) => &action.shared,
             Action::GithubRelease(action) => &action.shared,
         }
@@ -790,6 +796,7 @@ impl Action {
             Action::Upgrade(action) => Some(&action.repo),
             Action::Msi(action) => Some(&action.repo),
             Action::Rpm(action) => Some(&action.repo),
+            Action::Deb(action) => Some(&action.repo),
             Action::Compress(action) => Some(&action.repo),
             Action::GithubRelease(action) => Some(&action.repo),
         }
@@ -948,11 +955,12 @@ async fn entry() -> Result<ExitCode> {
         }
     };
 
-    tracing::trace!(
-        root = root.display().to_string(),
-        ?current_path,
-        "Using project root"
-    );
+    let paths = Paths {
+        root: &root,
+        current_path: current_path.as_deref(),
+    };
+
+    tracing::trace!(?paths, "Using project root");
 
     let mut env = Env::new();
     tracing::trace!(?env, "Using environment");
@@ -985,12 +993,14 @@ async fn entry() -> Result<ExitCode> {
     let repos = model::load_gitmodules(&root)?;
 
     let defaults = config::defaults();
+
     let config = config::load(
-        &root,
+        paths,
         &templating,
         repos.as_deref().unwrap_or_default(),
         &defaults,
-    )?;
+    )
+    .context("Loading kick configuration")?;
 
     let repos = match repos {
         Some(repos) => repos,
@@ -1021,16 +1031,6 @@ async fn entry() -> Result<ExitCode> {
     );
 
     if let Some(repo_opts) = repo_opts {
-        let current_path = if let Some(current_path) = current_path.as_ref() {
-            if !repo_opts.all && repos.iter().any(|m| current_path.starts_with(m.path())) {
-                Some(current_path.as_ref())
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
         let mut filters = Vec::new();
 
         for repo in &repo_opts.repos {
@@ -1076,13 +1076,17 @@ async fn entry() -> Result<ExitCode> {
             }
         };
 
+        let in_current_path = paths
+            .current_path
+            .filter(|p| !repo_opts.all && repos.iter().any(|m| p.starts_with(m.path())));
+
         filter_repos(
-            &root,
+            paths,
+            in_current_path,
             repo_opts,
             git.as_ref(),
             &repos,
             &filters,
-            current_path,
             set.as_ref(),
         )?;
     }
@@ -1090,8 +1094,7 @@ async fn entry() -> Result<ExitCode> {
     let changes_path = root.join("changes.gz");
 
     let mut cx = ctxt::Ctxt {
-        root: &root,
-        current_path: current_path.as_deref(),
+        paths,
         config: &config,
         actions: &actions,
         repos: &repos,
@@ -1138,6 +1141,9 @@ async fn entry() -> Result<ExitCode> {
         Action::Rpm(opts) => {
             cli::rpm::entry(&mut cx, &opts.action)?;
         }
+        Action::Deb(opts) => {
+            cli::deb::entry(&mut cx, &opts.action)?;
+        }
         Action::Compress(opts) => {
             cli::compress::entry(&mut cx, &opts.action)?;
         }
@@ -1174,12 +1180,12 @@ async fn entry() -> Result<ExitCode> {
 
 /// Perform more advanced filtering over modules.
 fn filter_repos(
-    root: &Path,
+    paths: Paths<'_>,
+    in_current_path: Option<&RelativePath>,
     repo_opts: &RepoOptions,
     git: Option<&git::Git>,
     repos: &[model::Repo],
     filters: &[Fragment<'_>],
-    current_path: Option<&RelativePath>,
     set: Option<&HashSet<RelativePathBuf>>,
 ) -> Result<()> {
     // Test if repo should be skipped.
@@ -1191,7 +1197,7 @@ fn filter_repos(
         }
 
         if filters.is_empty() {
-            if let Some(path) = current_path {
+            if let Some(path) = in_current_path {
                 return !path.starts_with(repo.path());
             }
 
@@ -1214,7 +1220,7 @@ fn filter_repos(
 
         if repo_opts.needs_git() {
             let git = git.context("no working git command found")?;
-            let repo_path = repo.path().to_path(root);
+            let repo_path = paths.to_path(repo.path());
 
             let cached = git.is_cached(&repo_path)?;
             let dirty = git.is_dirty(&repo_path)?;
