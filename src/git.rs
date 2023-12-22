@@ -4,6 +4,7 @@ use std::fmt::Display;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
+use std::str;
 
 use crate::process::Command;
 use anyhow::{ensure, Context, Result};
@@ -182,7 +183,7 @@ impl Git {
         Ok(!status.success())
     }
 
-    /// Get HEAD commit.
+    /// Parse a commit.
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command))]
     pub(crate) fn rev_parse<P>(&self, dir: P, rev: &str) -> Result<String>
     where
@@ -197,7 +198,7 @@ impl Git {
             .output()?;
 
         ensure!(output.status.success(), output.status);
-        Ok(String::from_utf8(output.stdout)?)
+        Ok(str::from_utf8(&output.stdout)?.trim().to_owned())
     }
 
     /// Get HEAD commit.

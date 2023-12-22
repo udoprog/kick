@@ -30,6 +30,15 @@ pub(crate) struct Opts {
     /// Pattern of release assets to upload.
     #[arg(long, value_name = "glob")]
     upload: Vec<RelativePathBuf>,
+    /// Delete any existing releases.
+    ///
+    /// If this is not specified, then an existing release will instead be
+    /// updated if necessary.
+    #[arg(long)]
+    delete: bool,
+    /// Delete any existing assets before uploading new ones.
+    #[arg(long)]
+    delete_assets: bool,
     /// Get details from the GitHub action context.
     #[arg(long)]
     github_action: bool,
@@ -57,10 +66,6 @@ pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
         bail!("Missing access token");
     };
 
-    let Some(sha) = &opts.sha else {
-        bail!("Missing SHA to update the commit to, either provide --sha or set GITHUB_SHA and use --github-action");
-    };
-
     let client = Client::new(token.clone())?;
     let name = version.to_string();
     let prerelease = version.is_pre();
@@ -69,7 +74,7 @@ pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
         cx,
         "Github Release",
         format_args!("github-release: {opts:?}"),
-        |cx, repo| { github_publish(cx, &opts, repo, &client, &name, sha, prerelease).await }
+        |cx, repo| { github_publish(cx, &opts, repo, &client, &name, prerelease).await }
     );
 
     Ok(())
@@ -82,11 +87,23 @@ async fn github_publish(
     repo: &Repo,
     client: &Client,
     name: &str,
-    sha: &str,
     prerelease: bool,
 ) -> Result<()> {
     let Some(path) = repo.repo() else {
         bail!("Repo is not a github repo");
+    };
+
+    let git_sha;
+
+    let sha = match opts.sha.as_deref() {
+        Some(sha) => sha,
+        None => {
+            let git = cx.require_git()?;
+            let dir = cx.to_path(repo.path());
+            git_sha = git.rev_parse(dir, "HEAD")?;
+            tracing::info!("Using HEAD commit from git (sha: {git_sha})");
+            &git_sha
+        }
     };
 
     tracing::info! {
@@ -98,45 +115,31 @@ async fn github_publish(
         body = opts.body.as_deref(),
         prerelease,
         draft = opts.draft,
-        "Publishing"
+        "Creating release"
     };
 
-    let mut releases = client.releases(path.owner, path.name)?;
-
-    let id = 'out: {
-        while let Some(page) = client
-            .next_page(&mut releases)
-            .await
-            .context("Downloading releases")?
-        {
-            for release in page {
-                if release.tag_name == name {
-                    break 'out Some(release.id);
-                }
-            }
-        }
-
-        None
-    };
-
-    if let Some(id) = id {
-        tracing::info!("Deleting release '{}' (id: {id})", name);
-        client
-            .delete_release(path.owner, path.name, id)
-            .await
-            .context("Deleting old release")?;
-    }
-
-    if cx.env.github_tag() != Some(name) {
-        tracing::info!("Trying to update tag '{}'", name);
+    if cx.env.github_tag() == Some(name) {
+        tracing::info!("Not updating '{name}' which is being built through GITHUB_REF");
+    } else {
         let r#ref = format!("tags/{}", name);
-        let update = client
-            .git_ref_update(path.owner, path.name, &r#ref, sha, true)
-            .await
-            .with_context(|| anyhow!("Updating tag '{}'", r#ref))?;
 
-        if update.is_none() {
-            tracing::info!("Creating tag '{}'", name);
+        let existing = client
+            .git_ref_get(path.owner, path.name, &r#ref)
+            .await
+            .with_context(|| anyhow!("Getting tag '{}'", r#ref))?;
+
+        if let Some(existing) = existing {
+            if existing.object.sha != sha {
+                tracing::info!("Updating tag '{}' (sha: {sha})", name);
+                let r#ref = format!("tags/{}", name);
+
+                client
+                    .git_ref_update(path.owner, path.name, &r#ref, sha, true)
+                    .await
+                    .with_context(|| anyhow!("Updating tag '{}'", r#ref))?;
+            }
+        } else {
+            tracing::info!("Creating tag '{}' (sha: {sha})", name);
             let r#ref = format!("refs/tags/{}", name);
 
             client
@@ -146,19 +149,82 @@ async fn github_publish(
         }
     }
 
-    tracing::info!("Creating release '{}'", name);
-    let release = client
-        .create_release(
-            path.owner,
-            path.name,
-            name,
-            sha,
-            name,
-            opts.body.as_deref(),
-            prerelease,
-            opts.draft,
-        )
-        .await?;
+    let mut releases = client.releases(path.owner, path.name)?;
+
+    let mut release = 'out: {
+        while let Some(page) = client
+            .next_page(&mut releases)
+            .await
+            .context("Downloading releases")?
+        {
+            for release in page {
+                if release.tag_name == name {
+                    break 'out Some(release);
+                }
+            }
+        }
+
+        None
+    };
+
+    if opts.delete {
+        if let Some(release) = release.take() {
+            tracing::info!("Deleting release '{name}' (id: {})", release.id);
+
+            client
+                .delete_release(path.owner, path.name, release.id)
+                .await
+                .with_context(|| anyhow!("Deleting release '{name}'"))?;
+        }
+    }
+
+    let release = if let Some(release) = release {
+        if release.draft != opts.draft || release.prerelease != prerelease {
+            tracing::info!("Updating existing release '{name}' (id: {})", release.id);
+            client
+                .update_release(
+                    path.owner,
+                    path.name,
+                    release.id,
+                    name,
+                    sha,
+                    name,
+                    opts.body.as_deref(),
+                    prerelease,
+                    opts.draft,
+                )
+                .await?;
+        }
+
+        release
+    } else {
+        tracing::info!("Creating release '{}'", name);
+        let release = client
+            .create_release(
+                path.owner,
+                path.name,
+                name,
+                sha,
+                name,
+                opts.body.as_deref(),
+                prerelease,
+                opts.draft,
+            )
+            .await?;
+
+        release
+    };
+
+    if opts.delete_assets {
+        for asset in &release.assets {
+            tracing::info!("Deleting asset '{}' (id: {})", asset.name, asset.id);
+
+            client
+                .delete_release_asset(path.owner, path.name, asset.id)
+                .await
+                .with_context(|| anyhow!("Deleting asset {}", asset.name))?;
+        }
+    }
 
     for upload in &opts.upload {
         let root = cx.to_path(repo.path());

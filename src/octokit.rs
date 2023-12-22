@@ -1,9 +1,9 @@
 use std::pin::pin;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{ensure, Context, Result};
 use bytes::Bytes;
 use futures_core::Stream;
-use reqwest::{header, Method};
+use reqwest::{header, Method, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use url::Url;
@@ -53,6 +53,33 @@ impl Client {
         Ok(Releases { url, page: 0 })
     }
 
+    /// Get an existing git reference.
+    pub(crate) async fn git_ref_get(
+        &self,
+        owner: &str,
+        repo: &str,
+        r#ref: &str,
+    ) -> Result<Option<Reference>> {
+        let mut url = self.url.clone();
+
+        url.path_segments_mut()
+            .ok()
+            .context("path")?
+            .extend(&["repos", owner, repo, "git", "refs", r#ref]);
+
+        let req = self.request(Method::GET, url.clone()).build()?;
+
+        let res = self.client.execute(req).await?;
+
+        if res.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        ensure!(res.status().is_success(), res.status());
+        let reference = res.json().await?;
+        Ok(Some(reference))
+    }
+
     /// Update a git reference.
     pub(crate) async fn git_ref_update(
         &self,
@@ -61,7 +88,7 @@ impl Client {
         r#ref: &str,
         sha: &str,
         force: bool,
-    ) -> Result<Option<ReferenceUpdate>> {
+    ) -> Result<Reference> {
         #[derive(Debug, Serialize)]
         struct Request<'a> {
             sha: &'a str,
@@ -84,16 +111,9 @@ impl Client {
 
         let res = self.client.execute(req).await?;
 
-        if res.status().is_client_error() {
-            return Ok(None);
-        }
-
-        if !res.status().is_success() {
-            bail!(res.status());
-        }
-
+        ensure!(res.status().is_success(), res.status());
         let update = res.json().await?;
-        Ok(Some(update))
+        Ok(update)
     }
 
     /// Create a git reference.
@@ -103,7 +123,7 @@ impl Client {
         repo: &str,
         r#ref: &str,
         sha: &str,
-    ) -> Result<ReferenceUpdate> {
+    ) -> Result<Reference> {
         #[derive(Debug, Serialize)]
         struct Request<'a> {
             sha: &'a str,
@@ -126,14 +146,12 @@ impl Client {
 
         let res = self.client.execute(req).await?;
 
-        if !res.status().is_success() {
-            bail!(res.status());
-        }
-
+        ensure!(res.status().is_success(), res.status());
         let update = res.json().await?;
         Ok(update)
     }
 
+    #[allow(unused)]
     pub(crate) async fn delete_release(&self, owner: &str, repo: &str, id: u64) -> Result<()> {
         let mut url = self.url.clone();
 
@@ -148,10 +166,7 @@ impl Client {
         let req = self.request(Method::DELETE, url).build()?;
         let res = self.client.execute(req).await?;
 
-        if !res.status().is_success() {
-            bail!(res.status());
-        }
-
+        ensure!(res.status().is_success(), res.status());
         Ok(())
     }
 
@@ -166,7 +181,7 @@ impl Client {
         body: Option<&str>,
         prerelease: bool,
         draft: bool,
-    ) -> Result<ReleaseUpdate> {
+    ) -> Result<Release> {
         #[derive(Serialize)]
         struct Request<'a> {
             tag_name: &'a str,
@@ -199,10 +214,60 @@ impl Client {
         let req = self.request(Method::POST, url).json(&request).build()?;
         let res = self.client.execute(req).await?;
 
-        if !res.status().is_success() {
-            bail!(res.status());
+        ensure!(res.status().is_success(), res.status());
+        let update = res.json().await?;
+        Ok(update)
+    }
+
+    /// Create a GitHub release.
+    pub(crate) async fn update_release(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: u64,
+        tag_name: &str,
+        target_commitish: &str,
+        name: &str,
+        body: Option<&str>,
+        prerelease: bool,
+        draft: bool,
+    ) -> Result<Release> {
+        #[derive(Serialize)]
+        struct Request<'a> {
+            tag_name: &'a str,
+            target_commitish: &'a str,
+            name: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            body: Option<&'a str>,
+            draft: bool,
+            prerelease: bool,
+            generate_release_notes: bool,
         }
 
+        let mut url = self.url.clone();
+
+        url.path_segments_mut().ok().context("path")?.extend(&[
+            "repos",
+            owner,
+            repo,
+            "releases",
+            &id.to_string(),
+        ]);
+
+        let request = Request {
+            tag_name,
+            target_commitish,
+            name,
+            body,
+            prerelease,
+            draft,
+            generate_release_notes: false,
+        };
+
+        let req = self.request(Method::PATCH, url).json(&request).build()?;
+        let res = self.client.execute(req).await?;
+
+        ensure!(res.status().is_success(), res.status());
         let update = res.json().await?;
         Ok(update)
     }
@@ -244,10 +309,32 @@ impl Client {
 
         let res = self.client.execute(req).await?;
 
-        if !res.status().is_success() {
-            bail!(res.status());
-        }
+        ensure!(res.status().is_success(), res.status());
+        Ok(())
+    }
 
+    /// Delete a release asset.
+    pub(crate) async fn delete_release_asset(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: u64,
+    ) -> Result<()> {
+        let mut url = self.url.clone();
+
+        url.path_segments_mut().ok().context("path")?.extend(&[
+            "repos",
+            owner,
+            repo,
+            "releases",
+            "assets",
+            &id.to_string(),
+        ]);
+
+        let req = self.request(Method::DELETE, url).build()?;
+        let res = self.client.execute(req).await?;
+
+        ensure!(res.status().is_success(), res.status());
         Ok(())
     }
 
@@ -264,10 +351,7 @@ impl Client {
 
         let res = self.client.execute(req).await?;
 
-        if !res.status().is_success() {
-            bail!(res.status());
-        }
-
+        ensure!(res.status().is_success(), res.status());
         let page: Vec<T::Item> = res.json().await?;
 
         if page.is_empty() {
@@ -289,18 +373,30 @@ impl Client {
 }
 
 #[derive(Debug, Deserialize)]
+pub(crate) struct Asset {
+    pub(crate) name: String,
+    pub(crate) id: u64,
+}
+
+#[derive(Debug, Deserialize)]
 pub(crate) struct Release {
     pub(crate) id: u64,
     pub(crate) tag_name: String,
+    pub(crate) draft: bool,
+    pub(crate) prerelease: bool,
+    #[serde(default)]
+    pub(crate) assets: Vec<Asset>,
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct ReleaseUpdate {
-    pub(crate) id: u64,
+pub(crate) struct Object {
+    pub(crate) sha: String,
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct ReferenceUpdate {}
+pub(crate) struct Reference {
+    pub(crate) object: Object,
+}
 
 #[derive(Deserialize)]
 pub(crate) struct Releases {

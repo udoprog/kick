@@ -2,6 +2,7 @@ use std::convert::Infallible;
 use std::env;
 use std::fmt;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -86,17 +87,33 @@ where
 {
     let path = path.as_ref();
 
-    match fs::read_to_string(path) {
-        Ok(auth) => {
-            let auth = auth.trim();
-
-            if auth.is_empty() {
-                return Ok(None);
-            }
-
-            Ok(Some(SecretString::new(auth.to_owned())))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+    let f = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(anyhow::Error::from(e)).with_context(|| path.display().to_string()),
+    };
+
+    let mut line = String::new();
+
+    let mut f = BufReader::new(f);
+
+    loop {
+        line.clear();
+
+        let n = f.read_line(&mut line)?;
+
+        if n == 0 {
+            break;
+        }
+
+        let line = line.trim();
+
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        return Ok(Some(SecretString::new(line.to_owned())));
     }
+
+    Ok(None)
 }
