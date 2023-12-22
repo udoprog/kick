@@ -37,7 +37,7 @@ jobs:
     - uses: Swatinem/rust-cache@v2
     - uses: udoprog/kick@nightly
     - run: cargo build --release
-    - run: kick compress ${{matrix.method}} --output dist
+    - run: kick ${{matrix.method}} --output dist
     - uses: actions/upload-artifact@v1
       with:
         name: dist-${{matrix.os}}
@@ -55,6 +55,6 @@ jobs:
     - uses: actions/download-artifact@v1
       with: {name: dist-ubuntu-latest, path: dist}
     - uses: udoprog/kick@nightly
-    - run: kick github-release --upload "dist/*" --github-action
+    - run: kick github-release --upload "dist/*" --github-action --delete
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
