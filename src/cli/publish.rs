@@ -28,7 +28,7 @@ pub(crate) struct Opts {
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     with_repos!(
         cx,
-        "publish",
+        "cargo publish",
         format_args!("publish: {opts:?}"),
         |cx, repo| { publish(cx, opts, repo) }
     );

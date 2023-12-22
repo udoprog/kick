@@ -65,7 +65,7 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 
     with_repos!(
         cx,
-        "Version",
+        "bump version",
         format_args!("version: {opts:?}"),
         |cx, repo| version(cx, opts, repo, &version_set),
     );

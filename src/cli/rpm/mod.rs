@@ -3,12 +3,11 @@ mod find_requires_by_elf;
 
 use std::collections::BTreeSet;
 use std::env::consts::ARCH;
-use std::fs;
 use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
-use relative_path::{RelativePath, RelativePathBuf};
+use relative_path::RelativePath;
 
 use crate::config::{rpm_requires, PackageFile, VersionConstraint, VersionRequirement};
 use crate::ctxt::Ctxt;
@@ -18,13 +17,14 @@ use crate::release::Version;
 
 use crate::release::ReleaseOpts;
 
+use super::output::OutputOpts;
+
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     #[clap(flatten)]
     release: ReleaseOpts,
-    /// Output directory to write to.
-    #[clap(long, value_name = "output")]
-    output: Option<RelativePathBuf>,
+    #[clap(flatten)]
+    output: OutputOpts,
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
@@ -32,7 +32,7 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 
     with_repos!(
         cx,
-        "Build rpm",
+        "build .rpm",
         format_args!("rpm: {:?}", opts),
         |cx, repo| { rpm(cx, repo, opts, &release) }
     );
@@ -50,14 +50,6 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts, release: &Version<'_>) -> Result
     let description = package.description().context("Missing description")?;
 
     let version = release.to_string();
-
-    let output = match &opts.output {
-        Some(output) => cx.to_path(repo.path().join(output)),
-        None => cx.to_path(repo.path().join("target/rpm")),
-    };
-
-    let output_path = output.join(format!("{name}-{release}-{ARCH}.rpm"));
-    tracing::info!("Writing: {}", output_path.display());
 
     let mut pkg = rpm::PackageBuilder::new(name, &version, license, ARCH, description)
         .compression(rpm::CompressionType::Gzip);
@@ -114,12 +106,11 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts, release: &Version<'_>) -> Result
         pkg = pkg.requires(rpm::Dependency::any(require));
     }
 
-    if !output.is_dir() {
-        fs::create_dir_all(output)?;
-    }
-
     let pkg = pkg.build()?;
-    pkg.write_file(&output_path)?;
+    let output = opts.output.make_directory(cx, repo, "rpm");
+    let output_path = output.make_path(format!("{name}-{release}-{ARCH}.rpm"))?;
+    pkg.write_file(&output_path)
+        .with_context(|| anyhow!("Writing rpm to {}", output_path.display()))?;
     Ok(())
 }
 

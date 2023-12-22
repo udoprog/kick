@@ -23,7 +23,7 @@ pub(crate) struct Opts {
 pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     let mut urls = Urls::default();
 
-    with_repos!(cx, "Check", format_args!("check: {opts:?}"), |cx, repo| {
+    with_repos!(cx, "check", format_args!("check: {opts:?}"), |cx, repo| {
         check(cx, repo, &mut urls)
     });
 

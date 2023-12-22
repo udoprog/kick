@@ -65,9 +65,12 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    with_repos!(cx, "MSRV", format_args!("msrv: {opts:?}"), |cx, repo| {
-        msrv(cx, repo, opts)
-    });
+    with_repos!(
+        cx,
+        "find msrv",
+        format_args!("msrv: {opts:?}"),
+        |cx, repo| { msrv(cx, repo, opts) }
+    );
 
     Ok(())
 }

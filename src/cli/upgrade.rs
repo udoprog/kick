@@ -21,7 +21,7 @@ pub(crate) struct Opts {
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     with_repos!(
         cx,
-        "Upgrade",
+        "upgrade",
         format_args!("upgrade: {opts:?}"),
         |cx, repo| upgrade(cx, opts, repo),
     );

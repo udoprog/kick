@@ -751,8 +751,10 @@ enum Action {
     Rpm(SharedAction<cli::rpm::Opts>),
     /// Build an deb-based installer.
     Deb(SharedAction<cli::deb::Opts>),
-    /// Build a compressed artifact (like a zip or tar.gz).
-    Compress(SharedAction<cli::compress::Opts>),
+    /// Build a compressed zip artifact.
+    Zip(SharedAction<cli::compress::Opts>),
+    /// Build a compressed gzip artifact.
+    Gzip(SharedAction<cli::compress::Opts>),
     /// Build a github release.
     GithubRelease(SharedAction<cli::github_release::Opts>),
 }
@@ -777,7 +779,8 @@ impl Action {
             Action::Msi(action) => &action.shared,
             Action::Rpm(action) => &action.shared,
             Action::Deb(action) => &action.shared,
-            Action::Compress(action) => &action.shared,
+            Action::Zip(action) => &action.shared,
+            Action::Gzip(action) => &action.shared,
             Action::GithubRelease(action) => &action.shared,
         }
     }
@@ -797,7 +800,8 @@ impl Action {
             Action::Msi(action) => Some(&action.repo),
             Action::Rpm(action) => Some(&action.repo),
             Action::Deb(action) => Some(&action.repo),
-            Action::Compress(action) => Some(&action.repo),
+            Action::Zip(action) => Some(&action.repo),
+            Action::Gzip(action) => Some(&action.repo),
             Action::GithubRelease(action) => Some(&action.repo),
         }
     }
@@ -1144,8 +1148,11 @@ async fn entry() -> Result<ExitCode> {
         Action::Deb(opts) => {
             cli::deb::entry(&mut cx, &opts.action)?;
         }
-        Action::Compress(opts) => {
-            cli::compress::entry(&mut cx, &opts.action)?;
+        Action::Zip(opts) => {
+            cli::compress::entry(&mut cx, cli::compress::Kind::Zip, &opts.action)?;
+        }
+        Action::Gzip(opts) => {
+            cli::compress::entry(&mut cx, cli::compress::Kind::Gzip, &opts.action)?;
         }
         Action::GithubRelease(opts) => {
             cli::github_release::entry(&mut cx, &opts.action).await?;

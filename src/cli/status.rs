@@ -67,7 +67,7 @@ pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 
     with_repos!(
         cx,
-        "Status",
+        "get build status",
         format_args!("status: {opts:?}"),
         |cx, repo| do_status(cx, repo, opts, &client, today, &limit).await,
     );

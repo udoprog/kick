@@ -72,7 +72,7 @@ pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 
     with_repos!(
         cx,
-        "Github Release",
+        "publish github release",
         format_args!("github-release: {opts:?}"),
         |cx, repo| { github_publish(cx, &opts, repo, &client, &name, prerelease).await }
     );

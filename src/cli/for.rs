@@ -22,9 +22,12 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    with_repos!(cx, "For", format_args!("for: {opts:?}"), |cx, repo| {
-        r#for(cx, repo, &opts.command, &opts.args)
-    });
+    with_repos!(
+        cx,
+        "run commands",
+        format_args!("for: {opts:?}"),
+        |cx, repo| { r#for(cx, repo, &opts.command, &opts.args) }
+    );
 
     Ok(())
 }

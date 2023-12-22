@@ -22,7 +22,7 @@ macro_rules! with_repos {
             tracing::trace!("Running `{}`", $what);
 
             if let Err(error) = ::anyhow::Context::with_context(result, $cx.context($repo)) {
-                tracing::error!("Failed `{}`", $what);
+                tracing::error!("Failed to {}", $what);
 
                 for cause in error.chain() {
                     tracing::error!("Caused by: {}", cause);
@@ -50,6 +50,7 @@ pub(crate) mod r#for;
 pub(crate) mod github_release;
 pub(crate) mod msi;
 pub(crate) mod msrv;
+mod output;
 pub(crate) mod publish;
 pub(crate) mod rpm;
 pub(crate) mod set;

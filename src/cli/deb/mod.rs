@@ -1,9 +1,8 @@
-use std::fs::{self, File};
+use std::fs;
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use relative_path::RelativePath;
-use relative_path::RelativePathBuf;
 
 use crate::config::deb_depends;
 use crate::config::VersionRequirement;
@@ -15,13 +14,14 @@ use crate::release::Version;
 
 use crate::release::ReleaseOpts;
 
+use super::output::OutputOpts;
+
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     #[clap(flatten)]
     release: ReleaseOpts,
-    /// Output directory to write to.
-    #[clap(long, value_name = "output")]
-    output: Option<RelativePathBuf>,
+    #[clap(flatten)]
+    output: OutputOpts,
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
@@ -29,7 +29,7 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 
     with_repos!(
         cx,
-        "Build deb",
+        "build .deb",
         format_args!("deb: {:?}", opts),
         |cx, repo| { deb(cx, repo, opts, &release) }
     );
@@ -53,14 +53,6 @@ fn deb(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts, release: &Version<'_>) -> Result
 
     let debian_version = release.debian_version()?;
     builder.version(&debian_version);
-
-    let output = match &opts.output {
-        Some(output) => cx.to_path(repo.path().join(output)),
-        None => cx.to_path(repo.path().join("target/deb")),
-    };
-
-    let output_path = output.join(format!("{name}-{debian_version}-{arch}.deb"));
-    tracing::info!("Writing: {}", output_path.display());
 
     for install_file in crate::packaging::install_files(cx, repo)? {
         match install_file {
@@ -119,12 +111,10 @@ fn deb(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts, release: &Version<'_>) -> Result
         }
     }
 
-    if !output.is_dir() {
-        fs::create_dir_all(output)?;
-    }
-
-    let f = File::create(&output_path)
-        .with_context(|| anyhow!("Creating {}", output_path.display()))?;
-    builder.write_to(f).context("Writing .deb")?;
+    let output = opts.output.make_directory(cx, repo, "deb");
+    let mut f = output.create_file(format_args!("{name}-{debian_version}-{arch}.deb"))?;
+    builder
+        .write_to(&mut f)
+        .with_context(|| anyhow!("Writing deb to {}", f.path().display()))?;
     Ok(())
 }

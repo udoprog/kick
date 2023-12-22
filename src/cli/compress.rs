@@ -1,13 +1,12 @@
 use std::env::consts::{self, EXE_EXTENSION};
 use std::fs::{self, File};
-use std::io::{self, Cursor};
+use std::io::{self, Cursor, Write};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
-use clap::{Parser, ValueEnum};
-use relative_path::RelativePathBuf;
+use clap::Parser;
 use time::OffsetDateTime;
 
 use crate::ctxt::Ctxt;
@@ -16,8 +15,10 @@ use crate::model::Repo;
 use crate::release::ReleaseOpts;
 use crate::workspace;
 
-#[derive(Debug, Clone, ValueEnum)]
-enum Kind {
+use super::output::OutputOpts;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Kind {
     /// Construct a .tar.gz file.
     Gzip,
     /// Construct a .zip file.
@@ -37,35 +38,31 @@ impl Kind {
 pub(crate) struct Opts {
     #[clap(flatten)]
     release: ReleaseOpts,
-    /// The type of archive to build.
-    #[arg(name = "type", value_name = "type")]
-    ty: Kind,
     /// The operating system to append to the archive.
     ///
     /// If not specified, defaults to `std::env::consts::OS`,
     #[arg(long, value_name = "os")]
     os: Option<String>,
-    /// The output directory to write the archive to.
-    #[arg(long, value_name = "dir")]
-    output: Option<RelativePathBuf>,
+    #[clap(flatten)]
+    output: OutputOpts,
     /// Append the given extra files to the archive.
     #[arg(value_name = "path")]
     path: Vec<String>,
 }
 
-pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
+pub(crate) fn entry(cx: &mut Ctxt<'_>, ty: Kind, opts: &Opts) -> Result<()> {
     with_repos!(
         cx,
-        "Compress",
+        format!("compress {}", ty.extension()),
         format_args!("compress: {opts:?}"),
-        |cx, repo| { compress(cx, repo, opts) }
+        |cx, repo| { compress(cx, ty, opts, repo) }
     );
 
     Ok(())
 }
 
 #[tracing::instrument(skip_all)]
-fn compress(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
+fn compress(cx: &Ctxt<'_>, ty: Kind, opts: &Opts, repo: &Repo) -> Result<()> {
     let Some(workspace) = workspace::open(cx, repo)? else {
         bail!("Not a workspace");
     };
@@ -87,7 +84,7 @@ fn compress(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     let mut zip_archive;
     let mut gzip_archive;
 
-    let archive: &mut dyn Archive = match &opts.ty {
+    let archive: &mut dyn Archive = match ty {
         Kind::Gzip => {
             gzip_archive = GzipArchive::create();
             &mut gzip_archive
@@ -98,32 +95,11 @@ fn compress(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
         }
     };
 
-    let output = match &opts.output {
-        Some(output) => {
-            let output = output.to_path(&root);
-
-            if !output.is_dir() {
-                fs::create_dir_all(&output)
-                    .with_context(|| anyhow!("Create directory: {}", output.display()))?;
-            }
-
-            output
-        }
-        None => root.clone(),
-    };
-
     let binary_path = root
         .join("target")
         .join("release")
         .join(name)
         .with_extension(EXE_EXTENSION);
-
-    let output_path = output.join(format!(
-        "{name}-{release}-{arch}-{os}.{}",
-        opts.ty.extension()
-    ));
-
-    tracing::info!("Writing {}", output_path.display());
 
     let mut out = Vec::new();
 
@@ -144,7 +120,10 @@ fn compress(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     }
 
     let contents = archive.finish()?;
-    fs::write(&output_path, contents).with_context(|| output_path.display().to_string())?;
+    let output = opts.output.make_directory(cx, repo, ty.extension());
+    let mut f = output.create_file(format!("{name}-{release}-{arch}-{os}.{}", ty.extension()))?;
+    f.write_all(&contents)
+        .with_context(|| anyhow!("Writing contents to {}", f.path().display()))?;
     Ok(())
 }
 

@@ -24,7 +24,7 @@ pub(crate) struct Opts {
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     let release = opts.release.version(cx.env)?;
 
-    with_repos!(cx, "Build MSI", format!("msi: {opts:?}"), |cx, repo| {
+    with_repos!(cx, "build .msi", format!("msi: {opts:?}"), |cx, repo| {
         msi(cx, repo, opts, &release)
     });
 

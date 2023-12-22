@@ -48,7 +48,7 @@ pub(crate) fn install_files<'a>(cx: &Ctxt<'a>, repo: &Repo) -> Result<Vec<Instal
     Ok(files)
 }
 
-pub enum InstallFile<'a> {
+pub(crate) enum InstallFile<'a> {
     /// Binary file to be installed.
     Binary(String, PathBuf),
     /// Install the specified file.
