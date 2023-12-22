@@ -21,48 +21,23 @@ const LAST_YEAR: u32 = 2255;
 pub(crate) struct ReleaseOpts {
     /// Define a version.
     ///
-    /// This supports a number of formats, the idea would be that you can use a
-    /// single input variable for most if not all of your release needs.
+    /// Note that can also be defined through the `KICK_VERSION` environment
+    /// variable. If a switch is specified at the same time the switch takes
+    /// priority.
     ///
-    /// The supported formats are:
-    /// * A version number potentially with a custom prerelease, like
-    ///   `1.2.3-pre1`.
-    /// * A simple naive date, like `2023-12-11`.
-    /// * An alphabetical name, like `nightly` which will result in a dated
-    ///   version number where version numbers are strictly required. A version
-    ///   suffixed with a number like `nightly1` will be treated as a
-    ///   pre-release.
-    /// * A date follow by a custom suffix, like `2023-12-11-nightly`.
-    /// * It is also possible to use a variable like `%date` to get the custom
-    ///   date. For available variable see below.
+    /// This primarily supports plain versions, dates, or tags, such as `1.2.3`,
+    /// `2021-01-01`, or `nightly1` and will be coerced as appropriate into a
+    /// target version specification depending in which type of package is being
+    /// built.
     ///
-    /// A version can also take a simple kind of expression, where each
-    /// candidate is separated from left to right using double pipes ('||'). The
-    /// first expression for which all variables are defined, and results in a
-    /// non-empty expansion will be used.
+    /// This also supports simple expressions such as `$VALUE || %date` which
+    /// are evaluated left-to-right and picks the first non-empty version
+    /// defined.
     ///
-    /// This means that with Github Actions, you can uses something like this:
-    ///
-    /// ```text
-    /// --version "${{github.event.inputs.release}} || %date-nightly"
-    /// ```
-    ///
-    /// In this example, the `release` input might be defined by a
-    /// workflow_dispatch job, and if undefined the version will default to a
-    /// "nightly" dated release.
-    ///
-    /// Available variables:
-    ///
-    /// * `%date` - The current date.
-    /// * `%{github.tag}` - The tag name from GITHUB_REF if it matches
-    ///   `refs/tags/*`.
-    /// * `%{github.head}` - The branch name from GITHUB_REF if it matches
-    ///   `refs/heads/*`.
-    /// * `%{github.sha}` - The sha fetched from GITHUB_SHA.
-    ///
-    /// You can also define your own variables using `--define <key>=<value>`.
-    /// If the value is empty, the variable will be considered undefined.
-    #[clap(long, verbatim_doc_comment, value_name = "version")]
+    /// For a full specification of the supported format, see the wobbly version
+    /// specification:
+    /// https://github.com/udoprog/kick/blob/main/WOBBLY_VERSIONS.md
+    #[clap(long, value_name = "version")]
     version: Option<String>,
     /// Append additional components to the version.
     ///
@@ -74,7 +49,7 @@ pub(crate) struct ReleaseOpts {
     ///
     /// Empty components will be ignored and invalid components will cause an
     /// error.
-    #[clap(long, verbatim_doc_comment, value_name = "component")]
+    #[clap(long, value_name = "component")]
     append: Vec<String>,
     /// Define a custom variable. See `--version` for more information.
     #[clap(long, value_name = "<key>=<value>")]

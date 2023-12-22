@@ -43,7 +43,7 @@ pub(crate) struct Opts {
     ///   project. Note that the first version to support rust-version is 2021.
     /// * workspace - The first Rust version to support workspaces.
     /// * rustc - The version reported by your local rustc.
-    #[arg(long, verbatim_doc_comment, value_name = "version-spec")]
+    #[arg(long, value_name = "version-spec")]
     earliest: Option<String>,
     /// Latest minor version to test. Default is `rustc`.
     ///
@@ -54,7 +54,7 @@ pub(crate) struct Opts {
     ///   project. Note that the first version to support rust-version is 2021.
     /// * workspace - The first Rust version to support workspaces.
     /// * rustc - The version reported by your local rustc.
-    #[arg(long, verbatim_doc_comment, value_name = "version-spec")]
+    #[arg(long, value_name = "version-spec")]
     latest: Option<String>,
     /// Command to test with.
     ///

@@ -36,145 +36,73 @@ commands in regular repositories.
 
 <br>
 
-## Available commands
+## Overview
 
-For a complete list of options, make use of `--help`. But these are the
-available commands.
+This is an overview of the sections in the README:
 
-* `check` - Checks each repo (default action).
-* `changes` - Apply staged changes which have previously been saved by
-  `check` unless `--save` was specified.
-* `for` - Run a custom command.
-* `status` - Fetch the github build status.
-* `msrv` - Find the minimum supported rust version through bisection.
-* `version` - Update package versions.
-* `publish` - Publish packages in reverse order of dependencies.
-* `upgrade` - Perform repo-aware `cargo upgrade`.
-* `compress` - Compress files.
-* `msi` - Build MSI packages.
-* `rpm` - Build RPM packages.
-* `define` - Define variables from versions.
+* [Configuration](#configuration)
+* [Tour of commands](#tour-of-commands)
+* [Github Actions](#github-actions)
+* [Staged changes](#staged-changes)
+* [Repo sets](#repo-sets)
+* [Packaging actions](#packaging-actions)
+* [Version specification](#version-specification)
+* [Defining variables for Github Actions](#defining-variables-for-github-actions)
 
 <br>
 
-## The `rpm` action
+## Configuration
 
-The `rpm` action builds an RPM package for each repo. It is configured with
-the following section:
-
-```toml
-[[rpm.files]]
-source = "desktop/se.tedro.JapaneseDictionary.desktop"
-dest = "/usr/share/applications/"
-mode = "600"
-
-[[rpm.requires]]
-package = "tesseract-langpack-jpn"
-version = ">= 4.1.1"
-```
-
-Note that:
-* The default mode for files is inherited from the file.
-* The default version specification is `*`.
-
-Available version specifications are:
-* `*` - any version.
-* `= 1.2.3` - exact version.
-* `> 1.2.3` - greater than version.
-* `>= 1.2.3` - greater than or equal to version.
-* `< 1.2.3` - less than version.
-* `<= 1.2.3` - less than or equal to version.
+Kick optionally reads `Kick.toml`, for how to configure projects. See the
+[configuration documentation].
 
 <br>
 
-## The `msi` action
+## Tour of commands
 
-The `msi` action builds an MSI package for each repo.
+This section details some of my favorite things that Kick can do for you.
+For a complete list of options, make use of `--help`.
 
-It is configured by a single `wix/<main>.wsx` file in the repo. For an
-example, [see the `jpv` project].
+Kick can `check`, which performs a project-specific sanity such as checking
+that READMEs are up-to-date with their corresponding sources, badges are
+configured, github actions are correctly configured and much more.
 
-When building a wix package, we define the following variables that should
-be used:
-* `Root` - The root directory of the project. Use this for all files
-  referenced.
-* `Version` - The version of the package being build in the correct format
-  the MSI expects.
-* `Platform` - The platform the package is being built for. Either `x86` or
-  `x64`. This is simply expected to be passed along to the `Platform`
-  attribute in the `Package` element.
-* `Win64` - Is either `x86_64` or `x86`. This is simply expected to be
-  passed along to any elements with a `Win64` attribute.
-* `ProgramFilesFolder` - The directory that corresponds to the
-  platform-specific program files folder to use.
-* `BinaryName` - The name of the main binary.
-* `BinaryPath` - The path to the main binary. Should not be `Root` prefixed.
+Kick can effortlessly package your Rust projects using actions such
+`gzip`,`zip`, or packaging systems such as `rpm`, `deb`, or `msi` preparing
+them for distribution.
 
-[see the `jpv` project]: https://github.com/udoprog/jpv/tree/main/wix
+Kick can run custom commands over git modules using convenient filters.
+Combined with [repo sets](#repo-sets). Performing batch maintenance over
+many git projects has never been easier!
+* Want to do something with every project that hasn't been released yet? Try
+  `kick for --unreleased`.
+* Want to do something with every project that is out-of-sync with their
+  remote? Try `kick for --outdated`.
+
+And much much more!
 
 <br>
 
-## Version selection
+## Github Actions
 
-Kick comes with a flexible version-selection mechanism, this is available
-for the following actions:
-
-* `compress`
-* `msi`
-* `rpm`
-* `define` (see [Defining variables from
-  versions](#defining-variables-from-versions))
-
-The way it works is that the `--version` argument has a very flexible
-parsing mechanism.
-
-The supported formats are:
-* A version number potentially with a custom prerelease, like `1.2.3-pre1`.
-* A simple naive date, like `2023-12-11`.
-* An alphabetical name, like `nightly` which will result in a dated version
-  number where version numbers are strictly required. A version suffixed
-  with a number like `nightly1` will be treated as a pre-release.
-* A date follow by a custom suffix, like `2023-12-11-nightly`.
-* It is also possible to use a variable like `%date` to get the custom date.
-  For available variable see below.
-
-A version can also take a simple kind of expression, where each candidate is
-separated from left to right using double pipes ('||'). The first expression
-for which all variables are defined, and results in a non-empty expansion
-will be used.
-
-This means that with Github Actions, you can uses something like this:
-
-```text
---version "${{github.event.inputs.release}} || %date-nightly"
-```
-
-In this example, the `release` input might be defined by a workflow_dispatch
-job, and if undefined the version will default to a "nightly" dated release.
-
-Available variables:
-* `%date` - The current date.
-* `%{github.tag}` - The tag name from GITHUB_REF.
-* `%{github.head}` - The branch name from GITHUB_REF.
-
-You can also define your own variables using `--define <key>=<value>`. If
-the value is empty, the variable will be considered undefined.
-
-<br>
-
-## Defining variables from versions
-
-The `define` command can be used to define a variable in a Github action to
-extract the version being selected:
+Kick shines the brightest when used in combination with Github Actions. To
+facilitate this, the Kick repo can be used in a job directly:
 
 ```yaml
-- uses: udoprog/kick@nightly
-- run: kick define --version "${{github.event.inputs.channel}} || %date" --github-action
-  id: release
-# echo the selected version
-- run: echo ${{steps.release.outputs.version}}
-# echo "yes" or "no" depending on if the version is a pre-release or not.
-- run: echo ${{steps.release.outputs.pre}}
+jobs:
+  build:
+  - uses: udoprog/kick@nightly
+  - run: kick --version
+```
+
+In particular it is useful to specify a global `KICK_VERSION` using the
+[wobbly version specification][wobbly-versions] so that all kick commands
+that run will use the same version number.
+
+```yaml
+# If the `version` input is not available through a `workflow_dispatch`, defaults to a dated release.
+env:
+  KICK_VERSION: "${{github.event.inputs.version}} || %date"
 ```
 
 <br>
@@ -205,7 +133,7 @@ repos/kick/src/main.rs: Fixing
 
 <br>
 
-## Working with repo sets
+## Repo sets
 
 Commands can produce sets under certain circumstances, the sets are usually
 called `good` and `bad` depending on the outcome when performing the work
@@ -240,437 +168,141 @@ repos/kick
 
 <br>
 
-## Configuration
+## Packaging actions
 
-Configuration for kick is stores in a `Kick.toml` file. Whenever you run the
-command it will look recursively for the `Kick.toml` that is in the
-shallowest possible filesystem location.
+The following actions are packaging actions:
+* `zip` - Build .zip archives.
+* `gzip` - Build .tar.gz archives.
+* `msi` - Build .msi packages using wix.
+* `rpm` - Build .rpm packages (builtin method).
+* `deb` - Build .deb packages (builtin method).
 
-Configuration is loaded in a hierarchy, and each option can be extended or
-overriden on a per-repo basis. This is usually done through a
-`[repo."<name>"]` section.
-
-```toml
-[repo."repos/OxidizeBot"]
-crate = "oxidize"
-
-[repo."repos/OxidizeBot".upgrade]
-exclude = [
-   # We avoid touching this dependency since it has a complex set of version-dependent feature flags.
-   "libsqlite3-sys"
-]
-```
-
-The equivalent would be to put the following inside of
-`repos/OxidizeBot/Kick.toml`, but this is usually not desirable since you
-might not want to contaminate the project folder with a random file nobody
-knows what it is.
+These all look at the `[package]` section in the configuration to determine
+what to include in a given package. For example:
 
 ```toml
-# repos/OxidizeBot/Kick.toml
-crate = "oxidize"
-
-[upgrade]
-exclude = [
-   # We avoid touching this dependency since it has a complex set of version-dependent feature flags.
-   "libsqlite3-sys"
-]
+[[package.files]]
+source = "desktop/se.tedro.JapaneseDictionary.desktop"
+dest = "/usr/share/applications/"
+mode = "600"
 ```
 
-Any option defined in the following section can be used either as an
-override, or as part of its own repo-specific configuration.
+Note that:
+* The default mode for files is 655.
+* Where approproate, the default version specification is a wildcard version, or `*`.
+
+When a version specification is used, it supports the following formats:
+* `*` - any version.
+* `= 1.2.3` - exact version.
+* `> 1.2.3` - greater than version.
+* `>= 1.2.3` - greater than or equal to version.
+* `< 1.2.3` - less than version.
+* `<= 1.2.3` - less than or equal to version.
 
 <br>
 
-### `crate`
+### `rpm` specific settings
 
-Overrides the detected crate name.
-
-<br>
-
-#### Examples
+For the `rpm` action, you can specify requires to add to the generated
+archive in `Kick.toml`:
 
 ```toml
-[repo."repos/OxidizeBot"]
-crate = "oxidize"
+[[package.rpm.requires]]
+package = "tesseract-langpack-jpn"
+version = ">= 4.1.1"
 ```
 
 <br>
 
-### `variables`
+### `deb` specific settings
 
-Defines an arbitrary collection of extra variables that can be used in templates.
-
-These are overriden on a per-repo basis in the following ways:
-
-* Arrays are extended.
-* Maps are extended, so conflicting keys are overriden.
-
-<br>
-
-#### Examples
+For the `deb` action, you can specify dependencies to add to the generated
+archive in `Kick.toml`:
 
 ```toml
-[variables]
-github = "https://github.com"
-docs_rs = "https://docs.rs"
-docs_rs_image = "data:image/svg+xml;base64,PHN2ZyByb2xlPSJpbWciIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgdmlld0JveD0iMCAwIDUxMiA1MTIiPjxwYXRoIGZpbGw9IiNmNWY1ZjUiIGQ9Ik00ODguNiAyNTAuMkwzOTIgMjE0VjEwNS41YzAtMTUtOS4zLTI4LjQtMjMuNC0zMy43bC0xMDAtMzcuNWMtOC4xLTMuMS0xNy4xLTMuMS0yNS4zIDBsLTEwMCAzNy41Yy0xNC4xIDUuMy0yMy40IDE4LjctMjMuNCAzMy43VjIxNGwtOTYuNiAzNi4yQzkuMyAyNTUuNSAwIDI2OC45IDAgMjgzLjlWMzk0YzAgMTMuNiA3LjcgMjYuMSAxOS45IDMyLjJsMTAwIDUwYzEwLjEgNS4xIDIyLjEgNS4xIDMyLjIgMGwxMDMuOS01MiAxMDMuOSA1MmMxMC4xIDUuMSAyMi4xIDUuMSAzMi4yIDBsMTAwLTUwYzEyLjItNi4xIDE5LjktMTguNiAxOS45LTMyLjJWMjgzLjljMC0xNS05LjMtMjguNC0yMy40LTMzLjd6TTM1OCAyMTQuOGwtODUgMzEuOXYtNjguMmw4NS0zN3Y3My4zek0xNTQgMTA0LjFsMTAyLTM4LjIgMTAyIDM4LjJ2LjZsLTEwMiA0MS40LTEwMi00MS40di0uNnptODQgMjkxLjFsLTg1IDQyLjV2LTc5LjFsODUtMzguOHY3NS40em0wLTExMmwtMTAyIDQxLjQtMTAyLTQxLjR2LS42bDEwMi0zOC4yIDEwMiAzOC4ydi42em0yNDAgMTEybC04NSA0Mi41di03OS4xbDg1LTM4Ljh2NzUuNHptMC0xMTJsLTEwMiA0MS40LTEwMi00MS40di0uNmwxMDItMzguMiAxMDIgMzguMnYuNnoiPjwvcGF0aD48L3N2Zz4K"
-colors = { github = "8da0cb", crates_io = "fc8d62", docs_rs = "66c2a5" }
-badge_height = 20
+[[package.rpm.depends]]
+package = "tesseract-ocr-jpn"
+version = ">= 4.1.1"
 ```
 
 <br>
 
-### `job_name`
+### The `msi` action
 
-Defines the name of the default workflow, this can be used to link to in
-badges later and is also validated by the `ci` module.
+The `msi` action builds an MSI package for each repo.
+
+It is configured by a single `wix/<main>.wsx` file in the repo. For an
+example, [see the `jpv` project].
+
+When building a wix package, we define the following variables that should
+be used:
+* `Root` - The root directory of the project. Use this for all files
+  referenced.
+* `Version` - The version of the package being build in the correct format
+  the MSI expects.
+* `Platform` - The platform the package is being built for. Either `x86` or
+  `x64`. This is simply expected to be passed along to the `Platform`
+  attribute in the `Package` element.
+* `Win64` - Is either `x86_64` or `x86`. This is simply expected to be
+  passed along to any elements with a `Win64` attribute.
+* `ProgramFilesFolder` - The directory that corresponds to the
+  platform-specific program files folder to use.
+* `BinaryName` - The name of the main binary.
+* `BinaryPath` - The path to the main binary. Should not be `Root` prefixed.
+
+[see the `jpv` project]: https://github.com/udoprog/jpv/tree/main/wix
 
 <br>
 
-#### Examples
+## Version specification
 
-```toml
-job_name = "CI"
+Some actions need to determine a version to use, such as when creating a
+github release or building a package.
+
+For these you can:
+* Provide the version through the `--version <version>` switch.
+* Defining the `KICK_VERSION` environment variable.
+
+This primarily supports plain versions, dates, or tags, such as `1.2.3`,
+`2021-01-01`, or `nightly1` and will be coerced as appropriate into a
+target version specification depending in which type of package is being
+built.
+
+This also supports simple expressions such as `$VALUE || %date` which are
+evaluated left-to-right and picks the first non-empty version defined.
+
+For a full specification of the supported format, see the [wobbly version
+specification][wobbly-versions].
+
+<br>
+
+## Defining variables for Github Actions
+
+Sometimes you want to export information from Kick so that it can be used in
+other Github Actions, most commonly this involves the resolved version from
+a [version specification](#version-specification).
+
+The `define` command can easily be used to achieve this:
+
+```yaml
+# If the `version` input is not available through a `workflow_dispatch`, defaults to a dated release.
+env:
+  KICK_VERSION: "${{github.event.inputs.version}} || %date"
+
+jobs:
+  build:
+  - uses: udoprog/kick@nightly
+  - run: kick define --github-action
+    id: release
+  # echo the selected version
+  - run: echo ${{steps.release.outputs.version}}
+  # echo "yes" or "no" depending on if the version is a pre-release or not.
+  - run: echo ${{steps.release.outputs.pre}}
 ```
 
-<br>
-
-### `workflow`
-
-Defines the default workflow template to use when a workflow is missing.
-
-<br>
-
-#### Examples
-
-```toml
-workflow = "data/workflow.yml"
-```
-
-<br>
-
-### `license`
-
-Defines the license for the current repo.
-
-<br>
-
-#### Examples
-
-```toml
-license = "MIT/Apache-2.0"
-```
-
-<br>
-
-### `authors`
-
-Defines a list of authors that should be present wherever appropriate, such
-as in a `Cargo.toml`.
-
-Per-repo options will extend this list.
-
-<br>
-
-#### Examples
-
-```toml
-authors = ["John-John Tedro <udoprog@tedro.se>"]
-```
-
-<br>
-
-### `documentation`
-
-Defines the documentation link to use.
-
-<br>
-
-#### Examples
-
-```toml
-documentation = "{{docs_rs}}/{{package.name}}"
-```
-
-<br>
-
-### `readme_badges`
-
-Defines a set of badges to use for readmes.
-
-<br>
-
-#### Examples
-
-```toml
-readme_badges = ["+build"]
-```
-
-<br>
-
-### `disabled`
-
-A list of kick modules to disable.
-
-```toml
-disabled = ["ci"]
-```
-
-<br>
-
-## badges
-
-Defines a list of *available* badges to use, with the following options:
-
-* `id` the identifier of the badge, used in `lib_badges` or `readme_badges`
-  (see below).
-* `alt` the alt text of the badge.
-* `src` the source image of the badge.
-* `href` the link of the badge.
-* `height` the height of the badge.
-* `enabled` whether or not the badge should be enabled by default. This can
-  be overrided in `lib_badges` and `readme_badges` (see below).
-
-<br>
-
-#### Examples
-
-```toml
-[[badges]]
-alt = "github"
-src = "https://img.shields.io/badge/github-{{dash_escape package.repo}}-{{colors.github}}?style=for-the-badge&logo=github"
-href = "{{github}}/{{package.repo}}"
-height = "{{badge_height}}"
-
-[[badges]]
-id = "crates.io"
-alt = "crates.io"
-src = "https://img.shields.io/crates/v/{{package.name}}.svg?style=for-the-badge&color={{colors.crates_io}}&logo=rust"
-href = "https://crates.io/crates/{{package.name}}"
-height = "{{badge_height}}"
-
-[[badges]]
-id = "docs.rs"
-alt = "docs.rs"
-src = "https://img.shields.io/badge/docs.rs-{{dash_escape package.name}}-{{colors.docs_rs}}?style=for-the-badge&logoColor=white&logo={{docs_rs_image}}"
-href = "{{docs_rs}}/{{package.name}}"
-height = "{{badge_height}}"
-
-[[badges]]
-id = "build"
-alt = "build status"
-src = "https://img.shields.io/github/actions/workflow/status/{{package.repo}}/ci.yml?branch=main&style=for-the-badge"
-href = "{{github}}/{{package.repo}}/actions?query=branch%3Amain"
-height = "{{badge_height}}"
-enabled = false
-
-[[badges]]
-id = "discord"
-alt = "chat on discord"
-src = "https://img.shields.io/discord/558644981137670144.svg?logo=discord&style=flat-square"
-href = "https://discord.gg/v5AeNkT"
-height = "{{badge_height}}"
-enabled = false
-```
-
-<br>
-
-### `lib_badges` and `readme_badges`
-
-Defines set of badges to use, either for the `lib` or `readme` file (see
-below).
-
-Badges are either included by prefixing them with a `+`, or excluded by
-prefixing them with a `-`. This overrides their default option (see above).
-
-<br>
-
-#### Examples
-
-```toml
-lib_badges = ["-docs.rs", "-crates.io", "+discord"]
-readme_badges = ["-docs.rs", "-crates.io", "+discord"]
-```
-
-<br>
-
-### `lib` and `readme`
-
-Path to templates:
-* `lib` generates the documentation header for `main.rs` or `lib.rs` entrypoints.
-* `readme` generated the `README.md` file.
-
-<br>
-
-#### Examples
-
-```toml
-[repo."repos/rune"]
-lib = "data/rune.lib.md"
-readme = "data/rune.readme.md"
-```
-
-The following variables are available for expansion:
-
-* `body` the rest of the comment, which does not include the generated
-  header.
-* `badges` a list of badges, each `{html: string, markdown: string}`.
-* `header_marker` a header marker that can be used to indicate the end of a
-  generated documentation header, this will only be set if there's a
-  trailing documentation section in use (optional).
-* `job_name` the name of the CI job, as specified in the `job_name` setting.
-* `rust_versions.rustc` the rust version detected by running `rustc
-  --version` (optional).
-* `rust_versions.edition_2018` the rust version that corresponds to the 2018
-  edition.
-* `rust_versions.edition_2021` the rust version that corresponds to the 2021
-  edition.
-* `package.name` the name of the package.
-* `package.repo.owner` the owner of the repository, as in `<owner>/<name>`
-  (optional).
-* `package.repo.name` the name of the repository, as in `<owner>/<name>`
-  (optional).
-* `package.description` the repo-specific description from its primary
-  `Cargo.toml` manifest (optional).
-* `package.rust_version` the rust-version read from its primary `Cargo.toml`
-  manifest (optional).
-
-The following is an example `lib` template stored in `data/rune.lib.md`,
-note that the optional `header_marker` is used here in case there is a
-trailing comment in use.
-
-```md
-<img alt="rune logo" src="https://raw.githubusercontent.com/rune-rs/rune/main/assets/icon.png" />
-<br>
-{{#each badges}}
-{{literal this.html}}
-{{/each}}
-<br>
-{{#if package.rust_version}}
-Minimum support: Rust <b>{{package.rust_version}}+</b>.
-<br>
-{{/if}}
-<br>
-<a href="https://rune-rs.github.io"><b>Visit the site 🌐</b></a>
-&mdash;
-<a href="https://rune-rs.github.io/book/"><b>Read the book 📖</b></a>
-<br>
-<br>
-
-{{package.description}}
-{{#if body}}
-
-<br>
-
-{{literal header_marker~}}
-{{literal body}}
-{{/if}}
-```
-
-The following is an example `readme` template stored in `data/rune.readme.md`:
-
-```md
-<img alt="rune logo" src="https://raw.githubusercontent.com/rune-rs/rune/main/assets/icon.png" />
-<br>
-<a href="https://rune-rs.github.io"><b>Visit the site 🌐</b></a>
-&mdash;
-<a href="https://rune-rs.github.io/book/"><b>Read the book 📖</b></a>
-
-# {{package.name}}
-
-{{#each badges}}
-{{literal this.html}}
-{{/each}}
-<br>
-<br>
-
-{{package.description}}
-{{#if body}}
-
-<br>
-
-{{literal body}}
-{{/if}}
-```
-
-<br>
-
-### `[[version]]`
-
-Defines a list of files for which we match a regular expression for version replacements.
-
-Available keys are:
-* `[[version]].paths` - list of patterns to match when performing a version
-  replacement.
-* `[[version]].pattern` - the regular expression which performs the
-  replacement. Use the `?P<version>` group name to define what is being
-  replaced.
-
-<br>
-
-#### Examples
-
-```toml
-[[version]]
-paths = ["src/**/*.rs"]
-# replaces versions in repo level comments that looks likle [dependencies] declarations
-pattern = "//!\\s+[a-z-]+\\s*=\\s*.+(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+).+"
-```
-
-<br>
-
-## Modules
-
-Modules provide optional functionality that can be disabled on a per-repo
-basis through the `disabled` option above.
-
-<br>
-
-### `ci` module
-
-This looks for the github workflow configuration matching `{{job_name}}` and
-performs some basic validation over them, such as:
-
-* Making sure there is a build for your `rust-version` (if defined in
-  `Cargo.toml`).
-* Updates `rust-version` if it mismatches with the build.
-* Rejects outdates actions, such as `actions-rs/cargo` in favor of simple
-  `run` commands (exact list can't be configured yet).
-
-To disable, specify:
-
-```toml
-disabled = ["ci"]
-```
-
-<br>
-
-### `readme` module
-
-Generates a `README.md` based on what's in the top-level comments of your
-primary crate's entrypoint. See the `readme` template above.
-
-```rust
-//! This is my crate!
-//!
-//! ```
-//! let a = 42;
-//! ```
-```
-
-Would become the following `README.md`:
-
-````text
-This is my crate!
-
-```rust
-let a = 42;
-```
-````
-
-To disable, specify:
-
-```toml
-disabled = ["readme"]
-```
+Note that version information is exported by default when specifying
+`--github-action`. For other information that can be exported, see `define
+--help`.
+
+[configuration documentation]: https://github.com/udoprog/kick/blob/main/CONFIGURATION.md
+[wobbly-versions]: https://github.com/udoprog/kick/blob/main/WOBBLY_VERSIONS.md

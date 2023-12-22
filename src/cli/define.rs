@@ -77,7 +77,7 @@ pub(crate) struct Opts {
     /// Note that the MSI version follows the ProductVersion specification.
     ///
     /// See: https://learn.microsoft.com/en-us/windows/win32/msi/productversion
-    #[arg(long, verbatim_doc_comment, value_name = "name")]
+    #[arg(long, value_name = "name")]
     msi_version_to: Option<String>,
     /// If specified, the a `yes` or a `no` will be written to the specified
     /// variable depending on if it's a prerelease or not.
@@ -94,7 +94,7 @@ pub(crate) struct Opts {
     ///
     /// Causing a file to be written to the path specified by GITHUB_OUTPUT,
     /// containing the `version` and `pre` definitions.
-    #[arg(long, verbatim_doc_comment)]
+    #[arg(long)]
     github_action: bool,
 }
 
