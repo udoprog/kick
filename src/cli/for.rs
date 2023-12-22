@@ -1,4 +1,6 @@
-use anyhow::{anyhow, bail, Result};
+use std::ffi::{OsStr, OsString};
+
+use anyhow::{ensure, Result};
 use clap::Parser;
 
 use crate::ctxt::Ctxt;
@@ -9,32 +11,34 @@ use crate::process::Command;
 pub(crate) struct Opts {
     /// Command to run.
     #[arg(value_name = "command")]
-    command: Vec<String>,
+    command: OsString,
+    /// Arguments to pass to the command to run.
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "args"
+    )]
+    args: Vec<OsString>,
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    let Some((command, args)) = opts.command.split_first() else {
-        return Err(anyhow!("missing command"));
-    };
-
     with_repos!(cx, "For", format_args!("for: {opts:?}"), |cx, repo| {
-        r#for(cx, repo, command, args)
+        r#for(cx, repo, &opts.command, &opts.args)
     });
 
     Ok(())
 }
 
 #[tracing::instrument(name = "for", skip_all)]
-fn r#for(cx: &Ctxt<'_>, repo: &Repo, command: &str, args: &[String]) -> Result<()> {
+fn r#for(cx: &Ctxt<'_>, repo: &Repo, command: &OsStr, args: &[OsString]) -> Result<()> {
+    let path = cx.to_path(repo.path());
+
     let mut command = Command::new(command);
     command.args(args);
-    command.current_dir(cx.to_path(repo.path()));
+    command.current_dir(&path);
 
-    tracing::info!("{}", command.display());
-
-    if !command.status()?.success() {
-        bail!("command failed");
-    }
-
+    println!("{}:", path.display());
+    let status = command.status()?;
+    ensure!(status.success(), status);
     Ok(())
 }
