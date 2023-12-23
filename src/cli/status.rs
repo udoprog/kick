@@ -1,75 +1,29 @@
 use core::fmt;
-use std::io::Write;
 
 use anyhow::{bail, Context, Result};
-use chrono::{DateTime, Local, TimeZone, Utc};
+use chrono::{DateTime, Local, TimeZone};
 use clap::Parser;
-use reqwest::{header, Client, IntoUrl, Method, RequestBuilder, StatusCode};
-use serde::{de::IntoDeserializer, Deserialize};
-use url::Url;
 
 use crate::ctxt::Ctxt;
 use crate::model::{Repo, RepoPath};
-
-/// GitHub base URL.
-const API_URL: &str = "https://api.github.com";
+use crate::octokit;
 
 #[derive(Debug, Default, Parser)]
 pub(crate) struct Opts {
-    /// Output raw JSON response.
-    #[arg(long)]
-    raw_json: bool,
-    /// Limit number of workspace runs to inspect.
-    #[arg(long, value_name = "number")]
-    limit: Option<u32>,
     /// Include information on individual jobs.
     #[arg(long)]
     jobs: bool,
 }
 
-#[derive(Debug, Deserialize)]
-struct Workflow {
-    status: String,
-    #[serde(default)]
-    conclusion: Option<String>,
-    head_branch: String,
-    head_sha: String,
-    updated_at: DateTime<Utc>,
-    #[serde(default)]
-    jobs_url: Option<Url>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Job {
-    name: String,
-    status: String,
-    #[serde(default)]
-    conclusion: Option<String>,
-    started_at: Option<DateTime<Utc>>,
-    completed_at: Option<DateTime<Utc>>,
-    html_url: Url,
-}
-
-#[derive(Debug, Deserialize)]
-struct Jobs {
-    jobs: Vec<Job>,
-}
-
-#[derive(Debug, Deserialize)]
-struct WorkflowRuns {
-    workflow_runs: Vec<Workflow>,
-}
-
 pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    let client = Client::builder().build()?;
+    let client = cx.octokit()?;
     let today = Local::now();
-    let limit = opts.limit.unwrap_or(1).max(1).to_string();
 
     with_repos!(
         cx,
         "get build status",
         format_args!("status: {opts:?}"),
-        |cx, repo| do_status(cx, repo, opts, &client, today, &limit).await,
+        |cx, repo| do_status(cx, repo, opts, &client, today).await,
     );
 
     Ok(())
@@ -79,9 +33,8 @@ async fn do_status(
     cx: &Ctxt<'_>,
     repo: &Repo,
     opts: &Opts,
-    client: &Client,
+    client: &octokit::Client,
     today: DateTime<Local>,
-    limit: &str,
 ) -> Result<()> {
     let workflows = cx.config.workflows(repo)?;
 
@@ -99,7 +52,7 @@ async fn do_status(
 
     for id in workflows.into_keys() {
         println!("Workflow `{id}`:");
-        ok &= status(cx, &id, opts, repo, repo_path, today, client, limit).await?;
+        ok &= status(cx, &id, opts, repo, repo_path, today, client).await?;
     }
 
     if !ok {
@@ -115,10 +68,9 @@ async fn status(
     id: &str,
     opts: &Opts,
     repo: &Repo,
-    repo_path: RepoPath<'_>,
+    path: RepoPath<'_>,
     today: DateTime<Local>,
-    client: &Client,
-    limit: &str,
+    client: &octokit::Client,
 ) -> Result<bool> {
     let sha;
 
@@ -132,119 +84,80 @@ async fn status(
         None => None,
     };
 
-    let url = format!(
-        "{API_URL}/repos/{owner}/{name}/actions/workflows/{id}.yml/runs",
-        owner = repo_path.owner,
-        name = repo_path.name
-    );
-
-    let req = build_request(cx, client, url)
-        .query(&[("exclude_pull_requests", "true"), ("per_page", limit)]);
-
-    let res = req.send().await?;
-
-    tracing::trace!("  {:?}", res.headers());
-
-    if res.status() == StatusCode::NOT_FOUND {
+    let Some(mut res) = client
+        .workflow_runs(path.owner, path.name, id, true, Some(1))
+        .await?
+    else {
         println!("  Workflow `{id}` not found");
         return Ok(false);
-    }
+    };
 
-    if !res.status().is_success() {
-        println!("  {}: {}", res.status(), res.text().await?);
-        return Ok(false);
-    }
-
-    let runs: serde_json::Value = res.json().await?;
-
-    if opts.raw_json {
-        let mut out = std::io::stdout();
-        serde_json::to_writer_pretty(&mut out, &runs)?;
-        writeln!(out)?;
-    }
-
-    let runs: WorkflowRuns = WorkflowRuns::deserialize(runs.into_deserializer())?;
-
-    if runs.workflow_runs.is_empty() {
-        println!("  No runs");
-        return Ok(false);
-    }
-
+    let mut remaining = 1;
     let mut ok = true;
 
-    for run in runs.workflow_runs {
-        let updated_at = FormatTime::new(today, Some(run.updated_at.with_timezone(&Local)));
-
-        let head = if sha == Some(&run.head_sha) {
-            "* "
-        } else {
-            "  "
-        };
-
-        println!(
-            " {head}{sha} {branch}: {updated_at}: status: {}, conclusion: {}",
-            run.status,
-            run.conclusion.as_deref().unwrap_or("*in progress*"),
-            branch = run.head_branch,
-            sha = short(&run.head_sha),
-        );
-
-        let failure = run.conclusion.as_deref() == Some("failure");
-
-        if opts.jobs || failure {
-            if let Some(jobs_url) = &run.jobs_url {
-                let res = build_request(cx, client, jobs_url.clone()).send().await?;
-
-                if !res.status().is_success() {
-                    println!("  {}", res.text().await?);
-                    continue;
-                }
-
-                let jobs: Jobs = res.json().await?;
-
-                for job in jobs.jobs {
-                    println!(
-                        "   {name}: {html_url}",
-                        name = job.name,
-                        html_url = job.html_url
-                    );
-
-                    println!(
-                        "     status: {status}, conclusion: {conclusion}",
-                        status = job.status,
-                        conclusion = job.conclusion.as_deref().unwrap_or("*in progress*"),
-                    );
-
-                    println!(
-                        "     time: {} - {}",
-                        FormatTime::new(today, job.started_at.map(|d| d.with_timezone(&Local))),
-                        FormatTime::new(today, job.completed_at.map(|d| d.with_timezone(&Local)))
-                    );
-                }
-            }
+    while let Some(runs) = client.next_page(&mut res).await? {
+        if remaining == 0 {
+            break;
         }
 
-        ok &= !failure;
+        for run in runs.into_iter().take(remaining) {
+            remaining -= 1;
+            let updated_at = FormatTime::new(today, Some(run.updated_at.with_timezone(&Local)));
+
+            let head = if sha == Some(&run.head_sha) {
+                "* "
+            } else {
+                "  "
+            };
+
+            println!(
+                " {head}{sha} {branch}: {updated_at}: status: {}, conclusion: {}",
+                run.status,
+                run.conclusion.as_deref().unwrap_or("*in progress*"),
+                branch = run.head_branch,
+                sha = short(&run.head_sha),
+            );
+
+            let failure = run.conclusion.as_deref() == Some("failure");
+
+            if opts.jobs || failure {
+                if let Some(jobs_url) = &run.jobs_url {
+                    let jobs: Option<octokit::Jobs> = client.get(jobs_url).await?;
+
+                    let Some(jobs) = jobs else {
+                        continue;
+                    };
+
+                    for job in jobs.jobs {
+                        println!(
+                            "   {name}: {html_url}",
+                            name = job.name,
+                            html_url = job.html_url
+                        );
+
+                        println!(
+                            "     status: {status}, conclusion: {conclusion}",
+                            status = job.status,
+                            conclusion = job.conclusion.as_deref().unwrap_or("*in progress*"),
+                        );
+
+                        println!(
+                            "     time: {} - {}",
+                            FormatTime::new(today, job.started_at.map(|d| d.with_timezone(&Local))),
+                            FormatTime::new(
+                                today,
+                                job.completed_at.map(|d| d.with_timezone(&Local))
+                            )
+                        );
+                    }
+                }
+            }
+
+            ok &= !failure;
+        }
     }
 
     Ok(ok)
-}
-
-fn build_request<U>(cx: &Ctxt<'_>, client: &Client, url: U) -> RequestBuilder
-where
-    U: IntoUrl,
-{
-    let req = client
-        .request(Method::GET, url)
-        .header(header::USER_AGENT, &crate::USER_AGENT);
-
-    match &cx.env.github_token {
-        Some(auth) => req.header(
-            header::AUTHORIZATION,
-            &format!("Bearer {}", auth.as_secret()),
-        ),
-        None => req,
-    }
 }
 
 fn short(string: &str) -> impl std::fmt::Display + '_ {

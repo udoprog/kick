@@ -8,7 +8,7 @@ use tokio::fs::File;
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::model::Repo;
-use crate::octokit::Client;
+use crate::octokit;
 use crate::release::ReleaseOpts;
 
 #[derive(Default, Debug, Clone, Parser)]
@@ -62,11 +62,7 @@ pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 
     let version = opts.release.version(cx.env)?;
 
-    let Some(token) = &cx.env.github_token else {
-        bail!("Missing access token");
-    };
-
-    let client = Client::new(token.clone())?;
+    let client = cx.octokit()?;
     let name = version.to_string();
     let prerelease = version.is_pre();
 
@@ -85,7 +81,7 @@ async fn github_publish(
     cx: &Ctxt<'_>,
     opts: &Opts,
     repo: &Repo,
-    client: &Client,
+    client: &octokit::Client,
     name: &str,
     prerelease: bool,
 ) -> Result<()> {
@@ -149,9 +145,13 @@ async fn github_publish(
         }
     }
 
-    let mut releases = client.releases(path.owner, path.name)?;
+    let releases = client.releases(path.owner, path.name).await?;
 
     let mut release = 'out: {
+        let Some(mut releases) = releases else {
+            break 'out None;
+        };
+
         while let Some(page) = client
             .next_page(&mut releases)
             .await

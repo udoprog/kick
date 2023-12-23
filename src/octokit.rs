@@ -1,7 +1,9 @@
+use std::marker::PhantomData;
 use std::pin::pin;
 
 use anyhow::{ensure, Context, Result};
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use futures_core::Stream;
 use reqwest::{header, Method, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -20,12 +22,12 @@ static OCTET_STREAM: header::HeaderValue =
 pub(crate) struct Client {
     uploads_url: Url,
     url: Url,
-    token: SecretString,
+    token: Option<SecretString>,
     client: reqwest::Client,
 }
 
 impl Client {
-    pub(crate) fn new(token: SecretString) -> Result<Self> {
+    pub(crate) fn new(token: Option<SecretString>) -> Result<Self> {
         let uploads_url = Url::parse(UPLOADS_URL)?;
         let url = Url::parse(API_URL)?;
 
@@ -41,8 +43,47 @@ impl Client {
         })
     }
 
+    /// Get the runs for the given workflow id.
+    ///
+    /// Returns `None` if the workflow doesn't exist.
+    pub(crate) async fn workflow_runs(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: &str,
+        exclude_pull_requests: bool,
+        per_page: Option<usize>,
+    ) -> Result<Option<PagedWorkflowRuns>> {
+        let mut url = self.url.clone();
+
+        url.path_segments_mut().ok().context("path")?.extend(&[
+            "repos",
+            owner,
+            repo,
+            "actions",
+            "workflows",
+            &format!("{id}.yml"),
+            "runs",
+        ]);
+
+        {
+            let mut query = url.query_pairs_mut();
+            query.append_pair("exclude_pull_requests", &exclude_pull_requests.to_string());
+
+            if let Some(per_page) = per_page {
+                query.append_pair("per_page ", &per_page.to_string());
+            }
+        }
+
+        let Some(initial) = self.get(&url).await? else {
+            return Ok(None);
+        };
+
+        Ok(Some(PagedWorkflowRuns::new(url, initial)))
+    }
+
     /// Fetch all releases related to a repository.
-    pub(crate) fn releases(&self, owner: &str, repo: &str) -> Result<Releases> {
+    pub(crate) async fn releases(&self, owner: &str, repo: &str) -> Result<Option<Paged<Release>>> {
         let mut url = self.url.clone();
 
         url.path_segments_mut()
@@ -50,7 +91,11 @@ impl Client {
             .context("path")?
             .extend(&["repos", owner, repo, "releases"]);
 
-        Ok(Releases { url, page: 0 })
+        let Some(initial) = self.get(&url).await? else {
+            return Ok(None);
+        };
+
+        Ok(Some(Paged::new(url, initial)))
     }
 
     /// Get an existing git reference.
@@ -338,11 +383,31 @@ impl Client {
         Ok(())
     }
 
+    /// Fetch the first page of results.
+    pub(crate) async fn get<T>(&self, url: &Url) -> Result<Option<T>>
+    where
+        T: DeserializeOwned,
+    {
+        let req = self.request(Method::GET, url.clone()).build()?;
+        let res = self.client.execute(req).await?;
+
+        if res.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        ensure!(res.status().is_success(), res.status());
+        Ok(Some(res.json().await?))
+    }
+
     /// Fetch the next page of results.
     pub(crate) async fn next_page<T>(&self, paged: &mut T) -> Result<Option<Vec<T::Item>>>
     where
         T: ?Sized + Paginate,
     {
+        if let Some(page) = paged.cached_page() {
+            return Ok(Some(T::to_items(page)));
+        }
+
         let mut url = paged.url().clone();
         let page = paged.next_page();
         url.query_pairs_mut().append_pair("page", &page.to_string());
@@ -352,7 +417,7 @@ impl Client {
         let res = self.client.execute(req).await?;
 
         ensure!(res.status().is_success(), res.status());
-        let page: Vec<T::Item> = res.json().await?;
+        let page = T::to_items(res.json().await?);
 
         if page.is_empty() {
             return Ok(None);
@@ -362,13 +427,19 @@ impl Client {
     }
 
     fn request(&self, method: Method, url: Url) -> reqwest::RequestBuilder {
-        self.client
+        let mut builder = self
+            .client
             .request(method, url.clone())
-            .header(header::ACCEPT, &ACCEPT)
-            .header(
+            .header(header::ACCEPT, &ACCEPT);
+
+        if let Some(token) = &self.token {
+            builder = builder.header(
                 header::AUTHORIZATION,
-                format!("Bearer {}", self.token.as_secret()),
-            )
+                format!("Bearer {}", token.as_secret()),
+            );
+        }
+
+        builder
     }
 }
 
@@ -398,31 +469,148 @@ pub(crate) struct Reference {
     pub(crate) object: Object,
 }
 
-#[derive(Deserialize)]
-pub(crate) struct Releases {
-    url: Url,
-    page: usize,
+#[derive(Debug, Deserialize)]
+pub(crate) struct WorkflowRuns {
+    workflow_runs: Vec<WorkflowRun>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WorkflowRun {
+    pub(crate) status: String,
+    #[serde(default)]
+    pub(crate) conclusion: Option<String>,
+    pub(crate) head_branch: String,
+    pub(crate) head_sha: String,
+    pub(crate) updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub(crate) jobs_url: Option<Url>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Job {
+    pub(crate) name: String,
+    pub(crate) status: String,
+    #[serde(default)]
+    pub(crate) conclusion: Option<String>,
+    pub(crate) started_at: Option<DateTime<Utc>>,
+    pub(crate) completed_at: Option<DateTime<Utc>>,
+    pub(crate) html_url: Url,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Jobs {
+    pub(crate) jobs: Vec<Job>,
 }
 
 pub(crate) trait Paginate {
-    type Item: DeserializeOwned;
+    /// The container of the item being paged.
+    type Container: DeserializeOwned;
 
+    /// The item being paged.
+    type Item;
+
+    /// Get the URL for the next page to request.
     fn url(&self) -> &Url;
 
+    /// Get the initial page of responses.
+    fn cached_page(&mut self) -> Option<Self::Container>;
+
+    /// Advance the page count.
     fn next_page(&mut self) -> usize;
+
+    /// Coerce the container into its interior items.
+    fn to_items(container: Self::Container) -> Vec<Self::Item>;
 }
 
-impl Paginate for Releases {
-    type Item = Release;
+pub(crate) struct PagedWorkflowRuns {
+    url: Url,
+    page: usize,
+    first_page: Option<WorkflowRuns>,
+}
 
+impl PagedWorkflowRuns {
+    fn new(url: Url, first_page: Option<WorkflowRuns>) -> Self {
+        Self {
+            url,
+            page: 0,
+            first_page,
+        }
+    }
+}
+
+impl Paginate for PagedWorkflowRuns {
+    type Container = WorkflowRuns;
+    type Item = WorkflowRun;
+
+    #[inline]
     fn url(&self) -> &Url {
         &self.url
     }
 
+    #[inline]
+    fn cached_page(&mut self) -> Option<Self::Container> {
+        self.first_page.take()
+    }
+
+    #[inline]
     fn next_page(&mut self) -> usize {
         let page = self.page + 1;
         self.page = page;
         page
+    }
+
+    #[inline]
+    fn to_items(container: Self::Container) -> Vec<Self::Item> {
+        container.workflow_runs
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct Paged<T> {
+    url: Url,
+    page: usize,
+    initial: Option<Vec<T>>,
+    _marker: PhantomData<T>,
+}
+
+impl<T> Paged<T> {
+    fn new(url: Url, initial: Vec<T>) -> Self {
+        Self {
+            url,
+            page: 1,
+            initial: Some(initial),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T> Paginate for Paged<T>
+where
+    T: DeserializeOwned,
+{
+    type Container = Vec<T>;
+    type Item = T;
+
+    #[inline]
+    fn url(&self) -> &Url {
+        &self.url
+    }
+
+    #[inline]
+    fn cached_page(&mut self) -> Option<Self::Container> {
+        self.initial.take()
+    }
+
+    #[inline]
+    fn next_page(&mut self) -> usize {
+        let page = self.page + 1;
+        self.page = page;
+        page
+    }
+
+    #[inline]
+    fn to_items(container: Self::Container) -> Vec<Self::Item> {
+        container
     }
 }
 

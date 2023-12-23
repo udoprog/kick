@@ -12,6 +12,7 @@ use crate::env::Env;
 use crate::git::Git;
 use crate::manifest::Package;
 use crate::model::{Repo, RepoParams, RepoRef, State};
+use crate::octokit;
 use crate::process::Command;
 use crate::repo_sets::RepoSets;
 use crate::rust_version::RustVersion;
@@ -61,6 +62,11 @@ pub(crate) struct Ctxt<'a> {
 }
 
 impl<'a> Ctxt<'a> {
+    /// Grab an octokit client optionally configured with a token.
+    pub(crate) fn octokit(&self) -> Result<octokit::Client> {
+        octokit::Client::new(self.env.github_token.clone())
+    }
+
     pub(crate) fn root(&self) -> &Path {
         self.paths.root
     }
