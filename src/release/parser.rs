@@ -5,7 +5,7 @@ use std::str;
 
 use anyhow::{bail, Context, Result};
 
-use super::{Date, Name, SemanticVersion, Tail, Version, VersionKind};
+use super::{Date, SemanticVersion, Tag, Tail, Version, VersionKind};
 
 const EOF: char = '\0';
 
@@ -398,7 +398,7 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
         Ok(number)
     }
 
-    fn maybe_channel(&mut self) -> Result<Outcome<Name<'a>>> {
+    fn maybe_channel(&mut self) -> Result<Outcome<Tag<'a>>> {
         if self.peek() == '-' {
             self.next();
 
@@ -412,7 +412,7 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
         }
     }
 
-    fn channel(&mut self) -> Result<Outcome<Name<'a>>> {
+    fn channel(&mut self) -> Result<Outcome<Tag<'a>>> {
         if self.peek() == '%' {
             return self.expand(Parser::channel);
         }
@@ -426,13 +426,13 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
         self.make_name(name)
     }
 
-    fn make_name(&mut self, name: &'a str) -> Result<Outcome<Name<'a>>> {
+    fn make_name(&mut self, name: &'a str) -> Result<Outcome<Tag<'a>>> {
         let tail = match name {
             "git" => propagate!(self.hex()?).map(Tail::Hash),
             _ => propagate!(self.number()?).map(Tail::Number),
         };
 
-        Ok(Outcome::Some(Name { name, tail }))
+        Ok(Outcome::Some(Tag { name, tail }))
     }
 
     fn release(&mut self) -> Result<Outcome<Version<'a>>> {
@@ -599,23 +599,23 @@ fn parsing() {
         };
     }
 
-    macro_rules! name {
+    macro_rules! tag {
         ($name:expr, {$hash:expr}) => {
-            Name {
+            Tag {
                 name: $name,
                 tail: Some(Tail::Hash($hash)),
             }
         };
 
         ($name:expr, $number:expr) => {
-            Name {
+            Tag {
                 name: $name,
                 tail: Some(Tail::Number($number)),
             }
         };
 
         ($name:expr) => {
-            Name {
+            Tag {
                 name: $name,
                 tail: None,
             }
@@ -705,7 +705,7 @@ fn parsing() {
         Some(Version {
             prefix: Some("v"),
             kind: VersionKind::SemanticVersion(semver!(1, 2, 3)),
-            names: vec![name!("pre", 1)],
+            names: vec![tag!("pre", 1)],
             append: Vec::new()
         })
     );
@@ -725,7 +725,7 @@ fn parsing() {
         Some(Version {
             prefix: None,
             kind: VersionKind::Date(date!(2023, 1, 1)),
-            names: vec![name!("pre", 1)],
+            names: vec![tag!("pre", 1)],
             append: Vec::new()
         })
     );
@@ -735,7 +735,7 @@ fn parsing() {
         Some(Version {
             prefix: None,
             kind: VersionKind::Date(date!(2023, 1, 1)),
-            names: vec![name!("pre", 1)],
+            names: vec![tag!("pre", 1)],
             append: Vec::new()
         })
     );
@@ -745,7 +745,7 @@ fn parsing() {
         Some(Version {
             prefix: None,
             kind: VersionKind::Date(date!(2023, 1, 1)),
-            names: vec![name!("pre", 1)],
+            names: vec![tag!("pre", 1)],
             append: Vec::new()
         })
     );
@@ -765,7 +765,7 @@ fn parsing() {
         Some(Version {
             prefix: None,
             kind: VersionKind::SemanticVersion(semver!(1, 2, 3)),
-            names: vec![name!("patch", 2), name!("patch", 1)],
+            names: vec![tag!("patch", 2), tag!("patch", 1)],
             append: vec!["fc39"]
         })
     );
@@ -774,8 +774,8 @@ fn parsing() {
         expr!("name-patch1"),
         Some(Version {
             prefix: None,
-            kind: VersionKind::Name(name!("name")),
-            names: vec![name!("patch", 1)],
+            kind: VersionKind::Name(tag!("name")),
+            names: vec![tag!("patch", 1)],
             append: Vec::new(),
         })
     );
@@ -784,8 +784,8 @@ fn parsing() {
         expr!("name-patch1"),
         Some(Version {
             prefix: None,
-            kind: VersionKind::Name(name!("name")),
-            names: vec![name!("patch", 1)],
+            kind: VersionKind::Name(tag!("name")),
+            names: vec![tag!("patch", 1)],
             append: Vec::new(),
         })
     );
@@ -794,8 +794,8 @@ fn parsing() {
         expr!("name-gitffcc11"),
         Some(Version {
             prefix: None,
-            kind: VersionKind::Name(name!("name")),
-            names: vec![name!("git", { "ffcc11" })],
+            kind: VersionKind::Name(tag!("name")),
+            names: vec![tag!("git", { "ffcc11" })],
             append: Vec::new(),
         })
     );
@@ -804,8 +804,8 @@ fn parsing() {
         expr!("name-git%sha"),
         Some(Version {
             prefix: None,
-            kind: VersionKind::Name(name!("name")),
-            names: vec![name!("git", { "99aabbcceeff" })],
+            kind: VersionKind::Name(tag!("name")),
+            names: vec![tag!("git", { "99aabbcceeff" })],
             append: Vec::new(),
         })
     );
@@ -815,7 +815,7 @@ fn parsing() {
         Some(Version {
             prefix: None,
             kind: VersionKind::SemanticVersion(semver!(1, 2, 3)),
-            names: vec![name!("patch")],
+            names: vec![tag!("patch")],
             append: Vec::new(),
         })
     );
@@ -825,7 +825,7 @@ fn parsing() {
         Some(Version {
             prefix: None,
             kind: VersionKind::SemanticVersion(semver!(1, 2, 3)),
-            names: vec![name!("patch", 1)],
+            names: vec![tag!("patch", 1)],
             append: Vec::new(),
         })
     );

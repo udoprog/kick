@@ -192,7 +192,7 @@ impl fmt::Display for Date {
 enum VersionKind<'a> {
     SemanticVersion(SemanticVersion<'a>),
     Date(Date),
-    Name(Name<'a>),
+    Name(Tag<'a>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -213,20 +213,20 @@ impl fmt::Display for Tail<'_> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-struct Name<'a> {
+struct Tag<'a> {
     name: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     tail: Option<Tail<'a>>,
 }
 
-impl Name<'_> {
+impl Tag<'_> {
     #[inline]
     fn is_pre(&self) -> bool {
         matches!(&self.tail, Some(Tail::Number(..)))
     }
 }
 
-impl fmt::Display for Name<'_> {
+impl fmt::Display for Tag<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.name.fmt(f)?;
 
@@ -238,9 +238,9 @@ impl fmt::Display for Name<'_> {
     }
 }
 
-impl<'a> AsRef<Name<'a>> for Name<'a> {
+impl<'a> AsRef<Tag<'a>> for Tag<'a> {
     #[inline]
-    fn as_ref(&self) -> &Name<'a> {
+    fn as_ref(&self) -> &Tag<'a> {
         self
     }
 }
@@ -252,7 +252,7 @@ pub(super) struct Version<'a> {
     #[serde(flatten)]
     kind: VersionKind<'a>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    names: Vec<Name<'a>>,
+    names: Vec<Tag<'a>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     append: Vec<&'a str>,
 }
@@ -477,7 +477,7 @@ fn github_release<'a>(env: &'a Env, vars: &mut Vars<'a>) {
 fn find_pre_only<'a, I>(names: I) -> Option<u32>
 where
     I: IntoIterator,
-    I::Item: AsRef<Name<'a>>,
+    I::Item: AsRef<Tag<'a>>,
 {
     for name in names {
         if let Some(Tail::Number(number)) = name.as_ref().tail {
@@ -489,10 +489,10 @@ where
 }
 
 /// Find pre-release including full name.
-fn find_pre<'a, I>(names: I) -> (Option<Name<'a>>, Vec<Name<'a>>)
+fn find_pre<'a, I>(names: I) -> (Option<Tag<'a>>, Vec<Tag<'a>>)
 where
     I: IntoIterator,
-    I::Item: AsRef<Name<'a>>,
+    I::Item: AsRef<Tag<'a>>,
 {
     let mut found = None;
     let mut other = Vec::new();
