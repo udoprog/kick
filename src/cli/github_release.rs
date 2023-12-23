@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -179,7 +180,10 @@ async fn github_publish(
     }
 
     let release = if let Some(release) = release {
-        if release.draft != opts.draft || release.prerelease != prerelease {
+        if release.draft != opts.draft
+            || release.prerelease != prerelease
+            || release.target_commitish != sha
+        {
             tracing::info!("Updating existing release '{name}' (id: {})", release.id);
             client
                 .update_release(
@@ -193,10 +197,10 @@ async fn github_publish(
                     prerelease,
                     opts.draft,
                 )
-                .await?;
+                .await?
+        } else {
+            release
         }
-
-        release
     } else {
         tracing::info!("Creating release '{}'", name);
         client
@@ -213,6 +217,8 @@ async fn github_publish(
             .await?
     };
 
+    let mut existing = HashMap::new();
+
     if opts.delete_assets {
         for asset in &release.assets {
             tracing::info!("Deleting asset '{}' (id: {})", asset.name, asset.id);
@@ -221,6 +227,10 @@ async fn github_publish(
                 .delete_release_asset(path.owner, path.name, asset.id)
                 .await
                 .with_context(|| anyhow!("Deleting asset {}", asset.name))?;
+        }
+    } else {
+        for asset in &release.assets {
+            existing.insert(asset.name.clone(), asset.id);
         }
     }
 
@@ -239,8 +249,6 @@ async fn github_publish(
 
             let m = m.to_path(&root);
 
-            tracing::info!("Uploading asset {}", m.display());
-
             let meta = tokio::fs::metadata(&m)
                 .await
                 .with_context(|| m.display().to_string())?;
@@ -248,6 +256,15 @@ async fn github_publish(
             let f = File::open(&m)
                 .await
                 .with_context(|| m.display().to_string())?;
+
+            if let Some(&asset_id) = existing.get(name) {
+                tracing::info!("Deleting existing asset {}", m.display());
+                client
+                    .delete_release_asset(path.owner, path.name, asset_id)
+                    .await?;
+            }
+
+            tracing::info!("Uploading new asset {}", m.display());
 
             client
                 .upload_release_asset(path.owner, path.name, release.id, name, f, meta.len())

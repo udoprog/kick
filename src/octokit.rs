@@ -322,11 +322,11 @@ impl Client {
         &self,
         owner: &str,
         repo: &str,
-        id: u64,
+        release_id: u64,
         name: &str,
         input: I,
         len: u64,
-    ) -> Result<()>
+    ) -> Result<Asset>
     where
         I: 'static + AsyncRead + Send + Sync,
     {
@@ -337,7 +337,7 @@ impl Client {
             owner,
             repo,
             "releases",
-            &id.to_string(),
+            &release_id.to_string(),
             "assets",
         ]);
 
@@ -355,7 +355,7 @@ impl Client {
         let res = self.client.execute(req).await?;
 
         ensure!(res.status().is_success(), res.status());
-        Ok(())
+        Ok(res.json().await?)
     }
 
     /// Delete a release asset.
@@ -457,6 +457,7 @@ pub(crate) struct Release {
     pub(crate) prerelease: bool,
     #[serde(default)]
     pub(crate) assets: Vec<Asset>,
+    pub(crate) target_commitish: String,
 }
 
 #[derive(Debug, Deserialize)]
