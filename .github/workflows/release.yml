@@ -55,6 +55,6 @@ jobs:
     - uses: actions/download-artifact@v1
       with: {name: dist-ubuntu-latest, path: dist}
     - uses: udoprog/kick@nightly
-    - run: kick github-release --upload "dist/*" --github-action --delete
+    - run: kick github-release --upload "dist/*" --github-action
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
