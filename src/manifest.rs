@@ -9,11 +9,12 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::Path;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Deserialize, Serialize};
-use toml_edit::{Array, Document, Formatted, Item, Table, Value};
+use toml_edit::{Array, Document, Formatted, Item, Key, Table, Value};
 
+use crate::ctxt::Paths;
 use crate::rust_version::RustVersion;
 use crate::workspace::Crates;
 
@@ -36,54 +37,48 @@ pub(crate) const BUILD_DEPENDENCIES: &str = "build-dependencies";
 pub(crate) const DEPS: [&str; 3] = [DEPENDENCIES, DEV_DEPENDENCIES, BUILD_DEPENDENCIES];
 
 /// Open a `Cargo.toml`.
-pub(crate) fn open<P>(
-    path: P,
-    manifest_dir: &RelativePath,
-    manifest_path: &RelativePath,
-) -> Result<Option<Manifest>>
-where
-    P: AsRef<Path>,
-{
-    let input = match std::fs::read_to_string(path) {
-        Ok(input) => input,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e.into()),
+pub(crate) fn open(paths: Paths<'_>, manifest_path: &RelativePath) -> Result<Option<Manifest>> {
+    let Some(input) = paths.read_to_string(manifest_path)? else {
+        return Ok(None);
     };
 
-    let doc = input.parse()?;
-
     Ok(Some(Manifest {
-        doc,
-        dir: manifest_dir.to_owned(),
-        path: manifest_path.to_owned(),
+        doc: input
+            .parse()
+            .with_context(|| anyhow!("{}", manifest_path))?,
+        path: manifest_path.into(),
     }))
 }
 
-macro_rules! manifest_package_field {
+macro_rules! insert_field {
     ($insert:ident, $field:literal) => {
-        pub(crate) fn $insert(&mut self, value: &str) -> Result<()> {
+        pub(crate) fn $insert<S>(&mut self, value: S) -> Result<()>
+        where
+            S: AsRef<str>,
+        {
             let package = self.ensure_package_mut()?;
             package.insert(
                 $field,
-                Item::Value(Value::String(Formatted::new(String::from(value)))),
+                Item::Value(Value::String(Formatted::new(value.as_ref().to_owned()))),
             );
             Ok(())
         }
     };
 }
 
-macro_rules! insert_package_list {
+macro_rules! insert_list {
     ($insert:ident, $name:literal) => {
         pub(crate) fn $insert<I>(&mut self, iter: I) -> Result<()>
         where
-            I: IntoIterator<Item = String>,
+            I: IntoIterator,
+            I::Item: AsRef<str>,
         {
             let package = self.ensure_package_mut()?;
 
             let mut array = Array::new();
 
             for keyword in iter {
-                array.push(keyword);
+                array.push(keyword.as_ref().to_owned());
             }
 
             package.insert($name, Item::Value(Value::Array(array)));
@@ -95,33 +90,32 @@ macro_rules! insert_package_list {
 /// A parsed `Cargo.toml`.
 #[derive(Debug, Clone)]
 pub(crate) struct Manifest {
-    dir: RelativePathBuf,
-    path: RelativePathBuf,
+    path: Box<RelativePath>,
     doc: Document,
 }
 
 impl Manifest {
     /// Path of the manifest.
     pub(crate) fn path(&self) -> &RelativePath {
-        &self.path
+        self.path.as_ref()
     }
 
     /// Directory of manifest.
     pub(crate) fn dir(&self) -> &RelativePath {
-        &self.dir
+        self.path.parent().unwrap_or(RelativePath::new("."))
     }
 
     /// Find the location of the entrypoint `lib.rs`.
     pub(crate) fn entries(&self) -> Vec<RelativePathBuf> {
         if let Some(path) = self
             .lib()
-            .and_then(|lib| lib.get("path").and_then(toml_edit::Item::as_str))
+            .and_then(|lib| lib.get("path").and_then(Item::as_str))
         {
-            vec![self.dir.join(path)]
+            vec![self.dir().join(path)]
         } else {
             vec![
-                self.dir.join("src").join("lib.rs"),
-                self.dir.join("src").join("main.rs"),
+                self.dir().join("src").join("lib.rs"),
+                self.dir().join("src").join("main.rs"),
             ]
         }
     }
@@ -184,7 +178,7 @@ impl Manifest {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
         enum SortKey<'a> {
             CargoKey(CargoKey),
-            Other(&'a toml_edit::Key),
+            Other(&'a Key),
         }
 
         let package = self.ensure_package_mut()?;
@@ -261,12 +255,12 @@ impl Manifest {
             .ok_or_else(|| anyhow!("missing `[package]`"))
     }
 
-    manifest_package_field!(insert_version, "version");
-    manifest_package_field!(insert_license, "license");
-    manifest_package_field!(insert_readme, "readme");
-    manifest_package_field!(insert_repository, "repository");
-    manifest_package_field!(insert_homepage, "homepage");
-    manifest_package_field!(insert_documentation, "documentation");
+    insert_field!(insert_version, "version");
+    insert_field!(insert_license, "license");
+    insert_field!(insert_readme, "readme");
+    insert_field!(insert_repository, "repository");
+    insert_field!(insert_homepage, "homepage");
+    insert_field!(insert_documentation, "documentation");
 
     /// Access dependencies.
     pub(crate) fn dependencies<'a>(&'a self, crates: &'a Crates) -> Option<Dependencies<'a>> {
@@ -312,8 +306,8 @@ impl Manifest {
         self.doc.remove(key).is_some()
     }
 
-    insert_package_list!(insert_keywords, "keywords");
-    insert_package_list!(insert_categories, "categories");
+    insert_list!(insert_keywords, "keywords");
+    insert_list!(insert_categories, "categories");
 }
 
 impl Serialize for Manifest {
@@ -324,7 +318,6 @@ impl Serialize for Manifest {
         #[derive(Serialize, Deserialize)]
         struct DocumentRef<'a> {
             doc: &'a str,
-            manifest_dir: &'a RelativePath,
             manifest_path: &'a RelativePath,
         }
 
@@ -332,7 +325,6 @@ impl Serialize for Manifest {
 
         let doc_ref = DocumentRef {
             doc: &doc,
-            manifest_dir: &self.dir,
             manifest_path: &self.path,
         };
 
@@ -348,7 +340,6 @@ impl<'de> Deserialize<'de> for Manifest {
         #[derive(Serialize, Deserialize)]
         struct DocumentRef<'a> {
             doc: Cow<'a, str>,
-            manifest_dir: RelativePathBuf,
             manifest_path: RelativePathBuf,
         }
 
@@ -361,8 +352,7 @@ impl<'de> Deserialize<'de> for Manifest {
 
         Ok(Self {
             doc,
-            dir: doc_ref.manifest_dir,
-            path: doc_ref.manifest_path,
+            path: doc_ref.manifest_path.into(),
         })
     }
 }

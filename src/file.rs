@@ -1,4 +1,5 @@
 use core::fmt;
+use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -32,7 +33,7 @@ impl File {
     where
         P: AsRef<Path>,
     {
-        let string = std::fs::read_to_string(path)?;
+        let string = fs::read_to_string(path)?;
         Ok(Self::from_string(string))
     }
 

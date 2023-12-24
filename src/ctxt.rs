@@ -1,4 +1,5 @@
 use std::cell::{Ref, RefCell};
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{ExitCode, Stdio};
 
@@ -45,6 +46,22 @@ impl Paths<'_> {
         }
 
         path.as_ref().to_path(self.root)
+    }
+
+    /// Read the given path to a string.
+    ///
+    /// Returns `None` if the given path does not exist.
+    pub(crate) fn read_to_string<P>(self, path: P) -> Result<Option<String>>
+    where
+        P: AsRef<RelativePath>,
+    {
+        let path = self.to_path(path);
+
+        match fs::read_to_string(&path) {
+            Ok(input) => Ok(Some(input)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(anyhow::Error::from(e).context(format!("Reading {}", path.display()))),
+        }
     }
 }
 

@@ -812,7 +812,7 @@ impl fmt::Display for Part {
 struct ConfigCtxt<'a> {
     paths: Paths<'a>,
     current: &'a RelativePath,
-    kick_path: PathBuf,
+    kick_path: RelativePathBuf,
     parts: Vec<Part>,
     templating: &'a Templating,
 }
@@ -822,7 +822,7 @@ impl<'a> ConfigCtxt<'a> {
         Self {
             paths,
             current,
-            kick_path: paths.to_path(current.join(KICK_TOML)),
+            kick_path: current.join_normalized(KICK_TOML),
             parts: Vec::new(),
             templating,
         }
@@ -830,14 +830,11 @@ impl<'a> ConfigCtxt<'a> {
 
     /// Load the kick config.
     fn kick_config(&self) -> Result<Option<toml::Value>> {
-        let string = match std::fs::read_to_string(&self.kick_path) {
-            Ok(string) => string,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e).with_context(|| self.kick_path.display().to_string()),
+        let Some(string) = self.paths.read_to_string(&self.kick_path)? else {
+            return Ok(None);
         };
 
-        let config =
-            toml::from_str(&string).with_context(|| self.kick_path.display().to_string())?;
+        let config = toml::from_str(&string).with_context(|| self.kick_path.clone())?;
         Ok(Some(config))
     }
 
@@ -878,7 +875,7 @@ impl<'a> ConfigCtxt<'a> {
 
         anyhow::Error::from(error).context(anyhow!(
             "In {path}: {parts}",
-            path = self.kick_path.display()
+            path = self.paths.to_path(&self.kick_path).display()
         ))
     }
 
@@ -1324,7 +1321,10 @@ pub(crate) fn load<'a>(
     let mut cx = ConfigCtxt::new(paths, RelativePath::new(""), templating);
 
     let Some(config) = cx.kick_config()? else {
-        tracing::trace!("{}: Missing configuration file", cx.kick_path.display());
+        tracing::trace!(
+            "{}: Missing configuration file",
+            paths.to_path(cx.kick_path).display()
+        );
 
         return Ok(Config {
             base: RepoConfig::default(),

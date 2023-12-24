@@ -27,12 +27,7 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Crates>> {
         .name(repo.path())
         .or(repo.repo().map(|repo| repo.name));
 
-    let manifest_dir = manifest_path
-        .parent()
-        .ok_or_else(|| anyhow!("Missing parent directory"))?;
-
-    let Some(manifest) = manifest::open(cx.to_path(&manifest_path), manifest_dir, &manifest_path)?
-    else {
+    let Some(manifest) = manifest::open(cx.paths, &manifest_path)? else {
         return Ok(None);
     };
 
@@ -63,10 +58,9 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Crates>> {
             for manifest_dir in members {
                 let manifest_path = manifest_dir.join(CARGO_TOML);
 
-                let manifest =
-                    manifest::open(cx.to_path(&manifest_path), &manifest_dir, &manifest_path)
-                        .with_context(|| anyhow!("{manifest_path}"))?
-                        .with_context(|| anyhow!("{manifest_path}: missing file"))?;
+                let manifest = manifest::open(cx.paths, &manifest_path)
+                    .with_context(|| anyhow!("{manifest_path}"))?
+                    .with_context(|| anyhow!("{manifest_path}: missing file"))?;
 
                 queue.push_back(manifest);
             }
