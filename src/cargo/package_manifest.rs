@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Result};
 use toml_edit::{Array, Item, Table};
 
-use crate::manifest::Manifest;
+use crate::cargo::Manifest;
+use crate::cargo::RustVersion;
 use crate::model::{PackageParams, RepoRef};
-use crate::rust_version::RustVersion;
 
 macro_rules! package_field {
     ($get:ident, $field:literal) => {

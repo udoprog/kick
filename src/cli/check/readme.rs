@@ -7,10 +7,10 @@ use relative_path::RelativePath;
 use reqwest::Url;
 use serde::Serialize;
 
+use crate::cargo::Manifest;
 use crate::changes::{Change, Warning};
 use crate::ctxt::Ctxt;
 use crate::file::File;
-use crate::manifest::Manifest;
 use crate::model::{Repo, RepoParams};
 use crate::urls::Urls;
 

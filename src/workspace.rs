@@ -4,9 +4,9 @@ use std::ops::Deref;
 use anyhow::{anyhow, Context, Result};
 use relative_path::{RelativePath, RelativePathBuf};
 
+use crate::cargo::{self, Manifest, Package, WorkspaceTable};
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
-use crate::manifest::{self, Manifest, Package, Workspace};
 use crate::model::RepoRef;
 
 /// The default name of a cargo manifest `Cargo.toml`.
@@ -27,7 +27,7 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Crates>> {
         .name(repo.path())
         .or(repo.repo().map(|repo| repo.name));
 
-    let Some(manifest) = manifest::open(cx.paths, &manifest_path)? else {
+    let Some(manifest) = cargo::open(cx.paths, &manifest_path)? else {
         return Ok(None);
     };
 
@@ -58,7 +58,7 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Crates>> {
             for manifest_dir in members {
                 let manifest_path = manifest_dir.join(CARGO_TOML);
 
-                let manifest = manifest::open(cx.paths, &manifest_path)
+                let manifest = cargo::open(cx.paths, &manifest_path)
                     .with_context(|| anyhow!("{manifest_path}"))?
                     .with_context(|| anyhow!("{manifest_path}: missing file"))?;
 
@@ -127,7 +127,7 @@ impl Crates {
     }
 
     /// Iterate over manifest workspaces.
-    pub(crate) fn workspaces(&self) -> impl Iterator<Item = (usize, Workspace<'_>)> {
+    pub(crate) fn workspaces(&self) -> impl Iterator<Item = (usize, &WorkspaceTable)> {
         self.workspaces
             .iter()
             .flat_map(|&i| Some((i, self.manifests.get(i)?.as_workspace()?)))

@@ -13,15 +13,15 @@ use relative_path::RelativePathBuf;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
+use crate::cargo::Manifest;
+use crate::cargo::RustVersion;
 use crate::cli::check::cargo::CargoKey;
 use crate::cli::check::ci::ActionExpected;
 use crate::config::Replaced;
 use crate::ctxt::Ctxt;
 use crate::file::{File, LineColumn};
-use crate::manifest::Manifest;
 use crate::model::RepoRef;
 use crate::process::Command;
-use crate::rust_version::RustVersion;
 
 /// Save changes to the given path.
 pub(crate) fn load_changes(path: &Path) -> Result<Option<Vec<Change>>> {

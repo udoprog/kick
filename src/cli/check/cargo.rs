@@ -3,9 +3,9 @@ use core::fmt;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use crate::cargo::{self, Package};
 use crate::changes::{CargoIssue, Change};
 use crate::ctxt::Ctxt;
-use crate::manifest::{self, Package};
 use crate::model::UpdateParams;
 use crate::workspace::Crates;
 
@@ -167,19 +167,19 @@ pub(crate) fn work_cargo_toml(
     if matches!(modified_manifest.dependencies(crates), Some(d) if d.is_empty()) {
         issues.push(CargoIssue::PackageDependenciesEmpty);
         changed = true;
-        modified_manifest.remove(manifest::DEPENDENCIES);
+        modified_manifest.remove(cargo::DEPENDENCIES);
     }
 
     if matches!(modified_manifest.dev_dependencies(crates), Some(d) if d.is_empty()) {
         issues.push(CargoIssue::PackageDevDependenciesEmpty);
         changed = true;
-        modified_manifest.remove(manifest::DEV_DEPENDENCIES);
+        modified_manifest.remove(cargo::DEV_DEPENDENCIES);
     }
 
     if matches!(modified_manifest.build_dependencies(crates), Some(d) if d.is_empty()) {
         issues.push(CargoIssue::PackageBuildDependenciesEmpty);
         changed = true;
-        modified_manifest.remove(manifest::BUILD_DEPENDENCIES);
+        modified_manifest.remove(cargo::BUILD_DEPENDENCIES);
     }
 
     {

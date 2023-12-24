@@ -10,10 +10,10 @@ use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Deserialize, Serialize, Serializer};
 use url::Url;
 
+use crate::cargo::RustVersion;
 use crate::ctxt::Ctxt;
 use crate::git::Git;
 use crate::gitmodules;
-use crate::rust_version::RustVersion;
 use crate::workspace::Crates;
 
 /// Parameters particular to a given package.

@@ -7,16 +7,16 @@ use anyhow::{anyhow, Context, Result};
 use relative_path::RelativePath;
 
 use crate::actions::Actions;
+use crate::cargo::Package;
+use crate::cargo::RustVersion;
 use crate::changes::{Change, Warning};
 use crate::config::Config;
 use crate::env::Env;
 use crate::git::Git;
-use crate::manifest::Package;
 use crate::model::{Repo, RepoParams, RepoRef, State};
 use crate::octokit;
 use crate::process::Command;
 use crate::repo_sets::RepoSets;
-use crate::rust_version::RustVersion;
 
 /// Paths being used.
 #[derive(Debug, Clone, Copy)]

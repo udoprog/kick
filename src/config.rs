@@ -13,10 +13,10 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
+use crate::cargo::{self};
 use crate::ctxt::{Ctxt, Paths};
 use crate::glob::Glob;
 use crate::model::{PackageParams, Random, RenderRustVersions, Repo, RepoParams, RepoRef};
-use crate::rust_version::{self};
 use crate::templates::{Template, Templating};
 use crate::KICK_TOML;
 
@@ -545,8 +545,8 @@ impl Config<'_> {
             package_params,
             rust_versions: RenderRustVersions {
                 rustc: cx.rustc_version,
-                edition_2018: rust_version::EDITION_2018,
-                edition_2021: rust_version::EDITION_2021,
+                edition_2018: cargo::rust_version::EDITION_2018,
+                edition_2021: cargo::rust_version::EDITION_2021,
             },
             random,
             variables,

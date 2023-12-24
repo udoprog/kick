@@ -7,12 +7,11 @@ use bstr::BStr;
 use nondestructive::yaml::{self, Id, Mapping};
 use relative_path::RelativePath;
 
+use crate::cargo::{Package, RustVersion};
 use crate::changes::{Change, Warning, WorkflowChange};
 use crate::config::WorkflowConfig;
 use crate::ctxt::Ctxt;
-use crate::manifest::Package;
 use crate::model::Repo;
-use crate::rust_version::RustVersion;
 use crate::workspace::Crates;
 
 pub(crate) struct Ci<'a> {

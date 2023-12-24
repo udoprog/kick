@@ -1,9 +1,23 @@
+use self::dependencies::Dependencies;
 mod dependencies;
+
+pub(crate) use self::dependency::Dependency;
 mod dependency;
-mod package;
-mod workspace;
-mod workspace_dependencies;
-mod workspace_dependency;
+
+pub(crate) use self::package_manifest::Package;
+mod package_manifest;
+
+pub(crate) use self::workspace_table::WorkspaceTable;
+mod workspace_table;
+
+use self::dependencies_table::DependenciesTable;
+mod dependencies_table;
+
+pub(crate) use self::dependency_item::DependencyItem;
+mod dependency_item;
+
+pub(crate) use self::rust_version::RustVersion;
+pub(crate) mod rust_version;
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -15,15 +29,7 @@ use serde::{Deserialize, Serialize};
 use toml_edit::{Array, Document, Formatted, Item, Key, Table, Value};
 
 use crate::ctxt::Paths;
-use crate::rust_version::RustVersion;
 use crate::workspace::Crates;
-
-pub(crate) use self::dependencies::Dependencies;
-pub(crate) use self::dependency::Dependency;
-pub(crate) use self::package::Package;
-pub(crate) use self::workspace::Workspace;
-pub(crate) use self::workspace_dependencies::WorkspaceDependencies;
-pub(crate) use self::workspace_dependency::WorkspaceDependency;
 
 /// The "workspace" field.
 pub(crate) const WORKSPACE: &str = "workspace";
@@ -126,9 +132,9 @@ impl Manifest {
     }
 
     /// Get workspace configuration.
-    pub(crate) fn as_workspace(&self) -> Option<Workspace<'_>> {
+    pub(crate) fn as_workspace(&self) -> Option<&WorkspaceTable> {
         let doc = self.doc.get("workspace")?.as_table()?;
-        Some(Workspace::new(doc))
+        Some(WorkspaceTable::new(doc))
     }
 
     /// Get package configuration.
@@ -269,7 +275,7 @@ impl Manifest {
             .get(DEPENDENCIES)
             .and_then(|table| table.as_table())?;
 
-        Some(Dependencies::new(doc, crates, Workspace::dependencies))
+        Some(Dependencies::new(doc, crates, WorkspaceTable::dependencies))
     }
 
     /// Access dev-dependencies.
@@ -279,7 +285,11 @@ impl Manifest {
             .get(DEV_DEPENDENCIES)
             .and_then(|table| table.as_table())?;
 
-        Some(Dependencies::new(doc, crates, Workspace::dev_dependencies))
+        Some(Dependencies::new(
+            doc,
+            crates,
+            WorkspaceTable::dev_dependencies,
+        ))
     }
 
     /// Access build-dependencies.
@@ -292,7 +302,7 @@ impl Manifest {
         Some(Dependencies::new(
             doc,
             crates,
-            Workspace::build_dependencies,
+            WorkspaceTable::build_dependencies,
         ))
     }
 

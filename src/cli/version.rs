@@ -5,9 +5,9 @@ use clap::Parser;
 use semver::{Comparator, Op, Prerelease, Version, VersionReq};
 use toml_edit::{Formatted, Item, TableLike, Value};
 
+use crate::cargo;
 use crate::changes::Change;
 use crate::ctxt::Ctxt;
-use crate::manifest;
 use crate::model::Repo;
 use crate::workspace;
 
@@ -168,7 +168,7 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo, version_set: &VersionSet) ->
             }
         }
 
-        for key in manifest::DEPS {
+        for key in cargo::DEPS {
             if let Some(deps) = modified.get_mut(key).and_then(|d| d.as_table_like_mut()) {
                 if modify_dependencies(deps, &versions)? {
                     changed_manifest = true;
@@ -177,10 +177,10 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo, version_set: &VersionSet) ->
         }
 
         if let Some(workspace) = modified
-            .get_mut(manifest::WORKSPACE)
+            .get_mut(cargo::WORKSPACE)
             .and_then(|d| d.as_table_like_mut())
         {
-            for key in manifest::DEPS {
+            for key in cargo::DEPS {
                 if let Some(deps) = workspace.get_mut(key).and_then(|d| d.as_table_like_mut()) {
                     if modify_dependencies(deps, &versions)? {
                         changed_manifest = true;

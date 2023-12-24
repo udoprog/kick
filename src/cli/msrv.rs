@@ -5,12 +5,11 @@ use std::process::Stdio;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 
+use crate::cargo::{self, RustVersion};
 use crate::changes::Change;
 use crate::ctxt::Ctxt;
-use crate::manifest;
 use crate::model::Repo;
 use crate::process::Command;
-use crate::rust_version::{self, RustVersion};
 
 /// Oldest version where rust-version was introduced.
 const RUST_VERSION_SUPPORTED: RustVersion = RustVersion::new(1, 56, None);
@@ -138,7 +137,7 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
             let mut save = if opts.no_remove_dev_dependencies {
                 false
             } else {
-                manifest.remove(manifest::DEV_DEPENDENCIES)
+                manifest.remove(cargo::DEV_DEPENDENCIES)
             };
 
             save |= if version < RUST_VERSION_SUPPORTED {
@@ -221,9 +220,9 @@ fn parse_minor_version(
 ) -> Result<Option<RustVersion>> {
     Ok(match string {
         Some("rustc") => cx.rustc_version,
-        Some("2018") => Some(rust_version::EDITION_2018),
-        Some("2021") => Some(rust_version::EDITION_2021),
-        Some("workspace") => Some(rust_version::WORKSPACE),
+        Some("2018") => Some(cargo::rust_version::EDITION_2018),
+        Some("2021") => Some(cargo::rust_version::EDITION_2021),
+        Some("workspace") => Some(cargo::rust_version::WORKSPACE),
         Some("rust-version") => rust_version.copied(),
         Some(n) => Some(RustVersion::new(1, n.parse()?, None)),
         None => None,

@@ -308,6 +308,7 @@
 #![allow(clippy::type_complexity)]
 
 mod actions;
+mod cargo;
 mod changes;
 mod cli;
 mod config;
@@ -318,14 +319,12 @@ mod file;
 mod git;
 mod gitmodules;
 mod glob;
-mod manifest;
 mod model;
 mod octokit;
 mod packaging;
 mod process;
 mod release;
 mod repo_sets;
-mod rust_version;
 mod templates;
 mod urls;
 mod wix;

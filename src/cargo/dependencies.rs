@@ -2,21 +2,23 @@ use std::iter::from_fn;
 
 use toml_edit::Table;
 
-use crate::manifest::{Dependency, Workspace, WorkspaceDependencies};
+use crate::cargo::{DependenciesTable, Dependency, WorkspaceTable};
 use crate::workspace::Crates;
+
+use super::DependencyItem;
 
 /// Represents the `[dependencies]` section of a manifest.
 pub(crate) struct Dependencies<'a> {
     doc: &'a Table,
     crates: &'a Crates,
-    accessor: fn(&Workspace<'a>) -> Option<WorkspaceDependencies<'a>>,
+    accessor: fn(&'a WorkspaceTable) -> Option<&'a DependenciesTable>,
 }
 
 impl<'a> Dependencies<'a> {
-    pub(crate) fn new(
+    pub(super) fn new(
         doc: &'a Table,
         crates: &'a Crates,
-        accessor: fn(&Workspace<'a>) -> Option<WorkspaceDependencies<'a>>,
+        accessor: fn(&'a WorkspaceTable) -> Option<&'a DependenciesTable>,
     ) -> Self {
         Self {
             doc,
@@ -26,18 +28,19 @@ impl<'a> Dependencies<'a> {
     }
 
     /// Test if the dependencies section is empty.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.doc.is_empty()
     }
 
     /// Iterate over dependencies.
-    pub fn iter(&self) -> impl Iterator<Item = Dependency<'a>> + 'a {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = Dependency<'a>> + 'a {
         let mut iter = self.doc.iter();
         let workspace = self.crates;
         let accessor = self.accessor;
 
         from_fn(move || {
             let (key, value) = iter.next()?;
+            let value = DependencyItem::new(value);
             Some(Dependency::new(key, value, workspace, accessor))
         })
     }
