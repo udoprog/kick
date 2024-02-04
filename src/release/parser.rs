@@ -721,6 +721,16 @@ fn parsing() {
     );
 
     assert_eq!(
+        parse!("2023-01-01"),
+        Some(Version {
+            prefix: None,
+            kind: VersionKind::Date(date!(2023, 1, 1)),
+            names: Vec::new(),
+            append: Vec::new()
+        })
+    );
+
+    assert_eq!(
         parse!("2023-1-1-pre1"),
         Some(Version {
             prefix: None,
