@@ -1,39 +1,21 @@
-# trunk github action
+# github action to download latest kick command
 
-Github action that installs and runs a [`trunk`] command.
+Github action that installs [`kick`].
 
-[`trunk`]: https://github.com/thedodd/trunk
+[`kick`]: https://github.com/udoprog/kick
 
 ## Inputs
 
-### `args`
-
-**Optional** Arguments to pass to `trunk`. Defaults to `build`.
-
 ### `version`
 
-**Optional** The version of `trunk` to use. Must match a tagged release. Defaults to `latest`.
+**Optional** The version of `kick` to use. Must match a tagged release. Defaults to `latest`.
 
-See: https://github.com/thedodd/trunk
-
-### `wasm-bindgen-version`
-
-**Optional** The version of `wasm-bindgen` to install. Must match a tagged release. Defaults to `latest`.
-
-See: https://github.com/rustwasm/wasm-bindgen
-
-### `binaryen-version`
-
-**Optional** The version of `binaryen` to install. Must match a tagged release. Defaults to `latest`.
-
-See: https://github.com/WebAssembly/binaryen
+See: https://github.com/udoprog/kick
 
 ## Example usage
 
 ```yaml
-- uses: udoprog/trunk-action@v1
+- uses: udoprog/kick@nightly
   with:
-    wasm-bindgen-version: latest
     version: latest
-    args: build
 ```

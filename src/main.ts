@@ -22,7 +22,18 @@ async function version(repo: string, key: string): Promise<string> {
 
     const response = await http.get(`https://api.github.com/repos/${repo}/releases/latest`);
     const body = await response.readBody();
-    return JSON.parse(body).tag_name;
+
+    if (response.message.statusCode !== 200) {
+        throw new Error(`Failed to fetch latest version of ${repo}: ${response.message.statusCode}: ${body}`);
+    }
+
+    let data = JSON.parse(body);
+
+    if (!data.tag_name) {
+        throw new Error(`Failed to fetch latest version of ${repo}: No tag_name`);
+    }
+
+    return data.tag_name;
 }
 
 /**
