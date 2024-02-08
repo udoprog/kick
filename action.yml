@@ -4,11 +4,11 @@ author: 'udoprog'
 
 inputs:
   version:
-    description: 'Version of kick to install. Defaults to "latest".'
-    default: 'latest'
+    description: 'Version of kick to install. Defaults to whatever is set for this branch.'
+    default: '2024-02-05'
 
 runs:
-  using: 'node16'
+  using: 'node20'
   main: 'dist/index.js'
 
 branding:
