@@ -893,9 +893,8 @@ impl<'a> ConfigCtxt<'a> {
     where
         S: AsRef<str>,
     {
-        let path = self.paths.root.join(path.as_ref());
-        let template =
-            std::fs::read_to_string(&path).with_context(|| path.display().to_string())?;
+        let path = self.current.join(path.as_ref()).to_path(self.paths.root);
+        let template = fs::read_to_string(&path).with_context(|| path.display().to_string())?;
         self.compile(template)
     }
 
