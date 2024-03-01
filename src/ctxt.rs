@@ -6,7 +6,6 @@ use std::process::{ExitCode, Stdio};
 use anyhow::{anyhow, Context, Result};
 use relative_path::RelativePath;
 
-use crate::actions::Actions;
 use crate::cargo::Package;
 use crate::cargo::RustVersion;
 use crate::changes::{Change, Warning};
@@ -68,7 +67,6 @@ impl Paths<'_> {
 pub(crate) struct Ctxt<'a> {
     pub(crate) paths: Paths<'a>,
     pub(crate) config: &'a Config<'a>,
-    pub(crate) actions: &'a Actions<'a>,
     pub(crate) repos: &'a [Repo],
     pub(crate) rustc_version: Option<RustVersion>,
     pub(crate) git: Option<Git>,

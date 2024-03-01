@@ -19,7 +19,7 @@ pub(crate) trait ActionsCheck {
 #[derive(Default)]
 pub(crate) struct Actions<'a> {
     latest: HashMap<String, String>,
-    deny: HashMap<String, String>,
+    deny: HashMap<String, Option<Box<str>>>,
     checks: HashMap<String, &'a dyn ActionsCheck>,
 }
 
@@ -30,8 +30,8 @@ impl<'a> Actions<'a> {
     }
 
     /// Deny the use of an action.
-    pub(crate) fn deny(&mut self, name: &str, reason: &str) {
-        self.deny.insert(name.into(), reason.into());
+    pub(crate) fn deny(&mut self, name: &str, reason: Option<&str>) {
+        self.deny.insert(name.into(), reason.map(Box::from));
     }
 
     /// Insert an actions check.
@@ -44,9 +44,14 @@ impl<'a> Actions<'a> {
         self.latest.get(name).map(|s| s.as_str())
     }
 
-    /// Get denied.
-    pub(crate) fn get_deny(&self, name: &str) -> Option<&str> {
-        self.deny.get(name).map(|s| s.as_str())
+    /// Test if a crate is denied.
+    pub(crate) fn is_denied(&self, name: &str) -> bool {
+        self.deny.contains_key(name)
+    }
+
+    /// Get deny reason.
+    pub(crate) fn get_deny_reason(&self, name: &str) -> Option<&str> {
+        self.deny.get(name).and_then(Option::as_deref)
     }
 
     /// Get denied.

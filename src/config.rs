@@ -133,6 +133,37 @@ impl Package {
 }
 
 #[derive(Default, Debug, Clone)]
+pub(crate) struct DenyAction {
+    /// The name of a denied action.
+    pub(crate) name: String,
+    /// The reason an action is denied.
+    pub(crate) reason: Option<String>,
+}
+
+#[derive(Default, Debug, Clone)]
+pub(crate) struct LatestAction {
+    /// The name of an action.
+    pub(crate) name: String,
+    /// The latest version available of the given action.
+    pub(crate) version: String,
+}
+
+#[derive(Default, Debug, Clone)]
+pub(crate) struct Actions {
+    /// Packages to include in an rpm package.
+    pub(crate) deny: Vec<DenyAction>,
+    /// Latest versions of available actions.
+    pub(crate) latest: Vec<LatestAction>,
+}
+
+impl Actions {
+    fn merge_with(&mut self, other: Self) {
+        self.deny.extend(other.deny);
+        self.latest.extend(other.latest);
+    }
+}
+
+#[derive(Default, Debug, Clone)]
 pub(crate) struct PackageFile {
     /// The source of an rpm file.
     pub(crate) source: String,
@@ -312,6 +343,8 @@ pub(crate) struct RepoConfig {
     pub(crate) upgrade: Upgrade,
     /// RPM configuration.
     pub(crate) package: Package,
+    /// Actions configuration.
+    pub(crate) actions: Actions,
 }
 
 impl RepoConfig {
@@ -334,6 +367,7 @@ impl RepoConfig {
         self.version.extend(other.version);
         self.upgrade.merge_with(other.upgrade);
         self.package.merge_with(other.package);
+        self.actions.merge_with(other.actions);
         merge_map(&mut self.variables, other.variables);
     }
 
@@ -644,6 +678,28 @@ impl Config<'_> {
         let mut files = self.base.package.files.iter().collect::<Vec<_>>();
 
         if let Some(values) = self.repo.get(repo.path()).map(|r| &r.package.files) {
+            files.extend(values);
+        }
+
+        files
+    }
+
+    /// Get all denied actions.
+    pub(crate) fn action_deny(&self, repo: &RepoRef) -> Vec<&DenyAction> {
+        let mut files = self.base.actions.deny.iter().collect::<Vec<_>>();
+
+        if let Some(values) = self.repo.get(repo.path()).map(|r| &r.actions.deny) {
+            files.extend(values);
+        }
+
+        files
+    }
+
+    /// Get all latest actions.
+    pub(crate) fn action_latest(&self, repo: &RepoRef) -> Vec<&LatestAction> {
+        let mut files = self.base.actions.latest.iter().collect::<Vec<_>>();
+
+        if let Some(values) = self.repo.get(repo.path()).map(|r| &r.actions.latest) {
             files.extend(values);
         }
 
@@ -1165,8 +1221,13 @@ impl<'a> ConfigCtxt<'a> {
         let upgrade = self
             .as_table(config, "upgrade", Self::upgrade)?
             .unwrap_or_default();
+
         let package = self
             .as_table(config, "package", Self::package)?
+            .unwrap_or_default();
+
+        let actions = self
+            .as_table(config, "actions", Self::actions)?
             .unwrap_or_default();
 
         Ok(RepoConfig {
@@ -1186,6 +1247,7 @@ impl<'a> ConfigCtxt<'a> {
             version: version.unwrap_or_default(),
             upgrade,
             package,
+            actions,
         })
     }
 
@@ -1242,7 +1304,7 @@ impl<'a> ConfigCtxt<'a> {
         let mut config = self.table(value)?;
 
         let Some(package) = self.in_string(&mut config, "package", |_, string| Ok(string))? else {
-            return Err(anyhow!("Missing package"));
+            bail!("Missing package");
         };
 
         let version = self
@@ -1307,6 +1369,47 @@ impl<'a> ConfigCtxt<'a> {
 
         self.ensure_empty(config)?;
         Ok(Package { files, rpm, deb })
+    }
+
+    fn deny_action(&mut self, value: toml::Value) -> Result<DenyAction> {
+        let mut config = self.table(value)?;
+
+        let Some(name) = self.as_string(&mut config, "name")? else {
+            bail!("Missing name of action");
+        };
+
+        let reason = self.as_string(&mut config, "reason")?;
+
+        self.ensure_empty(config)?;
+        Ok(DenyAction { name, reason })
+    }
+
+    fn latest_action(&mut self, value: toml::Value) -> Result<LatestAction> {
+        let mut config = self.table(value)?;
+
+        let Some(name) = self.as_string(&mut config, "name")? else {
+            bail!("Missing name of action");
+        };
+
+        let Some(version) = self.as_string(&mut config, "version")? else {
+            bail!("Missing version of action");
+        };
+
+        self.ensure_empty(config)?;
+        Ok(LatestAction { name, version })
+    }
+
+    fn actions(&mut self, mut config: toml::Table) -> Result<Actions> {
+        let deny = self
+            .in_array(&mut config, "deny", Self::deny_action)?
+            .unwrap_or_default();
+
+        let latest = self
+            .in_array(&mut config, "latest", Self::latest_action)?
+            .unwrap_or_default();
+
+        self.ensure_empty(config)?;
+        Ok(Actions { deny, latest })
     }
 }
 

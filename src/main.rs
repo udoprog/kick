@@ -338,7 +338,6 @@ use std::process::ExitCode;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, FromArgMatches, Parser, Subcommand};
 
-use actions::Actions;
 use env::SecretString;
 use relative_path::{RelativePath, RelativePathBuf};
 use tracing::metadata::LevelFilter;
@@ -660,18 +659,6 @@ async fn entry() -> Result<ExitCode> {
 
     let mut sets = repo_sets::RepoSets::new(root.join("sets"))?;
 
-    let mut actions = Actions::default();
-    actions.latest("actions/checkout", "v3");
-    actions.check(
-        "actions-rs/toolchain",
-        &actions::ActionsRsToolchainActionsCheck,
-    );
-    actions.deny("actions-rs/cargo", "using `run` is less verbose and faster");
-    actions.deny(
-        "actions-rs/toolchain",
-        "using `run` is less verbose and faster",
-    );
-
     if let Some(repo_opts) = repo_opts {
         let mut filters = Vec::new();
 
@@ -738,7 +725,6 @@ async fn entry() -> Result<ExitCode> {
     let mut cx = ctxt::Ctxt {
         paths,
         config: &config,
-        actions: &actions,
         repos: &repos,
         rustc_version: ctxt::rustc_version(),
         git,

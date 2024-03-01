@@ -7,6 +7,7 @@ use bstr::BStr;
 use nondestructive::yaml::{self, Id, Mapping};
 use relative_path::RelativePath;
 
+use crate::actions::{self, Actions};
 use crate::cargo::{Package, RustVersion};
 use crate::changes::{Change, Warning, WorkflowChange};
 use crate::config::WorkflowConfig;
@@ -16,6 +17,7 @@ use crate::workspace::Crates;
 
 pub(crate) struct Ci<'a> {
     path: &'a RelativePath,
+    actions: Actions<'a>,
     repo: &'a Repo,
     package: &'a Package<'a>,
     crates: &'a Crates,
@@ -67,8 +69,24 @@ enum CargoFeatures {
 pub(crate) fn build(cx: &Ctxt<'_>, package: &Package, repo: &Repo, crates: &Crates) -> Result<()> {
     let path = repo.path().join(".github").join("workflows");
 
+    let mut actions = Actions::default();
+
+    for latest in cx.config.action_latest(repo) {
+        actions.latest(&latest.name, &latest.version);
+    }
+
+    for deny in cx.config.action_deny(repo) {
+        actions.deny(&deny.name, deny.reason.as_deref());
+    }
+
+    actions.check(
+        "actions-rs/toolchain",
+        &actions::ActionsRsToolchainActionsCheck,
+    );
+
     let mut ci = Ci {
         path: &path,
+        actions,
         repo,
         package,
         crates,
@@ -144,7 +162,7 @@ fn validate_jobs(
             };
 
             check_strategy_rust_version(ci, job_name, &job);
-            check_actions(cx, ci, &job)?;
+            check_actions(ci, &job)?;
 
             if ci.crates.is_single_crate() {
                 verify_single_project_build(cx, ci, path, job)?;
@@ -163,7 +181,7 @@ fn validate_jobs(
     Ok(())
 }
 
-fn check_actions(cx: &Ctxt, ci: &mut Ci<'_>, job: &yaml::Mapping) -> Result<()> {
+fn check_actions(ci: &mut Ci<'_>, job: &yaml::Mapping) -> Result<()> {
     for action in job
         .get("steps")
         .and_then(|v| v.as_sequence())
@@ -172,7 +190,7 @@ fn check_actions(cx: &Ctxt, ci: &mut Ci<'_>, job: &yaml::Mapping) -> Result<()> 
         .flat_map(|v| v.as_mapping())
     {
         if let Some((uses, value)) = action.get("uses").and_then(|v| Some((v.id(), v.as_str()?))) {
-            check_action(cx, ci, &action, uses, value)?;
+            check_action(ci, &action, uses, value)?;
             check_uses_rust_version(ci, uses, value)?;
         }
 
@@ -184,18 +202,12 @@ fn check_actions(cx: &Ctxt, ci: &mut Ci<'_>, job: &yaml::Mapping) -> Result<()> 
     Ok(())
 }
 
-fn check_action(
-    cx: &Ctxt,
-    ci: &mut Ci<'_>,
-    action: &Mapping<'_>,
-    uses: Id,
-    name: &str,
-) -> Result<()> {
+fn check_action(ci: &mut Ci<'_>, action: &Mapping<'_>, uses: Id, name: &str) -> Result<()> {
     let Some((base, version)) = name.split_once('@') else {
         return Ok(());
     };
 
-    if let Some(expected) = cx.actions.get_latest(base) {
+    if let Some(expected) = ci.actions.get_latest(base) {
         if expected != version {
             ci.change.push(WorkflowChange::ReplaceString {
                 reason: format!("Outdated action: got `{version}` but expected `{expected}`"),
@@ -207,14 +219,19 @@ fn check_action(
         }
     }
 
-    if let Some(reason) = cx.actions.get_deny(base) {
+    if ci.actions.is_denied(base) {
+        let reason = match ci.actions.get_deny_reason(base) {
+            Some(reason) => reason.to_string(),
+            None => String::from("Action is denied"),
+        };
+
         ci.change.push(WorkflowChange::Error {
             name: name.to_owned(),
             reason: reason.into(),
         });
     }
 
-    if let Some(check) = cx.actions.get_check(base) {
+    if let Some(check) = ci.actions.get_check(base) {
         check.check(name, action, &mut ci.change)?;
     }
 
