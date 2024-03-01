@@ -5,7 +5,7 @@ author: 'udoprog'
 inputs:
   version:
     description: 'Version of kick to install. Defaults to whatever is set for this branch.'
-    default: '2024-02-05'
+    default: '2024-03-01'
 
 runs:
   using: 'node20'
