@@ -1,5 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt;
+use std::fs;
 use std::mem::take;
 
 use anyhow::{anyhow, Context, Result};
@@ -10,7 +11,7 @@ use relative_path::RelativePath;
 use crate::actions::{self, Actions};
 use crate::cargo::{Package, RustVersion};
 use crate::changes::{Change, Warning, WorkflowChange};
-use crate::config::WorkflowConfig;
+use crate::config::{WorkflowConfig, WorkflowFeature};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::workspace::Crates;
@@ -84,6 +85,8 @@ pub(crate) fn build(cx: &Ctxt<'_>, package: &Package, repo: &Repo, crates: &Crat
         &actions::ActionsRsToolchainActionsCheck,
     );
 
+    let mut ids = list_workflow_ids(cx, &path)?;
+
     let mut ci = Ci {
         path: &path,
         actions,
@@ -94,10 +97,35 @@ pub(crate) fn build(cx: &Ctxt<'_>, package: &Package, repo: &Repo, crates: &Crat
     };
 
     for (id, config) in cx.config.workflows(ci.repo)? {
-        validate_workflow(cx, &mut ci, &id, config)?;
+        ids.remove(&id);
+        validate_workflow(cx, &mut ci, &id, &config)?;
+    }
+
+    let default_config = WorkflowConfig::default();
+
+    for id in ids {
+        validate_workflow(cx, &mut ci, &id, &default_config)?;
     }
 
     Ok(())
+}
+
+/// List existing workflow identifiers.
+fn list_workflow_ids(cx: &Ctxt<'_>, path: &RelativePath) -> Result<BTreeSet<String>> {
+    let mut ids = BTreeSet::new();
+
+    let path = cx.to_path(&path);
+
+    for e in fs::read_dir(&path).with_context(|| path.display().to_string())? {
+        let entry = e.with_context(|| path.display().to_string())?;
+        let path = entry.path();
+
+        if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
+            ids.insert(id.to_owned());
+        }
+    }
+
+    Ok(ids)
 }
 
 /// Validate the current model.
@@ -105,7 +133,7 @@ fn validate_workflow(
     cx: &Ctxt<'_>,
     ci: &mut Ci<'_>,
     id: &str,
-    config: WorkflowConfig,
+    config: &WorkflowConfig,
 ) -> Result<()> {
     let path = ci.path.join(format!("{id}.yml"));
 
@@ -128,15 +156,17 @@ fn validate_workflow(
         .and_then(|m| m.get("name")?.as_str())
         .ok_or_else(|| anyhow!("{path}: missing .name"))?;
 
-    if name != config.name {
-        cx.warning(Warning::WrongWorkflowName {
-            path: path.clone(),
-            actual: name.to_owned(),
-            expected: config.name.clone(),
-        });
+    if let Some(expected) = &config.name {
+        if name != expected {
+            cx.warning(Warning::WrongWorkflowName {
+                path: path.clone(),
+                actual: name.to_owned(),
+                expected: expected.clone(),
+            });
+        }
     }
 
-    validate_jobs(cx, ci, &path, &value)?;
+    validate_jobs(cx, ci, &path, &value, &config)?;
     Ok(())
 }
 
@@ -146,13 +176,14 @@ fn validate_jobs(
     ci: &mut Ci<'_>,
     path: &RelativePath,
     doc: &yaml::Document,
+    config: &WorkflowConfig,
 ) -> Result<()> {
     let Some(table) = doc.as_ref().as_mapping() else {
         return Ok(());
     };
 
     if let Some(value) = table.get("on") {
-        validate_on(cx, ci, doc, value, path);
+        validate_on(cx, ci, doc, value, path, config);
     }
 
     if let Some(jobs) = table.get("jobs").and_then(|v| v.as_mapping()) {
@@ -345,6 +376,7 @@ fn validate_on(
     doc: &yaml::Document,
     value: yaml::Value<'_>,
     path: &RelativePath,
+    config: &WorkflowConfig,
 ) {
     let Some(m) = value.as_mapping() else {
         cx.warning(Warning::ActionMissingKey {
@@ -358,33 +390,40 @@ fn validate_on(
         return;
     };
 
-    if let Some(sequence) = m.get("schedule").and_then(|v| v.as_sequence()) {
-        for value in sequence.into_iter() {
-            let Some(m) = value.as_mapping() else {
-                continue;
-            };
+    if config
+        .features
+        .contains(&WorkflowFeature::ScheduleRandomWeekly)
+    {
+        if let Some(sequence) = m.get("schedule").and_then(|v| v.as_sequence()) {
+            for value in sequence.into_iter() {
+                let Some(m) = value.as_mapping() else {
+                    continue;
+                };
 
-            if let Some((value, actual)) = m.get("cron").map(|v| (v.id(), v.as_str())) {
-                let random = ci.repo.random();
-                let string = format!("{} {} * * {}", random.minute, random.hour, random.day);
+                if let Some((value, actual)) = m.get("cron").map(|v| (v.id(), v.as_str())) {
+                    let random = ci.repo.random();
+                    let string = format!("{} {} * * {}", random.minute, random.hour, random.day);
 
-                if actual != Some(string.as_str()) {
-                    let reason = match actual {
-                        Some(actual) => {
-                            format!("Wrong cron schedule, got `{actual}` but expected `{string}`")
-                        }
-                        None => {
-                            format!("Wrong cron schedule, got empty but expected `{string}`")
-                        }
-                    };
+                    if actual != Some(string.as_str()) {
+                        let reason = match actual {
+                            Some(actual) => {
+                                format!(
+                                    "Wrong cron schedule, got `{actual}` but expected `{string}`"
+                                )
+                            }
+                            None => {
+                                format!("Wrong cron schedule, got empty but expected `{string}`")
+                            }
+                        };
 
-                    ci.change.push(WorkflowChange::ReplaceString {
-                        reason,
-                        string,
-                        value,
-                        remove_keys: vec![],
-                        set_keys: vec![],
-                    });
+                        ci.change.push(WorkflowChange::ReplaceString {
+                            reason,
+                            string,
+                            value,
+                            remove_keys: vec![],
+                            set_keys: vec![],
+                        });
+                    }
                 }
             }
         }

@@ -410,15 +410,16 @@ impl PartialWorkflowConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum WorkflowFeature {}
+pub enum WorkflowFeature {
+    ScheduleRandomWeekly,
+}
 
 /// A workflow configuration.
-#[derive(Clone)]
+#[derive(Default, Clone)]
 pub struct WorkflowConfig {
     /// The expected name of the workflow.
-    pub(crate) name: String,
+    pub(crate) name: Option<String>,
     /// Features enabled in workflow configuration.
-    #[allow(unused)]
     pub(crate) features: HashSet<WorkflowFeature>,
 }
 
@@ -524,14 +525,10 @@ impl Config<'_> {
         let mut out = BTreeMap::new();
 
         for (id, config) in partial {
-            let name = config
-                .name
-                .with_context(|| anyhow!("workflows.{id}: Missing name"))?;
-
             out.insert(
                 id,
                 WorkflowConfig {
-                    name,
+                    name: config.name,
                     features: config.features,
                 },
             );
@@ -1138,7 +1135,11 @@ impl<'a> ConfigCtxt<'a> {
         let features = self.in_array(config, "features", |cx, value| {
             let value = cx.string(value)?;
             let value: &str = value.as_ref();
-            Err(anyhow!("Unknown workflow feature `{value}`"))
+
+            match value {
+                "schedule-random-weekly" => Ok(WorkflowFeature::ScheduleRandomWeekly),
+                value => Err(anyhow!("Unknown workflow feature `{value}`")),
+            }
         })?;
 
         Ok(PartialWorkflowConfig {
