@@ -38,7 +38,7 @@ jobs:
     - uses: udoprog/kick@nightly
     - run: cargo build --release
     - run: kick ${{matrix.method}} --output dist
-    - uses: actions/upload-artifact@v1
+    - uses: actions/upload-artifact@v4
       with:
         name: dist-${{matrix.os}}
         path: dist
@@ -48,11 +48,11 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/download-artifact@v1
+    - uses: actions/download-artifact@v4
       with: {name: dist-windows-latest, path: dist}
-    - uses: actions/download-artifact@v1
+    - uses: actions/download-artifact@v4
       with: {name: dist-macos-latest, path: dist}
-    - uses: actions/download-artifact@v1
+    - uses: actions/download-artifact@v4
       with: {name: dist-ubuntu-latest, path: dist}
     - uses: udoprog/kick@nightly
     - run: kick github-release --upload "dist/*" --github-action
