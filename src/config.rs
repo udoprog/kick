@@ -973,10 +973,25 @@ impl<'a> ConfigCtxt<'a> {
         }
     }
 
-    fn array(&mut self, value: toml::Value) -> Result<Vec<toml::Value>> {
-        match value {
-            toml::Value::Array(array) => Ok(array),
-            other => Err(anyhow!("Expected array, got {other}")),
+    fn array(&mut self, value: toml::Value, map: Option<(&str, &str)>) -> Result<Vec<toml::Value>> {
+        match (value, map) {
+            (toml::Value::Array(array), _) => Ok(array),
+            (toml::Value::Table(table), Some((key, value))) => {
+                let mut array = Vec::new();
+
+                for (k, v) in table {
+                    let mut table = toml::Table::new();
+                    table.insert(key.to_owned(), toml::Value::String(k));
+                    table.insert(value.to_owned(), v);
+                    array.push(toml::Value::Table(table));
+                }
+
+                Ok(array)
+            }
+            (other, Some((key, value))) => Err(anyhow!(
+                "Expected array or map {{{key} => {value}}}, got {other}"
+            )),
+            (other, None) => Err(anyhow!("Expected array, got {other}")),
         }
     }
 
@@ -991,6 +1006,7 @@ impl<'a> ConfigCtxt<'a> {
         &mut self,
         config: &mut toml::Table,
         key: &str,
+        map: Option<(&str, &str)>,
         mut f: F,
     ) -> Result<Option<Vec<O>>>
     where
@@ -1001,7 +1017,7 @@ impl<'a> ConfigCtxt<'a> {
         };
 
         self.key(key);
-        let array = self.array(value)?;
+        let array = self.array(value, map)?;
         let mut out = Vec::with_capacity(array.len());
 
         for (index, item) in array.into_iter().enumerate() {
@@ -1089,7 +1105,7 @@ impl<'a> ConfigCtxt<'a> {
     }
 
     fn badges(&mut self, config: &mut toml::Table) -> Result<Option<Vec<ConfigBadge>>> {
-        let badges = self.in_array(config, "badges", |cx, value| {
+        let badges = self.in_array(config, "badges", None, |cx, value| {
             let mut value = cx.table(value)?;
 
             let id = cx.as_string(&mut value, "id")?;
@@ -1132,7 +1148,7 @@ impl<'a> ConfigCtxt<'a> {
 
         let template = self.in_string(config, "template", Self::compile_path)?;
 
-        let features = self.in_array(config, "features", |cx, value| {
+        let features = self.in_array(config, "features", None, |cx, value| {
             let value = cx.string(value)?;
             let value: &str = value.as_ref();
 
@@ -1157,7 +1173,7 @@ impl<'a> ConfigCtxt<'a> {
         let license = self.in_string(config, "license", |_, string| Ok(string))?;
 
         let authors = self
-            .in_array(config, "authors", |cx, item| cx.string(item))?
+            .in_array(config, "authors", None, |cx, item| cx.string(item))?
             .unwrap_or_default();
 
         let documentation = self.in_string(config, "documentation", Self::compile)?;
@@ -1176,15 +1192,16 @@ impl<'a> ConfigCtxt<'a> {
             Ok(RelativePathBuf::from(string))
         })?;
 
-        let disabled = self.in_array(config, "disabled", |cx, item| cx.string(item))?;
+        let disabled = self.in_array(config, "disabled", None, |cx, item| cx.string(item))?;
         let disabled = disabled.unwrap_or_default().into_iter().collect();
 
-        let lib_badges =
-            self.in_array(config, "lib_badges", |cx, item| Id::parse(cx.string(item)?))?;
+        let lib_badges = self.in_array(config, "lib_badges", None, |cx, item| {
+            Id::parse(cx.string(item)?)
+        })?;
 
         let lib_badges = lib_badges.unwrap_or_default().into_iter().collect();
 
-        let readme_badges = self.in_array(config, "readme_badges", |cx, item| {
+        let readme_badges = self.in_array(config, "readme_badges", None, |cx, item| {
             Id::parse(cx.string(item)?)
         })?;
 
@@ -1194,12 +1211,12 @@ impl<'a> ConfigCtxt<'a> {
             .as_table(config, "variables", |_, table| Ok(table))?
             .unwrap_or_default();
 
-        let version = self.in_array(config, "version", |cx, item| {
+        let version = self.in_array(config, "version", None, |cx, item| {
             let mut config = cx.table(item)?;
             let package_name = cx.as_string(&mut config, "crate")?;
 
             let paths = cx
-                .in_array(&mut config, "paths", |cx, string| {
+                .in_array(&mut config, "paths", None, |cx, string| {
                     Ok(RelativePathBuf::from(cx.string(string)?))
                 })?
                 .context("missing `paths`")?;
@@ -1268,7 +1285,7 @@ impl<'a> ConfigCtxt<'a> {
 
     fn upgrade(&mut self, mut config: toml::Table) -> Result<Upgrade> {
         let exclude = self
-            .in_array(&mut config, "exclude", |cx, item| cx.string(item))?
+            .in_array(&mut config, "exclude", None, |cx, item| cx.string(item))?
             .into_iter()
             .flatten()
             .collect();
@@ -1333,7 +1350,7 @@ impl<'a> ConfigCtxt<'a> {
 
     fn rpm(&mut self, mut config: toml::Table) -> Result<RpmPackage> {
         let requires = self
-            .in_array(&mut config, "requires", Self::rpm_require)?
+            .in_array(&mut config, "requires", None, Self::rpm_require)?
             .into_iter()
             .flatten()
             .collect();
@@ -1344,7 +1361,7 @@ impl<'a> ConfigCtxt<'a> {
 
     fn deb(&mut self, mut config: toml::Table) -> Result<DebPackage> {
         let depends = self
-            .in_array(&mut config, "depends", Self::deb_dependency)?
+            .in_array(&mut config, "depends", None, Self::deb_dependency)?
             .into_iter()
             .flatten()
             .collect();
@@ -1355,7 +1372,7 @@ impl<'a> ConfigCtxt<'a> {
 
     fn package(&mut self, mut config: toml::Table) -> Result<Package> {
         let files = self
-            .in_array(&mut config, "files", Self::package_file)?
+            .in_array(&mut config, "files", None, Self::package_file)?
             .into_iter()
             .flatten()
             .collect();
@@ -1402,11 +1419,21 @@ impl<'a> ConfigCtxt<'a> {
 
     fn actions(&mut self, mut config: toml::Table) -> Result<Actions> {
         let deny = self
-            .in_array(&mut config, "deny", Self::deny_action)?
+            .in_array(
+                &mut config,
+                "deny",
+                Some(("name", "reason")),
+                Self::deny_action,
+            )?
             .unwrap_or_default();
 
         let latest = self
-            .in_array(&mut config, "latest", Self::latest_action)?
+            .in_array(
+                &mut config,
+                "latest",
+                Some(("name", "version")),
+                Self::latest_action,
+            )?
             .unwrap_or_default();
 
         self.ensure_empty(config)?;
