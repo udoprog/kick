@@ -114,7 +114,7 @@ pub(crate) fn build(cx: &Ctxt<'_>, package: &Package, repo: &Repo, crates: &Crat
 fn list_workflow_ids(cx: &Ctxt<'_>, path: &RelativePath) -> Result<BTreeSet<String>> {
     let mut ids = BTreeSet::new();
 
-    let path = cx.to_path(&path);
+    let path = cx.to_path(path);
 
     for e in fs::read_dir(&path).with_context(|| path.display().to_string())? {
         let entry = e.with_context(|| path.display().to_string())?;
@@ -166,7 +166,7 @@ fn validate_workflow(
         }
     }
 
-    validate_jobs(cx, ci, &path, &value, &config)?;
+    validate_jobs(cx, ci, &path, &value, config)?;
     Ok(())
 }
 
@@ -258,7 +258,7 @@ fn check_action(ci: &mut Ci<'_>, action: &Mapping<'_>, uses: Id, name: &str) -> 
 
         ci.change.push(WorkflowChange::Error {
             name: name.to_owned(),
-            reason: reason.into(),
+            reason,
         });
     }
 
