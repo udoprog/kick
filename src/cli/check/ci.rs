@@ -438,25 +438,27 @@ fn validate_on(
         }
     }
 
-    if let Some(m) = m.get("push").and_then(|v| v.as_mapping()) {
-        match m.get("branches").map(yaml::Value::into_any) {
-            Some(yaml::Any::Sequence(s)) => {
-                if !s.iter().flat_map(|v| v.as_str()).any(|b| b == "main") {
-                    cx.warning(Warning::ActionOnMissingBranch {
+    if let Some(branch) = &config.branch {
+        if let Some(m) = m.get("push").and_then(|v| v.as_mapping()) {
+            match m.get("branches").map(yaml::Value::into_any) {
+                Some(yaml::Any::Sequence(s)) => {
+                    if !s.iter().flat_map(|v| v.as_str()).any(|b| b == branch) {
+                        cx.warning(Warning::ActionOnMissingBranch {
+                            path: path.to_owned(),
+                            key: Box::from("on.push.branches"),
+                            branch: Box::from(branch.as_str()),
+                        });
+                    }
+                }
+                value => {
+                    cx.warning(Warning::ActionMissingKey {
                         path: path.to_owned(),
                         key: Box::from("on.push.branches"),
-                        branch: Box::from("main"),
+                        expected: ActionExpected::Sequence,
+                        doc: doc.clone(),
+                        actual: value.map(|v| v.id()),
                     });
                 }
-            }
-            value => {
-                cx.warning(Warning::ActionMissingKey {
-                    path: path.to_owned(),
-                    key: Box::from("on.push.branches"),
-                    expected: ActionExpected::Sequence,
-                    doc: doc.clone(),
-                    actual: value.map(|v| v.id()),
-                });
             }
         }
     }

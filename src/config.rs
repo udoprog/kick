@@ -399,6 +399,8 @@ pub struct PartialWorkflowConfig {
     pub(crate) name: Option<String>,
     /// Eanbled workflow features.
     pub(crate) features: HashSet<WorkflowFeature>,
+    /// Branch that the workflow should trigger on.
+    pub(crate) branch: Option<String>,
 }
 
 impl PartialWorkflowConfig {
@@ -406,12 +408,22 @@ impl PartialWorkflowConfig {
         self.template = other.template.or(self.template.take());
         self.name = other.name.or(self.name.take());
         self.features.extend(other.features);
+        self.branch = other.branch.or(self.branch.take());
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WorkflowFeature {
     ScheduleRandomWeekly,
+}
+
+impl WorkflowFeature {
+    fn parse(s: &str) -> Result<Self> {
+        match s {
+            "schedule-random-weekly" => Ok(WorkflowFeature::ScheduleRandomWeekly),
+            other => bail!("Unknown workflow feature: {other}"),
+        }
+    }
 }
 
 /// A workflow configuration.
@@ -421,6 +433,8 @@ pub struct WorkflowConfig {
     pub(crate) name: Option<String>,
     /// Features enabled in workflow configuration.
     pub(crate) features: HashSet<WorkflowFeature>,
+    /// Branch that the workflow should trigger on.
+    pub(crate) branch: Option<String>,
 }
 
 /// A badge configuration.
@@ -506,6 +520,13 @@ impl Config<'_> {
     pub(crate) fn workflows(&self, repo: &RepoRef) -> Result<BTreeMap<String, WorkflowConfig>> {
         let mut partial = BTreeMap::<String, PartialWorkflowConfig>::new();
 
+        for (id, config) in &self.base.workflows {
+            partial
+                .entry(id.clone())
+                .or_default()
+                .merge_with(config.clone());
+        }
+
         if let Some(repo) = self.repo.get(repo.path()) {
             for (id, config) in &repo.workflows {
                 partial
@@ -513,13 +534,6 @@ impl Config<'_> {
                     .or_default()
                     .merge_with(config.clone());
             }
-        }
-
-        for (id, config) in &self.base.workflows {
-            partial
-                .entry(id.clone())
-                .or_default()
-                .merge_with(config.clone());
         }
 
         let mut out = BTreeMap::new();
@@ -530,6 +544,7 @@ impl Config<'_> {
                 WorkflowConfig {
                     name: config.name,
                     features: config.features,
+                    branch: config.branch,
                 },
             );
         }
@@ -1150,18 +1165,16 @@ impl<'a> ConfigCtxt<'a> {
 
         let features = self.in_array(config, "features", None, |cx, value| {
             let value = cx.string(value)?;
-            let value: &str = value.as_ref();
-
-            match value {
-                "schedule-random-weekly" => Ok(WorkflowFeature::ScheduleRandomWeekly),
-                value => Err(anyhow!("Unknown workflow feature `{value}`")),
-            }
+            WorkflowFeature::parse(&value)
         })?;
+
+        let branch = self.as_string(config, "branch")?;
 
         Ok(PartialWorkflowConfig {
             name,
             template,
             features: features.unwrap_or_default().into_iter().collect(),
+            branch,
         })
     }
 

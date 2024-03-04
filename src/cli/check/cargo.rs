@@ -53,6 +53,7 @@ cargo_keys! {
 }
 
 /// Validate the main `Cargo.toml`.
+#[allow(clippy::collapsible_else_if, clippy::collapsible_if)]
 pub(crate) fn work_cargo_toml(
     cx: &Ctxt<'_>,
     crates: &Crates,
