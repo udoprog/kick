@@ -12,11 +12,11 @@ use crate::model::Repo;
 use crate::process::Command;
 
 /// Oldest version where rust-version was introduced.
-const RUST_VERSION_SUPPORTED: RustVersion = RustVersion::new(1, 56, None);
+const RUST_VERSION_SUPPORTED: RustVersion = RustVersion::new(1, 56);
 /// Oldest version to test by default.
 const EARLIEST: RustVersion = RUST_VERSION_SUPPORTED;
 /// Final fallback version to use if *nothing* else can be figured out.
-const LATEST: RustVersion = RustVersion::new(1, 68, None);
+const LATEST: RustVersion = RustVersion::new(1, 68);
 /// Default command to build.
 const DEFAULT_COMMAND: [&str; 3] = ["cargo", "build", "--workspace"];
 
@@ -224,7 +224,7 @@ fn parse_minor_version(
         Some("2021") => Some(cargo::rust_version::EDITION_2021),
         Some("workspace") => Some(cargo::rust_version::WORKSPACE),
         Some("rust-version") => rust_version.copied(),
-        Some(n) => Some(RustVersion::new(1, n.parse()?, None)),
+        Some(n) => Some(RustVersion::new(1, n.parse()?)),
         None => None,
     })
 }
@@ -263,13 +263,13 @@ impl Bisect {
             return None;
         }
 
-        Some(RustVersion::new(1, self.current, None))
+        Some(RustVersion::new(1, self.current))
     }
 
     /// Return a successfully tested version.
     fn get(&self) -> Option<RustVersion> {
         if *self.versions.get(&self.current)? {
-            return Some(RustVersion::new(1, self.current, None));
+            return Some(RustVersion::new(1, self.current));
         }
 
         None

@@ -74,9 +74,8 @@ fn check(cx: &Ctxt<'_>, repo: &Repo, urls: &mut Urls) -> Result<()> {
     };
 
     for package in crates.packages() {
-        if package.is_publish() {
-            cargo::work_cargo_toml(cx, &crates, &package, &update_params)?;
-        }
+        let rust_version = primary_crate.rust_version();
+        cargo::work_cargo_toml(cx, &crates, &package, &update_params, rust_version)?;
     }
 
     if cx.config.is_enabled(repo.path(), "ci") {

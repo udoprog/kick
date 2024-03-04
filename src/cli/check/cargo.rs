@@ -3,7 +3,7 @@ use core::fmt;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::cargo::{self, Package};
+use crate::cargo::{self, Package, RustVersion};
 use crate::changes::{CargoIssue, Change};
 use crate::ctxt::Ctxt;
 use crate::model::UpdateParams;
@@ -58,6 +58,7 @@ pub(crate) fn work_cargo_toml(
     crates: &Crates,
     package: &Package,
     update: &UpdateParams<'_>,
+    rust_version: Option<RustVersion>,
 ) -> Result<()> {
     let mut modified_manifest = package.manifest().clone();
     let mut issues = Vec::new();
@@ -81,87 +82,97 @@ pub(crate) fn work_cargo_toml(
         };
     }
 
-    check! {
-        license,
-        insert_license,
-        MissingPackageLicense,
-        WrongPackageLicense
-    };
+    if package.is_publish() {
+        check! {
+            license,
+            insert_license,
+            MissingPackageLicense,
+            WrongPackageLicense
+        };
 
-    check! {
-        readme,
-        insert_readme,
-        MissingPackageReadme,
-        WrongPackageReadme
-    };
+        check! {
+            readme,
+            insert_readme,
+            MissingPackageReadme,
+            WrongPackageReadme
+        };
 
-    check! {
-        repository,
-        insert_repository,
-        MissingPackageRepository,
-        WrongPackageRepository
-    };
+        check! {
+            repository,
+            insert_repository,
+            MissingPackageRepository,
+            WrongPackageRepository
+        };
 
-    check! {
-        homepage,
-        insert_homepage,
-        MissingPackageHomepage,
-        WrongPackageHomepage
-    };
+        check! {
+            homepage,
+            insert_homepage,
+            MissingPackageHomepage,
+            WrongPackageHomepage
+        };
 
-    check! {
-        documentation,
-        insert_documentation,
-        MissingPackageDocumentation,
-        WrongPackageDocumentation
-    };
+        check! {
+            documentation,
+            insert_documentation,
+            MissingPackageDocumentation,
+            WrongPackageDocumentation
+        };
 
-    if package.description().filter(|d| !d.is_empty()).is_none() {
-        issues.push(CargoIssue::PackageDescription);
-    }
+        if package.description().filter(|d| !d.is_empty()).is_none() {
+            issues.push(CargoIssue::PackageDescription);
+        }
 
-    if let Some(categories) = package.categories().filter(|value| !value.is_empty()) {
-        let categories = categories
-            .iter()
-            .flat_map(|v| Some(v.as_str()?.to_owned()))
-            .collect::<Vec<_>>();
-        let mut sorted = categories.clone();
-        sorted.sort();
+        if let Some(categories) = package.categories().filter(|value| !value.is_empty()) {
+            let categories = categories
+                .iter()
+                .flat_map(|v| Some(v.as_str()?.to_owned()))
+                .collect::<Vec<_>>();
+            let mut sorted = categories.clone();
+            sorted.sort();
 
-        if categories != sorted {
-            issues.push(CargoIssue::PackageCategoriesNotSorted);
+            if categories != sorted {
+                issues.push(CargoIssue::PackageCategoriesNotSorted);
+                changed = true;
+                modified_manifest.insert_categories(sorted)?;
+            }
+        } else {
+            issues.push(CargoIssue::PackageCategories);
+        }
+
+        if let Some(keywords) = package.keywords().filter(|value| !value.is_empty()) {
+            let keywords = keywords
+                .iter()
+                .flat_map(|v| Some(v.as_str()?.to_owned()))
+                .collect::<Vec<_>>();
+            let mut sorted = keywords.clone();
+            sorted.sort();
+
+            if keywords != sorted {
+                issues.push(CargoIssue::PackageKeywordsNotSorted);
+                changed = true;
+                modified_manifest.insert_keywords(sorted)?;
+            }
+        } else {
+            issues.push(CargoIssue::PackageKeywords);
+        }
+
+        if package
+            .authors()
+            .filter(|authors| !authors.is_empty())
+            .is_none()
+        {
+            issues.push(CargoIssue::PackageAuthorsEmpty);
             changed = true;
-            modified_manifest.insert_categories(sorted)?;
+            modified_manifest.insert_authors(update.authors.to_vec())?;
         }
     } else {
-        issues.push(CargoIssue::PackageCategories);
-    }
-
-    if let Some(keywords) = package.keywords().filter(|value| !value.is_empty()) {
-        let keywords = keywords
-            .iter()
-            .flat_map(|v| Some(v.as_str()?.to_owned()))
-            .collect::<Vec<_>>();
-        let mut sorted = keywords.clone();
-        sorted.sort();
-
-        if keywords != sorted {
-            issues.push(CargoIssue::PackageKeywordsNotSorted);
-            changed = true;
-            modified_manifest.insert_keywords(sorted)?;
+        if matches!(rust_version, Some(rust_version) if rust_version >= RustVersion::new(1, 75)) {
+            if package.version().filter(|d| !d.is_empty()).is_some() {
+                issues.push(CargoIssue::NoPublishVersion);
+                changed = true;
+                modified_manifest.remove_version();
+            }
         }
-    } else {
-        issues.push(CargoIssue::PackageKeywords);
-    }
-
-    if package
-        .authors()
-        .filter(|authors| !authors.is_empty())
-        .is_none()
-    {
-        issues.push(CargoIssue::PackageAuthorsEmpty);
-        changed = true;
-        modified_manifest.insert_authors(update.authors.to_vec())?;
     }
 
     if matches!(modified_manifest.dependencies(crates), Some(d) if d.is_empty()) {

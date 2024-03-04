@@ -156,6 +156,17 @@ impl Manifest {
         Ok(())
     }
 
+    /// Remove version.
+    pub(crate) fn remove_version(&mut self) -> bool {
+        if let Some(package) = self.doc.get_mut("package") {
+            if let Some(table) = package.as_table_like_mut() {
+                return table.remove("version").is_some();
+            }
+        }
+
+        false
+    }
+
     /// Remove rust-version.
     pub(crate) fn remove_rust_version(&mut self) -> bool {
         if let Some(package) = self.doc.get_mut("package") {

@@ -501,6 +501,7 @@ cargo_issues! {
     PackageDependenciesEmpty => write!(f, "dependencies: empty"),
     PackageDevDependenciesEmpty => write!(f, "dev-dependencies: empty"),
     PackageBuildDependenciesEmpty => write!(f, "build-dependencies: empty"),
+    NoPublishVersion => write!(f, "package.version: non-empty while package.publish = false (Supported since Rust 1.75)"),
     KeysNotSorted { expected: Vec<CargoKey>, actual: Vec<CargoKey> } => {
         write!(f, "[package] keys out-of-order, expected: {expected:?}")
     }
