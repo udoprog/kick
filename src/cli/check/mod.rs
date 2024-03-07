@@ -78,11 +78,11 @@ fn check(cx: &Ctxt<'_>, repo: &Repo, urls: &mut Urls) -> Result<()> {
         cargo::work_cargo_toml(cx, &crates, &package, &update_params, rust_version)?;
     }
 
-    if cx.config.is_enabled(repo.path(), "ci") {
+    if cx.config.is_enabled(repo, "ci") {
         ci::build(cx, &primary_crate, repo, &crates).with_context(|| anyhow!("ci change"))?;
     }
 
-    if cx.config.is_enabled(repo.path(), "readme") {
+    if cx.config.is_enabled(repo, "readme") {
         readme::build(
             cx,
             repo.path(),

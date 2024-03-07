@@ -209,7 +209,7 @@ fn process_lib_rs(
     let mut source_lines = source.lines().peekable();
     let mut header_marker = None;
 
-    let comments = if let Some(lib) = cx.config.lib(rm.repo.path()) {
+    let comments = if let Some(lib) = cx.config.lib(rm.repo) {
         while let Some(line) = source_lines.peek().and_then(|line| line.as_rust_comment()) {
             if line.starts_with('#') {
                 break;
@@ -428,7 +428,7 @@ fn readme_from_lib_rs(
         body.line(line);
     }
 
-    let mut readme = if let Some(readme) = cx.config.readme(rm.repo.path()) {
+    let mut readme = if let Some(readme) = cx.config.readme(rm.repo) {
         let output = readme.render(&ReadmeParams {
             body: body.as_non_empty_str(),
             badges,

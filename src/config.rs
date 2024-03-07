@@ -544,15 +544,7 @@ impl Config<'_> {
         for id in ids {
             let mut config = PartialWorkflowConfig::default();
 
-            if let Some(branch) = &self.base.branch {
-                config.branch = Some(branch.clone());
-            }
-
-            if let Some(c) = self.base.workflows.get(id) {
-                config.merge_with(c.clone());
-            }
-
-            if let Some(repo) = self.repos.get(repo.path()) {
+            for repo in self.repos(repo) {
                 if let Some(branch) = &repo.branch {
                     config.branch = Some(branch.clone());
                 }
@@ -583,113 +575,42 @@ impl Config<'_> {
         id: &str,
         params: RepoParams<'_>,
     ) -> Result<Option<String>> {
-        if let Some(template) = self
-            .repos
-            .get(repo.path())
-            .and_then(|r| r.workflows.get(id)?.template.as_ref())
-        {
-            return Ok(Some(template.render(&params)?));
-        }
-
-        if let Some(template) = self
-            .base
-            .workflows
-            .get(id)
-            .and_then(|r| r.template.as_ref())
-        {
-            return Ok(Some(template.render(&params)?));
+        for repo in self.repos(repo).rev() {
+            if let Some(template) = repo.workflows.get(id).and_then(|r| r.template.as_ref()) {
+                return Ok(Some(template.render(&params)?));
+            }
         }
 
         Ok(None)
     }
 
-    /// Get the current job name.
-    pub(crate) fn variable(&self, repo: &RepoRef, key: &str) -> Result<&toml::Value> {
-        if let Some(source) = self.repos.get(repo.path()).map(|r| &r.variables) {
-            if let Some(value) = source.get(key) {
-                return Ok(value);
-            }
-        }
-
-        if let Some(value) = self.base.variables.get(key) {
-            return Ok(value);
-        }
-
-        let Some(value) = self.defaults.get(key) else {
-            bail!("Missing variable `{key}`");
-        };
-
-        Ok(value)
-    }
-
-    /// Get a string variable.
-    #[allow(unused)]
-    pub(crate) fn string_variable(&self, repo: &RepoRef, key: &str) -> Result<&str> {
-        let value = match self.variable(repo, key)? {
-            toml::Value::String(value) => value,
-            other => bail!("Found variable `{key}` with invalid type {other:?}, expected string"),
-        };
-
-        Ok(value.as_str())
-    }
-
     /// Get the current documentation template.
     pub(crate) fn documentation(&self, repo: &Repo) -> Option<&Template> {
-        if let Some(template) = self
-            .repos
-            .get(repo.path())
-            .and_then(|r| r.documentation.as_ref())
-        {
-            return Some(template);
-        }
-
-        self.base.documentation.as_ref()
+        self.repos(repo)
+            .rev()
+            .flat_map(|r| r.documentation.as_ref())
+            .next()
     }
 
     /// Get the current license template.
     pub(crate) fn license(&self, repo: &Repo) -> &str {
-        if let Some(template) = self
-            .repos
-            .get(repo.path())
-            .and_then(|r| r.license.as_deref())
-        {
-            return template;
-        }
-
-        self.base.license.as_deref().unwrap_or(DEFAULT_LICENSE)
+        self.repos(repo)
+            .rev()
+            .flat_map(|r| r.license.as_deref())
+            .next()
+            .unwrap_or(DEFAULT_LICENSE)
     }
 
     /// Get the current license template.
     pub(crate) fn authors(&self, repo: &Repo) -> Vec<String> {
-        let mut authors = Vec::new();
-
-        for author in self
-            .repos
-            .get(repo.path())
-            .into_iter()
-            .flat_map(|r| r.authors.iter())
-        {
-            authors.push(author.to_owned());
-        }
-
-        authors.extend(self.base.authors.iter().cloned());
-        authors
+        self.repos(repo).flat_map(|r| &r.authors).cloned().collect()
     }
 
     /// Get the current license template.
     pub(crate) fn variables(&self, repo: &RepoRef) -> toml::Table {
         let mut variables = self.defaults.clone();
 
-        if let Some(branch) = &self.base.branch {
-            variables.insert(
-                String::from("branch"),
-                toml::Value::String(branch.to_owned()),
-            );
-        }
-
-        merge_map(&mut variables, self.base.variables.clone());
-
-        if let Some(repo) = self.repos.get(repo.path()) {
+        for repo in self.repos(repo) {
             let mut current = repo.variables.clone();
 
             if let Some(branch) = &repo.branch {
@@ -707,35 +628,17 @@ impl Config<'_> {
 
     /// Get all rpm files.
     pub(crate) fn package_files(&self, repo: &RepoRef) -> Vec<&PackageFile> {
-        let mut files = self.base.package.files.iter().collect::<Vec<_>>();
-
-        if let Some(values) = self.repos.get(repo.path()).map(|r| &r.package.files) {
-            files.extend(values);
-        }
-
-        files
+        self.repos(repo).flat_map(|r| &r.package.files).collect()
     }
 
     /// Get all denied actions.
     pub(crate) fn action_deny(&self, repo: &RepoRef) -> Vec<&DenyAction> {
-        let mut files = self.base.actions.deny.iter().collect::<Vec<_>>();
-
-        if let Some(values) = self.repos.get(repo.path()).map(|r| &r.actions.deny) {
-            files.extend(values);
-        }
-
-        files
+        self.repos(repo).flat_map(|r| &r.actions.deny).collect()
     }
 
     /// Get all latest actions.
     pub(crate) fn action_latest(&self, repo: &RepoRef) -> Vec<&LatestAction> {
-        let mut files = self.base.actions.latest.iter().collect::<Vec<_>>();
-
-        if let Some(values) = self.repos.get(repo.path()).map(|r| &r.actions.latest) {
-            files.extend(values);
-        }
-
-        files
+        self.repos(repo).flat_map(|r| &r.actions.latest).collect()
     }
 
     /// Get all elements corresponding to the given field.
@@ -779,44 +682,37 @@ impl Config<'_> {
     }
 
     /// Get the header for the given repo.
-    pub(crate) fn lib(&self, path: &RelativePath) -> Option<&Template> {
-        if let Some(lib) = self.repos.get(path).and_then(|r| r.lib.as_ref()) {
-            return Some(lib);
-        }
-
-        self.base.lib.as_ref()
+    pub(crate) fn lib(&self, repo: &RepoRef) -> Option<&Template> {
+        self.repos(repo).rev().flat_map(|r| r.lib.as_ref()).next()
     }
 
     /// Get readme template for the given repo.
-    pub(crate) fn readme(&self, path: &RelativePath) -> Option<&Template> {
-        if let Some(readme) = self.repos.get(path).and_then(|r| r.readme.as_ref()) {
-            return Some(readme);
-        }
-
-        self.base.readme.as_ref()
+    pub(crate) fn readme(&self, repo: &RepoRef) -> Option<&Template> {
+        self.repos(repo)
+            .rev()
+            .flat_map(|r| r.readme.as_ref())
+            .next()
     }
 
     /// Get crate for the given repo.
-    pub(crate) fn name<'a>(&'a self, path: &RelativePath) -> Option<&'a str> {
-        if let Some(krate) = self.repos.get(path).and_then(|r| r.name.as_deref()) {
-            return Some(krate);
-        }
-
-        self.base.name.as_deref()
+    pub(crate) fn name<'a>(&'a self, repo: &RepoRef) -> Option<&'a str> {
+        self.repos(repo)
+            .rev()
+            .flat_map(|r| r.name.as_deref())
+            .next()
     }
 
     /// Get Cargo.toml path for the given repo.
-    pub(crate) fn cargo_toml<'a>(&'a self, path: &RelativePath) -> Option<&'a RelativePath> {
-        if let Some(cargo_toml) = self.repos.get(path).and_then(|r| r.cargo_toml.as_deref()) {
-            return Some(cargo_toml);
-        }
-
-        self.base.cargo_toml.as_deref()
+    pub(crate) fn cargo_toml<'a>(&'a self, repo: &RepoRef) -> Option<&'a RelativePath> {
+        self.repos(repo)
+            .rev()
+            .flat_map(|r| r.cargo_toml.as_deref())
+            .next()
     }
 
     /// Get Cargo.toml path for the given repo.
-    pub(crate) fn is_enabled(&self, path: &RelativePath, feature: &str) -> bool {
-        let Some(repo) = self.repos.get(path) else {
+    pub(crate) fn is_enabled(&self, repo: &RepoRef, feature: &str) -> bool {
+        let Some(repo) = self.repos.get(repo.path()) else {
             return true;
         };
 
@@ -824,32 +720,23 @@ impl Config<'_> {
     }
 
     /// Get version replacements.
-    pub(crate) fn version<'a>(&'a self, repo: &Repo) -> Vec<&'a Replacement> {
-        let mut replacements = Vec::new();
-
-        for replacement in self
-            .repos
-            .get(repo.path())
-            .into_iter()
-            .flat_map(|r| r.version.iter())
-        {
-            replacements.push(replacement);
-        }
-
-        replacements.extend(self.base.version.iter());
-        replacements
+    pub(crate) fn version<'a>(&'a self, repo: &RepoRef) -> Vec<&'a Replacement> {
+        self.repos(repo).flat_map(|r| &r.version).collect()
     }
 
     /// Get crate for the given repo.
-    pub(crate) fn upgrade(&self, path: &RelativePath) -> Upgrade {
-        let mut upgrade = self
-            .repos
-            .get(path)
-            .map(|r| r.upgrade.clone())
-            .unwrap_or_default();
+    pub(crate) fn upgrade(&self, repo: &RepoRef) -> Upgrade {
+        let mut upgrade = Upgrade::default();
 
-        upgrade.merge_with(self.base.upgrade.clone());
+        for u in self.repos(repo).rev().map(|r| &r.upgrade) {
+            upgrade.merge_with(u.clone());
+        }
+
         upgrade
+    }
+
+    fn repos<'a>(&'a self, repo: &RepoRef) -> impl DoubleEndedIterator<Item = &'a RepoConfig> {
+        [&self.base].into_iter().chain(self.repos.get(repo.path()))
     }
 }
 

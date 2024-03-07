@@ -17,15 +17,12 @@ pub(crate) const CARGO_TOML: &str = "Cargo.toml";
 pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Crates>> {
     tracing::trace!("Opening workspace");
 
-    let manifest_path = match cx.config.cargo_toml(repo.path()) {
+    let manifest_path = match cx.config.cargo_toml(repo) {
         Some(cargo_toml) => repo.path().join(cargo_toml),
         None => repo.path().join(CARGO_TOML),
     };
 
-    let primary_package = cx
-        .config
-        .name(repo.path())
-        .or(repo.repo().map(|repo| repo.name));
+    let primary_package = cx.config.name(repo).or(repo.repo().map(|repo| repo.name));
 
     let Some(manifest) = cargo::open(cx.paths, &manifest_path)? else {
         return Ok(None);
