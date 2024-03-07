@@ -527,49 +527,43 @@ pub(crate) struct Config<'a> {
 impl Config<'_> {
     /// A workflow configuration.
     pub(crate) fn workflows(&self, repo: &RepoRef) -> Result<BTreeMap<String, WorkflowConfig>> {
-        let mut partial = BTreeMap::<String, PartialWorkflowConfig>::new();
+        let mut ids = HashSet::new();
 
-        for (id, config) in &self.base.workflows {
-            let mut config = config.clone();
-
-            if let Some(branch) = &self.base.branch {
-                config.branch = Some(config.branch.unwrap_or_else(|| branch.clone()));
-            }
-
-            partial.entry(id.clone()).or_default().merge_with(config);
+        for id in self.base.workflows.keys() {
+            ids.insert(id.as_str());
         }
 
         if let Some(repo) = self.repos.get(repo.path()) {
-            let mut remaining = partial.keys().cloned().collect::<HashSet<_>>();
-
-            for (id, config) in &repo.workflows {
-                remaining.remove(id);
-
-                let mut config = config.clone();
-
-                if let Some(branch) = &repo.branch {
-                    config.branch = Some(config.branch.unwrap_or_else(|| branch.clone()));
-                }
-
-                partial.entry(id.clone()).or_default().merge_with(config);
-            }
-
-            for id in remaining {
-                let mut config = PartialWorkflowConfig::default();
-
-                if let Some(branch) = &repo.branch {
-                    config.branch = Some(branch.clone());
-                }
-
-                partial.entry(id).or_default().merge_with(config);
+            for id in repo.workflows.keys() {
+                ids.insert(id.as_str());
             }
         }
 
         let mut out = BTreeMap::new();
 
-        for (id, config) in partial {
+        for id in ids {
+            let mut config = PartialWorkflowConfig::default();
+
+            if let Some(branch) = &self.base.branch {
+                config.branch = Some(branch.clone());
+            }
+
+            if let Some(c) = self.base.workflows.get(id) {
+                config.merge_with(c.clone());
+            }
+
+            if let Some(repo) = self.repos.get(repo.path()) {
+                if let Some(branch) = &repo.branch {
+                    config.branch = Some(branch.clone());
+                }
+
+                if let Some(c) = repo.workflows.get(id) {
+                    config.merge_with(c.clone());
+                }
+            }
+
             out.insert(
-                id,
+                id.to_owned(),
                 WorkflowConfig {
                     name: config.name,
                     features: config.features,
