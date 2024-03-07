@@ -680,27 +680,23 @@ impl Config<'_> {
     pub(crate) fn variables(&self, repo: &RepoRef) -> toml::Table {
         let mut variables = self.defaults.clone();
 
-        merge_map(&mut variables, self.base.variables.clone());
-
         if let Some(branch) = &self.base.branch {
-            if !variables.contains_key("branch") {
-                variables.insert(
-                    String::from("branch"),
-                    toml::Value::String(branch.to_owned()),
-                );
-            }
+            variables.insert(
+                String::from("branch"),
+                toml::Value::String(branch.to_owned()),
+            );
         }
+
+        merge_map(&mut variables, self.base.variables.clone());
 
         if let Some(repo) = self.repos.get(repo.path()) {
             let mut current = repo.variables.clone();
 
             if let Some(branch) = &repo.branch {
-                if !current.contains_key("branch") {
-                    current.insert(
-                        String::from("branch"),
-                        toml::Value::String(branch.to_owned()),
-                    );
-                }
+                current.insert(
+                    String::from("branch"),
+                    toml::Value::String(branch.to_owned()),
+                );
             }
 
             merge_map(&mut variables, current);
