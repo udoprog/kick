@@ -13,10 +13,9 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
-use crate::cargo::{self};
-use crate::ctxt::{Ctxt, Paths};
+use crate::ctxt::Paths;
 use crate::glob::Glob;
-use crate::model::{PackageParams, Random, RenderRustVersions, Repo, RepoParams, RepoRef};
+use crate::model::{Repo, RepoParams, RepoRef};
 use crate::templates::{Template, Templating};
 use crate::KICK_TOML;
 
@@ -90,7 +89,7 @@ impl Replaced {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Debug, Clone)]
 pub(crate) struct Upgrade {
     /// Packages to exclude during an upgrade.
     pub(crate) exclude: BTreeSet<String>,
@@ -248,7 +247,7 @@ pub(crate) struct DebDependency {
     pub(crate) version: VersionRequirement,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct Replacement {
     /// Replacements to perform in a given package.
     pub(crate) package_name: Option<String>,
@@ -309,8 +308,12 @@ impl Replacement {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(crate) struct RepoConfig {
+    /// Override crate to use.
+    pub(crate) name: Option<String>,
+    /// Name of the repo branch.
+    pub(crate) branch: Option<String>,
     /// Workflows to incorporate.
     pub(crate) workflows: HashMap<String, PartialWorkflowConfig>,
     /// License of the project.
@@ -325,8 +328,6 @@ pub(crate) struct RepoConfig {
     pub(crate) readme: Option<Template>,
     /// Custom badges for a specific project.
     pub(crate) badges: Vec<ConfigBadge>,
-    /// Override crate to use.
-    pub(crate) name: Option<String>,
     /// Path to Cargo.toml to build.
     pub(crate) cargo_toml: Option<RelativePathBuf>,
     /// Disabled modules.
@@ -350,6 +351,9 @@ pub(crate) struct RepoConfig {
 impl RepoConfig {
     /// Merge this config with another.
     pub(crate) fn merge_with(&mut self, mut other: Self) {
+        self.name = other.name.or(self.name.take());
+        self.branch = other.branch.or(self.branch.take());
+
         for (id, workflow) in other.workflows {
             self.workflows.entry(id).or_default().merge_with(workflow);
         }
@@ -359,7 +363,6 @@ impl RepoConfig {
         self.documentation = other.documentation.or(self.documentation.take());
         self.lib = other.lib.or(self.lib.take());
         self.badges.append(&mut other.badges);
-        self.name = other.name.or(self.name.take());
         self.cargo_toml = other.cargo_toml.or(self.cargo_toml.take());
         self.disabled.extend(other.disabled);
         self.lib_badges.merge_with(other.lib_badges);
@@ -368,6 +371,7 @@ impl RepoConfig {
         self.upgrade.merge_with(other.upgrade);
         self.package.merge_with(other.package);
         self.actions.merge_with(other.actions);
+
         merge_map(&mut self.variables, other.variables);
     }
 
@@ -391,7 +395,7 @@ impl RepoConfig {
 }
 
 /// A workflow configuration.
-#[derive(Default, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct PartialWorkflowConfig {
     /// Workflow template.
     pub(crate) template: Option<Template>,
@@ -401,6 +405,8 @@ pub struct PartialWorkflowConfig {
     pub(crate) features: HashSet<WorkflowFeature>,
     /// Branch that the workflow should trigger on.
     pub(crate) branch: Option<String>,
+    /// If the workflow config is disabled.
+    pub(crate) disable: Option<bool>,
 }
 
 impl PartialWorkflowConfig {
@@ -409,6 +415,7 @@ impl PartialWorkflowConfig {
         self.name = other.name.or(self.name.take());
         self.features.extend(other.features);
         self.branch = other.branch.or(self.branch.take());
+        self.disable = other.disable.or(self.disable.take());
     }
 }
 
@@ -427,7 +434,7 @@ impl WorkflowFeature {
 }
 
 /// A workflow configuration.
-#[derive(Default, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct WorkflowConfig {
     /// The expected name of the workflow.
     pub(crate) name: Option<String>,
@@ -435,6 +442,8 @@ pub struct WorkflowConfig {
     pub(crate) features: HashSet<WorkflowFeature>,
     /// Branch that the workflow should trigger on.
     pub(crate) branch: Option<String>,
+    /// If the workflow configuration is disabled.
+    pub(crate) disable: bool,
 }
 
 /// A badge configuration.
@@ -511,7 +520,7 @@ impl FromIterator<Id> for IdSet {
 
 pub(crate) struct Config<'a> {
     pub(crate) base: RepoConfig,
-    pub(crate) repo: HashMap<RelativePathBuf, RepoConfig>,
+    pub(crate) repos: HashMap<RelativePathBuf, RepoConfig>,
     pub(crate) defaults: &'a toml::Table,
 }
 
@@ -521,18 +530,38 @@ impl Config<'_> {
         let mut partial = BTreeMap::<String, PartialWorkflowConfig>::new();
 
         for (id, config) in &self.base.workflows {
-            partial
-                .entry(id.clone())
-                .or_default()
-                .merge_with(config.clone());
+            let mut config = config.clone();
+
+            if let Some(branch) = &self.base.branch {
+                config.branch = Some(config.branch.unwrap_or_else(|| branch.clone()));
+            }
+
+            partial.entry(id.clone()).or_default().merge_with(config);
         }
 
-        if let Some(repo) = self.repo.get(repo.path()) {
+        if let Some(repo) = self.repos.get(repo.path()) {
+            let mut remaining = partial.keys().cloned().collect::<HashSet<_>>();
+
             for (id, config) in &repo.workflows {
-                partial
-                    .entry(id.clone())
-                    .or_default()
-                    .merge_with(config.clone());
+                remaining.remove(id);
+
+                let mut config = config.clone();
+
+                if let Some(branch) = &repo.branch {
+                    config.branch = Some(config.branch.unwrap_or_else(|| branch.clone()));
+                }
+
+                partial.entry(id.clone()).or_default().merge_with(config);
+            }
+
+            for id in remaining {
+                let mut config = PartialWorkflowConfig::default();
+
+                if let Some(branch) = &repo.branch {
+                    config.branch = Some(branch.clone());
+                }
+
+                partial.entry(id).or_default().merge_with(config);
             }
         }
 
@@ -545,6 +574,7 @@ impl Config<'_> {
                     name: config.name,
                     features: config.features,
                     branch: config.branch,
+                    disable: config.disable.unwrap_or_default(),
                 },
             );
         }
@@ -560,7 +590,7 @@ impl Config<'_> {
         params: RepoParams<'_>,
     ) -> Result<Option<String>> {
         if let Some(template) = self
-            .repo
+            .repos
             .get(repo.path())
             .and_then(|r| r.workflows.get(id)?.template.as_ref())
         {
@@ -579,29 +609,9 @@ impl Config<'_> {
         Ok(None)
     }
 
-    /// Set up render parameters.
-    pub(crate) fn repo_params<'a>(
-        &'a self,
-        cx: &Ctxt<'_>,
-        package_params: PackageParams<'a>,
-        random: Random,
-        variables: toml::Table,
-    ) -> RepoParams<'a> {
-        RepoParams {
-            package_params,
-            rust_versions: RenderRustVersions {
-                rustc: cx.rustc_version,
-                edition_2018: cargo::rust_version::EDITION_2018,
-                edition_2021: cargo::rust_version::EDITION_2021,
-            },
-            random,
-            variables,
-        }
-    }
-
     /// Get the current job name.
     pub(crate) fn variable(&self, repo: &RepoRef, key: &str) -> Result<&toml::Value> {
-        if let Some(source) = self.repo.get(repo.path()).map(|r| &r.variables) {
+        if let Some(source) = self.repos.get(repo.path()).map(|r| &r.variables) {
             if let Some(value) = source.get(key) {
                 return Ok(value);
             }
@@ -632,7 +642,7 @@ impl Config<'_> {
     /// Get the current documentation template.
     pub(crate) fn documentation(&self, repo: &Repo) -> Option<&Template> {
         if let Some(template) = self
-            .repo
+            .repos
             .get(repo.path())
             .and_then(|r| r.documentation.as_ref())
         {
@@ -645,7 +655,7 @@ impl Config<'_> {
     /// Get the current license template.
     pub(crate) fn license(&self, repo: &Repo) -> &str {
         if let Some(template) = self
-            .repo
+            .repos
             .get(repo.path())
             .and_then(|r| r.license.as_deref())
         {
@@ -660,7 +670,7 @@ impl Config<'_> {
         let mut authors = Vec::new();
 
         for author in self
-            .repo
+            .repos
             .get(repo.path())
             .into_iter()
             .flat_map(|r| r.authors.iter())
@@ -678,8 +688,28 @@ impl Config<'_> {
 
         merge_map(&mut variables, self.base.variables.clone());
 
-        if let Some(source) = self.repo.get(repo.path()).map(|r| &r.variables) {
-            merge_map(&mut variables, source.clone());
+        if let Some(branch) = &self.base.branch {
+            if !variables.contains_key("branch") {
+                variables.insert(
+                    String::from("branch"),
+                    toml::Value::String(branch.to_owned()),
+                );
+            }
+        }
+
+        if let Some(repo) = self.repos.get(repo.path()) {
+            let mut current = repo.variables.clone();
+
+            if let Some(branch) = &repo.branch {
+                if !current.contains_key("branch") {
+                    current.insert(
+                        String::from("branch"),
+                        toml::Value::String(branch.to_owned()),
+                    );
+                }
+            }
+
+            merge_map(&mut variables, current);
         }
 
         variables
@@ -689,7 +719,7 @@ impl Config<'_> {
     pub(crate) fn package_files(&self, repo: &RepoRef) -> Vec<&PackageFile> {
         let mut files = self.base.package.files.iter().collect::<Vec<_>>();
 
-        if let Some(values) = self.repo.get(repo.path()).map(|r| &r.package.files) {
+        if let Some(values) = self.repos.get(repo.path()).map(|r| &r.package.files) {
             files.extend(values);
         }
 
@@ -700,7 +730,7 @@ impl Config<'_> {
     pub(crate) fn action_deny(&self, repo: &RepoRef) -> Vec<&DenyAction> {
         let mut files = self.base.actions.deny.iter().collect::<Vec<_>>();
 
-        if let Some(values) = self.repo.get(repo.path()).map(|r| &r.actions.deny) {
+        if let Some(values) = self.repos.get(repo.path()).map(|r| &r.actions.deny) {
             files.extend(values);
         }
 
@@ -711,7 +741,7 @@ impl Config<'_> {
     pub(crate) fn action_latest(&self, repo: &RepoRef) -> Vec<&LatestAction> {
         let mut files = self.base.actions.latest.iter().collect::<Vec<_>>();
 
-        if let Some(values) = self.repo.get(repo.path()).map(|r| &r.actions.latest) {
+        if let Some(values) = self.repos.get(repo.path()).map(|r| &r.actions.latest) {
             files.extend(values);
         }
 
@@ -725,7 +755,7 @@ impl Config<'_> {
     {
         let mut requires = get(&self.base).iter().collect::<Vec<_>>();
 
-        if let Some(values) = self.repo.get(repo.path()).map(get) {
+        if let Some(values) = self.repos.get(repo.path()).map(get) {
             requires.extend(values);
         }
 
@@ -736,7 +766,7 @@ impl Config<'_> {
     where
         F: FnMut(&RepoConfig, &ConfigBadge, bool) -> bool,
     {
-        let repo = self.repo.get(path);
+        let repo = self.repos.get(path);
         let repos = repo.into_iter().flat_map(|repo| repo.badges.iter());
 
         self.base.badges.iter().chain(repos).filter(move |b| {
@@ -760,7 +790,7 @@ impl Config<'_> {
 
     /// Get the header for the given repo.
     pub(crate) fn lib(&self, path: &RelativePath) -> Option<&Template> {
-        if let Some(lib) = self.repo.get(path).and_then(|r| r.lib.as_ref()) {
+        if let Some(lib) = self.repos.get(path).and_then(|r| r.lib.as_ref()) {
             return Some(lib);
         }
 
@@ -769,7 +799,7 @@ impl Config<'_> {
 
     /// Get readme template for the given repo.
     pub(crate) fn readme(&self, path: &RelativePath) -> Option<&Template> {
-        if let Some(readme) = self.repo.get(path).and_then(|r| r.readme.as_ref()) {
+        if let Some(readme) = self.repos.get(path).and_then(|r| r.readme.as_ref()) {
             return Some(readme);
         }
 
@@ -778,7 +808,7 @@ impl Config<'_> {
 
     /// Get crate for the given repo.
     pub(crate) fn name<'a>(&'a self, path: &RelativePath) -> Option<&'a str> {
-        if let Some(krate) = self.repo.get(path).and_then(|r| r.name.as_deref()) {
+        if let Some(krate) = self.repos.get(path).and_then(|r| r.name.as_deref()) {
             return Some(krate);
         }
 
@@ -787,7 +817,7 @@ impl Config<'_> {
 
     /// Get Cargo.toml path for the given repo.
     pub(crate) fn cargo_toml<'a>(&'a self, path: &RelativePath) -> Option<&'a RelativePath> {
-        if let Some(cargo_toml) = self.repo.get(path).and_then(|r| r.cargo_toml.as_deref()) {
+        if let Some(cargo_toml) = self.repos.get(path).and_then(|r| r.cargo_toml.as_deref()) {
             return Some(cargo_toml);
         }
 
@@ -796,7 +826,7 @@ impl Config<'_> {
 
     /// Get Cargo.toml path for the given repo.
     pub(crate) fn is_enabled(&self, path: &RelativePath, feature: &str) -> bool {
-        let Some(repo) = self.repo.get(path) else {
+        let Some(repo) = self.repos.get(path) else {
             return true;
         };
 
@@ -808,7 +838,7 @@ impl Config<'_> {
         let mut replacements = Vec::new();
 
         for replacement in self
-            .repo
+            .repos
             .get(repo.path())
             .into_iter()
             .flat_map(|r| r.version.iter())
@@ -823,7 +853,7 @@ impl Config<'_> {
     /// Get crate for the given repo.
     pub(crate) fn upgrade(&self, path: &RelativePath) -> Upgrade {
         let mut upgrade = self
-            .repo
+            .repos
             .get(path)
             .map(|r| r.upgrade.clone())
             .unwrap_or_default();
@@ -833,6 +863,7 @@ impl Config<'_> {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct ConfigBadge {
     pub(crate) id: Option<String>,
     enabled: bool,
@@ -1169,16 +1200,21 @@ impl<'a> ConfigCtxt<'a> {
         })?;
 
         let branch = self.as_string(config, "branch")?;
+        let disable = self.as_boolean(config, "disable")?;
 
         Ok(PartialWorkflowConfig {
             name,
             template,
             features: features.unwrap_or_default().into_iter().collect(),
             branch,
+            disable,
         })
     }
 
     fn repo_table(&mut self, config: &mut toml::Table) -> Result<RepoConfig> {
+        let name = self.as_string(config, "name")?;
+        let branch = self.as_string(config, "branch")?;
+
         let workflows = self.in_table(config, "workflows", |cx, id, value| {
             Ok((id, cx.workflow(value)?))
         })?;
@@ -1199,7 +1235,6 @@ impl<'a> ConfigCtxt<'a> {
         let _ = self
             .as_boolean(config, "center_badges")?
             .unwrap_or_default();
-        let name = self.as_string(config, "name")?;
 
         let cargo_toml = self.in_string(config, "cargo_toml", |_, string| {
             Ok(RelativePathBuf::from(string))
@@ -1262,6 +1297,8 @@ impl<'a> ConfigCtxt<'a> {
             .unwrap_or_default();
 
         Ok(RepoConfig {
+            name,
+            branch,
             workflows: workflows.unwrap_or_default(),
             license,
             authors,
@@ -1269,7 +1306,6 @@ impl<'a> ConfigCtxt<'a> {
             lib,
             readme,
             badges,
-            name,
             cargo_toml,
             disabled,
             lib_badges,
@@ -1471,7 +1507,7 @@ pub(crate) fn load<'a>(
 
         return Ok(Config {
             base: RepoConfig::default(),
-            repo: HashMap::new(),
+            repos: HashMap::new(),
             defaults,
         });
     };
@@ -1484,33 +1520,30 @@ pub(crate) fn load<'a>(
 fn load_merged<'a>(
     cx: &mut ConfigCtxt<'_>,
     templating: &Templating,
-    repos: &[Repo],
+    inputs: &[Repo],
     config: toml::Value,
     defaults: &'a toml::Table,
 ) -> Result<Config<'a>> {
-    let (base, mut repo_configs) = match load_base(cx, config) {
+    let (base, mut repos) = match load_base(cx, config) {
         Ok(output) => output,
         Err(error) => return Err(cx.context(error)),
     };
 
-    for repo in repos {
-        let result = load_repo(cx.paths, cx.current, repo, templating)
+    for repo in inputs {
+        let config = load_repo(cx.paths, cx.current, repo, templating)
             .with_context(|| anyhow!("In repo {}", cx.paths.to_path(repo.path()).display()))?;
 
-        let Some(config) = result else {
+        let Some(config) = config else {
             continue;
         };
 
-        let original = repo_configs
-            .entry(RelativePathBuf::from(repo.path()))
-            .or_default();
-
+        let original = repos.entry(RelativePathBuf::from(repo.path())).or_default();
         original.merge_with(config);
     }
 
     Ok(Config {
         base,
-        repo: repo_configs,
+        repos,
         defaults,
     })
 }

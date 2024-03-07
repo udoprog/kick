@@ -6,13 +6,12 @@ use std::process::{ExitCode, Stdio};
 use anyhow::{anyhow, Context, Result};
 use relative_path::RelativePath;
 
-use crate::cargo::Package;
-use crate::cargo::RustVersion;
+use crate::cargo::{self, Package, RustVersion};
 use crate::changes::{Change, Warning};
 use crate::config::Config;
 use crate::env::Env;
 use crate::git::Git;
-use crate::model::{Repo, RepoParams, RepoRef, State};
+use crate::model::{RenderRustVersions, Repo, RepoParams, RepoRef, State};
 use crate::octokit;
 use crate::process::Command;
 use crate::repo_sets::RepoSets;
@@ -126,9 +125,17 @@ impl<'a> Ctxt<'a> {
         let variables = self.config.variables(repo);
         let package_params = package.package_params(repo)?;
         let random = repo.random();
-        Ok(self
-            .config
-            .repo_params(self, package_params, random, variables))
+
+        Ok(RepoParams {
+            package_params,
+            rust_versions: RenderRustVersions {
+                rustc: self.rustc_version,
+                edition_2018: cargo::rust_version::EDITION_2018,
+                edition_2021: cargo::rust_version::EDITION_2021,
+            },
+            random,
+            variables,
+        })
     }
 
     /// Iterate over non-disabled modules.

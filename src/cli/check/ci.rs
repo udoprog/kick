@@ -135,6 +135,10 @@ fn validate_workflow(
     id: &str,
     config: &WorkflowConfig,
 ) -> Result<()> {
+    if config.disable {
+        return Ok(());
+    }
+
     let path = ci.path.join(format!("{id}.yml"));
 
     if !cx.to_path(&path).is_file() {
