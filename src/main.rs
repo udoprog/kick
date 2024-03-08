@@ -314,6 +314,7 @@ mod cli;
 mod config;
 mod ctxt;
 mod deb;
+mod edits;
 mod env;
 mod file;
 mod git;
@@ -375,7 +376,7 @@ enum Action {
     Version(SharedAction<cli::version::Opts>),
     /// Publish packages in reverse order of dependencies.
     Publish(SharedAction<cli::publish::Opts>),
-    /// Perform repository aware `cargo upgrade`.
+    /// Perform repository aware `cargo upgrade`.change
     Upgrade(SharedAction<cli::upgrade::Opts>),
     /// Build an .msi package (using wix).
     Msi(SharedAction<cli::msi::Opts>),

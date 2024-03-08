@@ -10,9 +10,10 @@ use relative_path::RelativePath;
 
 use crate::actions::{self, Actions};
 use crate::cargo::{Package, RustVersion};
-use crate::changes::{Change, ReplaceValue, Warning, WorkflowChange};
+use crate::changes::{Change, Warning, WorkflowError};
 use crate::config::{WorkflowConfig, WorkflowFeature};
 use crate::ctxt::Ctxt;
+use crate::edits;
 use crate::keys::Keys;
 use crate::model::Repo;
 use crate::workspace::Crates;
@@ -23,7 +24,8 @@ pub(crate) struct Ci<'a> {
     repo: &'a Repo,
     package: &'a Package<'a>,
     crates: &'a Crates,
-    change: Vec<WorkflowChange>,
+    edits: edits::Edits,
+    errors: Vec<WorkflowError>,
 }
 
 pub(crate) enum ActionExpected {
@@ -92,7 +94,8 @@ pub(crate) fn build(cx: &Ctxt<'_>, package: &Package, repo: &Repo, crates: &Crat
         repo,
         package,
         crates,
-        change: Vec::new(),
+        edits: edits::Edits::default(),
+        errors: Vec::new(),
     };
 
     for (id, config) in cx.config.workflows(ci.repo)? {
@@ -204,11 +207,12 @@ fn validate_jobs(
         }
     }
 
-    if !ci.change.is_empty() {
+    if !ci.edits.is_empty() || !ci.errors.is_empty() {
         cx.change(Change::BadWorkflow {
             path: path.to_owned(),
             doc: doc.clone(),
-            change: take(&mut ci.change),
+            edits: take(&mut ci.edits),
+            errors: take(&mut ci.errors),
         });
     }
 
@@ -243,13 +247,11 @@ fn check_action(ci: &mut Ci<'_>, action: &Mapping<'_>, at: Id, name: &str) -> Re
 
     if let Some(expected) = ci.actions.get_latest(base) {
         if expected != version {
-            ci.change.push(WorkflowChange::Edit {
-                reason: format!("Outdated action: got `{version}` but expected `{expected}`"),
-                value: ReplaceValue::String(format!("{base}@{expected}")),
+            ci.edits.set(
                 at,
-                remove_keys: vec![],
-                set_keys: vec![],
-            });
+                format!("Outdated action: got `{version}` but expected `{expected}`"),
+                format_args!("{base}@{expected}"),
+            );
         }
     }
 
@@ -259,14 +261,14 @@ fn check_action(ci: &mut Ci<'_>, action: &Mapping<'_>, at: Id, name: &str) -> Re
             None => String::from("Action is denied"),
         };
 
-        ci.change.push(WorkflowChange::Error {
+        ci.errors.push(WorkflowError::Error {
             name: name.to_owned(),
             reason,
         });
     }
 
     if let Some(check) = ci.actions.get_check(base) {
-        check.check(name, action, &mut ci.change)?;
+        check.check(name, action, &mut ci.edits, &mut ci.errors)?;
     }
 
     Ok(())
@@ -290,15 +292,13 @@ fn check_uses_rust_version(ci: &mut Ci<'_>, at: Id, name: &str) -> Result<()> {
     };
 
     if rust_version > version {
-        ci.change.push(WorkflowChange::Edit {
-            reason: format!(
+        ci.edits.set(
+            at,
+            format_args!(
                 "Outdated rust version in rust-toolchain action: got `{version}` but expected `{rust_version}`"
             ),
-            value: ReplaceValue::String(format!("{author}/rust-toolchain@{rust_version}")),
-            at,
-            remove_keys: vec![],
-            set_keys: vec![],
-        });
+            format_args!("{author}/rust-toolchain@{rust_version}"),
+        );
     }
 
     Ok(())
@@ -323,15 +323,13 @@ fn check_if_rust_version(ci: &mut Ci<'_>, at: Id, value: &str) -> Result<()> {
     };
 
     if rust_version > version {
-        ci.change.push(WorkflowChange::Edit {
-            reason: format!(
+        ci.edits.set(
+            at,
+            format_args!(
                 "Outdated matrix.rust condition: got `{version}` but expected `{rust_version}`"
             ),
-            value: ReplaceValue::String(format!("matrix.rust == '{rust_version}'")),
-            at,
-            remove_keys: vec![],
-            set_keys: vec![],
-        });
+            format_args!("matrix.rust == '{rust_version}'"),
+        );
     }
 
     Ok(())
@@ -359,15 +357,13 @@ fn check_strategy_rust_version(ci: &mut Ci, job_name: &BStr, job: &yaml::Mapping
             };
 
             if rust_version > version {
-                ci.change.push(WorkflowChange::Edit {
-                    reason: format!(
+                ci.edits.set(
+                    value.id(),
+                    format_args!(
                         "build.{job_name}.strategy.matrix.rust[{index}]: Found rust version `{version}` but expected `{rust_version}`"
                     ),
-                    value: ReplaceValue::String(rust_version.to_string()),
-                    at: value.id(),
-                    remove_keys: vec![],
-                    set_keys: vec![],
-                });
+                    rust_version.to_string(),
+                );
             }
         }
     }
@@ -423,13 +419,7 @@ fn validate_on(
                             }
                         };
 
-                        ci.change.push(WorkflowChange::Edit {
-                            reason,
-                            value: ReplaceValue::String(string),
-                            at,
-                            remove_keys: vec![],
-                            set_keys: vec![],
-                        });
+                        ci.edits.set(at, reason, string);
                     }
                 }
             }
@@ -445,20 +435,18 @@ fn validate_on(
         }
     }
 
-    'done: {
-        let Some(branch) = &config.branch else {
-            break 'done;
-        };
-
-        let value = vec![(
-            String::from("push"),
-            ReplaceValue::Mapping(vec![(
-                String::from("branches"),
-                ReplaceValue::Array(vec![ReplaceValue::String(branch.clone())]),
-            )]),
-        )];
-
-        edit_mapping(ci, &mut keys, m, value);
+    if let Some(branch) = &config.branch {
+        ci.edits.edit_mapping(
+            &mut keys,
+            m,
+            [(
+                String::from("push"),
+                edits::Value::Mapping(vec![(
+                    String::from("branches"),
+                    edits::Value::Array(vec![edits::Value::String(branch.clone())]),
+                )]),
+            )],
+        );
     }
 }
 
@@ -611,100 +599,4 @@ fn process_features(
     }
 
     (cargo_features, missing_features, features_list)
-}
-
-fn edit_mapping(
-    ci: &mut Ci<'_>,
-    keys: &mut Keys,
-    mapping: yaml::Mapping<'_>,
-    items: Vec<(String, ReplaceValue)>,
-) {
-    for (key, value) in items {
-        keys.field(&key);
-
-        let Some(actual) = mapping.get(&key) else {
-            ci.change.push(WorkflowChange::Insert {
-                reason: format!("{keys}: expected mapping"),
-                key,
-                value,
-                at: mapping.id(),
-            });
-
-            continue;
-        };
-
-        edit(ci, keys, actual, value);
-        keys.pop();
-    }
-}
-
-fn edit_sequence(
-    ci: &mut Ci<'_>,
-    keys: &mut Keys,
-    sequence: yaml::Sequence<'_>,
-    array: Vec<ReplaceValue>,
-) {
-    if array.len() != sequence.len() {
-        ci.change.push(WorkflowChange::Edit {
-            reason: format!("{keys}: expected array of length {}", array.len()),
-            value: ReplaceValue::Array(array),
-            at: sequence.id(),
-            remove_keys: Vec::new(),
-            set_keys: Vec::new(),
-        });
-
-        return;
-    }
-
-    for ((index, value), actual) in array.into_iter().enumerate().zip(sequence) {
-        keys.index(index);
-        edit(ci, keys, actual, value);
-        keys.pop();
-    }
-}
-
-fn edit(ci: &mut Ci<'_>, keys: &mut Keys, actual: yaml::Value<'_>, value: ReplaceValue) {
-    match value {
-        ReplaceValue::String(string) => {
-            if !actual.as_str().map_or(false, |actual| actual == string) {
-                ci.change.push(WorkflowChange::Edit {
-                    reason: format!("{keys}: expected string"),
-                    value: ReplaceValue::String(string),
-                    at: actual.id(),
-                    remove_keys: Vec::new(),
-                    set_keys: Vec::new(),
-                });
-            }
-        }
-        ReplaceValue::Array(array) => {
-            let Some(actual) = actual.as_sequence() else {
-                ci.change.push(WorkflowChange::Edit {
-                    reason: format!("{keys}: expected array"),
-                    value: ReplaceValue::Array(array),
-                    at: actual.id(),
-                    remove_keys: Vec::new(),
-                    set_keys: Vec::new(),
-                });
-
-                return;
-            };
-
-            edit_sequence(ci, keys, actual, array);
-        }
-        ReplaceValue::Mapping(mapping) => {
-            let Some(actual) = actual.as_mapping() else {
-                ci.change.push(WorkflowChange::Edit {
-                    reason: format!("{keys}: expected mapping"),
-                    value: ReplaceValue::Mapping(mapping),
-                    at: actual.id(),
-                    remove_keys: Vec::new(),
-                    set_keys: Vec::new(),
-                });
-
-                return;
-            };
-
-            edit_mapping(ci, keys, actual, mapping);
-        }
-    }
 }

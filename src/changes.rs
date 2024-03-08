@@ -19,6 +19,7 @@ use crate::cli::check::cargo::CargoKey;
 use crate::cli::check::ci::ActionExpected;
 use crate::config::Replaced;
 use crate::ctxt::Ctxt;
+use crate::edits::{self, Edits};
 use crate::file::{File, LineColumn};
 use crate::model::RepoRef;
 use crate::process::Command;
@@ -179,86 +180,82 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                 std::fs::write(path, string)?;
             }
         }
-        Change::BadWorkflow { path, doc, change } => {
+        Change::BadWorkflow {
+            path,
+            doc,
+            edits,
+            errors,
+        } => {
             let path = cx.to_path(path);
-            let mut doc = doc.clone();
-            let mut edited = false;
 
-            for change in change {
-                match change {
-                    WorkflowChange::Insert {
-                        reason,
-                        key,
-                        value,
-                        at,
-                    } => {
-                        println!("{}: {reason}", path.display());
+            if !edits.is_empty() {
+                let mut doc = doc.clone();
+                let mut edited = false;
 
-                        if save {
-                            let mut mapping = doc.value_mut(*at);
+                for change in edits.changes() {
+                    match change {
+                        edits::Change::Insert {
+                            at,
+                            reason,
+                            key,
+                            value,
+                        } => {
+                            println!("{}: {reason}", path.display());
 
-                            if let Some(mut mapping) = mapping.as_mapping_mut() {
-                                let at = mapping
-                                    .insert(key.clone(), yaml::Separator::Auto)
-                                    .as_ref()
-                                    .id();
-                                value.replace(&mut doc, at);
+                            if save {
+                                let mut mapping = doc.value_mut(*at);
+
+                                if let Some(mut mapping) = mapping.as_mapping_mut() {
+                                    let at = mapping
+                                        .insert(key.clone(), yaml::Separator::Auto)
+                                        .as_ref()
+                                        .id();
+                                    value.replace(&mut doc, at);
+                                }
+
+                                edited = true;
                             }
-
-                            edited = true;
                         }
-                    }
-                    WorkflowChange::Edit {
-                        reason,
-                        value,
-                        at,
-                        remove_keys,
-                        set_keys,
-                    } => {
-                        println!("{}: {reason}", path.display());
+                        edits::Change::Set { at, reason, value } => {
+                            println!("{}: {reason}", path.display());
 
-                        if save {
-                            value.replace(&mut doc, *at);
+                            if save {
+                                value.replace(&mut doc, *at);
+                                edited = true;
+                            }
+                        }
+                        edits::Change::RemoveKey {
+                            mapping,
+                            reason,
+                            key,
+                        } => {
+                            println!("{}: {reason}", path.display());
 
-                            for (id, key) in remove_keys {
-                                if let Some(mut m) = doc.value_mut(*id).into_mapping_mut() {
+                            if save {
+                                if let Some(mut m) = doc.value_mut(*mapping).into_mapping_mut() {
                                     if !m.remove(key) {
                                         bail!("{}: failed to remove key `{key}`", path.display());
                                     }
+
+                                    edited = true;
                                 }
                             }
-
-                            for (id, key, value) in set_keys {
-                                let mut m = doc.value_mut(*id);
-
-                                for step in key.split('.') {
-                                    let Some(next) =
-                                        m.into_mapping_mut().and_then(|m| m.get_into_mut(step))
-                                    else {
-                                        bail!(
-                                            "{}: missing step `{step}` in key `{key}`",
-                                            path.display()
-                                        );
-                                    };
-
-                                    m = next;
-                                }
-
-                                m.set_string(value);
-                            }
-
-                            edited = true;
                         }
                     }
-                    WorkflowChange::Error { name, reason } => {
-                        println!("{}: {name}: {reason}", path.display());
-                    }
+                }
+
+                if edited {
+                    println!("{}: Fixing", path.display());
+                    std::fs::write(&path, doc.to_string())?;
                 }
             }
 
-            if edited {
-                println!("{}: Fixing", path.display());
-                std::fs::write(path, doc.to_string())?;
+            for change in errors {
+                match change {
+                    WorkflowError::Error { name, reason } => {
+                        println!("{}: {name}: {reason}", path.display());
+                    }
+                }
             }
         }
         Change::UpdateLib {
@@ -522,71 +519,10 @@ cargo_issues! {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "data")]
-pub(crate) enum ReplaceValue {
-    String(String),
-    Array(Vec<ReplaceValue>),
-    Mapping(Vec<(String, ReplaceValue)>),
-}
-
-impl ReplaceValue {
-    fn replace(&self, doc: &mut yaml::Document, at: yaml::Id) {
-        match self {
-            ReplaceValue::String(value) => {
-                doc.value_mut(at).set_string(value);
-            }
-            ReplaceValue::Array(array) => {
-                let mut sequence = doc.value_mut(at).make_sequence();
-                sequence.clear();
-
-                let mut ids = Vec::with_capacity(array.len());
-
-                for _ in array {
-                    ids.push(sequence.push(yaml::Separator::Auto).as_ref().id());
-                }
-
-                for (value, id) in array.iter().zip(ids) {
-                    value.replace(doc, id);
-                }
-            }
-            ReplaceValue::Mapping(mapping) => {
-                let mut map = doc.value_mut(at).make_mapping();
-
-                let mut ids = Vec::with_capacity(mapping.len());
-
-                for (key, value) in mapping {
-                    let id = map.insert(key.clone(), yaml::Separator::Auto).as_ref().id();
-                    ids.push((value, id));
-                }
-
-                for (value, id) in ids {
-                    value.replace(doc, id);
-                }
-            }
-        }
-    }
-}
-
 /// A simple workflow change.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind")]
-pub(crate) enum WorkflowChange {
-    /// Insert an entry into a map.
-    Insert {
-        reason: String,
-        key: String,
-        value: ReplaceValue,
-        at: yaml::Id,
-    },
-    /// Oudated version of an action.
-    Edit {
-        reason: String,
-        value: ReplaceValue,
-        at: yaml::Id,
-        remove_keys: Vec<(yaml::Id, String)>,
-        set_keys: Vec<(yaml::Id, String, String)>,
-    },
+pub(crate) enum WorkflowError {
     /// Deny use of the specific action.
     Error { name: String, reason: String },
 }
@@ -649,7 +585,8 @@ pub(crate) enum Change {
     BadWorkflow {
         path: RelativePathBuf,
         doc: yaml::Document,
-        change: Vec<WorkflowChange>,
+        edits: Edits,
+        errors: Vec<WorkflowError>,
     },
     UpdateLib {
         path: RelativePathBuf,

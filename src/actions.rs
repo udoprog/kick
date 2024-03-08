@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use anyhow::Result;
 use nondestructive::yaml;
 
-use crate::changes::{ReplaceValue, WorkflowChange};
+use crate::changes::WorkflowError;
+use crate::edits::{self, Edits};
 
 /// A single actions check.
 pub(crate) trait ActionsCheck {
@@ -11,7 +12,8 @@ pub(crate) trait ActionsCheck {
         &self,
         name: &str,
         action: &yaml::Mapping<'_>,
-        change: &mut Vec<WorkflowChange>,
+        edits: &mut Edits,
+        errors: &mut Vec<WorkflowError>,
     ) -> Result<()>;
 }
 
@@ -67,10 +69,11 @@ impl ActionsCheck for ActionsRsToolchainActionsCheck {
         &self,
         name: &str,
         mapping: &yaml::Mapping<'_>,
-        change: &mut Vec<WorkflowChange>,
+        edits: &mut Edits,
+        errors: &mut Vec<WorkflowError>,
     ) -> Result<()> {
         let Some(uses) = mapping.get("uses") else {
-            change.push(WorkflowChange::Error {
+            errors.push(WorkflowError::Error {
                 name: name.to_string(),
                 reason: String::from("there are better alternatives"),
             });
@@ -86,28 +89,28 @@ impl ActionsCheck for ActionsRsToolchainActionsCheck {
             "stable"
         };
 
-        let mut remove_keys = Vec::new();
-        let mut set_keys = Vec::new();
-
         let toolchain = if !toolchain.starts_with("${{") {
-            remove_keys.push((mapping.id(), String::from("with")));
+            edits.remove_key(mapping.id(), "With is incorrect", String::from("with"));
             toolchain
         } else {
-            set_keys.push((
+            edits.insert(
                 mapping.id(),
-                String::from("with.toolchain"),
-                toolchain.to_string(),
-            ));
+                "Update toolchain",
+                String::from("with"),
+                edits::Value::Mapping(vec![(
+                    String::from("toolchain"),
+                    edits::Value::String(toolchain.to_string()),
+                )]),
+            );
+
             "master"
         };
 
-        change.push(WorkflowChange::Edit {
-            reason: String::from("actions-rs/toolchain has better alternatives"),
-            value: ReplaceValue::String(format!("dtolnay/rust-toolchain@{toolchain}")),
-            at: uses.id(),
-            remove_keys,
-            set_keys,
-        });
+        edits.set(
+            uses.id(),
+            "actions-rs/toolchain has better alternatives",
+            edits::Value::String(format!("dtolnay/rust-toolchain@{toolchain}")),
+        );
 
         Ok(())
     }
