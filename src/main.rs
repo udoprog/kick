@@ -322,6 +322,7 @@ mod gitmodules;
 mod glob;
 mod keys;
 mod model;
+mod musli;
 mod octokit;
 mod packaging;
 mod process;

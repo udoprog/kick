@@ -8,6 +8,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
+use musli::{Decode, Encode};
 use nondestructive::yaml;
 use relative_path::RelativePathBuf;
 use semver::Version;
@@ -476,7 +477,7 @@ pub(crate) fn temporary_line_fix(
 
 macro_rules! cargo_issues {
     ($f:ident, $($issue:ident $({ $($field:ident: $ty:ty),* $(,)? })? => $description:expr),* $(,)?) => {
-        #[derive(Clone, Serialize, Deserialize)]
+        #[derive(Clone, Serialize, Deserialize, Encode, Decode)]
         #[serde(tag = "kind")]
         pub(crate) enum CargoIssue {
             $($issue $({$($field: $ty),*})?,)*
@@ -520,7 +521,7 @@ cargo_issues! {
 }
 
 /// A simple workflow change.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Encode, Decode)]
 #[serde(tag = "kind")]
 pub(crate) enum WorkflowError {
     /// Deny use of the specific action.
@@ -575,28 +576,34 @@ pub(crate) enum Warning {
 }
 
 /// A single change.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Encode, Decode, Serialize, Deserialize)]
 pub(crate) enum Change {
     MissingWorkflow {
         id: String,
+        #[musli(with = crate::musli::relative_path)]
         path: RelativePathBuf,
         repo: RepoRef,
     },
     BadWorkflow {
+        #[musli(with = crate::musli::relative_path)]
         path: RelativePathBuf,
+        #[musli(with = crate::musli::serde::<_>)]
         doc: yaml::Document,
         edits: Edits,
         errors: Vec<WorkflowError>,
     },
     UpdateLib {
+        #[musli(with = crate::musli::relative_path)]
         path: RelativePathBuf,
         lib: Arc<File>,
     },
     UpdateReadme {
+        #[musli(with = crate::musli::relative_path)]
         path: RelativePathBuf,
         readme: Arc<File>,
     },
     CargoTomlIssues {
+        #[musli(with = crate::musli::relative_path)]
         path: RelativePathBuf,
         cargo: Option<Manifest>,
         issues: Vec<CargoIssue>,
@@ -616,8 +623,10 @@ pub(crate) enum Change {
     },
     ReleaseCommit {
         /// Perform a release commit.
+        #[musli(with = crate::musli::relative_path)]
         path: RelativePathBuf,
         /// Version to commit.
+        #[musli(with = crate::musli::version)]
         version: Version,
     },
     /// Perform a publish action somewhere.
@@ -625,6 +634,7 @@ pub(crate) enum Change {
         /// Name of the crate being published.
         name: String,
         /// Directory to publish.
+        #[musli(with = crate::musli::relative_path)]
         manifest_dir: RelativePathBuf,
         /// Whether we perform a dry run or not.
         dry_run: bool,

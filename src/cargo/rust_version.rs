@@ -1,6 +1,7 @@
 use core::fmt;
 use std::borrow::Cow;
 
+use musli::{Decode, Encode};
 use serde::de::Error;
 use serde::{Deserialize, Serialize, Serializer};
 
@@ -11,7 +12,7 @@ pub(crate) const EDITION_2021: RustVersion = RustVersion::new(1, 56);
 /// Oldest version to support workspaces.
 pub(crate) const WORKSPACE: RustVersion = RustVersion::new(1, 12);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Encode, Decode)]
 #[non_exhaustive]
 pub(crate) struct RustVersion {
     pub(crate) major: u64,
