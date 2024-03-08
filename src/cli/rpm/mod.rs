@@ -122,7 +122,7 @@ fn add_file(
 ) -> Result<rpm::PackageBuilder> {
     tracing::info!("Adding {} to {dest}", source.display());
 
-    let mut options = rpm::FileOptions::new(dest.as_str());
+    let mut options = rpm::FileOptions::new(format!("/{dest}"));
 
     if let Some(mode) = file.mode {
         options = options.mode(mode);
