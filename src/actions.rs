@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 use nondestructive::yaml;
 
-use crate::changes::WorkflowChange;
+use crate::changes::{ReplaceValue, WorkflowChange};
 
 /// A single actions check.
 pub(crate) trait ActionsCheck {
@@ -101,10 +101,10 @@ impl ActionsCheck for ActionsRsToolchainActionsCheck {
             "master"
         };
 
-        change.push(WorkflowChange::ReplaceString {
+        change.push(WorkflowChange::Edit {
             reason: String::from("actions-rs/toolchain has better alternatives"),
-            string: format!("dtolnay/rust-toolchain@{toolchain}"),
-            value: uses.id(),
+            value: ReplaceValue::String(format!("dtolnay/rust-toolchain@{toolchain}")),
+            at: uses.id(),
             remove_keys,
             set_keys,
         });

@@ -10,7 +10,7 @@ use relative_path::RelativePath;
 
 use crate::actions::{self, Actions};
 use crate::cargo::{Package, RustVersion};
-use crate::changes::{Change, Warning, WorkflowChange};
+use crate::changes::{Change, ReplaceValue, Warning, WorkflowChange};
 use crate::config::{WorkflowConfig, WorkflowFeature};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
@@ -26,14 +26,12 @@ pub(crate) struct Ci<'a> {
 }
 
 pub(crate) enum ActionExpected {
-    Sequence,
     Mapping,
 }
 
 impl fmt::Display for ActionExpected {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ActionExpected::Sequence => write!(f, "sequence"),
             ActionExpected::Mapping => write!(f, "mapping"),
         }
     }
@@ -237,17 +235,17 @@ fn check_actions(ci: &mut Ci<'_>, job: &yaml::Mapping) -> Result<()> {
     Ok(())
 }
 
-fn check_action(ci: &mut Ci<'_>, action: &Mapping<'_>, uses: Id, name: &str) -> Result<()> {
+fn check_action(ci: &mut Ci<'_>, action: &Mapping<'_>, at: Id, name: &str) -> Result<()> {
     let Some((base, version)) = name.split_once('@') else {
         return Ok(());
     };
 
     if let Some(expected) = ci.actions.get_latest(base) {
         if expected != version {
-            ci.change.push(WorkflowChange::ReplaceString {
+            ci.change.push(WorkflowChange::Edit {
                 reason: format!("Outdated action: got `{version}` but expected `{expected}`"),
-                string: format!("{base}@{expected}"),
-                value: uses,
+                value: ReplaceValue::String(format!("{base}@{expected}")),
+                at,
                 remove_keys: vec![],
                 set_keys: vec![],
             });
@@ -273,7 +271,7 @@ fn check_action(ci: &mut Ci<'_>, action: &Mapping<'_>, uses: Id, name: &str) -> 
     Ok(())
 }
 
-fn check_uses_rust_version(ci: &mut Ci<'_>, uses_id: Id, name: &str) -> Result<()> {
+fn check_uses_rust_version(ci: &mut Ci<'_>, at: Id, name: &str) -> Result<()> {
     let Some(rust_version) = ci.package.rust_version() else {
         return Ok(());
     };
@@ -291,12 +289,12 @@ fn check_uses_rust_version(ci: &mut Ci<'_>, uses_id: Id, name: &str) -> Result<(
     };
 
     if rust_version > version {
-        ci.change.push(WorkflowChange::ReplaceString {
+        ci.change.push(WorkflowChange::Edit {
             reason: format!(
                 "Outdated rust version in rust-toolchain action: got `{version}` but expected `{rust_version}`"
             ),
-            string: format!("{author}/rust-toolchain@{rust_version}"),
-            value: uses_id,
+            value: ReplaceValue::String(format!("{author}/rust-toolchain@{rust_version}")),
+            at,
             remove_keys: vec![],
             set_keys: vec![],
         });
@@ -305,7 +303,7 @@ fn check_uses_rust_version(ci: &mut Ci<'_>, uses_id: Id, name: &str) -> Result<(
     Ok(())
 }
 
-fn check_if_rust_version(ci: &mut Ci<'_>, if_id: Id, value: &str) -> Result<()> {
+fn check_if_rust_version(ci: &mut Ci<'_>, at: Id, value: &str) -> Result<()> {
     let Some(rust_version) = ci.package.rust_version() else {
         return Ok(());
     };
@@ -324,12 +322,12 @@ fn check_if_rust_version(ci: &mut Ci<'_>, if_id: Id, value: &str) -> Result<()> 
     };
 
     if rust_version > version {
-        ci.change.push(WorkflowChange::ReplaceString {
+        ci.change.push(WorkflowChange::Edit {
             reason: format!(
                 "Outdated matrix.rust condition: got `{version}` but expected `{rust_version}`"
             ),
-            string: format!("matrix.rust == '{rust_version}'"),
-            value: if_id,
+            value: ReplaceValue::String(format!("matrix.rust == '{rust_version}'")),
+            at,
             remove_keys: vec![],
             set_keys: vec![],
         });
@@ -360,12 +358,12 @@ fn check_strategy_rust_version(ci: &mut Ci, job_name: &BStr, job: &yaml::Mapping
             };
 
             if rust_version > version {
-                ci.change.push(WorkflowChange::ReplaceString {
+                ci.change.push(WorkflowChange::Edit {
                     reason: format!(
                         "build.{job_name}.strategy.matrix.rust[{index}]: Found rust version `{version}` but expected `{rust_version}`"
                     ),
-                    string: rust_version.to_string(),
-                    value: value.id(),
+                    value: ReplaceValue::String(rust_version.to_string()),
+                    at: value.id(),
                     remove_keys: vec![],
                     set_keys: vec![],
                 });
@@ -404,7 +402,7 @@ fn validate_on(
                     continue;
                 };
 
-                if let Some((value, actual)) = m.get("cron").map(|v| (v.id(), v.as_str())) {
+                if let Some((at, actual)) = m.get("cron").map(|v| (v.id(), v.as_str())) {
                     let random = ci.repo.random();
                     let string = format!("{} {} * * {}", random.minute, random.hour, random.day);
 
@@ -420,10 +418,10 @@ fn validate_on(
                             }
                         };
 
-                        ci.change.push(WorkflowChange::ReplaceString {
+                        ci.change.push(WorkflowChange::Edit {
                             reason,
-                            string,
-                            value,
+                            value: ReplaceValue::String(string),
+                            at,
                             remove_keys: vec![],
                             set_keys: vec![],
                         });
@@ -442,28 +440,60 @@ fn validate_on(
         }
     }
 
-    if let Some(branch) = &config.branch {
-        if let Some(m) = m.get("push").and_then(|v| v.as_mapping()) {
-            match m.get("branches").map(yaml::Value::into_any) {
-                Some(yaml::Any::Sequence(s)) => {
-                    if !s.iter().flat_map(|v| v.as_str()).any(|b| b == branch) {
-                        cx.warning(Warning::ActionOnMissingBranch {
-                            path: path.to_owned(),
-                            key: Box::from("on.push.branches"),
-                            branch: Box::from(branch.as_str()),
-                        });
-                    }
-                }
-                value => {
-                    cx.warning(Warning::ActionMissingKey {
-                        path: path.to_owned(),
-                        key: Box::from("on.push.branches"),
-                        expected: ActionExpected::Sequence,
-                        doc: doc.clone(),
-                        actual: value.map(|v| v.id()),
-                    });
-                }
-            }
+    'done: {
+        let Some(branch) = &config.branch else {
+            break 'done;
+        };
+
+        let Some(push) = m.get("push").and_then(|v| v.as_mapping()) else {
+            ci.change.push(WorkflowChange::Insert {
+                reason: format!("Expected `push` key with `{branch}`"),
+                key: String::from("push"),
+                value: ReplaceValue::Mapping(vec![(
+                    String::from("branches"),
+                    ReplaceValue::Array(vec![ReplaceValue::String(branch.clone())]),
+                )]),
+                at: m.id(),
+            });
+
+            break 'done;
+        };
+
+        let Some(branches) = push.get("branches") else {
+            ci.change.push(WorkflowChange::Insert {
+                reason: format!("Expected sequence with branch [\"{branch}\"]"),
+                key: String::from("branches"),
+                value: ReplaceValue::Array(vec![ReplaceValue::String(branch.clone())]),
+                at: push.id(),
+            });
+
+            break 'done;
+        };
+
+        let Some(branches) = branches.as_sequence().filter(|b| b.len() == 1) else {
+            ci.change.push(WorkflowChange::Edit {
+                reason: format!("Expected sequence with branch [\"{branch}\"]"),
+                value: ReplaceValue::Array(vec![ReplaceValue::String(branch.clone())]),
+                at: branches.id(),
+                remove_keys: vec![],
+                set_keys: vec![],
+            });
+
+            break 'done;
+        };
+
+        let Some(first) = branches.get(0) else {
+            break 'done;
+        };
+
+        if !first.as_str().map_or(false, |name| name == branch) {
+            ci.change.push(WorkflowChange::Edit {
+                reason: format!("Expected branch `{value}`"),
+                value: ReplaceValue::String(branch.clone()),
+                at: first.id(),
+                remove_keys: vec![],
+                set_keys: vec![],
+            });
         }
     }
 }

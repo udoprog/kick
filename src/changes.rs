@@ -144,13 +144,6 @@ pub(crate) fn report(cx: &Ctxt<'_>, warning: &Warning) -> Result<()> {
                 }
             }
         }
-        Warning::ActionOnMissingBranch { path, key, branch } => {
-            let path = cx.to_path(path);
-            println!(
-                "{}: {key}: action missing branch `{branch}`",
-                path.display()
-            );
-        }
         Warning::ActionExpectedEmptyMapping { path, key } => {
             let path = cx.to_path(path);
             println!("{}: {key}: action expected empty mapping", path.display());
@@ -193,17 +186,39 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
 
             for change in change {
                 match change {
-                    WorkflowChange::ReplaceString {
+                    WorkflowChange::Insert {
                         reason,
-                        string,
-                        value: uses,
+                        key,
+                        value,
+                        at,
+                    } => {
+                        println!("{}: {reason}", path.display());
+
+                        if save {
+                            let mut mapping = doc.value_mut(*at);
+
+                            if let Some(mut mapping) = mapping.as_mapping_mut() {
+                                let at = mapping
+                                    .insert(key.clone(), yaml::Separator::Auto)
+                                    .as_ref()
+                                    .id();
+                                value.replace(&mut doc, at);
+                            }
+
+                            edited = true;
+                        }
+                    }
+                    WorkflowChange::Edit {
+                        reason,
+                        value,
+                        at,
                         remove_keys,
                         set_keys,
                     } => {
                         println!("{}: {reason}", path.display());
 
                         if save {
-                            doc.value_mut(*uses).set_string(string);
+                            value.replace(&mut doc, *at);
 
                             for (id, key) in remove_keys {
                                 if let Some(mut m) = doc.value_mut(*id).into_mapping_mut() {
@@ -507,15 +522,67 @@ cargo_issues! {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "data")]
+pub(crate) enum ReplaceValue {
+    String(String),
+    Array(Vec<ReplaceValue>),
+    Mapping(Vec<(String, ReplaceValue)>),
+}
+
+impl ReplaceValue {
+    fn replace(&self, doc: &mut yaml::Document, at: yaml::Id) {
+        match self {
+            ReplaceValue::String(value) => {
+                doc.value_mut(at).set_string(value);
+            }
+            ReplaceValue::Array(array) => {
+                let mut sequence = doc.value_mut(at).make_sequence();
+
+                let mut ids = Vec::with_capacity(array.len());
+
+                for _ in array {
+                    ids.push(sequence.push(yaml::Separator::Auto).as_ref().id());
+                }
+
+                for (value, id) in array.iter().zip(ids) {
+                    value.replace(doc, id);
+                }
+            }
+            ReplaceValue::Mapping(mapping) => {
+                let mut map = doc.value_mut(at).make_mapping();
+
+                let mut ids = Vec::with_capacity(mapping.len());
+
+                for (key, value) in mapping {
+                    let id = map.insert(key.clone(), yaml::Separator::Auto).as_ref().id();
+                    ids.push((value, id));
+                }
+
+                for (value, id) in ids {
+                    value.replace(doc, id);
+                }
+            }
+        }
+    }
+}
+
 /// A simple workflow change.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub(crate) enum WorkflowChange {
-    /// Oudated version of an action.
-    ReplaceString {
+    /// Insert an entry into a map.
+    Insert {
         reason: String,
-        string: String,
-        value: yaml::Id,
+        key: String,
+        value: ReplaceValue,
+        at: yaml::Id,
+    },
+    /// Oudated version of an action.
+    Edit {
+        reason: String,
+        value: ReplaceValue,
+        at: yaml::Id,
         remove_keys: Vec<(yaml::Id, String)>,
         set_keys: Vec<(yaml::Id, String, String)>,
     },
@@ -563,11 +630,6 @@ pub(crate) enum Warning {
         expected: ActionExpected,
         doc: yaml::Document,
         actual: Option<yaml::Id>,
-    },
-    ActionOnMissingBranch {
-        path: RelativePathBuf,
-        key: Box<str>,
-        branch: Box<str>,
     },
     ActionExpectedEmptyMapping {
         path: RelativePathBuf,
