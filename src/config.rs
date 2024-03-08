@@ -166,9 +166,9 @@ impl Actions {
 #[derive(Default, Debug, Clone)]
 pub(crate) struct PackageFile {
     /// The source of an rpm file.
-    pub(crate) source: String,
+    pub(crate) source: RelativePathBuf,
     /// Destination of an rpm file.
-    pub(crate) dest: String,
+    pub(crate) dest: RelativePathBuf,
     /// The mode of a file.
     pub(crate) mode: Option<u16>,
 }
@@ -817,6 +817,21 @@ impl<'a> ConfigCtxt<'a> {
         Ok(())
     }
 
+    /// Visit the given key, extracting it from the specified table.
+    fn in_key<F, O>(&mut self, config: &mut toml::Table, key: &str, f: F) -> Result<Option<O>>
+    where
+        F: FnOnce(&mut Self, toml::Value) -> Result<O>,
+    {
+        let Some(value) = config.remove(key) else {
+            return Ok(None);
+        };
+
+        self.keys.field(key);
+        let out = f(self, value)?;
+        self.keys.pop();
+        Ok(Some(out))
+    }
+
     /// Compile a template from a path.
     fn compile_path<S>(&mut self, path: S) -> Result<Template>
     where
@@ -840,6 +855,17 @@ impl<'a> ConfigCtxt<'a> {
             toml::Value::String(string) => Ok(string),
             other => Err(anyhow!("Expected string, got {other}")),
         }
+    }
+
+    fn relative_path(&mut self, value: toml::Value) -> Result<RelativePathBuf> {
+        let string = self.string(value)?;
+        let path = RelativePathBuf::from(string);
+
+        if path.as_str().starts_with('/') {
+            bail!("path must be relative, but got {path}");
+        }
+
+        Ok(path)
     }
 
     fn boolean(&mut self, value: toml::Value) -> Result<bool> {
@@ -888,22 +914,18 @@ impl<'a> ConfigCtxt<'a> {
     where
         F: FnMut(&mut Self, toml::Value) -> Result<O>,
     {
-        let Some(value) = config.remove(key) else {
-            return Ok(None);
-        };
+        self.in_key(config, key, move |cx, value| {
+            let array = cx.array(value, map)?;
+            let mut out = Vec::with_capacity(array.len());
 
-        self.keys.field(key);
-        let array = self.array(value, map)?;
-        let mut out = Vec::with_capacity(array.len());
+            for (index, item) in array.into_iter().enumerate() {
+                cx.keys.index(index);
+                out.push(f(cx, item)?);
+                cx.keys.pop();
+            }
 
-        for (index, item) in array.into_iter().enumerate() {
-            self.keys.index(index);
-            out.push(f(self, item)?);
-            self.keys.pop();
-        }
-
-        self.keys.pop();
-        Ok(Some(out))
+            Ok(out)
+        })
     }
 
     fn in_table<F, K, V>(
@@ -916,53 +938,47 @@ impl<'a> ConfigCtxt<'a> {
         K: Eq + Hash,
         F: FnMut(&mut Self, String, toml::Value) -> Result<(K, V)>,
     {
-        let Some(value) = config.remove(key) else {
-            return Ok(None);
-        };
+        self.in_key(config, key, move |cx, value| {
+            let table = cx.table(value)?;
+            let mut out = HashMap::with_capacity(table.len());
 
-        self.keys.field(key);
-        let table = self.table(value)?;
-        let mut out = HashMap::with_capacity(table.len());
+            for (key, item) in table {
+                cx.keys.field(&key);
+                let (key, value) = f(cx, key, item)?;
+                out.insert(key, value);
+                cx.keys.pop();
+            }
 
-        for (key, item) in table {
-            self.keys.field(&key);
-            let (key, value) = f(self, key, item)?;
-            out.insert(key, value);
-            self.keys.pop();
-        }
-
-        self.keys.pop();
-        Ok(Some(out))
+            Ok(out)
+        })
     }
 
     fn as_table<F, O>(&mut self, config: &mut toml::Table, key: &str, f: F) -> Result<Option<O>>
     where
         F: FnOnce(&mut Self, toml::Table) -> Result<O>,
     {
-        let Some(value) = config.remove(key) else {
-            return Ok(None);
-        };
-
-        self.keys.field(key);
-        let table = self.table(value)?;
-        let output = f(self, table)?;
-        self.keys.pop();
-        Ok(Some(output))
+        self.in_key(config, key, move |cx, value| {
+            let table = cx.table(value)?;
+            f(cx, table)
+        })
     }
 
     fn in_string<F, O>(&mut self, config: &mut toml::Table, key: &str, f: F) -> Result<Option<O>>
     where
         F: FnOnce(&mut Self, String) -> Result<O>,
     {
-        let Some(value) = config.remove(key) else {
-            return Ok(None);
-        };
+        self.in_key(config, key, move |cx, value| {
+            let string = cx.string(value)?;
+            f(cx, string)
+        })
+    }
 
-        self.keys.field(key);
-        let out = self.string(value)?;
-        let out = f(self, out)?;
-        self.keys.pop();
-        Ok(Some(out))
+    fn as_relative_path(
+        &mut self,
+        config: &mut toml::Table,
+        key: &str,
+    ) -> Result<Option<RelativePathBuf>> {
+        self.in_key(config, key, Self::relative_path)
     }
 
     fn as_string(&mut self, config: &mut toml::Table, key: &str) -> Result<Option<String>> {
@@ -970,14 +986,7 @@ impl<'a> ConfigCtxt<'a> {
     }
 
     fn as_boolean(&mut self, config: &mut toml::Table, key: &str) -> Result<Option<bool>> {
-        let Some(value) = config.remove(key) else {
-            return Ok(None);
-        };
-
-        self.keys.field(key);
-        let out = self.boolean(value)?;
-        self.keys.pop();
-        Ok(Some(out))
+        self.in_key(config, key, Self::boolean)
     }
 
     fn badges(&mut self, config: &mut toml::Table) -> Result<Option<Vec<ConfigBadge>>> {
@@ -1066,9 +1075,7 @@ impl<'a> ConfigCtxt<'a> {
             .as_boolean(config, "center_badges")?
             .unwrap_or_default();
 
-        let cargo_toml = self.in_string(config, "cargo_toml", |_, string| {
-            Ok(RelativePathBuf::from(string))
-        })?;
+        let cargo_toml = self.as_relative_path(config, "cargo_toml")?;
 
         let disabled = self.in_array(config, "disabled", None, |cx, item| cx.string(item))?;
         let disabled = disabled.unwrap_or_default().into_iter().collect();
@@ -1094,9 +1101,7 @@ impl<'a> ConfigCtxt<'a> {
             let package_name = cx.as_string(&mut config, "crate")?;
 
             let paths = cx
-                .in_array(&mut config, "paths", None, |cx, string| {
-                    Ok(RelativePathBuf::from(cx.string(string)?))
-                })?
+                .in_array(&mut config, "paths", None, Self::relative_path)?
                 .context("missing `paths`")?;
 
             let pattern = cx
@@ -1164,7 +1169,7 @@ impl<'a> ConfigCtxt<'a> {
 
     fn upgrade(&mut self, mut config: toml::Table) -> Result<Upgrade> {
         let exclude = self
-            .in_array(&mut config, "exclude", None, |cx, item| cx.string(item))?
+            .in_array(&mut config, "exclude", None, Self::string)?
             .into_iter()
             .flatten()
             .collect();
@@ -1177,11 +1182,11 @@ impl<'a> ConfigCtxt<'a> {
     fn package_file(&mut self, value: toml::Value) -> Result<PackageFile> {
         let mut config = self.table(value)?;
 
-        let Some(source) = self.in_string(&mut config, "source", |_, string| Ok(string))? else {
+        let Some(source) = self.as_relative_path(&mut config, "source")? else {
             bail!("Missing source");
         };
 
-        let Some(dest) = self.in_string(&mut config, "dest", |_, string| Ok(string))? else {
+        let Some(dest) = self.as_relative_path(&mut config, "dest")? else {
             bail!("Missing dest");
         };
 

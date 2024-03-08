@@ -1,10 +1,9 @@
-use anyhow::{Context, Result};
+use std::fmt;
+use std::io::{Cursor, Write};
+use std::time::SystemTime;
+
+use anyhow::{anyhow, Context, Result};
 use relative_path::{RelativePath, RelativePathBuf};
-use std::{
-    fmt,
-    io::{Cursor, Write},
-    time::SystemTime,
-};
 
 use super::Architecture;
 
@@ -75,13 +74,16 @@ impl Builder {
             .append(&header, Cursor::new(&contents))
             .context("Appending debian-binary")?;
 
-        let control = self.control.build(&self.data.files)?;
+        let control = self
+            .control
+            .build(&self.data.files)
+            .context("Building control")?;
         let header = ar::Header::new(b"control.tar.xz".to_vec(), control.len() as u64);
         builder
             .append(&header, Cursor::new(&control))
             .context("Appending control")?;
 
-        let data = self.data.build()?;
+        let data = self.data.build().context("Building data")?;
         let header = ar::Header::new(b"data.tar.xz".to_vec(), data.len() as u64);
         builder
             .append(&header, Cursor::new(&data))
@@ -228,7 +230,10 @@ impl DataBuilder {
 
         for file in &self.files {
             let mut header = tar::Header::new_gnu();
-            header.set_path(file.path.as_str())?;
+            header
+                .set_path(file.path.as_str())
+                .with_context(|| anyhow!("Setting path {}", &file.path))?;
+
             header.set_size(file.contents.len() as u64);
             header.set_mode(file.mode);
             header.set_mtime(file.mtime);
