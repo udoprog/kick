@@ -6,6 +6,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use anyhow::{anyhow, bail, Context, Error, Result};
+use musli::{Decode, Encode};
 use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Deserialize, Serialize, Serializer};
 use url::Url;
@@ -112,11 +113,13 @@ impl fmt::Display for RepoSource {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Encode, Decode, Serialize, Deserialize)]
 pub(crate) struct RepoRef {
     /// Path to module.
+    #[musli(with = musli_serde)]
     path: RelativePathBuf,
     /// URL of module.
+    #[musli(with = musli_serde)]
     url: Url,
 }
 

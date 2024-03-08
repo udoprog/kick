@@ -2,12 +2,14 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io;
+use std::io::Write;
 use std::ops::Range;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
+use musli::{Decode, Encode};
 use nondestructive::yaml;
 use relative_path::RelativePathBuf;
 use semver::Version;
@@ -40,22 +42,37 @@ pub(crate) fn load_changes(path: &Path) -> Result<Option<Vec<Change>>> {
 
     let mut buf = Vec::new();
     encoder.read_to_end(&mut buf)?;
-    Ok(serde_json::from_slice(&buf)?)
+
+    let mut system_buffer = musli_descriptive::allocator::SystemBuffer::new();
+    let alloc = musli_descriptive::allocator::System::new(&mut system_buffer);
+    let mut cx = musli_descriptive::context::SystemContext::new(&alloc);
+    cx.include_type();
+
+    let value: Vec<Change> = match musli_descriptive::encoding::DEFAULT.from_slice_with(&cx, &buf) {
+        Ok(value) => value,
+        Err(error) => {
+            for error in cx.errors() {
+                bail!("{}", error);
+            }
+
+            bail!("{error}")
+        }
+    };
+
+    Ok(Some(value))
 }
 
 /// Save changes to the given path.
 pub(crate) fn save_changes(cx: &Ctxt<'_>, path: &Path) -> Result<()> {
-    use std::io::Write;
-
     use flate2::write::GzEncoder;
     use flate2::Compression;
 
-    let f = fs::File::create(path)?;
     let changes = cx.changes().iter().cloned().collect::<Vec<_>>();
-    let buf = serde_json::to_vec(&changes)?;
-    let mut encoder = GzEncoder::new(f, Compression::default());
-    encoder.write_all(&buf)?;
-    encoder.flush()?;
+    let f = fs::File::create(path)?;
+    let mut w = GzEncoder::new(f, Compression::default());
+    musli_descriptive::to_writer(&mut w, &changes)?;
+    let mut f = w.finish()?;
+    f.flush()?;
     Ok(())
 }
 
@@ -476,7 +493,7 @@ pub(crate) fn temporary_line_fix(
 
 macro_rules! cargo_issues {
     ($f:ident, $($issue:ident $({ $($field:ident: $ty:ty),* $(,)? })? => $description:expr),* $(,)?) => {
-        #[derive(Clone, Serialize, Deserialize)]
+        #[derive(Clone, Serialize, Deserialize, Encode, Decode)]
         #[serde(tag = "kind")]
         pub(crate) enum CargoIssue {
             $($issue $({$($field: $ty),*})?,)*
@@ -520,7 +537,7 @@ cargo_issues! {
 }
 
 /// A simple workflow change.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Encode, Decode)]
 #[serde(tag = "kind")]
 pub(crate) enum WorkflowError {
     /// Deny use of the specific action.
@@ -575,28 +592,34 @@ pub(crate) enum Warning {
 }
 
 /// A single change.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Encode, Decode, Serialize, Deserialize)]
 pub(crate) enum Change {
     MissingWorkflow {
         id: String,
+        #[musli(with = musli_serde)]
         path: RelativePathBuf,
         repo: RepoRef,
     },
     BadWorkflow {
+        #[musli(with = musli_serde)]
         path: RelativePathBuf,
+        #[musli(with = musli_serde)]
         doc: yaml::Document,
         edits: Edits,
         errors: Vec<WorkflowError>,
     },
     UpdateLib {
+        #[musli(with = musli_serde)]
         path: RelativePathBuf,
         lib: Arc<File>,
     },
     UpdateReadme {
+        #[musli(with = musli_serde)]
         path: RelativePathBuf,
         readme: Arc<File>,
     },
     CargoTomlIssues {
+        #[musli(with = musli_serde)]
         path: RelativePathBuf,
         cargo: Option<Manifest>,
         issues: Vec<CargoIssue>,
@@ -616,8 +639,10 @@ pub(crate) enum Change {
     },
     ReleaseCommit {
         /// Perform a release commit.
+        #[musli(with = musli_serde)]
         path: RelativePathBuf,
         /// Version to commit.
+        #[musli(with = musli_serde)]
         version: Version,
     },
     /// Perform a publish action somewhere.
@@ -625,6 +650,7 @@ pub(crate) enum Change {
         /// Name of the crate being published.
         name: String,
         /// Directory to publish.
+        #[musli(with = musli_serde)]
         manifest_dir: RelativePathBuf,
         /// Whether we perform a dry run or not.
         dry_run: bool,

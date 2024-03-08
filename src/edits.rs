@@ -1,12 +1,13 @@
 use std::fmt::{self, Arguments};
 
+use musli::{Decode, Encode};
 use nondestructive::yaml;
 use serde::{Deserialize, Serialize};
 
 use crate::keys::Keys;
 
 /// A collection of document edits.
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize, Encode, Decode)]
 pub(crate) struct Edits {
     changes: Vec<Change>,
 }
@@ -143,11 +144,12 @@ impl Edits {
 }
 
 /// A stored document change.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Encode, Decode)]
 #[serde(tag = "kind")]
 pub(crate) enum Change {
     /// Insert an entry into a map.
     Insert {
+        #[musli(with = musli_serde)]
         at: yaml::Id,
         reason: String,
         key: String,
@@ -155,19 +157,21 @@ pub(crate) enum Change {
     },
     /// Oudated version of an action.
     Set {
+        #[musli(with = musli_serde)]
         at: yaml::Id,
         reason: String,
         value: Value,
     },
     /// Change to remove a key.
     RemoveKey {
+        #[musli(with = musli_serde)]
         mapping: yaml::Id,
         reason: String,
         key: String,
     },
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Encode, Decode)]
 #[serde(tag = "kind", content = "data")]
 pub(crate) enum Value {
     String(String),

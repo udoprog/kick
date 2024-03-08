@@ -24,6 +24,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
+use musli::{Decode, Encode};
 use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Deserialize, Serialize};
 use toml_edit::{Array, Document, Formatted, Item, Key, Table, Value};
@@ -94,9 +95,11 @@ macro_rules! insert_list {
 }
 
 /// A parsed `Cargo.toml`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub(crate) struct Manifest {
+    #[musli(with = musli_serde)]
     path: Box<RelativePath>,
+    #[musli(with = crate::musli::document)]
     doc: Document,
 }
 

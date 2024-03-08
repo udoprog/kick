@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::{anyhow, bail, Context, Error, Result};
+use musli::{Decode, Encode};
 use relative_path::{RelativePath, RelativePathBuf};
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -42,7 +43,7 @@ pub(crate) fn defaults() -> toml::Table {
     defaults
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Encode, Decode)]
 pub(crate) struct Replaced {
     path: PathBuf,
     content: Vec<u8>,

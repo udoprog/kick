@@ -1,6 +1,7 @@
 use core::fmt;
 
 use anyhow::Result;
+use musli::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 
 use crate::cargo::{self, Package, RustVersion};
@@ -11,7 +12,7 @@ use crate::workspace::Crates;
 
 macro_rules! cargo_keys {
     ($($ident:ident => $name:literal),* $(,)?) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Encode, Decode)]
         #[serde(tag = "kind")]
         pub(crate) enum CargoKey {
             $($ident,)*
