@@ -15,6 +15,7 @@ use tempfile::NamedTempFile;
 
 use crate::ctxt::Paths;
 use crate::glob::Glob;
+use crate::keys::Keys;
 use crate::model::{Repo, RepoParams, RepoRef};
 use crate::templates::{Template, Templating};
 use crate::KICK_TOML;
@@ -766,30 +767,12 @@ impl ConfigBadge {
     }
 }
 
-enum Part {
-    Key(String),
-    Index(usize),
-}
-
-impl fmt::Display for Part {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Part::Key(key) => {
-                write!(f, "{key}")
-            }
-            Part::Index(index) => {
-                write!(f, "[{index}]")
-            }
-        }
-    }
-}
-
 /// Context used when parsing configuration.
 struct ConfigCtxt<'a> {
     paths: Paths<'a>,
     current: &'a RelativePath,
     kick_path: RelativePathBuf,
-    parts: Vec<Part>,
+    keys: Keys,
     templating: &'a Templating,
 }
 
@@ -799,7 +782,7 @@ impl<'a> ConfigCtxt<'a> {
             paths,
             current,
             kick_path: current.join_normalized(KICK_TOML),
-            parts: Vec::new(),
+            keys: Keys::default(),
             templating,
         }
     }
@@ -814,43 +797,13 @@ impl<'a> ConfigCtxt<'a> {
         Ok(Some(config))
     }
 
-    fn key(&mut self, key: &str) {
-        self.parts.push(Part::Key(key.to_owned()));
-    }
-
-    fn format_parts(&self) -> String {
-        use std::fmt::Write;
-
-        if self.parts.is_empty() {
-            return ".".to_string();
-        }
-
-        let mut out = String::new();
-        let mut it = self.parts.iter();
-
-        if let Some(p) = it.next() {
-            write!(out, "{p}").unwrap();
-        }
-
-        for p in it {
-            if let Part::Key(..) = p {
-                out.push('.');
-            }
-
-            write!(out, "{p}").unwrap();
-        }
-
-        out
-    }
-
     fn context<E>(&self, error: E) -> anyhow::Error
     where
         anyhow::Error: From<E>,
     {
-        let parts = self.format_parts();
-
         anyhow::Error::from(error).context(anyhow!(
-            "In {path}: {parts}",
+            "In {path}: {}",
+            self.keys,
             path = self.paths.to_path(&self.kick_path).display()
         ))
     }
@@ -939,17 +892,17 @@ impl<'a> ConfigCtxt<'a> {
             return Ok(None);
         };
 
-        self.key(key);
+        self.keys.field(key);
         let array = self.array(value, map)?;
         let mut out = Vec::with_capacity(array.len());
 
         for (index, item) in array.into_iter().enumerate() {
-            self.parts.push(Part::Index(index));
+            self.keys.index(index);
             out.push(f(self, item)?);
-            self.parts.pop();
+            self.keys.pop();
         }
 
-        self.parts.pop();
+        self.keys.pop();
         Ok(Some(out))
     }
 
@@ -967,18 +920,18 @@ impl<'a> ConfigCtxt<'a> {
             return Ok(None);
         };
 
-        self.key(key);
+        self.keys.field(key);
         let table = self.table(value)?;
         let mut out = HashMap::with_capacity(table.len());
 
         for (key, item) in table {
-            self.parts.push(Part::Key(key.clone()));
+            self.keys.field(&key);
             let (key, value) = f(self, key, item)?;
             out.insert(key, value);
-            self.parts.pop();
+            self.keys.pop();
         }
 
-        self.parts.pop();
+        self.keys.pop();
         Ok(Some(out))
     }
 
@@ -990,10 +943,10 @@ impl<'a> ConfigCtxt<'a> {
             return Ok(None);
         };
 
-        self.key(key);
+        self.keys.field(key);
         let table = self.table(value)?;
         let output = f(self, table)?;
-        self.parts.pop();
+        self.keys.pop();
         Ok(Some(output))
     }
 
@@ -1005,10 +958,10 @@ impl<'a> ConfigCtxt<'a> {
             return Ok(None);
         };
 
-        self.key(key);
+        self.keys.field(key);
         let out = self.string(value)?;
         let out = f(self, out)?;
-        self.parts.pop();
+        self.keys.pop();
         Ok(Some(out))
     }
 
@@ -1021,9 +974,9 @@ impl<'a> ConfigCtxt<'a> {
             return Ok(None);
         };
 
-        self.key(key);
+        self.keys.field(key);
         let out = self.boolean(value)?;
-        self.parts.pop();
+        self.keys.pop();
         Ok(Some(out))
     }
 

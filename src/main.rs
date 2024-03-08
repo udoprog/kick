@@ -319,6 +319,7 @@ mod file;
 mod git;
 mod gitmodules;
 mod glob;
+mod keys;
 mod model;
 mod octokit;
 mod packaging;

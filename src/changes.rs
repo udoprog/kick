@@ -538,6 +538,7 @@ impl ReplaceValue {
             }
             ReplaceValue::Array(array) => {
                 let mut sequence = doc.value_mut(at).make_sequence();
+                sequence.clear();
 
                 let mut ids = Vec::with_capacity(array.len());
 

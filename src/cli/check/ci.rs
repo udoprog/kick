@@ -13,6 +13,7 @@ use crate::cargo::{Package, RustVersion};
 use crate::changes::{Change, ReplaceValue, Warning, WorkflowChange};
 use crate::config::{WorkflowConfig, WorkflowFeature};
 use crate::ctxt::Ctxt;
+use crate::keys::Keys;
 use crate::model::Repo;
 use crate::workspace::Crates;
 
@@ -380,6 +381,8 @@ fn validate_on(
     path: &RelativePath,
     config: &WorkflowConfig,
 ) {
+    let mut keys = Keys::default();
+
     let Some(m) = value.as_mapping() else {
         cx.warning(Warning::ActionMissingKey {
             path: path.to_owned(),
@@ -391,6 +394,8 @@ fn validate_on(
 
         return;
     };
+
+    keys.field("on");
 
     if config
         .features
@@ -445,56 +450,15 @@ fn validate_on(
             break 'done;
         };
 
-        let Some(push) = m.get("push").and_then(|v| v.as_mapping()) else {
-            ci.change.push(WorkflowChange::Insert {
-                reason: format!("Expected `push` key with `{branch}`"),
-                key: String::from("push"),
-                value: ReplaceValue::Mapping(vec![(
-                    String::from("branches"),
-                    ReplaceValue::Array(vec![ReplaceValue::String(branch.clone())]),
-                )]),
-                at: m.id(),
-            });
+        let value = vec![(
+            String::from("push"),
+            ReplaceValue::Mapping(vec![(
+                String::from("branches"),
+                ReplaceValue::Array(vec![ReplaceValue::String(branch.clone())]),
+            )]),
+        )];
 
-            break 'done;
-        };
-
-        let Some(branches) = push.get("branches") else {
-            ci.change.push(WorkflowChange::Insert {
-                reason: format!("Expected sequence with branch [\"{branch}\"]"),
-                key: String::from("branches"),
-                value: ReplaceValue::Array(vec![ReplaceValue::String(branch.clone())]),
-                at: push.id(),
-            });
-
-            break 'done;
-        };
-
-        let Some(branches) = branches.as_sequence().filter(|b| b.len() == 1) else {
-            ci.change.push(WorkflowChange::Edit {
-                reason: format!("Expected sequence with branch [\"{branch}\"]"),
-                value: ReplaceValue::Array(vec![ReplaceValue::String(branch.clone())]),
-                at: branches.id(),
-                remove_keys: vec![],
-                set_keys: vec![],
-            });
-
-            break 'done;
-        };
-
-        let Some(first) = branches.get(0) else {
-            break 'done;
-        };
-
-        if !first.as_str().map_or(false, |name| name == branch) {
-            ci.change.push(WorkflowChange::Edit {
-                reason: format!("Expected branch `{value}`"),
-                value: ReplaceValue::String(branch.clone()),
-                at: first.id(),
-                remove_keys: vec![],
-                set_keys: vec![],
-            });
-        }
+        edit_mapping(ci, &mut keys, m, value);
     }
 }
 
@@ -647,4 +611,100 @@ fn process_features(
     }
 
     (cargo_features, missing_features, features_list)
+}
+
+fn edit_mapping(
+    ci: &mut Ci<'_>,
+    keys: &mut Keys,
+    mapping: yaml::Mapping<'_>,
+    items: Vec<(String, ReplaceValue)>,
+) {
+    for (key, value) in items {
+        keys.field(&key);
+
+        let Some(actual) = mapping.get(&key) else {
+            ci.change.push(WorkflowChange::Insert {
+                reason: format!("{keys}: expected mapping"),
+                key,
+                value,
+                at: mapping.id(),
+            });
+
+            continue;
+        };
+
+        edit(ci, keys, actual, value);
+        keys.pop();
+    }
+}
+
+fn edit_sequence(
+    ci: &mut Ci<'_>,
+    keys: &mut Keys,
+    sequence: yaml::Sequence<'_>,
+    array: Vec<ReplaceValue>,
+) {
+    if array.len() != sequence.len() {
+        ci.change.push(WorkflowChange::Edit {
+            reason: format!("{keys}: expected array of length {}", array.len()),
+            value: ReplaceValue::Array(array),
+            at: sequence.id(),
+            remove_keys: Vec::new(),
+            set_keys: Vec::new(),
+        });
+
+        return;
+    }
+
+    for ((index, value), actual) in array.into_iter().enumerate().zip(sequence) {
+        keys.index(index);
+        edit(ci, keys, actual, value);
+        keys.pop();
+    }
+}
+
+fn edit(ci: &mut Ci<'_>, keys: &mut Keys, actual: yaml::Value<'_>, value: ReplaceValue) {
+    match value {
+        ReplaceValue::String(string) => {
+            if !actual.as_str().map_or(false, |actual| actual == string) {
+                ci.change.push(WorkflowChange::Edit {
+                    reason: format!("{keys}: expected string"),
+                    value: ReplaceValue::String(string),
+                    at: actual.id(),
+                    remove_keys: Vec::new(),
+                    set_keys: Vec::new(),
+                });
+            }
+        }
+        ReplaceValue::Array(array) => {
+            let Some(actual) = actual.as_sequence() else {
+                ci.change.push(WorkflowChange::Edit {
+                    reason: format!("{keys}: expected array"),
+                    value: ReplaceValue::Array(array),
+                    at: actual.id(),
+                    remove_keys: Vec::new(),
+                    set_keys: Vec::new(),
+                });
+
+                return;
+            };
+
+            edit_sequence(ci, keys, actual, array);
+        }
+        ReplaceValue::Mapping(mapping) => {
+            let Some(actual) = actual.as_mapping() else {
+                ci.change.push(WorkflowChange::Edit {
+                    reason: format!("{keys}: expected mapping"),
+                    value: ReplaceValue::Mapping(mapping),
+                    at: actual.id(),
+                    remove_keys: Vec::new(),
+                    set_keys: Vec::new(),
+                });
+
+                return;
+            };
+
+            edit_mapping(ci, keys, actual, mapping);
+        }
+    }
 }
