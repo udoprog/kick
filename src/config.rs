@@ -3,6 +3,7 @@ use std::fmt;
 use std::fs;
 use std::hash::Hash;
 use std::io::{self, Write};
+use std::iter;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -808,15 +809,6 @@ impl<'a> ConfigCtxt<'a> {
         ))
     }
 
-    /// Ensure table is empty.
-    fn ensure_empty(&self, table: toml::Table) -> Result<()> {
-        if let Some((key, value)) = table.into_iter().next() {
-            bail!("got unsupported key `{key}`: {value}");
-        }
-
-        Ok(())
-    }
-
     /// Visit the given key, extracting it from the specified table.
     fn in_key<F, O>(&mut self, config: &mut toml::Table, key: &str, f: F) -> Result<Option<O>>
     where
@@ -904,28 +896,44 @@ impl<'a> ConfigCtxt<'a> {
         }
     }
 
-    fn in_array<F, O>(
+    fn in_array<F, O, B>(
         &mut self,
         config: &mut toml::Table,
         key: &str,
         map: Option<(&str, &str)>,
         mut f: F,
-    ) -> Result<Option<Vec<O>>>
+    ) -> Result<B>
     where
         F: FnMut(&mut Self, toml::Value) -> Result<O>,
+        B: FromIterator<O>,
     {
-        self.in_key(config, key, move |cx, value| {
+        let result = self.in_key(config, key, move |cx, value| {
             let array = cx.array(value, map)?;
-            let mut out = Vec::with_capacity(array.len());
+            let mut it = array.into_iter().enumerate();
 
-            for (index, item) in array.into_iter().enumerate() {
+            let it = iter::from_fn(|| {
+                let (index, item) = it.next()?;
+
                 cx.keys.index(index);
-                out.push(f(cx, item)?);
-                cx.keys.pop();
-            }
 
-            Ok(out)
-        })
+                let value = match f(cx, item) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return Some(Err(error));
+                    }
+                };
+
+                cx.keys.pop();
+                Some(Ok(value))
+            });
+
+            it.collect()
+        })?;
+
+        match result {
+            Some(result) => Ok(result),
+            None => Ok(B::from_iter(iter::empty())),
+        }
     }
 
     fn in_table<F, K, V>(
@@ -973,229 +981,159 @@ impl<'a> ConfigCtxt<'a> {
         })
     }
 
-    fn as_relative_path(
-        &mut self,
-        config: &mut toml::Table,
-        key: &str,
-    ) -> Result<Option<RelativePathBuf>> {
-        self.in_key(config, key, Self::relative_path)
-    }
-
-    fn as_string(&mut self, config: &mut toml::Table, key: &str) -> Result<Option<String>> {
-        self.in_string(config, key, |_, string| Ok(string))
-    }
-
-    fn as_boolean(&mut self, config: &mut toml::Table, key: &str) -> Result<Option<bool>> {
-        self.in_key(config, key, Self::boolean)
-    }
-
-    fn badges(&mut self, config: &mut toml::Table) -> Result<Option<Vec<ConfigBadge>>> {
-        let badges = self.in_array(config, "badges", None, |cx, value| {
-            let mut value = cx.table(value)?;
-
-            let id = cx.as_string(&mut value, "id")?;
-            let alt = cx.as_string(&mut value, "alt")?;
-            let src = cx.as_string(&mut value, "src")?;
-            let href = cx.as_string(&mut value, "href")?;
-            let height = cx.as_string(&mut value, "height")?;
-            let enabled = cx.as_boolean(&mut value, "enabled")?.unwrap_or(true);
-
-            let alt = FormatOptional(alt.as_ref(), |f, alt| write!(f, " alt=\"{alt}\""));
-
-            let (markdown, html) =
-                if let (Some(src), Some(href), Some(height)) = (src, href, height) {
-                    let markdown = cx.compile(format!(
-                        "[<img{alt} src=\"{src}\" height=\"{height}\">]({href})"
-                    ))?;
-                    let html = cx.compile(format!(
-                        "<a href=\"{href}\"><img{alt} src=\"{src}\" height=\"{height}\"></a>"
-                    ))?;
-                    (Some(markdown), Some(html))
-                } else {
-                    (None, None)
-                };
-
-            cx.ensure_empty(value)?;
-
-            Ok(ConfigBadge {
-                id,
-                enabled,
-                markdown,
-                html,
-            })
-        })?;
-
-        Ok(badges)
-    }
-
-    fn workflow_table(&mut self, config: &mut toml::Table) -> Result<PartialWorkflowConfig> {
-        let name = self.in_string(config, "name", |_, string| Ok(string))?;
-
-        let template = self.in_string(config, "template", Self::compile_path)?;
-
-        let features = self.in_array(config, "features", None, |cx, value| {
-            let value = cx.string(value)?;
-            WorkflowFeature::parse(&value)
-        })?;
-
-        let branch = self.as_string(config, "branch")?;
-        let disable = self.as_boolean(config, "disable")?;
-
+    fn workflow_table(cx: &mut TableContext<'a, '_>) -> Result<PartialWorkflowConfig> {
         Ok(PartialWorkflowConfig {
-            name,
-            template,
-            features: features.unwrap_or_default().into_iter().collect(),
-            branch,
-            disable,
+            name: cx.as_string("name")?,
+            template: cx.in_string("template", Self::compile_path)?,
+            features: cx.in_array("features", None, |cx, value| {
+                let value = cx.string(value)?;
+                WorkflowFeature::parse(&value)
+            })?,
+            branch: cx.as_string("branch")?,
+            disable: cx.as_boolean("disable")?,
         })
     }
 
-    fn repo_table(&mut self, config: &mut toml::Table) -> Result<RepoConfig> {
-        let name = self.as_string(config, "name")?;
-        let branch = self.as_string(config, "branch")?;
+    fn repo_table(cx: &mut TableContext<'a, '_>) -> Result<RepoConfig> {
+        let badges = cx.in_array("badges", None, |cx, value| {
+            cx.with_table(value, |cx| {
+                let id = cx.as_string("id")?;
+                let alt = cx.as_string("alt")?;
+                let src = cx.as_string("src")?;
+                let href = cx.as_string("href")?;
+                let height = cx.as_string("height")?;
+                let enabled = cx.as_boolean("enabled")?.unwrap_or(true);
 
-        let workflows = self.in_table(config, "workflows", |cx, id, value| {
-            Ok((id, cx.workflow(value)?))
-        })?;
+                let alt = FormatOptional(alt.as_ref(), |f, alt| write!(f, " alt=\"{alt}\""));
 
-        let license = self.in_string(config, "license", |_, string| Ok(string))?;
+                let (markdown, html) =
+                    if let (Some(src), Some(href), Some(height)) = (src, href, height) {
+                        let markdown = cx.cx.compile(format!(
+                            "[<img{alt} src=\"{src}\" height=\"{height}\">]({href})"
+                        ))?;
+                        let html = cx.cx.compile(format!(
+                            "<a href=\"{href}\"><img{alt} src=\"{src}\" height=\"{height}\"></a>"
+                        ))?;
+                        (Some(markdown), Some(html))
+                    } else {
+                        (None, None)
+                    };
 
-        let authors = self
-            .in_array(config, "authors", None, |cx, item| cx.string(item))?
-            .unwrap_or_default();
-
-        let documentation = self.in_string(config, "documentation", Self::compile)?;
-
-        let lib = self.in_string(config, "lib", Self::compile_path)?;
-
-        let readme = self.in_string(config, "readme", Self::compile_path)?;
-
-        let badges = self.badges(config)?.unwrap_or_default();
-        let _ = self
-            .as_boolean(config, "center_badges")?
-            .unwrap_or_default();
-
-        let cargo_toml = self.as_relative_path(config, "cargo_toml")?;
-
-        let disabled = self.in_array(config, "disabled", None, |cx, item| cx.string(item))?;
-        let disabled = disabled.unwrap_or_default().into_iter().collect();
-
-        let lib_badges = self.in_array(config, "lib_badges", None, |cx, item| {
-            Id::parse(cx.string(item)?)
-        })?;
-
-        let lib_badges = lib_badges.unwrap_or_default().into_iter().collect();
-
-        let readme_badges = self.in_array(config, "readme_badges", None, |cx, item| {
-            Id::parse(cx.string(item)?)
-        })?;
-
-        let readme_badges = readme_badges.unwrap_or_default().into_iter().collect();
-
-        let variables = self
-            .as_table(config, "variables", |_, table| Ok(table))?
-            .unwrap_or_default();
-
-        let version = self.in_array(config, "version", None, |cx, item| {
-            let mut config = cx.table(item)?;
-            let package_name = cx.as_string(&mut config, "crate")?;
-
-            let paths = cx
-                .in_array(&mut config, "paths", None, Self::relative_path)?
-                .context("missing `paths`")?;
-
-            let pattern = cx
-                .in_string(&mut config, "pattern", |_, pattern| {
-                    Ok(regex::bytes::Regex::new(&pattern)?)
-                })?
-                .context("missing `pattern`")?;
-
-            cx.ensure_empty(config)?;
-
-            Ok(Replacement {
-                package_name,
-                paths,
-                pattern,
+                Ok(ConfigBadge {
+                    id,
+                    enabled,
+                    markdown,
+                    html,
+                })
             })
         })?;
 
-        let upgrade = self
-            .as_table(config, "upgrade", Self::upgrade)?
+        let readme_badges = cx.in_array("readme_badges", None, |cx, item| {
+            Id::parse(cx.string(item)?)
+        })?;
+
+        let variables = cx
+            .as_table("variables", |_, table| Ok(table))?
             .unwrap_or_default();
 
-        let package = self
-            .as_table(config, "package", Self::package)?
-            .unwrap_or_default();
+        let version = cx.in_array("version", None, |cx, value| {
+            cx.with_table(value, |cx| {
+                let package_name = cx.as_string("crate")?;
 
-        let actions = self
-            .as_table(config, "actions", Self::actions)?
-            .unwrap_or_default();
+                let paths = cx.in_array("paths", None, Self::relative_path)?;
+
+                let pattern = cx
+                    .in_string("pattern", |_, pattern| {
+                        Ok(regex::bytes::Regex::new(&pattern)?)
+                    })?
+                    .context("Missing `pattern`")?;
+
+                Ok(Replacement {
+                    package_name,
+                    paths,
+                    pattern,
+                })
+            })
+        })?;
 
         Ok(RepoConfig {
-            name,
-            branch,
-            workflows: workflows.unwrap_or_default(),
-            license,
-            authors,
-            documentation,
-            lib,
-            readme,
+            name: cx.as_string("name")?,
+            branch: cx.as_string("branch")?,
+            workflows: cx
+                .in_table("workflows", |cx, id, value| Ok((id, cx.workflow(value)?)))?
+                .unwrap_or_default(),
+            license: cx.in_string("license", |_, string| Ok(string))?,
+            authors: cx.in_array("authors", None, Self::string)?,
+            documentation: cx.in_string("documentation", Self::compile)?,
+            lib: cx.in_string("lib", Self::compile_path)?,
+            readme: cx.in_string("readme", Self::compile_path)?,
             badges,
-            cargo_toml,
-            disabled,
-            lib_badges,
+            cargo_toml: cx.as_relative_path("cargo_toml")?,
+            disabled: cx.in_array("disabled", None, Self::string)?,
+            lib_badges: cx.in_array("lib_badges", None, |cx, item| Id::parse(cx.string(item)?))?,
             readme_badges,
             variables,
-            version: version.unwrap_or_default(),
-            upgrade,
-            package,
-            actions,
+            version,
+            upgrade: cx.in_key("upgrade", Self::upgrade)?.unwrap_or_default(),
+            package: cx.in_key("package", Self::package)?.unwrap_or_default(),
+            actions: cx.in_key("actions", Self::actions)?.unwrap_or_default(),
         })
+    }
+
+    fn with_table<F, O>(&mut self, config: toml::Value, f: F) -> Result<O>
+    where
+        F: FnOnce(&mut TableContext<'a, '_>) -> Result<O>,
+    {
+        let mut config = self.table(config)?;
+
+        let mut cx = TableContext {
+            cx: self,
+            config: &mut config,
+        };
+
+        let out = f(&mut cx)?;
+
+        if !config.is_empty() {
+            let keys = config.into_iter().map(|(key, _)| key).collect::<Vec<_>>();
+            let keys = keys.join(", ");
+            bail!("{}: got unsupported keys `{keys}`", self.keys);
+        }
+
+        Ok(out)
     }
 
     fn repo(&mut self, config: toml::Value) -> Result<RepoConfig> {
-        let mut config = self.table(config)?;
-        let repo = self.repo_table(&mut config)?;
-        self.ensure_empty(config)?;
-        Ok(repo)
+        self.with_table(config, Self::repo_table)
     }
 
     fn workflow(&mut self, config: toml::Value) -> Result<PartialWorkflowConfig> {
-        let mut config = self.table(config)?;
-        let repo = self.workflow_table(&mut config)?;
-        self.ensure_empty(config)?;
-        Ok(repo)
+        self.with_table(config, Self::workflow_table)
     }
 
-    fn upgrade(&mut self, mut config: toml::Table) -> Result<Upgrade> {
-        let exclude = self
-            .in_array(&mut config, "exclude", None, Self::string)?
-            .into_iter()
-            .flatten()
-            .collect();
-
-        self.ensure_empty(config)?;
-
-        Ok(Upgrade { exclude })
+    fn upgrade(&mut self, value: toml::Value) -> Result<Upgrade> {
+        self.with_table(value, |cx| {
+            Ok(Upgrade {
+                exclude: cx.in_array("exclude", None, Self::string)?,
+            })
+        })
     }
 
     fn package_file(&mut self, value: toml::Value) -> Result<PackageFile> {
-        let mut config = self.table(value)?;
+        self.with_table(value, |cx| {
+            let Some(source) = cx.as_relative_path("source")? else {
+                bail!("Missing source");
+            };
 
-        let Some(source) = self.as_relative_path(&mut config, "source")? else {
-            bail!("Missing source");
-        };
+            let Some(dest) = cx.as_relative_path("dest")? else {
+                bail!("Missing dest");
+            };
 
-        let Some(dest) = self.as_relative_path(&mut config, "dest")? else {
-            bail!("Missing dest");
-        };
-
-        let mode = self.in_string(&mut config, "mode", |_, string| {
-            Ok(u16::from_str_radix(&string, 8)?)
-        })?;
-
-        self.ensure_empty(config)?;
-        Ok(PackageFile { source, dest, mode })
+            Ok(PackageFile {
+                source,
+                dest,
+                mode: cx.in_string("mode", |_, string| Ok(u16::from_str_radix(&string, 8)?))?,
+            })
+        })
     }
 
     fn version_requirement(&mut self, string: String) -> Result<VersionRequirement> {
@@ -1203,125 +1141,150 @@ impl<'a> ConfigCtxt<'a> {
     }
 
     fn rpm_require(&mut self, value: toml::Value) -> Result<RpmRequire> {
-        let mut config = self.table(value)?;
+        self.with_table(value, |cx| {
+            let Some(package) = cx.as_string("package")? else {
+                bail!("Missing package");
+            };
 
-        let Some(package) = self.in_string(&mut config, "package", |_, string| Ok(string))? else {
-            bail!("Missing package");
-        };
+            let version = cx
+                .in_string("version", Self::version_requirement)?
+                .unwrap_or_default();
 
-        let version = self
-            .in_string(&mut config, "version", Self::version_requirement)?
-            .unwrap_or_default();
-
-        self.ensure_empty(config)?;
-        Ok(RpmRequire { package, version })
+            Ok(RpmRequire { package, version })
+        })
     }
 
     fn deb_dependency(&mut self, value: toml::Value) -> Result<DebDependency> {
-        let mut config = self.table(value)?;
+        self.with_table(value, |cx| {
+            let Some(package) = cx.in_string("package", |_, string| Ok(string))? else {
+                bail!("Missing package");
+            };
 
-        let Some(package) = self.in_string(&mut config, "package", |_, string| Ok(string))? else {
-            bail!("Missing package");
-        };
+            let version = cx
+                .in_string("version", Self::version_requirement)?
+                .unwrap_or_default();
 
-        let version = self
-            .in_string(&mut config, "version", Self::version_requirement)?
-            .unwrap_or_default();
-
-        self.ensure_empty(config)?;
-        Ok(DebDependency { package, version })
+            Ok(DebDependency { package, version })
+        })
     }
 
-    fn rpm(&mut self, mut config: toml::Table) -> Result<RpmPackage> {
-        let requires = self
-            .in_array(&mut config, "requires", None, Self::rpm_require)?
-            .into_iter()
-            .flatten()
-            .collect();
-
-        self.ensure_empty(config)?;
-        Ok(RpmPackage { requires })
+    fn rpm(&mut self, value: toml::Value) -> Result<RpmPackage> {
+        self.with_table(value, |cx| {
+            Ok(RpmPackage {
+                requires: cx.in_array("requires", None, Self::rpm_require)?,
+            })
+        })
     }
 
-    fn deb(&mut self, mut config: toml::Table) -> Result<DebPackage> {
-        let depends = self
-            .in_array(&mut config, "depends", None, Self::deb_dependency)?
-            .into_iter()
-            .flatten()
-            .collect();
-
-        self.ensure_empty(config)?;
-        Ok(DebPackage { depends })
+    fn deb(&mut self, value: toml::Value) -> Result<DebPackage> {
+        self.with_table(value, |cx| {
+            Ok(DebPackage {
+                depends: cx.in_array("depends", None, Self::deb_dependency)?,
+            })
+        })
     }
 
-    fn package(&mut self, mut config: toml::Table) -> Result<Package> {
-        let files = self
-            .in_array(&mut config, "files", None, Self::package_file)?
-            .into_iter()
-            .flatten()
-            .collect();
-
-        let rpm = self
-            .as_table(&mut config, "rpm", Self::rpm)?
-            .unwrap_or_default();
-
-        let deb = self
-            .as_table(&mut config, "deb", Self::deb)?
-            .unwrap_or_default();
-
-        self.ensure_empty(config)?;
-        Ok(Package { files, rpm, deb })
+    fn package(&mut self, value: toml::Value) -> Result<Package> {
+        self.with_table(value, |cx| {
+            Ok(Package {
+                files: cx.in_array("files", None, Self::package_file)?,
+                rpm: cx.in_key("rpm", Self::rpm)?.unwrap_or_default(),
+                deb: cx.in_key("deb", Self::deb)?.unwrap_or_default(),
+            })
+        })
     }
 
     fn deny_action(&mut self, value: toml::Value) -> Result<DenyAction> {
-        let mut config = self.table(value)?;
+        self.with_table(value, |cx| {
+            let Some(name) = cx.as_string("name")? else {
+                bail!("Missing name of action");
+            };
 
-        let Some(name) = self.as_string(&mut config, "name")? else {
-            bail!("Missing name of action");
-        };
-
-        let reason = self.as_string(&mut config, "reason")?;
-
-        self.ensure_empty(config)?;
-        Ok(DenyAction { name, reason })
+            Ok(DenyAction {
+                name,
+                reason: cx.as_string("reason")?,
+            })
+        })
     }
 
     fn latest_action(&mut self, value: toml::Value) -> Result<LatestAction> {
-        let mut config = self.table(value)?;
+        self.with_table(value, |cx| {
+            let Some(name) = cx.as_string("name")? else {
+                bail!("Missing name of action");
+            };
 
-        let Some(name) = self.as_string(&mut config, "name")? else {
-            bail!("Missing name of action");
-        };
+            let Some(version) = cx.as_string("version")? else {
+                bail!("Missing version of action");
+            };
 
-        let Some(version) = self.as_string(&mut config, "version")? else {
-            bail!("Missing version of action");
-        };
-
-        self.ensure_empty(config)?;
-        Ok(LatestAction { name, version })
+            Ok(LatestAction { name, version })
+        })
     }
 
-    fn actions(&mut self, mut config: toml::Table) -> Result<Actions> {
-        let deny = self
-            .in_array(
-                &mut config,
-                "deny",
-                Some(("name", "reason")),
-                Self::deny_action,
-            )?
-            .unwrap_or_default();
+    fn actions(&mut self, value: toml::Value) -> Result<Actions> {
+        self.with_table(value, |cx| {
+            Ok(Actions {
+                deny: cx.in_array("deny", Some(("name", "reason")), Self::deny_action)?,
+                latest: cx.in_array("latest", Some(("name", "version")), Self::latest_action)?,
+            })
+        })
+    }
+}
 
-        let latest = self
-            .in_array(
-                &mut config,
-                "latest",
-                Some(("name", "version")),
-                Self::latest_action,
-            )?
-            .unwrap_or_default();
+struct TableContext<'a, 'b> {
+    cx: &'b mut ConfigCtxt<'a>,
+    config: &'b mut toml::Table,
+}
 
-        self.ensure_empty(config)?;
-        Ok(Actions { deny, latest })
+impl<'a> TableContext<'a, '_> {
+    fn as_relative_path(&mut self, key: &str) -> Result<Option<RelativePathBuf>> {
+        self.cx.in_key(self.config, key, ConfigCtxt::relative_path)
+    }
+
+    fn as_string(&mut self, key: &str) -> Result<Option<String>> {
+        self.cx.in_string(self.config, key, |_, string| Ok(string))
+    }
+
+    fn as_boolean(&mut self, key: &str) -> Result<Option<bool>> {
+        self.cx.in_key(self.config, key, ConfigCtxt::boolean)
+    }
+
+    fn in_array<F, O, B>(&mut self, key: &str, map: Option<(&str, &str)>, f: F) -> Result<B>
+    where
+        F: FnMut(&mut ConfigCtxt<'a>, toml::Value) -> Result<O>,
+        B: FromIterator<O>,
+    {
+        self.cx.in_array(self.config, key, map, f)
+    }
+
+    fn in_string<F, O>(&mut self, key: &str, f: F) -> Result<Option<O>>
+    where
+        F: FnOnce(&mut ConfigCtxt<'a>, String) -> Result<O>,
+    {
+        self.cx.in_string(self.config, key, f)
+    }
+
+    /// Visit the given key, extracting it from the specified table.
+    fn in_key<F, O>(&mut self, key: &str, f: F) -> Result<Option<O>>
+    where
+        F: FnOnce(&mut ConfigCtxt<'a>, toml::Value) -> Result<O>,
+    {
+        self.cx.in_key(self.config, key, f)
+    }
+
+    fn in_table<F, K, V>(&mut self, key: &str, f: F) -> Result<Option<HashMap<K, V>>>
+    where
+        K: Eq + Hash,
+        F: FnMut(&mut ConfigCtxt<'a>, String, toml::Value) -> Result<(K, V)>,
+    {
+        self.cx.in_table(self.config, key, f)
+    }
+
+    fn as_table<F, O>(&mut self, key: &str, f: F) -> Result<Option<O>>
+    where
+        F: FnOnce(&mut ConfigCtxt<'a>, toml::Table) -> Result<O>,
+    {
+        self.cx.as_table(self.config, key, f)
     }
 }
 
@@ -1387,17 +1350,17 @@ fn load_base(
     cx: &mut ConfigCtxt<'_>,
     config: toml::Value,
 ) -> Result<(RepoConfig, HashMap<RelativePathBuf, RepoConfig>)> {
-    let mut config = cx.table(config)?;
-    let base = cx.repo_table(&mut config)?;
+    cx.with_table(config, |cx| {
+        let base = ConfigCtxt::repo_table(cx)?;
 
-    let repo_configs = cx
-        .in_table(&mut config, "repo", |cx, id, value| {
-            Ok((RelativePathBuf::from(id), cx.repo(value)?))
-        })?
-        .unwrap_or_default();
+        let repo_configs = cx
+            .in_table("repo", |cx, id, value| {
+                Ok((RelativePathBuf::from(id), cx.repo(value)?))
+            })?
+            .unwrap_or_default();
 
-    cx.ensure_empty(config)?;
-    Ok((base, repo_configs))
+        Ok((base, repo_configs))
+    })
 }
 
 fn load_repo(
