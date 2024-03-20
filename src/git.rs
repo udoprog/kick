@@ -203,10 +203,7 @@ impl Git {
 
     /// Get HEAD commit.
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command))]
-    pub(crate) fn describe_tags<P>(
-        &self,
-        dir: &P,
-    ) -> Result<Option<(String, Option<(usize, String)>)>>
+    pub(crate) fn describe_tags<P>(&self, dir: &P) -> Result<Option<DescribeTags>>
     where
         P: ?Sized + AsRef<Path>,
     {
@@ -224,17 +221,20 @@ impl Git {
 
         let string = std::str::from_utf8(&output.stdout)?.trim();
 
-        let Some(((tag, count), hash)) = string
+        let Some(((tag, offset), _)) = string
             .rsplit_once('-')
             .and_then(|(rest, hash)| Some((rest.rsplit_once('-')?, hash)))
         else {
-            return Ok(Some((string.to_string(), None)));
+            return Ok(Some(DescribeTags {
+                tag: string.to_string(),
+                offset: None,
+            }));
         };
 
-        Ok(Some((
-            tag.to_string(),
-            Some((count.parse()?, hash.to_string())),
-        )))
+        Ok(Some(DescribeTags {
+            tag: tag.to_string(),
+            offset: Some(offset.parse()?),
+        }))
     }
 
     /// Get remote url.
@@ -252,6 +252,11 @@ impl Git {
         let url = String::from_utf8(output.stdout)?;
         Ok(Url::parse(url.trim())?)
     }
+}
+
+pub(crate) struct DescribeTags {
+    pub(crate) tag: String,
+    pub(crate) offset: Option<usize>,
 }
 
 fn git_version<P>(path: &P) -> Result<Option<ExitStatus>>

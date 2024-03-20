@@ -883,9 +883,9 @@ fn filter_repos(
             }
 
             if repo_opts.unreleased {
-                if let Some((tag, offset)) = git.describe_tags(&repo_path)? {
-                    if offset.is_none() {
-                        tracing::trace!("No offset detected (tag: {tag})");
+                if let Some(describe) = git.describe_tags(&repo_path)? {
+                    if describe.offset.is_none() {
+                        tracing::trace!("No offset detected (tag: {})", describe.tag);
                         repo.disable();
                     }
                 } else {
