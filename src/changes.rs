@@ -51,7 +51,7 @@ pub(crate) fn load_changes(path: &Path) -> Result<Option<Vec<Change>>> {
     let value: Vec<Change> = match musli_descriptive::encoding::DEFAULT.from_slice_with(&cx, &buf) {
         Ok(value) => value,
         Err(error) => {
-            for error in cx.errors() {
+            if let Some(error) = cx.errors().next() {
                 bail!("{}", error);
             }
 
