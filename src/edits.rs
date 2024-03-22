@@ -61,7 +61,11 @@ impl Edits {
         match value {
             Value::String(string) => {
                 if !actual.as_str().map_or(false, |actual| actual == string) {
-                    self.set(actual.id(), format_args!("{keys}: expected string `{string}`"), string.as_str());
+                    self.set(
+                        actual.id(),
+                        format_args!("{keys}: expected string `{string}`"),
+                        string.as_str(),
+                    );
                 }
             }
             Value::Array(array) => {
