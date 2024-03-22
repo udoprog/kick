@@ -61,7 +61,7 @@ impl Edits {
         match value {
             Value::String(string) => {
                 if !actual.as_str().map_or(false, |actual| actual == string) {
-                    self.set(actual.id(), format_args!("{keys}: expected string"), string);
+                    self.set(actual.id(), format_args!("{keys}: expected string `{string}`"), string.as_str());
                 }
             }
             Value::Array(array) => {
@@ -220,6 +220,12 @@ impl Value {
 impl From<String> for Value {
     fn from(value: String) -> Self {
         Value::String(value)
+    }
+}
+
+impl From<&str> for Value {
+    fn from(value: &str) -> Self {
+        Value::String(value.to_owned())
     }
 }
 
