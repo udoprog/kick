@@ -948,9 +948,5 @@ fn find_from_current_dir(current_dir: &Path) -> Option<(PathBuf, RelativePathBuf
         return Some((path, relative));
     }
 
-    let Some((first_git, relative_path)) = first_git else {
-        return None;
-    };
-
-    Some((first_git, relative_path))
+    first_git
 }
