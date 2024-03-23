@@ -99,7 +99,7 @@ macro_rules! insert_list {
 pub(crate) struct Manifest {
     #[musli(with = musli_serde)]
     path: Box<RelativePath>,
-    #[musli(with = crate::musli::document)]
+    #[musli(with = crate::musli::string)]
     doc: Document,
 }
 

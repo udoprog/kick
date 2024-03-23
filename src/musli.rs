@@ -1,26 +1,26 @@
-pub(crate) mod document {
-    use musli::{Context, Decoder, Encoder};
-    use toml_edit::Document;
+pub(crate) mod string {
+    use std::fmt;
+    use std::str::FromStr;
 
-    pub(crate) fn encode<C, E>(doc: &Document, cx: &C, encoder: E) -> Result<E::Ok, C::Error>
+    use musli::{Context, Decoder, Encoder};
+
+    pub(crate) fn encode<T, E>(doc: &T, _: &E::Cx, encoder: E) -> Result<E::Ok, E::Error>
     where
-        C: ?Sized + Context,
-        E: Encoder<C>,
+        T: fmt::Display,
+        E: Encoder,
     {
-        let string = doc.to_string();
-        encoder.encode_string(cx, &string)
+        encoder.collect_string(doc)
     }
 
-    pub(crate) fn decode<'de, C, D>(cx: &C, decoder: D) -> Result<Document, C::Error>
+    pub(crate) fn decode<'de, T, D>(cx: &D::Cx, decoder: D) -> Result<T, D::Error>
     where
-        C: ?Sized + Context,
-        D: Decoder<'de, C>,
+        T: FromStr,
+        T::Err: fmt::Display,
+        D: Decoder<'de>,
     {
-        decoder.decode_string(
-            cx,
-            musli::utils::visit_owned_fn("a document", |cx: &C, string: &str| {
-                string.parse().map_err(cx.map())
-            }),
-        )
+        decoder.decode_string(musli::utils::visit_owned_fn(
+            "a value decoded from a string",
+            |string: &str| string.parse().map_err(cx.map_message()),
+        ))
     }
 }
