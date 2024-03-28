@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 
 use anyhow::{bail, Result};
@@ -46,8 +46,8 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
     let skip = opts.skip.iter().cloned().collect::<HashSet<_>>();
 
     let mut packages = Vec::new();
-    let mut deps = HashMap::<_, Vec<_>>::new();
-    let mut rev = HashMap::<_, u32>::new();
+    let mut deps = HashMap::<_, BTreeSet<_>>::new();
+    let mut rev = HashMap::<_, BTreeSet<_>>::new();
     let mut pending = HashSet::new();
 
     for package in workspace.packages() {
@@ -57,16 +57,22 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
 
         let from = package.name()?;
 
-        if let Some(dependencies) = package.manifest().dependencies(&workspace) {
-            for dep in dependencies.iter() {
-                let to = dep.package()?;
+        let a = package.manifest().dependencies(&workspace);
+        let b = package.manifest().dev_dependencies(&workspace);
+        let c = package.manifest().build_dependencies(&workspace);
 
-                deps.entry(from.to_string())
-                    .or_default()
-                    .push(to.to_string());
+        let it = [a, b, c].into_iter().flatten().flat_map(|d| d.iter());
 
-                *rev.entry(to.to_string()).or_default() += 1;
-            }
+        for dep in it {
+            let to = dep.package()?;
+
+            deps.entry(from.to_string())
+                .or_default()
+                .insert(to.to_string());
+
+            rev.entry(to.to_string())
+                .or_default()
+                .insert(from.to_string());
         }
 
         packages.push(package);
@@ -85,15 +91,12 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
                 continue;
             }
 
-            let revs = rev.get(name).copied().unwrap_or_default();
-
-            if revs != 0 {
+            if matches!(rev.get(name), Some(revs) if !revs.is_empty()) {
                 continue;
             }
 
             for dep in deps.remove(name).into_iter().flatten() {
-                let n = rev.entry(dep).or_default();
-                *n = (*n).saturating_sub(1);
+                rev.entry(dep).or_default().remove(name);
             }
 
             pending.remove(name);
@@ -101,7 +104,7 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
         }
 
         if start == pending.len() {
-            bail!("failed to order packages for publishing");
+            bail!("Failed to order packages for publishing: {pending:?}");
         }
     }
 
