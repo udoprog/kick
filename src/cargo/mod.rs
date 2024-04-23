@@ -1,4 +1,4 @@
-use self::dependencies::Dependencies;
+pub(crate) use self::dependencies::Dependencies;
 mod dependencies;
 
 pub(crate) use self::dependency::Dependency;

@@ -1,9 +1,11 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use core::fmt;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 
 use anyhow::{bail, Result};
 use clap::Parser;
 
+use crate::cargo::Dependency;
 use crate::changes::Change;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
@@ -46,8 +48,7 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
     let skip = opts.skip.iter().cloned().collect::<HashSet<_>>();
 
     let mut packages = Vec::new();
-    let mut deps = HashMap::<_, BTreeSet<_>>::new();
-    let mut rev = HashMap::<_, BTreeSet<_>>::new();
+    let mut deps = HashMap::<_, Vec<_>>::new();
     let mut pending = HashSet::new();
 
     for package in workspace.packages() {
@@ -55,31 +56,55 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
             continue;
         }
 
+        pending.insert(package.name()?);
+        packages.push(package);
+    }
+
+    for package in &packages {
         let from = package.name()?;
 
-        let a = package.manifest().dependencies(&workspace);
-        let b = package.manifest().dev_dependencies(&workspace);
-        let c = package.manifest().build_dependencies(&workspace);
+        let m = package.manifest();
 
-        let it = [a, b, c].into_iter().flatten().flat_map(|d| d.iter());
+        let a = m
+            .dependencies(&workspace)
+            .map(|d| d.iter().map(Dep::runtime));
+
+        let b = m
+            .dev_dependencies(&workspace)
+            .map(|d| d.iter().map(Dep::dev));
+
+        let c = m
+            .build_dependencies(&workspace)
+            .map(|d| d.iter().map(Dep::build));
+
+        let it = a
+            .into_iter()
+            .flatten()
+            .chain(b.into_iter().flatten())
+            .chain(c.into_iter().flatten());
 
         for dep in it {
-            let to = dep.package()?;
+            let d = dep?;
 
-            deps.entry(from.to_string())
-                .or_default()
-                .insert(to.to_string());
+            if d.name == from || !pending.contains(d.name) {
+                continue;
+            }
 
-            rev.entry(to.to_string())
-                .or_default()
-                .insert(from.to_string());
+            tracing::trace!("{from} -> {d}");
+            deps.entry(from.to_string()).or_default().push(d);
         }
+    }
 
-        packages.push(package);
-        pending.insert(from.to_string());
+    if tracing::enabled!(tracing::Level::TRACE) {
+        for (dependent, deps) in &deps {
+            for dep in deps {
+                tracing::trace!("Found: {dependent} -> {dep}");
+            }
+        }
     }
 
     let mut ordered = Vec::new();
+    let mut non_runtime_purged = false;
 
     while !pending.is_empty() {
         let start = pending.len();
@@ -88,27 +113,62 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
             let name = package.name()?;
 
             if !pending.contains(name) {
+                tracing::trace!("Not pending: {name}");
                 continue;
             }
 
-            if matches!(rev.get(name), Some(revs) if !revs.is_empty()) {
-                continue;
+            if let Some(deps) = deps.get(name) {
+                if !deps.is_empty() {
+                    tracing::trace!("Has dependencies: {deps:?}");
+                    continue;
+                }
             }
 
-            for dep in deps.remove(name).into_iter().flatten() {
-                rev.entry(dep).or_default().remove(name);
+            for (_, deps) in deps.iter_mut() {
+                deps.retain(|d| d.name != name);
             }
 
+            tracing::trace!("Adding: {name}");
             pending.remove(name);
             ordered.push(package);
         }
 
         if start == pending.len() {
-            bail!("Failed to order packages for publishing: {pending:?}");
+            if !non_runtime_purged {
+                let mut any_removed = false;
+
+                for (_, deps) in deps.iter_mut() {
+                    let mut removed = false;
+
+                    deps.retain(|d| {
+                        if matches!(d.kind, DepKind::Runtime) {
+                            true
+                        } else {
+                            removed = true;
+                            false
+                        }
+                    });
+
+                    any_removed |= removed;
+                }
+
+                non_runtime_purged = true;
+
+                if any_removed {
+                    continue;
+                }
+            }
+
+            let ordered = ordered
+                .iter()
+                .map(|p| p.name())
+                .collect::<Result<Vec<_>>>()?;
+
+            bail!("Failed to order packages for publishing:\nPending: {pending:?}\nOrdered: {ordered:?}\nDependencies: {deps:?}");
         }
     }
 
-    for package in ordered.into_iter().rev() {
+    for package in ordered.into_iter() {
         let name = package.name()?;
 
         if skip.contains(name) {
@@ -125,4 +185,62 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(Debug)]
+enum DepKind {
+    Runtime,
+    Dev,
+    Build,
+}
+
+struct Dep<'a> {
+    name: &'a str,
+    kind: DepKind,
+}
+
+impl<'a> Dep<'a> {
+    fn runtime(dep: Dependency<'a>) -> Result<Self> {
+        Self::with_kind(DepKind::Runtime, dep)
+    }
+
+    fn dev(dep: Dependency<'a>) -> Result<Self> {
+        Self::with_kind(DepKind::Dev, dep)
+    }
+
+    fn build(dep: Dependency<'a>) -> Result<Self> {
+        Self::with_kind(DepKind::Build, dep)
+    }
+
+    fn with_kind(kind: DepKind, dep: Dependency<'a>) -> Result<Self> {
+        Ok(Self {
+            name: *dep.package()?,
+            kind,
+        })
+    }
+}
+
+impl fmt::Display for Dep<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name)?;
+
+        match &self.kind {
+            DepKind::Runtime => (),
+            DepKind::Dev => {
+                write!(f, " (dev)")?;
+            }
+            DepKind::Build => {
+                write!(f, " (build)")?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl fmt::Debug for Dep<'_> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Dep({})", self)
+    }
 }
