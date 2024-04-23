@@ -18,9 +18,6 @@ pub(crate) mod string {
         T::Err: fmt::Display,
         D: Decoder<'de>,
     {
-        decoder.decode_string(musli::utils::visit_owned_fn(
-            "a value decoded from a string",
-            |string: &str| string.parse().map_err(cx.map_message()),
-        ))
+        decoder.decode_unsized(|string: &str| string.parse().map_err(cx.map_message()))
     }
 }

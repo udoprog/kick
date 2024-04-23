@@ -19,14 +19,12 @@ mod dependency_item;
 pub(crate) use self::rust_version::RustVersion;
 pub(crate) mod rust_version;
 
-use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
 use musli::{Decode, Encode};
 use relative_path::{RelativePath, RelativePathBuf};
-use serde::{Deserialize, Serialize};
 use toml_edit::{Array, Document, Formatted, Item, Key, Table, Value};
 
 use crate::ctxt::Paths;
@@ -97,7 +95,7 @@ macro_rules! insert_list {
 /// A parsed `Cargo.toml`.
 #[derive(Debug, Clone, Encode, Decode)]
 pub(crate) struct Manifest {
-    #[musli(with = musli_serde)]
+    #[musli(with = musli::serde)]
     path: Box<RelativePath>,
     #[musli(with = crate::musli::string)]
     doc: Document,
@@ -332,51 +330,4 @@ impl Manifest {
 
     insert_list!(insert_keywords, "keywords");
     insert_list!(insert_categories, "categories");
-}
-
-impl Serialize for Manifest {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        #[derive(Serialize, Deserialize)]
-        struct DocumentRef<'a> {
-            doc: &'a str,
-            manifest_path: &'a RelativePath,
-        }
-
-        let doc = self.doc.to_string();
-
-        let doc_ref = DocumentRef {
-            doc: &doc,
-            manifest_path: &self.path,
-        };
-
-        doc_ref.serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Manifest {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Serialize, Deserialize)]
-        struct DocumentRef<'a> {
-            doc: Cow<'a, str>,
-            manifest_path: RelativePathBuf,
-        }
-
-        let doc_ref = DocumentRef::deserialize(deserializer)?;
-
-        let doc = doc_ref
-            .doc
-            .parse()
-            .map_err(<D::Error as serde::de::Error>::custom)?;
-
-        Ok(Self {
-            doc,
-            path: doc_ref.manifest_path.into(),
-        })
-    }
 }

@@ -9,11 +9,11 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
+use musli::storage::Encoding;
 use musli::{Decode, Encode};
 use nondestructive::yaml;
 use relative_path::RelativePathBuf;
 use semver::Version;
-use serde::{Deserialize, Serialize};
 
 use crate::cargo::Manifest;
 use crate::cargo::RustVersion;
@@ -25,6 +25,8 @@ use crate::edits::{self, Edits};
 use crate::file::{File, LineColumn};
 use crate::model::RepoRef;
 use crate::process::Command;
+
+const ENCODING: Encoding = Encoding::new();
 
 /// Save changes to the given path.
 pub(crate) fn load_changes(path: &Path) -> Result<Option<Vec<Change>>> {
@@ -43,19 +45,14 @@ pub(crate) fn load_changes(path: &Path) -> Result<Option<Vec<Change>>> {
     let mut buf = Vec::new();
     encoder.read_to_end(&mut buf)?;
 
-    let mut system_buffer = musli_descriptive::allocator::SystemBuffer::new();
-    let alloc = musli_descriptive::allocator::System::new(&mut system_buffer);
-    let mut cx = musli_descriptive::context::SystemContext::new(&alloc);
+    let alloc = musli::allocator::System::new();
+    let mut cx = musli::context::SystemContext::new(&alloc);
     cx.include_type();
 
-    let value: Vec<Change> = match musli_descriptive::encoding::DEFAULT.from_slice_with(&cx, &buf) {
+    let value: Vec<Change> = match ENCODING.from_slice_with(&cx, &buf) {
         Ok(value) => value,
-        Err(error) => {
-            if let Some(error) = cx.errors().next() {
-                bail!("{}", error);
-            }
-
-            bail!("{error}")
+        Err(..) => {
+            bail!("{}", cx.report())
         }
     };
 
@@ -70,7 +67,7 @@ pub(crate) fn save_changes(cx: &Ctxt<'_>, path: &Path) -> Result<()> {
     let changes = cx.changes().iter().cloned().collect::<Vec<_>>();
     let f = fs::File::create(path)?;
     let mut w = GzEncoder::new(f, Compression::default());
-    musli_descriptive::to_writer(&mut w, &changes)?;
+    ENCODING.to_writer(&mut w, &changes)?;
     let mut f = w.finish()?;
     f.flush()?;
     Ok(())
@@ -450,7 +447,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                 let mut command = Command::new("cargo");
                 command.args(["publish"]);
 
-                if *no_verify {
+                if no_verify.is_some() {
                     command.arg("--no-verify");
                 }
 
@@ -471,7 +468,13 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
 
                 tracing::info!("{status}");
             } else {
-                tracing::info!("{}: would publish: {} (with --run)", manifest_dir, name);
+                let no_verify = match no_verify {
+                    Some(NoVerify::Argument) => " with `--no-verify` due to argument",
+                    Some(NoVerify::Circular) => " with `--no-verify` due to circular dependency",
+                    None => "",
+                };
+
+                tracing::info!("{manifest_dir}: would publish: {name}{no_verify}");
             }
         }
     };
@@ -493,8 +496,7 @@ pub(crate) fn temporary_line_fix(
 
 macro_rules! cargo_issues {
     ($f:ident, $($issue:ident $({ $($field:ident: $ty:ty),* $(,)? })? => $description:expr),* $(,)?) => {
-        #[derive(Clone, Serialize, Deserialize, Encode, Decode)]
-        #[serde(tag = "kind")]
+        #[derive(Clone, Encode, Decode)]
         pub(crate) enum CargoIssue {
             $($issue $({$($field: $ty),*})?,)*
         }
@@ -537,8 +539,7 @@ cargo_issues! {
 }
 
 /// A simple workflow change.
-#[derive(Clone, Serialize, Deserialize, Encode, Decode)]
-#[serde(tag = "kind")]
+#[derive(Clone, Encode, Decode)]
 pub(crate) enum WorkflowError {
     /// Deny use of the specific action.
     Error { name: String, reason: String },
@@ -591,35 +592,41 @@ pub(crate) enum Warning {
     },
 }
 
+#[derive(Clone, Encode, Decode)]
+pub(crate) enum NoVerify {
+    Argument,
+    Circular,
+}
+
 /// A single change.
-#[derive(Clone, Encode, Decode, Serialize, Deserialize)]
+#[derive(Clone, Encode, Decode)]
 pub(crate) enum Change {
     MissingWorkflow {
         id: String,
-        #[musli(with = musli_serde)]
+        #[musli(with = musli::serde)]
         path: RelativePathBuf,
         repo: RepoRef,
     },
     BadWorkflow {
-        #[musli(with = musli_serde)]
+        #[musli(with = musli::serde)]
         path: RelativePathBuf,
-        #[musli(with = musli_serde)]
+        #[musli(with = musli::serde)]
         doc: yaml::Document,
         edits: Edits,
         errors: Vec<WorkflowError>,
     },
     UpdateLib {
-        #[musli(with = musli_serde)]
+        #[musli(with = musli::serde)]
         path: RelativePathBuf,
         lib: Arc<File>,
     },
     UpdateReadme {
-        #[musli(with = musli_serde)]
+        #[musli(with = musli::serde)]
         path: RelativePathBuf,
         readme: Arc<File>,
     },
     CargoTomlIssues {
-        #[musli(with = musli_serde)]
+        #[musli(with = musli::serde)]
         path: RelativePathBuf,
         cargo: Option<Manifest>,
         issues: Vec<CargoIssue>,
@@ -639,10 +646,10 @@ pub(crate) enum Change {
     },
     ReleaseCommit {
         /// Perform a release commit.
-        #[musli(with = musli_serde)]
+        #[musli(with = musli::serde)]
         path: RelativePathBuf,
         /// Version to commit.
-        #[musli(with = musli_serde)]
+        #[musli(with = musli::serde)]
         version: Version,
     },
     /// Perform a publish action somewhere.
@@ -650,12 +657,12 @@ pub(crate) enum Change {
         /// Name of the crate being published.
         name: String,
         /// Directory to publish.
-        #[musli(with = musli_serde)]
+        #[musli(with = musli::serde)]
         manifest_dir: RelativePathBuf,
         /// Whether we perform a dry run or not.
         dry_run: bool,
-        /// Whether `--no-verify` should be passed.
-        no_verify: bool,
+        /// Whether `--no-verify` should be passed and the cause fo passing it.
+        no_verify: Option<NoVerify>,
         /// Extra arguments.
         args: Vec<OsString>,
     },

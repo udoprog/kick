@@ -6,7 +6,7 @@ use anyhow::{bail, Result};
 use clap::Parser;
 
 use crate::cargo::Dependency;
-use crate::changes::Change;
+use crate::changes::{Change, NoVerify};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::workspace;
@@ -104,9 +104,9 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
     }
 
     let mut ordered = Vec::new();
-    let mut non_runtime_purged = false;
+    let mut reduced_no_verify = HashSet::new();
 
-    while !pending.is_empty() {
+    'outer: while !pending.is_empty() {
         let start = pending.len();
 
         for package in &packages {
@@ -133,39 +133,30 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
             ordered.push(package);
         }
 
-        if start == pending.len() {
-            if !non_runtime_purged {
-                let mut any_removed = false;
-
-                for (_, deps) in deps.iter_mut() {
-                    let mut removed = false;
-
-                    deps.retain(|d| {
-                        if matches!(d.kind, DepKind::Runtime) {
-                            true
-                        } else {
-                            removed = true;
-                            false
-                        }
-                    });
-
-                    any_removed |= removed;
-                }
-
-                non_runtime_purged = true;
-
-                if any_removed {
-                    continue;
-                }
-            }
-
-            let ordered = ordered
-                .iter()
-                .map(|p| p.name())
-                .collect::<Result<Vec<_>>>()?;
-
-            bail!("Failed to order packages for publishing:\nPending: {pending:?}\nOrdered: {ordered:?}\nDependencies: {deps:?}");
+        if start != pending.len() {
+            continue;
         }
+
+        // Find a the first non-runtime dependency, remove it and try again.
+        for (dependent, deps) in deps.iter_mut() {
+            if let Some(index) = deps
+                .iter()
+                .position(|d| !matches!(d.kind, DepKind::Runtime))
+            {
+                deps.remove(index);
+                reduced_no_verify.insert(dependent.clone());
+                continue 'outer;
+            }
+        }
+
+        // No dependencies to tweak, so we can't do anything else. Provide a
+        // helpful error message.
+        let ordered = ordered
+            .iter()
+            .map(|p| p.name())
+            .collect::<Result<Vec<_>>>()?;
+
+        bail!("Failed to order packages for publishing:\nPending: {pending:?}\nOrdered: {ordered:?}\nDependencies: {deps:?}");
     }
 
     for package in ordered.into_iter() {
@@ -175,11 +166,17 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
             continue;
         }
 
+        let no_verify = match (no_verify.contains(name), reduced_no_verify.contains(name)) {
+            (true, _) => Some(NoVerify::Argument),
+            (_, true) => Some(NoVerify::Circular),
+            _ => None,
+        };
+
         cx.change(Change::Publish {
             name: name.to_owned(),
             manifest_dir: package.manifest().dir().to_owned(),
             dry_run: opts.dry_run,
-            no_verify: no_verify.contains(name),
+            no_verify,
             args: opts.cargo_publish.clone(),
         });
     }

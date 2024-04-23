@@ -12,7 +12,6 @@ use anyhow::{anyhow, bail, Context, Error, Result};
 use musli::{Decode, Encode};
 use relative_path::{RelativePath, RelativePathBuf};
 use semver::Version;
-use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
 use crate::ctxt::Paths;
@@ -43,7 +42,7 @@ pub(crate) fn defaults() -> toml::Table {
     defaults
 }
 
-#[derive(Clone, Serialize, Deserialize, Encode, Decode)]
+#[derive(Clone, Encode, Decode)]
 pub(crate) struct Replaced {
     path: PathBuf,
     content: Vec<u8>,

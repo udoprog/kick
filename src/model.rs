@@ -116,10 +116,10 @@ impl fmt::Display for RepoSource {
 #[derive(Debug, Clone, Encode, Decode, Serialize, Deserialize)]
 pub(crate) struct RepoRef {
     /// Path to module.
-    #[musli(with = musli_serde)]
+    #[musli(with = musli::serde)]
     path: RelativePathBuf,
     /// URL of module.
-    #[musli(with = musli_serde)]
+    #[musli(with = musli::serde)]
     url: Url,
 }
 
