@@ -29,7 +29,8 @@ jobs:
       matrix:
         include:
         - {os: windows-latest, method: zip}
-        - {os: macos-latest, method: gzip}
+        - {os: macos-12, method: gzip}
+        - {os: macos-14, method: gzip}
         - {os: ubuntu-latest, method: gzip}
     steps:
     - uses: actions/checkout@v4
@@ -48,9 +49,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/download-artifact@v4
-      with: {name: dist-windows-latest, path: dist}
+      with: {name: dist-macos-12, path: dist}
     - uses: actions/download-artifact@v4
-      with: {name: dist-macos-latest, path: dist}
+      with: {name: dist-macos-14, path: dist}
+    - uses: actions/download-artifact@v4
+      with: {name: dist-windows-latest, path: dist}
     - uses: actions/download-artifact@v4
       with: {name: dist-ubuntu-latest, path: dist}
     - uses: udoprog/kick@nightly
