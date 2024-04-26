@@ -1,41 +1,59 @@
 import * as core from '@actions/core';
 import * as tc from '@actions/tool-cache';
 
-const IS_WINDOWS = process.platform === 'win32'
-const IS_MAC = process.platform === 'darwin'
+type Architecture = 'x86_64' | 'aarch64';
+type Platform = 'windows' | 'macos' | 'linux';
+
+interface Detect {
+    platform: Platform;
+    ext: string;
+    method: (directory: string) => Promise<string>;
+}
+
+function detect_arch(): Architecture {
+    if (process.arch === 'x64') {
+        return 'x86_64';
+    }
+
+    if (process.arch === 'arm64') {
+        return 'aarch64';
+    }
+
+    throw new Error(`Unsupported architecture \`${process.arch}\``);
+}
+
+function detect(): Detect {
+    if (process.platform === 'win32') {
+        return {platform: 'windows', ext: 'zip', method: tc.extractZip};
+    }
+
+    if (process.platform === 'darwin') {
+        return {platform: 'macos', ext: 'tar.gz', method: tc.extractTar};
+    }
+
+    if (process.platform === 'linux') {
+        return {platform: 'linux', ext: 'tar.gz', method: tc.extractTar};
+    }
+
+    throw new Error(`Unsupported platform \`${process.platform}\``);
+}
 
 async function download(tag: string): Promise<string> {
-    let platform;
-    let ext = 'tar.gz';
-    let zip = false;
-    let arch = 'x86';
-
-    if (process.arch === 'x64') {
-        arch = 'x86_64';
-    }
-
-    if (IS_WINDOWS) {
-        platform = 'windows';
-        ext = 'zip';
-        zip = true;
-    } else if (IS_MAC) {
-        platform = 'macos';
-    } else {
-        platform = 'linux';
-    }
-
-    let name = `kick-${tag}-${arch}-${platform}.${ext}`;
-
+    const arch = detect_arch();
+    const { platform, ext, method } = detect();
+    const name = `kick-${tag}-${arch}-${platform}.${ext}`;
     const url = `https://github.com/udoprog/kick/releases/download/${tag}/${name}`;
 
-    core.info(`Downloading ${url}`);
-    let directory = await tc.downloadTool(url);
+    core.info(`Platform: ${platform}`);
+    core.info(`Extension: ${ext}`);
+    core.info(`Architecture: ${arch}`);
+    core.info(`Name: ${name}`);
+    core.info(`Url: ${url}`);
 
-    if (zip) {
-        return await tc.extractZip(directory);
-    } else {
-        return await tc.extractTar(directory);
-    }
+    core.info(`Downloading from ${url}`);
+    const directory = await tc.downloadTool(url);
+    core.info(`Extracting ${directory}`);
+    return await method(directory);
 }
 
 async function innerMain() {
