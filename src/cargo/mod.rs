@@ -4,7 +4,7 @@ mod dependencies;
 pub(crate) use self::dependency::Dependency;
 mod dependency;
 
-pub(crate) use self::package_manifest::Package;
+pub(crate) use self::package_manifest::{Package, PackageMut};
 mod package_manifest;
 
 pub(crate) use self::workspace_table::WorkspaceTable;
@@ -62,7 +62,7 @@ macro_rules! insert_field {
             S: AsRef<str>,
         {
             let package = self.ensure_package_mut()?;
-            package.insert(
+            package.doc.insert(
                 $field,
                 Item::Value(Value::String(Formatted::new(value.as_ref().to_owned()))),
             );
@@ -86,7 +86,7 @@ macro_rules! insert_list {
                 array.push(keyword.as_ref().to_owned());
             }
 
-            package.insert($name, Item::Value(Value::Array(array)));
+            package.doc.insert($name, Item::Value(Value::Array(array)));
             Ok(())
         }
     };
@@ -144,6 +144,12 @@ impl Manifest {
         Some(Package::new(doc, self))
     }
 
+    /// Access `[package]` section mutably.
+    pub(crate) fn as_package_mut(&mut self) -> Option<PackageMut<'_>> {
+        let doc = self.doc.get_mut("package")?.as_table_mut()?;
+        Some(PackageMut::new(doc))
+    }
+
     /// Insert authors.
     pub(crate) fn insert_authors(&mut self, authors: Vec<String>) -> Result<()> {
         let package = self.ensure_package_mut()?;
@@ -153,7 +159,9 @@ impl Manifest {
             array.push(author);
         }
 
-        package.insert("authors", Item::Value(Value::Array(array)));
+        package
+            .doc
+            .insert("authors", Item::Value(Value::Array(array)));
         Ok(())
     }
 
@@ -170,23 +178,38 @@ impl Manifest {
 
     /// Remove rust-version.
     pub(crate) fn remove_rust_version(&mut self) -> bool {
-        if let Some(package) = self.doc.get_mut("package") {
-            if let Some(table) = package.as_table_like_mut() {
-                return table.remove("rust-version").is_some();
-            }
-        }
+        let Some(table) = self
+            .doc
+            .get_mut("package")
+            .and_then(Item::as_table_like_mut)
+        else {
+            return false;
+        };
 
-        false
+        return table.remove("rust-version").is_some();
     }
 
-    /// Set rust-version to the desirable value.
-    pub(crate) fn set_rust_version(&mut self, version: &RustVersion) -> Result<()> {
-        let package = self.ensure_package_mut()?;
-        package.insert(
+    /// Set rust-version of the manifest.
+    pub(crate) fn set_rust_version(&mut self, version: &RustVersion) -> bool {
+        let Some(table) = self
+            .doc
+            .get_mut("package")
+            .and_then(Item::as_table_like_mut)
+        else {
+            return false;
+        };
+
+        let version = version.to_string();
+
+        if table.get("rust-version").and_then(Item::as_str) == Some(&version) {
+            return false;
+        }
+
+        table.insert(
             "rust-version",
-            Item::Value(Value::String(Formatted::new(version.to_string()))),
+            Item::Value(Value::String(Formatted::new(version))),
         );
-        Ok(())
+        true
     }
 
     /// Sort package keys.
@@ -201,7 +224,7 @@ impl Manifest {
 
         let package = self.ensure_package_mut()?;
 
-        package.sort_values_by(|a, _, b, _| {
+        package.doc.sort_values_by(|a, _, b, _| {
             let a = crate::cli::check::cargo::cargo_key(a.to_string().trim())
                 .map(SortKey::CargoKey)
                 .unwrap_or(SortKey::Other(a));
@@ -229,7 +252,7 @@ impl Manifest {
         let mut new_features = HashSet::new();
 
         // Get explicit features.
-        if let Some(table) = self.doc.get("features").and_then(|v| v.as_table()) {
+        if let Some(table) = self.doc.get("features").and_then(Item::as_table) {
             new_features.extend(
                 table
                     .iter()
@@ -266,10 +289,8 @@ impl Manifest {
     }
 
     /// Access `[package]` section mutably.
-    fn ensure_package_mut(&mut self) -> Result<&mut Table> {
-        self.doc
-            .get_mut("package")
-            .and_then(|table| table.as_table_mut())
+    fn ensure_package_mut(&mut self) -> Result<PackageMut<'_>> {
+        self.as_package_mut()
             .ok_or_else(|| anyhow!("missing `[package]`"))
     }
 

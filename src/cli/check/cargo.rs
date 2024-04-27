@@ -4,6 +4,7 @@ use anyhow::Result;
 use musli::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 
+use crate::cargo::rust_version::NO_PUBLISH_VERSION_OMIT;
 use crate::cargo::{self, Package, RustVersion};
 use crate::changes::{CargoIssue, Change};
 use crate::ctxt::Ctxt;
@@ -168,7 +169,7 @@ pub(crate) fn work_cargo_toml(
             modified_manifest.insert_authors(update.authors.to_vec())?;
         }
     } else {
-        if matches!(rust_version, Some(rust_version) if rust_version >= RustVersion::new(1, 75)) {
+        if matches!(rust_version, Some(rust_version) if rust_version >= NO_PUBLISH_VERSION_OMIT) {
             if package.version().filter(|d| !d.is_empty()).is_some() {
                 issues.push(CargoIssue::NoPublishVersion);
                 changed = true;

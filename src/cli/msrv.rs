@@ -1,10 +1,12 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 
+use crate::cargo::rust_version::NO_PUBLISH_VERSION_OMIT;
 use crate::cargo::{self, RustVersion};
 use crate::changes::Change;
 use crate::ctxt::Ctxt;
@@ -18,7 +20,7 @@ const EARLIEST: RustVersion = RUST_VERSION_SUPPORTED;
 /// Final fallback version to use if *nothing* else can be figured out.
 const LATEST: RustVersion = RustVersion::new(1, 68);
 /// Default command to build.
-const DEFAULT_COMMAND: [&str; 3] = ["cargo", "build", "--workspace"];
+const DEFAULT_COMMAND: [&str; 2] = ["cargo", "build"];
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -33,6 +35,10 @@ pub(crate) struct Opts {
     /// Do not remove [dev-dependencies].
     #[arg(long)]
     no_remove_dev_dependencies: bool,
+    /// By default, packages which are publish = false will not be built. This
+    /// causes such packages to be included.
+    #[arg(long)]
+    include_no_publish: bool,
     /// Earliest minor version to test. Default: 2021.
     ///
     /// Supports the following special values, apart from minor version numbers:
@@ -58,7 +64,9 @@ pub(crate) struct Opts {
     /// Command to test with.
     ///
     /// This is run through `rustup run <version> <command>`, the default
-    /// command is `cargo build --workspace`.
+    /// command is `cargo build`. The command will be run with the argument
+    /// `--manifest-path <path>`, which will be the path to the `Cargo.toml` of
+    /// the package being built.
     #[arg(value_name = "command")]
     command: Vec<String>,
 }
@@ -99,6 +107,18 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     tracing::info!("Testing Rust {earliest}-{latest}");
     let mut candidates = Bisect::new(earliest, latest);
 
+    let mut restore = Restore::default();
+
+    let mut packages = Vec::new();
+
+    for p in crates.packages() {
+        if !p.is_publish() && !opts.include_no_publish {
+            continue;
+        }
+
+        packages.push(p);
+    }
+
     while let Some(version) = candidates.current() {
         let version_string = version.to_string();
 
@@ -121,67 +141,92 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                 .status()?;
 
             if !status.success() {
-                bail!("failed to install Rust {version}");
+                bail!("Failed to install Rust {version}");
             }
         }
 
-        let mut restore = Vec::new();
-
-        for p in crates.packages() {
-            let original = p.manifest().path().with_extension("toml.original");
+        for manifest in crates.manifests() {
+            let original = manifest.path().with_extension("toml.original");
             let original_path = cx.to_path(original);
-            let manifest_path = cx.to_path(p.manifest().path());
+            let manifest_path = cx.to_path(manifest.path());
 
-            let mut manifest = p.manifest().clone();
+            let mut manifest = manifest.clone();
 
-            let mut save = if opts.no_remove_dev_dependencies {
-                false
+            let mut save = false;
+
+            if !opts.no_remove_dev_dependencies {
+                tracing::info!("{}: Removing dev-dependencies", manifest_path.display());
+                save |= manifest.remove(cargo::DEV_DEPENDENCIES);
+            }
+
+            if version < RUST_VERSION_SUPPORTED {
+                tracing::info!("{}: Removing rust-version (since rust-version=\"{version}\" is less than {RUST_VERSION_SUPPORTED})", manifest_path.display());
+                save |= manifest.remove_rust_version();
             } else {
-                manifest.remove(cargo::DEV_DEPENDENCIES)
-            };
+                tracing::info!(
+                    "{}: Setting rust-version=\"{version}\"",
+                    manifest_path.display()
+                );
+                save |= manifest.set_rust_version(&version);
+            }
 
-            save |= if version < RUST_VERSION_SUPPORTED {
-                manifest.set_rust_version(&version)?;
-                true
-            } else {
-                manifest.remove_rust_version()
-            };
+            if let Some(mut package) = manifest.as_package_mut() {
+                if !package.is_publish() && version < NO_PUBLISH_VERSION_OMIT {
+                    tracing::info!("{}: Setting version = \"0.0.0\" (since publish = false and rust-version=\"{version}\" is less than {NO_PUBLISH_VERSION_OMIT})", manifest_path.display());
+                    save |= package.set_version("0.0.0");
+                }
+            }
 
             if save {
                 move_paths(&manifest_path, &original_path)?;
-                tracing::trace!("Saving {}", p.manifest().path());
+                tracing::trace!("Saving {}", manifest.path());
                 manifest.save_to(&manifest_path)?;
-                restore.push((original_path.to_owned(), manifest_path));
+                restore
+                    .paths
+                    .push((original_path.to_owned(), manifest_path));
             }
         }
 
         if !opts.keep_cargo_lock && cargo_lock.is_file() {
             move_paths(&cargo_lock, &cargo_lock_original)?;
-            restore.push((cargo_lock_original.clone(), cargo_lock.clone()));
+            restore
+                .paths
+                .push((cargo_lock_original.clone(), cargo_lock.clone()));
         }
 
         tracing::trace!(?current_dir, "Testing against rust {version}");
 
-        let mut rustup = Command::new("rustup");
-        rustup.args(["run", &version_string, "--"]);
+        let mut all_ok = true;
 
-        if !opts.command.is_empty() {
-            rustup.args(&opts.command[..]);
-        } else {
-            rustup.args(DEFAULT_COMMAND);
+        for p in &packages {
+            let manifest_path = cx.to_path(p.manifest().path());
+
+            let mut rustup = Command::new("rustup");
+            rustup.args(["run", &version_string, "--"]);
+
+            if !opts.command.is_empty() {
+                rustup.args(&opts.command[..]);
+            } else {
+                rustup.args(DEFAULT_COMMAND);
+            }
+
+            rustup.args([OsStr::new("--manifest-path"), manifest_path.as_os_str()]);
+            rustup.current_dir(&current_dir);
+
+            if !opts.verbose {
+                rustup.stdout(Stdio::null()).stderr(Stdio::null());
+            }
+
+            tracing::info!("Testing Rust {version}: {}", rustup.display());
+            let status = rustup.status().context("Command through `rustup run`")?;
+
+            if !status.success() {
+                all_ok = false;
+                break;
+            }
         }
 
-        rustup.current_dir(&current_dir);
-
-        if !opts.verbose {
-            rustup.stdout(Stdio::null()).stderr(Stdio::null());
-        }
-
-        tracing::info!("Testing Rust {version}: {}", rustup.display());
-
-        let status = rustup.status().context("Command through `rustup run`")?;
-
-        if status.success() {
+        if all_ok {
             tracing::info!("Rust {version}: ok");
             candidates.ok();
         } else {
@@ -189,9 +234,7 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
             candidates.fail();
         }
 
-        for (from, to) in restore {
-            move_paths(&from, &to)?;
-        }
+        restore.restore();
     }
 
     let Some(version) = candidates.get() else {
@@ -290,4 +333,25 @@ impl Bisect {
 
 fn midpoint(start: u64, end: u64) -> u64 {
     (start + (end - start) / 2).clamp(start, end)
+}
+
+#[derive(Default)]
+struct Restore {
+    paths: Vec<(PathBuf, PathBuf)>,
+}
+
+impl Restore {
+    fn restore(&mut self) {
+        for (from, to) in self.paths.drain(..) {
+            if let Err(error) = move_paths(&from, &to) {
+                tracing::error!("Failed to restore {}: {}", from.display(), error);
+            }
+        }
+    }
+}
+
+impl Drop for Restore {
+    fn drop(&mut self) {
+        self.restore();
+    }
 }

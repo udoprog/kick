@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use toml_edit::{Array, Item, Table};
+use toml_edit::{Array, Formatted, Item, Table, Value};
 
 use crate::cargo::Manifest;
 use crate::cargo::RustVersion;
@@ -88,5 +88,39 @@ impl<'a> Package<'a> {
             description: self.description(),
             rust_version: self.rust_version(),
         })
+    }
+}
+
+/// Represents the `[package]` section of a manifest.
+pub(crate) struct PackageMut<'a> {
+    pub(crate) doc: &'a mut Table,
+}
+
+impl<'a> PackageMut<'a> {
+    pub(crate) fn new(doc: &'a mut Table) -> Self {
+        Self { doc }
+    }
+
+    /// Test if manifest is publish.
+    pub(crate) fn is_publish(&self) -> bool {
+        self.doc
+            .get("publish")
+            .and_then(Item::as_bool)
+            .unwrap_or(true)
+    }
+
+    /// Set version of the manifest.
+    ///
+    /// Returns `true` if the version string was modified.
+    pub(crate) fn set_version(&mut self, version: &str) -> bool {
+        if self.doc.get("version").and_then(|item| item.as_str()) == Some(version) {
+            return false;
+        }
+
+        self.doc.insert(
+            "version",
+            Item::Value(Value::String(Formatted::new(version.to_owned()))),
+        );
+        true
     }
 }

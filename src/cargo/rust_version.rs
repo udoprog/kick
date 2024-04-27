@@ -11,6 +11,8 @@ pub(crate) const EDITION_2018: RustVersion = RustVersion::new(1, 31);
 pub(crate) const EDITION_2021: RustVersion = RustVersion::new(1, 56);
 /// Oldest version to support workspaces.
 pub(crate) const WORKSPACE: RustVersion = RustVersion::new(1, 12);
+/// Oldest version which supports omitting `version` if publish is false.
+pub(crate) const NO_PUBLISH_VERSION_OMIT: RustVersion = RustVersion::new(1, 75);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Encode, Decode)]
 #[non_exhaustive]
