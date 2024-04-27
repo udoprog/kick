@@ -186,7 +186,7 @@ impl Manifest {
             return false;
         };
 
-        return table.remove("rust-version").is_some();
+        table.remove("rust-version").is_some()
     }
 
     /// Set rust-version of the manifest.
