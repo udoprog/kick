@@ -328,10 +328,12 @@ mod packaging;
 mod process;
 mod release;
 mod repo_sets;
+mod system;
 mod templates;
 mod urls;
 mod wix;
 mod workspace;
+mod wsl;
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -636,7 +638,7 @@ async fn entry() -> Result<ExitCode> {
         }
     }
 
-    let git = git::Git::find()?;
+    let system = system::detect()?;
 
     let templating = templates::Templating::new()?;
     let repos = model::load_gitmodules(&root)?;
@@ -653,7 +655,7 @@ async fn entry() -> Result<ExitCode> {
 
     let repos = match repos {
         Some(repos) => repos,
-        None => model::load_from_git(&root, git.as_ref())?,
+        None => model::load_from_git(&root, system.git.first())?,
     };
 
     tracing::trace!(
@@ -666,6 +668,13 @@ async fn entry() -> Result<ExitCode> {
     );
 
     let mut sets = repo_sets::RepoSets::new(root.join("sets"))?;
+
+    let os = match std::env::consts::OS {
+        "linux" => Os::Linux,
+        "windows" => Os::Windows,
+        "macos" => Os::Mac,
+        other => Os::Other(other.into()),
+    };
 
     if let Some(repo_opts) = repo_opts {
         let mut filters = Vec::new();
@@ -722,21 +731,23 @@ async fn entry() -> Result<ExitCode> {
             paths,
             in_current_path,
             repo_opts,
-            git.as_ref(),
+            system.git.first(),
             &repos,
             &filters,
             set.as_ref(),
+            &os,
         )?;
     }
 
     let changes_path = root.join("changes.gz");
 
     let mut cx = ctxt::Ctxt {
+        system: &system,
+        os,
         paths,
         config: &config,
         repos: &repos,
         rustc_version: ctxt::rustc_version(),
-        git,
         warnings: RefCell::new(Vec::new()),
         changes: RefCell::new(Vec::new()),
         sets: &mut sets,
@@ -828,6 +839,7 @@ fn filter_repos(
     repos: &[model::Repo],
     filters: &[Fragment<'_>],
     set: Option<&HashSet<RelativePathBuf>>,
+    expected: &Os,
 ) -> Result<()> {
     // Test if repo should be skipped.
     let should_disable = |repo: &Repo| -> bool {
@@ -860,16 +872,9 @@ fn filter_repos(
         }
 
         if repo_opts.same_os {
-            let expected = match std::env::consts::OS {
-                "linux" => Os::Linux,
-                "windows" => Os::Windows,
-                "macos" => Os::Mac,
-                other => bail!("Unsupported operating system: {other} (required due to --same-os)"),
-            };
-
             let os = config.os(repo);
 
-            if !os.is_empty() && !os.contains(&expected) {
+            if !os.is_empty() && !os.contains(expected) {
                 tracing::trace!("Operating systems {os:?} does not contain {expected:?}");
                 repo.disable();
             }

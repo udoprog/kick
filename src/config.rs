@@ -310,11 +310,12 @@ impl Replacement {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum Os {
     Windows,
     Linux,
     Mac,
+    Other(String),
 }
 
 #[derive(Default, Debug)]
@@ -614,8 +615,8 @@ impl Config<'_> {
     }
 
     /// Get supported operating systems.
-    pub(crate) fn os(&self, repo: &Repo) -> HashSet<Os> {
-        self.repos(repo).flat_map(|r| &r.os).copied().collect()
+    pub(crate) fn os(&self, repo: &Repo) -> HashSet<&Os> {
+        self.repos(repo).flat_map(|r| &r.os).collect()
     }
 
     /// Get the current license template.
