@@ -6,9 +6,10 @@ use std::process::{ExitCode, Stdio};
 use anyhow::{anyhow, Context, Result};
 use relative_path::RelativePath;
 
+use super::system::System;
 use crate::cargo::{self, Package, RustVersion};
 use crate::changes::{Change, Warning};
-use crate::config::Config;
+use crate::config::{Config, Os};
 use crate::env::Env;
 use crate::git::Git;
 use crate::model::{RenderRustVersions, Repo, RepoParams, RepoRef, State};
@@ -64,11 +65,12 @@ impl Paths<'_> {
 }
 
 pub(crate) struct Ctxt<'a> {
+    pub(crate) system: &'a System,
+    pub(crate) os: Os,
     pub(crate) paths: Paths<'a>,
     pub(crate) config: &'a Config<'a>,
     pub(crate) repos: &'a [Repo],
     pub(crate) rustc_version: Option<RustVersion>,
-    pub(crate) git: Option<Git>,
     pub(crate) warnings: RefCell<Vec<Warning>>,
     pub(crate) changes: RefCell<Vec<Change>>,
     pub(crate) sets: &'a mut RepoSets,
@@ -148,7 +150,7 @@ impl<'a> Ctxt<'a> {
 
     /// Require a working git command.
     pub(crate) fn require_git(&self) -> Result<&Git> {
-        self.git.as_ref().context("no working git command")
+        self.system.git.first().context("no working git command")
     }
 
     /// Push a change.

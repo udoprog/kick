@@ -1,4 +1,3 @@
-use std::env::consts::EXE_EXTENSION;
 use std::ffi::OsStr;
 use std::fmt::Display;
 use std::io;
@@ -10,45 +9,15 @@ use crate::process::Command;
 use anyhow::{ensure, Context, Result};
 use reqwest::Url;
 
-#[cfg(windows)]
-const PATH_SEP: char = ';';
-#[cfg(not(windows))]
-const PATH_SEP: char = ':';
-
 #[derive(Debug)]
 pub(crate) struct Git {
     command: PathBuf,
 }
 
 impl Git {
-    /// Try to find a working git command.
-    pub(crate) fn find() -> Result<Option<Self>> {
-        if let Some(path) = std::env::var_os("GIT_PATH").and_then(|path| path.into_string().ok()) {
-            if let Some(status) = git_version(&path)? {
-                if status.success() {
-                    return Ok(Some(Self {
-                        command: path.into(),
-                    }));
-                }
-            }
-        }
-
-        let Some(path) = std::env::var_os("PATH").and_then(|path| path.into_string().ok()) else {
-            return Ok(None);
-        };
-
-        // Look for the command in the PATH.
-        for path in path.split(PATH_SEP) {
-            let command = Path::new(path).join("git").with_extension(EXE_EXTENSION);
-
-            if let Some(status) = git_version(&command)? {
-                if status.success() {
-                    return Ok(Some(Self { command }));
-                }
-            }
-        }
-
-        Ok(None)
+    #[inline]
+    pub(crate) fn new(command: PathBuf) -> Self {
+        Self { command }
     }
 
     /// Make a commit.
@@ -259,11 +228,8 @@ pub(crate) struct DescribeTags {
     pub(crate) offset: Option<usize>,
 }
 
-fn git_version<P>(path: &P) -> Result<Option<ExitStatus>>
-where
-    P: ?Sized + AsRef<Path>,
-{
-    match std::process::Command::new(path.as_ref())
+pub(crate) fn version(path: &OsStr) -> Result<Option<ExitStatus>> {
+    match std::process::Command::new(path)
         .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())

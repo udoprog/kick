@@ -74,7 +74,7 @@ async fn status(
 ) -> Result<bool> {
     let sha;
 
-    let sha = match &cx.git {
+    let sha = match cx.system.git.first() {
         Some(git) => {
             sha = git
                 .rev_parse(cx.to_path(repo.path()), "HEAD")
