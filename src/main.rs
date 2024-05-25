@@ -341,6 +341,7 @@ use std::process::ExitCode;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, FromArgMatches, Parser, Subcommand};
 
+use config::{Config, Os};
 use env::SecretString;
 use relative_path::{RelativePath, RelativePathBuf};
 use tracing::metadata::LevelFilter;
@@ -495,6 +496,10 @@ struct RepoOptions {
     /// commit that doesn't have a tag as determined by `git describe --tags`.
     #[arg(long)]
     unreleased: bool,
+    /// Only run over repos which have declared that the same operating system
+    /// is supported.
+    #[arg(long)]
+    same_os: bool,
     /// Load sets with the given id.
     #[arg(long, value_name = "set")]
     set: Vec<String>,
@@ -713,6 +718,7 @@ async fn entry() -> Result<ExitCode> {
             .filter(|p| !repo_opts.all && repos.iter().any(|m| p.starts_with(m.path())));
 
         filter_repos(
+            &config,
             paths,
             in_current_path,
             repo_opts,
@@ -814,6 +820,7 @@ async fn entry() -> Result<ExitCode> {
 
 /// Perform more advanced filtering over modules.
 fn filter_repos(
+    config: &Config,
     paths: Paths<'_>,
     in_current_path: Option<&RelativePath>,
     repo_opts: &RepoOptions,
@@ -850,6 +857,22 @@ fn filter_repos(
 
         if repo.is_disabled() {
             continue;
+        }
+
+        if repo_opts.same_os {
+            let expected = match std::env::consts::OS {
+                "linux" => Os::Linux,
+                "windows" => Os::Windows,
+                "macos" => Os::Mac,
+                other => bail!("Unsupported operating system: {other} (required due to --same-os)"),
+            };
+
+            let os = config.os(repo);
+
+            if !os.is_empty() && !os.contains(&expected) {
+                tracing::trace!("Operating systems {os:?} does not contain {expected:?}");
+                repo.disable();
+            }
         }
 
         if repo_opts.needs_git() {

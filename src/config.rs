@@ -310,10 +310,19 @@ impl Replacement {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Os {
+    Windows,
+    Linux,
+    Mac,
+}
+
 #[derive(Default, Debug)]
 pub(crate) struct RepoConfig {
     /// Override crate to use.
     pub(crate) name: Option<String>,
+    /// Supported operating system.
+    pub(crate) os: HashSet<Os>,
     /// Name of the repo branch.
     pub(crate) branch: Option<String>,
     /// Workflows to incorporate.
@@ -354,6 +363,7 @@ impl RepoConfig {
     /// Merge this config with another.
     pub(crate) fn merge_with(&mut self, mut other: Self) {
         self.name = other.name.or(self.name.take());
+        self.os.extend(other.os);
         self.branch = other.branch.or(self.branch.take());
 
         for (id, workflow) in other.workflows {
@@ -601,6 +611,11 @@ impl Config<'_> {
             .flat_map(|r| r.license.as_deref())
             .next()
             .unwrap_or(DEFAULT_LICENSE)
+    }
+
+    /// Get supported operating systems.
+    pub(crate) fn os(&self, repo: &Repo) -> HashSet<Os> {
+        self.repos(repo).flat_map(|r| &r.os).copied().collect()
     }
 
     /// Get the current license template.
@@ -1056,8 +1071,16 @@ impl<'a> ConfigCtxt<'a> {
             })
         })?;
 
+        let os = cx.in_array("os", None, |cx, item| match cx.string(item)?.as_str() {
+            "windows" => Ok(Os::Windows),
+            "linux" => Ok(Os::Linux),
+            "macos" => Ok(Os::Mac),
+            other => Err(anyhow!("Unknown os: {other}")),
+        })?;
+
         Ok(RepoConfig {
             name: cx.as_string("name")?,
+            os,
             branch: cx.as_string("branch")?,
             workflows: cx
                 .in_table("workflows", |cx, id, value| Ok((id, cx.workflow(value)?)))?
