@@ -310,7 +310,7 @@ impl Replacement {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Os {
     Windows,
     Linux,
@@ -323,7 +323,7 @@ pub(crate) struct RepoConfig {
     /// Override crate to use.
     pub(crate) name: Option<String>,
     /// Supported operating system.
-    pub(crate) os: HashSet<Os>,
+    pub(crate) os: BTreeSet<Os>,
     /// Name of the repo branch.
     pub(crate) branch: Option<String>,
     /// Workflows to incorporate.
@@ -615,7 +615,7 @@ impl Config<'_> {
     }
 
     /// Get supported operating systems.
-    pub(crate) fn os(&self, repo: &Repo) -> HashSet<&Os> {
+    pub(crate) fn os(&self, repo: &Repo) -> BTreeSet<&Os> {
         self.repos(repo).flat_map(|r| &r.os).collect()
     }
 
