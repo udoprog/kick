@@ -68,7 +68,7 @@ fn r#for(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
         for os in cx.config.os(repo).into_iter().take(limit) {
             if cx.os == *os {
-                runners.push((None, current_os(&path, opts), None));
+                runners.push(setup_same(&path, opts));
                 continue;
             }
 
@@ -87,49 +87,57 @@ fn r#for(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     }
 
     if runners.is_empty() {
-        runners.push((None, current_os(&path, opts), None));
+        runners.push(setup_same(&path, opts));
     }
 
-    for (name, mut runner, extra_env) in runners {
+    for mut runner in runners {
         for e in &opts.env {
             if let Some((key, value)) = e.split_once('=') {
-                runner.env(key, value);
+                runner.command.env(key, value);
             }
         }
 
-        if let Some((key, value)) = extra_env {
-            runner.env(key, value);
+        if let Some((key, value)) = runner.extra_env {
+            runner.command.env(key, value);
         }
 
-        if let Some(name) = name {
+        if let Some(name) = runner.name {
             println!("{} ({name}):", path.display());
         } else {
             println!("{}:", path.display());
         }
 
-        let status = runner.status()?;
+        let status = runner.command.status()?;
         ensure!(status.success(), status);
     }
 
     Ok(())
 }
 
-fn current_os(path: &Path, opts: &Opts) -> Command {
+struct Runner {
+    command: Command,
+    name: Option<&'static str>,
+    extra_env: Option<(&'static str, String)>,
+}
+
+impl Runner {
+    fn new(command: Command) -> Self {
+        Self {
+            command,
+            name: None,
+            extra_env: None,
+        }
+    }
+}
+
+fn setup_same(path: &Path, opts: &Opts) -> Runner {
     let mut command = Command::new(&opts.command);
     command.args(&opts.args);
     command.current_dir(path);
-    command
+    Runner::new(command)
 }
 
-fn setup_wsl(
-    path: &Path,
-    wsl: &Wsl,
-    opts: &Opts,
-) -> (
-    Option<&'static str>,
-    Command,
-    Option<(&'static str, String)>,
-) {
+fn setup_wsl(path: &Path, wsl: &Wsl, opts: &Opts) -> Runner {
     let mut command = wsl.shell(path);
     command.arg(&opts.command);
     command.args(&opts.args);
@@ -148,5 +156,8 @@ fn setup_wsl(
         }
     }
 
-    (Some("WSL"), command, Some(("WSLENV", wslenv)))
+    let mut runner = Runner::new(command);
+    runner.name = Some("WSL");
+    runner.extra_env = Some(("WSLENV", wslenv));
+    runner
 }
