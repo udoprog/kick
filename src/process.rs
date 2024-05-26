@@ -14,6 +14,7 @@ pub(crate) struct Command {
     stdin: Option<Stdio>,
     stdout: Option<Stdio>,
     stderr: Option<Stdio>,
+    env: Vec<(OsString, OsString)>,
 }
 
 impl Command {
@@ -28,6 +29,7 @@ impl Command {
             stdin: None,
             stdout: None,
             stderr: None,
+            env: Vec::new(),
         }
     }
 
@@ -50,6 +52,17 @@ impl Command {
             self.args.push(arg.as_ref().to_owned());
         }
 
+        self
+    }
+
+    /// Add an environment variable to the command.
+    pub(crate) fn env<K, V>(&mut self, key: K, value: V) -> &mut Self
+    where
+        K: AsRef<OsStr>,
+        V: AsRef<OsStr>,
+    {
+        self.env
+            .push((key.as_ref().to_owned(), value.as_ref().to_owned()));
         self
     }
 
@@ -130,6 +143,10 @@ impl Command {
 
         if let Some(stderr) = self.stderr.take() {
             command.stderr(stderr);
+        }
+
+        for (key, value) in &self.env {
+            command.env(key, value);
         }
 
         command
