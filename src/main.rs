@@ -480,13 +480,15 @@ struct RepoOptions {
     /// Only run the specified set of repos.
     #[arg(long = "path", short = 'p', name = "repos", value_name = "path")]
     repos: Vec<String>,
-    /// Test if the repository is outdated.
-    #[arg(long)]
-    outdated: bool,
     /// Only run over dirty modules with changes that have not been staged in
     /// cache.
     #[arg(long)]
     dirty: bool,
+    /// Test if the repository is outdated.
+    ///
+    /// A repo is considered outdated if its branch is ahead of its remote.
+    #[arg(long)]
+    outdated: bool,
     /// Only run over modules that have changes staged in cache.
     #[arg(long)]
     cached: bool,
@@ -890,36 +892,44 @@ fn filter_repos(
             let span = tracing::trace_span!("git", ?cached, ?dirty, repo = repo.path().to_string());
             let _enter = span.enter();
 
-            if repo_opts.outdated && !git.is_outdated(&repo_path)? {
-                tracing::trace!("Directory is not outdated");
-                repo.disable();
-            }
-
-            if repo_opts.dirty && !dirty {
-                tracing::trace!("Directory is not dirty");
-                repo.disable();
-            }
-
-            if repo_opts.cached && !cached {
-                tracing::trace!("Directory has no cached changes");
-                repo.disable();
-            }
-
-            if repo_opts.cached_only && (!cached || dirty) {
-                tracing::trace!("Directory has no cached changes");
-                repo.disable();
-            }
-
-            if repo_opts.unreleased {
-                if let Some(describe) = git.describe_tags(&repo_path)? {
-                    if describe.offset.is_none() {
-                        tracing::trace!("No offset detected (tag: {})", describe.tag);
-                        repo.disable();
-                    }
-                } else {
-                    tracing::trace!("No tags to describe");
-                    repo.disable();
+            let disable = 'outcome: {
+                if repo_opts.dirty && !dirty {
+                    tracing::trace!("Directory is not dirty");
+                    break 'outcome true;
                 }
+
+                if repo_opts.cached && !cached {
+                    tracing::trace!("Directory has no cached changes");
+                    break 'outcome true;
+                }
+
+                if repo_opts.cached_only && (!cached || dirty) {
+                    tracing::trace!("Directory has no cached changes");
+                    break 'outcome true;
+                }
+
+                if repo_opts.outdated && (!dirty && !git.is_outdated(&repo_path)?) {
+                    tracing::trace!("Directory is not outdated");
+                    break 'outcome true;
+                }
+
+                if repo_opts.unreleased {
+                    if let Some(describe) = git.describe_tags(&repo_path)? {
+                        if describe.offset.is_none() {
+                            tracing::trace!("No offset detected (tag: {})", describe.tag);
+                            break 'outcome true;
+                        }
+                    } else {
+                        tracing::trace!("No tags to describe");
+                        break 'outcome true;
+                    }
+                }
+
+                false
+            };
+
+            if disable {
+                repo.disable();
             }
         }
     }
