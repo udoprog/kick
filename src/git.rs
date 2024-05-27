@@ -6,7 +6,7 @@ use std::process::{ExitStatus, Stdio};
 use std::str;
 
 use crate::process::Command;
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use reqwest::Url;
 
 #[derive(Debug)]
@@ -132,6 +132,41 @@ impl Git {
         Ok(())
     }
 
+    pub(crate) fn remote_branch<P>(&self, dir: P) -> Result<(String, String)>
+    where
+        P: AsRef<Path>,
+    {
+        let output = Command::new(&self.command)
+            .args(["status", "-sb"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .current_dir(dir)
+            .output()?;
+
+        ensure!(output.status.success(), output.status);
+
+        let string = std::str::from_utf8(&output.stdout)?.trim();
+
+        // Trim "## " prefix.
+        let Some(rest) = string.strip_prefix("## ") else {
+            bail!("Unexpected output: {string}");
+        };
+
+        // Trim " [ahead N]" suffix.
+        let rest = if let Some((head, _)) = rest.split_once(" ") {
+            head
+        } else {
+            rest
+        };
+
+        let Some((local, remote)) = rest.split_once("...") else {
+            bail!("Unexpected output: {string}");
+        };
+
+        Ok((local.to_string(), remote.to_string()))
+    }
+
     /// Test if the local branch is outdated.
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command, ?fetch))]
     pub(crate) fn is_outdated<P>(&self, dir: P, fetch: bool) -> Result<bool>
@@ -144,8 +179,10 @@ impl Git {
             self.remote_update(dir)?;
         }
 
+        let (local, remote) = self.remote_branch(dir)?;
+
         let status = Command::new(&self.command)
-            .args(["diff", "--quiet", "main", "origin/main"])
+            .args(["diff", "--quiet", &local, &remote])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
