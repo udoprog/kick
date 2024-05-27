@@ -116,11 +116,12 @@ impl Git {
         Ok(!output.stdout.is_empty())
     }
 
-    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command))]
-    pub(crate) fn remote_update<P>(&self, dir: P) -> Result<()>
+    fn remote_update<P>(&self, dir: P) -> Result<()>
     where
         P: AsRef<Path>,
     {
+        tracing::info!("Updating remote");
+
         let status = Command::new(&self.command)
             .args(["remote", "update"])
             .stdin(Stdio::null())
@@ -132,14 +133,16 @@ impl Git {
     }
 
     /// Test if the local branch is outdated.
-    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command))]
-    pub(crate) fn is_outdated<P>(&self, dir: P) -> Result<bool>
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command, ?fetch))]
+    pub(crate) fn is_outdated<P>(&self, dir: P, fetch: bool) -> Result<bool>
     where
         P: AsRef<Path>,
     {
         let dir = dir.as_ref();
 
-        self.remote_update(dir)?;
+        if fetch {
+            self.remote_update(dir)?;
+        }
 
         let status = Command::new(&self.command)
             .args(["diff", "--quiet", "main", "origin/main"])
@@ -171,11 +174,15 @@ impl Git {
     }
 
     /// Get HEAD commit.
-    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command))]
-    pub(crate) fn describe_tags<P>(&self, dir: &P) -> Result<Option<DescribeTags>>
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command, ?fetch))]
+    pub(crate) fn describe_tags<P>(&self, dir: &P, fetch: bool) -> Result<Option<DescribeTags>>
     where
         P: ?Sized + AsRef<Path>,
     {
+        if fetch {
+            self.remote_update(dir)?;
+        }
+
         let output = Command::new(&self.command)
             .args(["describe", "--tags"])
             .stdin(Stdio::null())

@@ -480,6 +480,9 @@ struct RepoOptions {
     /// Only run the specified set of repos.
     #[arg(long = "path", short = 'p', name = "repos", value_name = "path")]
     repos: Vec<String>,
+    /// If we should fetch the latest updates from remotes before filtering.
+    #[arg(long)]
+    fetch: bool,
     /// Only run over dirty modules with changes that have not been staged in
     /// cache.
     #[arg(long)]
@@ -908,13 +911,15 @@ fn filter_repos(
                     break 'outcome true;
                 }
 
-                if repo_opts.outdated && (!dirty && !git.is_outdated(&repo_path)?) {
+                if repo_opts.outdated
+                    && (!dirty && !git.is_outdated(&repo_path, repo_opts.fetch)?)
+                {
                     tracing::trace!("Directory is not outdated");
                     break 'outcome true;
                 }
 
                 if repo_opts.unreleased {
-                    if let Some(describe) = git.describe_tags(&repo_path)? {
+                    if let Some(describe) = git.describe_tags(&repo_path, repo_opts.fetch)? {
                         if describe.offset.is_none() {
                             tracing::trace!("No offset detected (tag: {})", describe.tag);
                             break 'outcome true;
