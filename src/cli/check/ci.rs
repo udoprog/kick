@@ -199,7 +199,7 @@ fn validate_jobs(
             };
 
             check_strategy_rust_version(ci, job_name, &job);
-            check_actions(ci, &job)?;
+            check_actions(ci, job_name, &job)?;
 
             if ci.crates.is_single_crate() {
                 verify_single_project_build(cx, ci, path, job)?;
@@ -219,7 +219,13 @@ fn validate_jobs(
     Ok(())
 }
 
-fn check_actions(ci: &mut Ci<'_>, job: &yaml::Mapping) -> Result<()> {
+fn check_actions(ci: &mut Ci<'_>, job_name: &BStr, job: &yaml::Mapping) -> Result<()> {
+    let policy = if job_name == "clippy" {
+        RustVersionPolicy::Named("stable")
+    } else {
+        RustVersionPolicy::MinimumSupported
+    };
+
     for action in job
         .get("steps")
         .and_then(|v| v.as_sequence())
@@ -229,7 +235,7 @@ fn check_actions(ci: &mut Ci<'_>, job: &yaml::Mapping) -> Result<()> {
     {
         if let Some((uses, value)) = action.get("uses").and_then(|v| Some((v.id(), v.as_str()?))) {
             check_action(ci, &action, uses, value)?;
-            check_uses_rust_version(ci, uses, value)?;
+            check_uses_rust_version(ci, uses, value, policy)?;
         }
 
         if let Some((if_id, value)) = action.get("if").and_then(|v| Some((v.id(), v.as_str()?))) {
@@ -274,11 +280,18 @@ fn check_action(ci: &mut Ci<'_>, action: &Mapping<'_>, at: Id, name: &str) -> Re
     Ok(())
 }
 
-fn check_uses_rust_version(ci: &mut Ci<'_>, at: Id, name: &str) -> Result<()> {
-    let Some(rust_version) = ci.package.rust_version() else {
-        return Ok(());
-    };
+#[derive(Debug, Clone, Copy)]
+enum RustVersionPolicy<'a> {
+    Named(&'a str),
+    MinimumSupported,
+}
 
+fn check_uses_rust_version(
+    ci: &mut Ci<'_>,
+    at: Id,
+    name: &str,
+    policy: RustVersionPolicy,
+) -> Result<()> {
     let Some((name, version)) = name.split_once('@') else {
         return Ok(());
     };
@@ -287,18 +300,35 @@ fn check_uses_rust_version(ci: &mut Ci<'_>, at: Id, name: &str) -> Result<()> {
         return Ok(());
     };
 
-    let Some(version) = RustVersion::parse(version) else {
-        return Ok(());
-    };
+    match policy {
+        RustVersionPolicy::Named(name) => {
+            if version != name {
+                ci.edits.set(
+                    at,
+                    "Expected stable rust toolchain",
+                    format_args!("{author}/rust-toolchain@{name}"),
+                );
+            }
+        }
+        RustVersionPolicy::MinimumSupported => {
+            let Some(version) = RustVersion::parse(version) else {
+                return Ok(());
+            };
 
-    if rust_version > version {
-        ci.edits.set(
-            at,
-            format_args!(
-                "Outdated rust version in rust-toolchain action: got `{version}` but expected `{rust_version}`"
-            ),
-            format_args!("{author}/rust-toolchain@{rust_version}"),
-        );
+            let Some(rust_version) = ci.package.rust_version() else {
+                return Ok(());
+            };
+
+            if rust_version > version {
+                ci.edits.set(
+                    at,
+                    format_args!(
+                        "Outdated rust version in rust-toolchain action: got `{version}` but expected `{rust_version}`"
+                    ),
+                    format_args!("{author}/rust-toolchain@{rust_version}"),
+                );
+            }
+        }
     }
 
     Ok(())
