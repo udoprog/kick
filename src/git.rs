@@ -154,7 +154,7 @@ impl Git {
         };
 
         // Trim " [ahead N]" suffix.
-        let rest = if let Some((head, _)) = rest.split_once(" ") {
+        let rest = if let Some((head, _)) = rest.split_once(' ') {
             head
         } else {
             rest
