@@ -423,37 +423,32 @@ fn validate_on(
 
     keys.field("on");
 
+    let mut edits = Vec::new();
+
+    if let Some(branch) = &config.branch {
+        edits.push((
+            String::from("push"),
+            edits::Value::Mapping(vec![(
+                String::from("branches"),
+                edits::Value::Array(vec![edits::Value::String(branch.clone())]),
+            )]),
+        ));
+    }
+
     if config
         .features
         .contains(&WorkflowFeature::ScheduleRandomWeekly)
     {
-        if let Some(sequence) = m.get("schedule").and_then(|v| v.as_sequence()) {
-            for value in sequence.into_iter() {
-                let Some(m) = value.as_mapping() else {
-                    continue;
-                };
+        let random = ci.repo.random();
+        let string = format!("{} {} * * {}", random.minute, random.hour, random.day);
 
-                if let Some((at, actual)) = m.get("cron").map(|v| (v.id(), v.as_str())) {
-                    let random = ci.repo.random();
-                    let string = format!("{} {} * * {}", random.minute, random.hour, random.day);
-
-                    if actual != Some(string.as_str()) {
-                        let reason = match actual {
-                            Some(actual) => {
-                                format!(
-                                    "Wrong cron schedule, got `{actual}` but expected `{string}`"
-                                )
-                            }
-                            None => {
-                                format!("Wrong cron schedule, got empty but expected `{string}`")
-                            }
-                        };
-
-                        ci.edits.set(at, reason, string);
-                    }
-                }
-            }
-        }
+        edits.push((
+            String::from("schedule"),
+            edits::Value::Array(vec![edits::Value::Mapping(vec![(
+                String::from("cron"),
+                edits::Value::String(string),
+            )])]),
+        ));
     }
 
     if let Some(m) = m.get("pull_request").and_then(|v| v.as_mapping()) {
@@ -465,18 +460,8 @@ fn validate_on(
         }
     }
 
-    if let Some(branch) = &config.branch {
-        ci.edits.edit_mapping(
-            &mut keys,
-            m,
-            [(
-                String::from("push"),
-                edits::Value::Mapping(vec![(
-                    String::from("branches"),
-                    edits::Value::Array(vec![edits::Value::String(branch.clone())]),
-                )]),
-            )],
-        );
+    if !edits.is_empty() {
+        ci.edits.edit_mapping(&mut keys, m, edits);
     }
 }
 
