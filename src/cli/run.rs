@@ -5,13 +5,13 @@ use std::path::Path;
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 use anyhow::{bail, ensure, Result};
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use nondestructive::yaml::Mapping;
 use relative_path::RelativePathBuf;
 
 use crate::config::Os;
 use crate::ctxt::Ctxt;
-use crate::model::Repo;
+use crate::model::{Repo, ShellFlavor};
 use crate::process::Command;
 use crate::system::Wsl;
 use crate::workflows::{Eval, Workflows};
@@ -376,7 +376,7 @@ fn run(
                     write!(o, ": ")?;
                 }
 
-                write!(o, "{}", runner.command.display())?;
+                write!(o, "{}", runner.command.display_with(flavor))?;
 
                 if let Some(skipped) = &run.skipped {
                     write!(o, " (Skipped: ")?;
@@ -400,26 +400,26 @@ fn run(
                                 )?;
                             }
 
-                            write!(o, "{}", runner.command.display())?;
+                            write!(o, "{}", runner.command.display_with(flavor))?;
                             writeln!(o)?;
                         }
                         ShellFlavor::Powershell => {
                             if !runner.command.env.is_empty() {
-                                write!(o, "powershell -Command {{")?;
+                                writeln!(o, "powershell -Command {{")?;
 
                                 for (key, value) in &runner.command.env {
-                                    write!(
+                                    writeln!(
                                         o,
-                                        r#" $env:{}="{}";"#,
+                                        r#"  $Env:{}="{}";"#,
                                         key.to_string_lossy(),
                                         value.to_string_lossy()
                                     )?;
                                 }
 
-                                write!(o, " {} ", runner.command.display())?;
+                                writeln!(o, "  {}", runner.command.display_with(flavor))?;
                                 writeln!(o, "}}")?;
                             } else {
-                                write!(o, "{}", runner.command.display())?;
+                                write!(o, "{}", runner.command.display_with(flavor))?;
                                 writeln!(o)?;
                             }
                         }
@@ -535,13 +535,6 @@ impl CommandBatch {
 
         set
     }
-}
-
-#[derive(Default, Debug, Clone, Copy, ValueEnum)]
-enum ShellFlavor {
-    #[default]
-    Sh,
-    Powershell,
 }
 
 enum Run {

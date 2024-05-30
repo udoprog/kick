@@ -1,7 +1,9 @@
 use std::borrow::Cow;
 
+use crate::model::ShellFlavor;
+
 /// Escape a string into a bash command.
-pub(crate) fn escape(source: &str) -> Cow<'_, str> {
+pub(crate) fn escape(source: &str, flavor: ShellFlavor) -> Cow<'_, str> {
     let i = 'bail: {
         for (i, c) in source.char_indices() {
             match c {
@@ -20,13 +22,19 @@ pub(crate) fn escape(source: &str) -> Cow<'_, str> {
     out.push('"');
     out.push_str(&source[..i]);
 
+    let (nl, tab, cr) = match flavor {
+        ShellFlavor::Sh => ("\\n", "\\t", "\\r"),
+        ShellFlavor::Powershell => ("`n", "`t", "`r"),
+    };
+
     for c in source[i..].chars() {
         match c {
             '\\' => out.push_str("\\\\"),
             '"' => out.push_str("\\\""),
             '!' => out.push_str("\\!"),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str(nl),
+            '\r' => out.push_str(cr),
+            '\t' => out.push_str(tab),
             _ => out.push(c),
         }
     }

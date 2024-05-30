@@ -6,6 +6,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use anyhow::{anyhow, bail, Context, Error, Result};
+use clap::ValueEnum;
 use musli::{Decode, Encode};
 use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Deserialize, Serialize, Serializer};
@@ -16,6 +17,13 @@ use crate::ctxt::Ctxt;
 use crate::gitmodules;
 use crate::system::Git;
 use crate::workspace::Crates;
+
+#[derive(Default, Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum ShellFlavor {
+    #[default]
+    Sh,
+    Powershell,
+}
 
 /// Parameters particular to a given package.
 #[derive(Debug, Clone, Copy, Serialize)]

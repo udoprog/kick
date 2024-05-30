@@ -7,6 +7,8 @@ use std::process::{ChildStdin, ChildStdout, ExitStatus, Output, Stdio};
 
 use anyhow::{anyhow, Context, Result};
 
+use crate::model::ShellFlavor;
+
 pub(crate) struct Command {
     command: OsString,
     args: Vec<OsString>,
@@ -154,7 +156,15 @@ impl Command {
 
     /// Build a command representation.
     pub(crate) fn display(&self) -> Display<'_> {
-        Display { inner: self }
+        self.display_with(ShellFlavor::default())
+    }
+
+    /// Build a command representation.
+    pub(crate) fn display_with(&self, flavor: ShellFlavor) -> Display<'_> {
+        Display {
+            inner: self,
+            flavor,
+        }
     }
 
     /// Current dir representation.
@@ -195,18 +205,19 @@ impl Child {
 
 pub(crate) struct Display<'a> {
     inner: &'a Command,
+    flavor: ShellFlavor,
 }
 
 impl fmt::Display for Display<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let lossy = self.inner.command.to_string_lossy();
-        let escaped = crate::shell::escape(lossy.as_ref());
+        let escaped = crate::shell::escape(lossy.as_ref(), self.flavor);
         f.write_str(&escaped)?;
 
         for arg in &self.inner.args {
             f.write_char(' ')?;
             let lossy = arg.to_string_lossy();
-            let escaped = crate::shell::escape(lossy.as_ref());
+            let escaped = crate::shell::escape(lossy.as_ref(), self.flavor);
             f.write_str(&escaped)?;
         }
 
