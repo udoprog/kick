@@ -141,11 +141,7 @@ impl<'cx, 'a> Job<'cx, 'a> {
             }
         };
 
-        let mut positions = Vec::new();
-
-        for _ in &variables {
-            positions.push(0usize);
-        }
+        let mut positions = vec![0usize; variables.len()];
 
         'outer: loop {
             let mut matrix = BTreeMap::new();
@@ -155,7 +151,7 @@ impl<'cx, 'a> Job<'cx, 'a> {
                 matrix.insert(key.to_string(), values[p].to_owned());
             }
 
-            matrices.push(Matrix { variables: matrix });
+            matrices.push(Matrix { matrix });
 
             for n in 0..variables.len() {
                 if positions[n] + 1 < variables[n].1.len() {
@@ -171,7 +167,7 @@ impl<'cx, 'a> Job<'cx, 'a> {
 
         if matrices.is_empty() {
             matrices.push(Matrix {
-                variables: BTreeMap::new(),
+                matrix: BTreeMap::new(),
             });
         }
 
@@ -181,14 +177,14 @@ impl<'cx, 'a> Job<'cx, 'a> {
 
 /// A matrix of variables.
 pub(crate) struct Matrix {
-    variables: BTreeMap<String, String>,
+    matrix: BTreeMap<String, String>,
 }
 
 impl Matrix {
     /// Test if the matrix is empty.
     #[inline]
     pub(crate) fn is_empty(&self) -> bool {
-        self.variables.is_empty()
+        self.matrix.is_empty()
     }
 
     /// Evaluate a string with matrix variables.
@@ -221,7 +217,7 @@ impl Matrix {
             let variable = &rest[..end];
 
             if let Some(("matrix", variable)) = variable.split_once('.') {
-                if let Some(value) = self.variables.get(variable) {
+                if let Some(value) = self.matrix.get(variable) {
                     result.push_str(value);
                 }
             }
@@ -236,7 +232,7 @@ impl Matrix {
 impl fmt::Debug for Matrix {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.variables.fmt(f)
+        self.matrix.fmt(f)
     }
 }
 

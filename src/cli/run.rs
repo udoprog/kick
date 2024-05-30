@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::ffi::OsString;
 use std::fmt;
 use std::path::Path;
@@ -38,6 +38,12 @@ pub(crate) struct Opts {
     /// Run all commands associated with a Github workflows job.
     #[arg(long)]
     job: Option<String>,
+    /// Matrix values to ignore when running a Github workflows job.
+    #[arg(long, value_name = "<value>")]
+    ignore_matrix: Vec<String>,
+    /// Ignore `runs-on` specification in github workflow.
+    #[arg(long)]
+    ignore_runs_on: bool,
     /// Arguments to pass to the command to run.
     #[arg(
         trailing_var_arg = true,
@@ -62,7 +68,15 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     let mut commands = Vec::new();
 
-    let ignore = IGNORE.iter().copied().map(String::from).collect();
+    let mut ignore = IGNORE
+        .iter()
+        .copied()
+        .map(String::from)
+        .collect::<HashSet<_>>();
+
+    for i in &opts.ignore_matrix {
+        ignore.insert(i.clone());
+    }
 
     if let Some(to_run) = &opts.job {
         let workflows = Workflows::new(cx, repo)?;
@@ -77,17 +91,22 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                     let runs_on = job.runs_on()?;
 
                     for matrix in job.matrices(&ignore)? {
-                        let runs_on = matrix.eval(runs_on);
-                        let runs_on = runs_on.as_ref();
+                        let runner = if opts.ignore_runs_on {
+                            None
+                        } else {
+                            let runs_on = matrix.eval(runs_on);
+                            let runs_on = runs_on.as_ref();
 
-                        let os = match runs_on.split_once('-') {
-                            Some(("ubuntu", _)) => Os::Linux,
-                            Some(("windows", _)) => Os::Windows,
-                            Some(("macos", _)) => Os::Mac,
-                            _ => bail!("Unsupported runs-on: {runs_on}"),
+                            let os = match runs_on.split_once('-') {
+                                Some(("ubuntu", _)) => Os::Linux,
+                                Some(("windows", _)) => Os::Windows,
+                                Some(("macos", _)) => Os::Mac,
+                                _ => bail!("Unsupported runs-on: {runs_on}"),
+                            };
+
+                            let runner = RunnerKind::from_os(cx, &os)?;
+                            Some(runner)
                         };
-
-                        let runner = RunnerKind::from_os(cx, &os)?;
 
                         let Some(steps) =
                             job.value.get("steps").and_then(|steps| steps.as_sequence())
@@ -117,7 +136,7 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                             commands.push(RunCommand {
                                 command: command.into(),
                                 args,
-                                runner: Some(runner),
+                                runner,
                                 matrix: if matrix.is_empty() {
                                     None
                                 } else {
@@ -173,7 +192,7 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                 runner.command.env(key, value);
             }
 
-            let name = Optional(runner.name.as_deref());
+            let name = Optional(runner.name);
             let matrix = Optional(run.matrix.as_deref());
             println!(
                 "{}{name}{matrix}: {}",
@@ -222,10 +241,8 @@ impl RunnerKind {
             return Ok(Self::Same);
         }
 
-        if cx.os == Os::Windows && *os == Os::Linux {
-            if cx.system.wsl.first().is_some() {
-                return Ok(Self::Wsl);
-            }
+        if cx.os == Os::Windows && *os == Os::Linux && cx.system.wsl.first().is_some() {
+            return Ok(Self::Wsl);
         }
 
         bail!(
