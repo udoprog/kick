@@ -1,4 +1,6 @@
+use std::collections::BTreeSet;
 use std::ffi::OsString;
+use std::fmt;
 use std::path::Path;
 
 use anyhow::{bail, ensure, Result};
@@ -8,13 +10,13 @@ use crate::config::Os;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::process::Command;
+use crate::workflows::Workflows;
 use crate::wsl::Wsl;
+
+const IGNORE: &[&str] = &["rust"];
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
-    /// Command to run.
-    #[arg(value_name = "command")]
-    command: OsString,
     /// If the specified operating system is different for the repo, execute the
     /// command using a compatibility layer which is appropriate for a supported
     /// operating system.
@@ -33,13 +35,16 @@ pub(crate) struct Opts {
     /// what environments are passed in.
     #[arg(long, short = 'E', value_name = "<key>[=<value>]")]
     env: Vec<String>,
+    /// Run all commands associated with a Github workflows job.
+    #[arg(long)]
+    job: Option<String>,
     /// Arguments to pass to the command to run.
     #[arg(
         trailing_var_arg = true,
         allow_hyphen_values = true,
-        value_name = "args"
+        value_name = "command"
     )]
-    args: Vec<OsString>,
+    command: Vec<OsString>,
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
@@ -55,9 +60,88 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 
 #[tracing::instrument(name = "for", skip_all)]
 fn r#for(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
-    let path = cx.to_path(repo.path());
+    let mut commands = Vec::new();
 
-    let mut runners = Vec::new();
+    let ignore = IGNORE.iter().copied().map(String::from).collect();
+
+    if let Some(to_run) = &opts.job {
+        let workflows = Workflows::new(cx, repo)?;
+
+        for id in workflows.ids() {
+            if let Some(workflow) = workflows.open(id)? {
+                for (job_name, job) in workflow.jobs() {
+                    if job_name != to_run {
+                        continue;
+                    }
+
+                    let runs_on = job.runs_on()?;
+
+                    for matrix in job.matrices(&ignore)? {
+                        let runs_on = matrix.eval(runs_on);
+
+                        let os = match runs_on.as_ref() {
+                            "ubuntu-latest" => Os::Linux,
+                            "windows-latest" => Os::Windows,
+                            "macos-latest" => Os::Mac,
+                            other => bail!("Unsupported runs-on: {other}"),
+                        };
+
+                        let runner = RunnerKind::from_os(cx, &os)?;
+
+                        let Some(steps) =
+                            job.value.get("steps").and_then(|steps| steps.as_sequence())
+                        else {
+                            continue;
+                        };
+
+                        for step in steps {
+                            let Some(step) = step.as_mapping() else {
+                                continue;
+                            };
+
+                            let Some(run) = step.get("run").and_then(|run| run.as_str()) else {
+                                continue;
+                            };
+
+                            let run = matrix.eval(run);
+
+                            let mut it = run.split_whitespace();
+
+                            let Some(command) = it.next() else {
+                                continue;
+                            };
+
+                            let args = it.map(OsString::from).collect::<Vec<_>>();
+
+                            commands.push(RunCommand {
+                                command: command.into(),
+                                args,
+                                runner: Some(runner),
+                                matrix: if matrix.is_empty() {
+                                    None
+                                } else {
+                                    Some(format!("{matrix:?}"))
+                                },
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        let [command, rest @ ..] = &opts.command[..] else {
+            bail!("No command specified");
+        };
+
+        commands.push(RunCommand {
+            command: command.clone(),
+            args: rest.to_vec(),
+            runner: None,
+            matrix: None,
+        });
+    }
+
+    let mut argument_runners = Vec::new();
 
     if opts.first_os || opts.each_os {
         if opts.first_os && opts.each_os {
@@ -67,51 +151,100 @@ fn r#for(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
         let limit = if opts.first_os { 1 } else { usize::MAX };
 
         for os in cx.config.os(repo).into_iter().take(limit) {
-            if cx.os == *os {
-                runners.push(setup_same(&path, opts));
-                continue;
-            }
+            let runner = RunnerKind::from_os(cx, os)?;
+            argument_runners.push(runner);
+        }
+    }
 
-            if cx.os == Os::Windows && *os == Os::Linux {
-                if let Some(wsl) = cx.system.wsl.first() {
-                    runners.push(setup_wsl(&path, wsl, opts));
-                    continue;
+    let path = cx.to_path(repo.path());
+
+    for run in commands {
+        for runner in run.runners(&argument_runners) {
+            let mut runner = runner.build(cx, opts, &path, &run)?;
+
+            for e in &opts.env {
+                if let Some((key, value)) = e.split_once('=') {
+                    runner.command.env(key, value);
                 }
             }
 
-            bail!(
-                "No supported runner for {os:?} on current system {:?}",
-                cx.os
-            );
-        }
-    }
-
-    if runners.is_empty() {
-        runners.push(setup_same(&path, opts));
-    }
-
-    for mut runner in runners {
-        for e in &opts.env {
-            if let Some((key, value)) = e.split_once('=') {
+            if let Some((key, value)) = runner.extra_env {
                 runner.command.env(key, value);
             }
-        }
 
-        if let Some((key, value)) = runner.extra_env {
-            runner.command.env(key, value);
-        }
+            let name = Optional(runner.name.as_deref());
+            let matrix = Optional(run.matrix.as_deref());
+            println!(
+                "{}{name}{matrix}: {}",
+                path.display(),
+                runner.command.display()
+            );
 
-        if let Some(name) = runner.name {
-            println!("{} ({name}):", path.display());
-        } else {
-            println!("{}:", path.display());
+            let status = runner.command.status()?;
+            ensure!(status.success(), status);
         }
-
-        let status = runner.command.status()?;
-        ensure!(status.success(), status);
     }
 
     Ok(())
+}
+
+struct RunCommand {
+    command: OsString,
+    args: Vec<OsString>,
+    runner: Option<RunnerKind>,
+    matrix: Option<String>,
+}
+
+impl RunCommand {
+    fn runners(&self, opts: &[RunnerKind]) -> BTreeSet<RunnerKind> {
+        let mut set = BTreeSet::new();
+        set.extend(opts.iter().copied());
+        set.extend(self.runner);
+
+        if set.is_empty() {
+            set.insert(RunnerKind::Same);
+        }
+
+        set
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum RunnerKind {
+    Same,
+    Wsl,
+}
+
+impl RunnerKind {
+    fn from_os(cx: &Ctxt<'_>, os: &Os) -> Result<Self> {
+        if cx.os == *os {
+            return Ok(Self::Same);
+        }
+
+        if cx.os == Os::Windows && *os == Os::Linux {
+            if cx.system.wsl.first().is_some() {
+                return Ok(Self::Wsl);
+            }
+        }
+
+        bail!(
+            "No supported runner for {os:?} on current system {:?}",
+            cx.os
+        );
+    }
+
+    fn build(&self, cx: &Ctxt, opts: &Opts, path: &Path, command: &RunCommand) -> Result<Runner> {
+        match *self {
+            Self::Same => Ok(setup_same(path, command)),
+            Self::Wsl => {
+                let Some(wsl) = cx.system.wsl.first() else {
+                    bail!("No WSL available");
+                };
+
+                Ok(setup_wsl(path, wsl, opts, command))
+            }
+        }
+    }
 }
 
 struct Runner {
@@ -130,17 +263,17 @@ impl Runner {
     }
 }
 
-fn setup_same(path: &Path, opts: &Opts) -> Runner {
-    let mut command = Command::new(&opts.command);
-    command.args(&opts.args);
-    command.current_dir(path);
-    Runner::new(command)
+fn setup_same(path: &Path, run: &RunCommand) -> Runner {
+    let mut c = Command::new(&run.command);
+    c.args(&run.args);
+    c.current_dir(path);
+    Runner::new(c)
 }
 
-fn setup_wsl(path: &Path, wsl: &Wsl, opts: &Opts) -> Runner {
-    let mut command = wsl.shell(path);
-    command.arg(&opts.command);
-    command.args(&opts.args);
+fn setup_wsl(path: &Path, wsl: &Wsl, opts: &Opts, run: &RunCommand) -> Runner {
+    let mut c = wsl.shell(path);
+    c.arg(&run.command);
+    c.args(&run.args);
 
     let mut wslenv = String::new();
 
@@ -156,8 +289,23 @@ fn setup_wsl(path: &Path, wsl: &Wsl, opts: &Opts) -> Runner {
         }
     }
 
-    let mut runner = Runner::new(command);
+    let mut runner = Runner::new(c);
     runner.name = Some("WSL");
     runner.extra_env = Some(("WSLENV", wslenv));
     runner
+}
+
+struct Optional<T>(Option<T>);
+
+impl<T> fmt::Display for Optional<T>
+where
+    T: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(value) = &self.0 {
+            write!(f, " {}", value)?;
+        }
+
+        Ok(())
+    }
 }
