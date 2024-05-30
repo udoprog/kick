@@ -206,10 +206,6 @@ impl fmt::Display for Display<'_> {
             f.write_str(arg.to_string_lossy().as_ref())?;
         }
 
-        if let Some(dir) = &self.inner.current_dir {
-            write!(f, " (in {})", dir.display())?;
-        }
-
         Ok(())
     }
 }

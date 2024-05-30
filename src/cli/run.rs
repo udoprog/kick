@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsString;
 use std::fmt;
 use std::path::Path;
@@ -66,7 +66,7 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 
 #[tracing::instrument(skip_all)]
 fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
-    let mut commands = Vec::new();
+    let mut batches = Vec::new();
 
     let mut ignore = HashSet::new();
 
@@ -110,10 +110,30 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                             continue;
                         };
 
+                        let mut commands = Vec::new();
+
                         for step in steps {
                             let Some(step) = step.as_mapping() else {
                                 continue;
                             };
+
+                            let mut skipped = false;
+
+                            if let Some(expr) = step.get("if").and_then(|v| v.as_str()) {
+                                skipped = !matrix.test(expr)?;
+                            }
+
+                            let mut env = BTreeMap::new();
+
+                            if let Some(m) = step.get("env").and_then(|v| v.as_mapping()) {
+                                for (key, value) in m {
+                                    let Some(value) = value.as_str() else {
+                                        continue;
+                                    };
+
+                                    env.insert(key.to_string(), value.to_string());
+                                }
+                            }
 
                             if let Some(rust_version) = extract_rust_version(&step, &matrix) {
                                 commands.push(RunCommand {
@@ -122,12 +142,8 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                                         OsString::from("default"),
                                         OsString::from(rust_version.as_ref()),
                                     ],
-                                    runner,
-                                    matrix: if matrix.is_empty() {
-                                        None
-                                    } else {
-                                        Some(format!("{matrix:?}"))
-                                    },
+                                    env: BTreeMap::new(),
+                                    skipped,
                                 });
                             }
 
@@ -145,15 +161,21 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                                 commands.push(RunCommand {
                                     command: command.into(),
                                     args,
-                                    runner,
-                                    matrix: if matrix.is_empty() {
-                                        None
-                                    } else {
-                                        Some(format!("{matrix:?}"))
-                                    },
+                                    env,
+                                    skipped,
                                 });
                             }
                         }
+
+                        batches.push(CommandBatch {
+                            commands,
+                            runner,
+                            matrix: if matrix.is_empty() {
+                                None
+                            } else {
+                                Some(format!("{matrix:?}"))
+                            },
+                        })
                     }
                 }
             }
@@ -163,9 +185,13 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
             bail!("No command specified");
         };
 
-        commands.push(RunCommand {
-            command: command.clone(),
-            args: rest.to_vec(),
+        batches.push(CommandBatch {
+            commands: vec![RunCommand {
+                command: command.clone(),
+                args: rest.to_vec(),
+                env: BTreeMap::new(),
+                skipped: false,
+            }],
             runner: None,
             matrix: None,
         });
@@ -188,30 +214,40 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
     let path = cx.to_path(repo.path());
 
-    for run in commands {
-        for runner in run.runners(&argument_runners) {
-            let mut runner = runner.build(cx, opts, &path, &run)?;
+    for batch in batches {
+        for runner in batch.runners(&argument_runners) {
+            {
+                let path = path.display();
+                let name = Optional(runner.name());
+                let matrix = Optional(batch.matrix.as_deref());
+                println!("{path}:{name}{matrix}");
+            }
 
-            for e in &opts.env {
-                if let Some((key, value)) = e.split_once('=') {
+            for run in &batch.commands {
+                let mut runner = runner.build(cx, opts, &path, run)?;
+
+                for e in &opts.env {
+                    if let Some((key, value)) = e.split_once('=') {
+                        runner.command.env(key, value);
+                    }
+                }
+
+                if let Some((key, value)) = runner.extra_env {
                     runner.command.env(key, value);
                 }
+
+                for (key, value) in &run.env {
+                    runner.command.env(key, value);
+                }
+
+                let skipped = Optional(if run.skipped { Some("(skipped)") } else { None });
+                println!(">> {}{skipped}", runner.command.display());
+
+                if !run.skipped {
+                    let status = runner.command.status()?;
+                    ensure!(status.success(), status);
+                }
             }
-
-            if let Some((key, value)) = runner.extra_env {
-                runner.command.env(key, value);
-            }
-
-            let name = Optional(runner.name);
-            let matrix = Optional(run.matrix.as_deref());
-            println!(
-                "{}{name}{matrix}: {}",
-                path.display(),
-                runner.command.display()
-            );
-
-            let status = runner.command.status()?;
-            ensure!(status.success(), status);
         }
     }
 
@@ -238,14 +274,13 @@ fn extract_rust_version<'a>(step: &Mapping<'a>, matrix: &Matrix) -> Option<Cow<'
     Some(matrix.eval(toolchain))
 }
 
-struct RunCommand {
-    command: OsString,
-    args: Vec<OsString>,
+struct CommandBatch {
+    commands: Vec<RunCommand>,
     runner: Option<RunnerKind>,
     matrix: Option<String>,
 }
 
-impl RunCommand {
+impl CommandBatch {
     fn runners(&self, opts: &[RunnerKind]) -> BTreeSet<RunnerKind> {
         let mut set = BTreeSet::new();
         set.extend(opts.iter().copied());
@@ -257,6 +292,13 @@ impl RunCommand {
 
         set
     }
+}
+
+struct RunCommand {
+    command: OsString,
+    args: Vec<OsString>,
+    env: BTreeMap<String, String>,
+    skipped: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -293,11 +335,17 @@ impl RunnerKind {
             }
         }
     }
+
+    fn name(&self) -> Option<&str> {
+        match *self {
+            Self::Same => None,
+            Self::Wsl => Some("WSL"),
+        }
+    }
 }
 
 struct Runner {
     command: Command,
-    name: Option<&'static str>,
     extra_env: Option<(&'static str, String)>,
 }
 
@@ -305,7 +353,6 @@ impl Runner {
     fn new(command: Command) -> Self {
         Self {
             command,
-            name: None,
             extra_env: None,
         }
     }
@@ -325,7 +372,7 @@ fn setup_wsl(path: &Path, wsl: &Wsl, opts: &Opts, run: &RunCommand) -> Runner {
 
     let mut wslenv = String::new();
 
-    for e in &opts.env {
+    for e in opts.env.iter().chain(run.env.keys()) {
         if !wslenv.is_empty() {
             wslenv.push(':');
         }
@@ -338,7 +385,6 @@ fn setup_wsl(path: &Path, wsl: &Wsl, opts: &Opts, run: &RunCommand) -> Runner {
     }
 
     let mut runner = Runner::new(c);
-    runner.name = Some("WSL");
     runner.extra_env = Some(("WSLENV", wslenv));
     runner
 }
