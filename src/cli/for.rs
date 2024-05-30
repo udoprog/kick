@@ -31,7 +31,7 @@ pub(crate) struct Opts {
     ///
     /// For WSL, this constructs the WSLENV environment variable, which dictates
     /// what environments are passed in.
-    #[arg(long, value_name = "<key>[=<value>]")]
+    #[arg(long, short = 'E', value_name = "<key>[=<value>]")]
     env: Vec<String>,
     /// Arguments to pass to the command to run.
     #[arg(

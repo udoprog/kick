@@ -1,12 +1,10 @@
 use std::collections::{BTreeSet, HashSet};
 use std::fmt;
-use std::fs;
 use std::mem::take;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use bstr::BStr;
 use nondestructive::yaml::{self, Id, Mapping};
-use relative_path::RelativePath;
 
 use crate::actions::{self, Actions};
 use crate::cargo::{Package, RustVersion};
@@ -16,10 +14,11 @@ use crate::ctxt::Ctxt;
 use crate::edits;
 use crate::keys::Keys;
 use crate::model::Repo;
+use crate::workflows::{Workflow, Workflows};
 use crate::workspace::Crates;
 
 pub(crate) struct Ci<'a> {
-    path: &'a RelativePath,
+    workflows: &'a Workflows<'a>,
     actions: Actions<'a>,
     repo: &'a Repo,
     package: &'a Package<'a>,
@@ -69,8 +68,6 @@ enum CargoFeatures {
 
 /// Build ci change.
 pub(crate) fn build(cx: &Ctxt<'_>, package: &Package, repo: &Repo, crates: &Crates) -> Result<()> {
-    let path = repo.path().join(".github").join("workflows");
-
     let mut actions = Actions::default();
 
     for latest in cx.config.action_latest(repo) {
@@ -86,10 +83,10 @@ pub(crate) fn build(cx: &Ctxt<'_>, package: &Package, repo: &Repo, crates: &Crat
         &actions::ActionsRsToolchainActionsCheck,
     );
 
-    let mut ids = list_workflow_ids(cx, &path)?;
+    let workflows = Workflows::new(cx, repo)?;
 
     let mut ci = Ci {
-        path: &path,
+        workflows: &workflows,
         actions,
         repo,
         package,
@@ -98,8 +95,10 @@ pub(crate) fn build(cx: &Ctxt<'_>, package: &Package, repo: &Repo, crates: &Crat
         errors: Vec::new(),
     };
 
+    let mut ids = workflows.ids().collect::<BTreeSet<_>>();
+
     for (id, config) in cx.config.workflows(ci.repo)? {
-        ids.remove(&id);
+        ids.remove(id.as_str());
         validate_workflow(cx, &mut ci, &id, &config)?;
     }
 
@@ -110,24 +109,6 @@ pub(crate) fn build(cx: &Ctxt<'_>, package: &Package, repo: &Repo, crates: &Crat
     }
 
     Ok(())
-}
-
-/// List existing workflow identifiers.
-fn list_workflow_ids(cx: &Ctxt<'_>, path: &RelativePath) -> Result<BTreeSet<String>> {
-    let mut ids = BTreeSet::new();
-
-    let path = cx.to_path(path);
-
-    for e in fs::read_dir(&path).with_context(|| path.display().to_string())? {
-        let entry = e.with_context(|| path.display().to_string())?;
-        let path = entry.path();
-
-        if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
-            ids.insert(id.to_owned());
-        }
-    }
-
-    Ok(ids)
 }
 
 /// Validate the current model.
@@ -141,38 +122,44 @@ fn validate_workflow(
         return Ok(());
     }
 
-    let path = ci.path.join(format!("{id}.yml"));
-
-    if !cx.to_path(&path).is_file() {
+    let Some(w) = ci.workflows.open(id)? else {
         cx.change(Change::MissingWorkflow {
             id: id.to_owned(),
-            path,
+            path: ci.workflows.path(id),
             repo: (**ci.repo).clone(),
         });
 
         return Ok(());
-    }
+    };
 
-    let bytes = std::fs::read(cx.to_path(&path))?;
-    let value = yaml::from_slice(bytes).with_context(|| anyhow!("{path}"))?;
-
-    let name = value
+    let name = w
+        .doc
         .as_ref()
         .as_mapping()
         .and_then(|m| m.get("name")?.as_str())
-        .ok_or_else(|| anyhow!("{path}: missing .name"))?;
+        .ok_or_else(|| anyhow!("{}: missing .name", w.path))?;
 
     if let Some(expected) = &config.name {
         if name != expected {
             cx.warning(Warning::WrongWorkflowName {
-                path: path.clone(),
+                path: w.path.clone(),
                 actual: name.to_owned(),
                 expected: expected.clone(),
             });
         }
     }
 
-    validate_jobs(cx, ci, &path, &value, config)?;
+    validate_jobs(cx, ci, &w, config)?;
+
+    if !ci.edits.is_empty() || !ci.errors.is_empty() {
+        cx.change(Change::BadWorkflow {
+            path: ci.workflows.path(id),
+            doc: w.doc.clone(),
+            edits: take(&mut ci.edits),
+            errors: take(&mut ci.errors),
+        });
+    }
+
     Ok(())
 }
 
@@ -180,16 +167,15 @@ fn validate_workflow(
 fn validate_jobs(
     cx: &Ctxt<'_>,
     ci: &mut Ci<'_>,
-    path: &RelativePath,
-    doc: &yaml::Document,
+    w: &Workflow<'_>,
     config: &WorkflowConfig,
 ) -> Result<()> {
-    let Some(table) = doc.as_ref().as_mapping() else {
+    let Some(table) = w.doc.as_ref().as_mapping() else {
         return Ok(());
     };
 
     if let Some(value) = table.get("on") {
-        validate_on(cx, ci, doc, value, path, config);
+        validate_on(cx, ci, w, config, value);
     }
 
     if let Some(jobs) = table.get("jobs").and_then(|v| v.as_mapping()) {
@@ -202,18 +188,9 @@ fn validate_jobs(
             check_actions(ci, job_name, &job)?;
 
             if ci.crates.is_single_crate() {
-                verify_single_project_build(cx, ci, path, job)?;
+                verify_single_project_build(cx, ci, w, job)?;
             }
         }
-    }
-
-    if !ci.edits.is_empty() || !ci.errors.is_empty() {
-        cx.change(Change::BadWorkflow {
-            path: path.to_owned(),
-            doc: doc.clone(),
-            edits: take(&mut ci.edits),
-            errors: take(&mut ci.errors),
-        });
     }
 
     Ok(())
@@ -402,19 +379,18 @@ fn check_strategy_rust_version(ci: &mut Ci, job_name: &BStr, job: &yaml::Mapping
 fn validate_on(
     cx: &Ctxt<'_>,
     ci: &mut Ci<'_>,
-    doc: &yaml::Document,
-    value: yaml::Value<'_>,
-    path: &RelativePath,
+    w: &Workflow<'_>,
     config: &WorkflowConfig,
+    value: yaml::Value<'_>,
 ) {
     let mut keys = Keys::default();
 
     let Some(m) = value.as_mapping() else {
         cx.warning(Warning::ActionMissingKey {
-            path: path.to_owned(),
+            path: w.path.clone(),
             key: Box::from("on"),
             expected: ActionExpected::Mapping,
-            doc: doc.clone(),
+            doc: w.doc.clone(),
             actual: Some(value.id()),
         });
 
@@ -454,7 +430,7 @@ fn validate_on(
     if let Some(m) = m.get("pull_request").and_then(|v| v.as_mapping()) {
         if !m.is_empty() {
             cx.warning(Warning::ActionExpectedEmptyMapping {
-                path: path.to_owned(),
+                path: w.path.clone(),
                 key: Box::from("on.pull_request"),
             });
         }
@@ -468,7 +444,7 @@ fn validate_on(
 fn verify_single_project_build(
     cx: &Ctxt<'_>,
     ci: &mut Ci<'_>,
-    path: &RelativePath,
+    w: &Workflow<'_>,
     job: yaml::Mapping<'_>,
 ) -> Result<()> {
     let mut cargo_combos = Vec::new();
@@ -487,7 +463,7 @@ fn verify_single_project_build(
             if let RunIdentity::Cargo(cargo) = identity {
                 for feature in &cargo.missing_features {
                     cx.warning(Warning::MissingFeature {
-                        path: path.to_owned(),
+                        path: w.path.clone(),
                         feature: feature.clone(),
                     });
                 }
@@ -504,12 +480,12 @@ fn verify_single_project_build(
             for build in &cargo_combos {
                 if !matches!(build.features, CargoFeatures::Default) {
                     cx.warning(Warning::NoFeatures {
-                        path: path.to_owned(),
+                        path: w.path.clone(),
                     });
                 }
             }
         } else {
-            ensure_feature_combo(cx, path, &cargo_combos);
+            ensure_feature_combo(cx, w, &cargo_combos);
         }
     }
 
@@ -517,7 +493,7 @@ fn verify_single_project_build(
 }
 
 /// Ensure that feature combination is valid.
-fn ensure_feature_combo(cx: &Ctxt<'_>, path: &RelativePath, cargos: &[Cargo]) -> bool {
+fn ensure_feature_combo(cx: &Ctxt<'_>, w: &Workflow, cargos: &[Cargo]) -> bool {
     let mut all_features = false;
     let mut empty_features = false;
 
@@ -537,13 +513,13 @@ fn ensure_feature_combo(cx: &Ctxt<'_>, path: &RelativePath, cargos: &[Cargo]) ->
 
     if !empty_features {
         cx.warning(Warning::MissingEmptyFeatures {
-            path: path.to_owned(),
+            path: w.path.clone(),
         });
     }
 
     if !all_features {
         cx.warning(Warning::MissingAllFeatures {
-            path: path.to_owned(),
+            path: w.path.clone(),
         });
     }
 
