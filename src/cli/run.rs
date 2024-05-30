@@ -1,7 +1,9 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
+use std::io::Write;
 use std::path::Path;
+use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 use anyhow::{bail, ensure, Result};
 use clap::{Parser, ValueEnum};
@@ -14,13 +16,6 @@ use crate::model::Repo;
 use crate::process::Command;
 use crate::system::Wsl;
 use crate::workflows::{Eval, Workflows};
-
-#[derive(Default, Debug, Clone, Copy, ValueEnum)]
-enum Flavor {
-    #[default]
-    Sh,
-    Powershell,
-}
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -57,9 +52,12 @@ pub(crate) struct Opts {
     /// Don't actually run any commands, just print what would be done.
     #[arg(long)]
     dry_run: bool,
-    /// Shell flavor for verbose output.
+    /// Shell flavor to use for local shell.
+    ///
+    /// By default this is `bash` for unix-like environments and `powershell`
+    /// for windows.
     #[arg(long, value_name = "<lavor")]
-    flavor: Option<Flavor>,
+    flavor: Option<ShellFlavor>,
     /// Arguments to pass to the command to run.
     #[arg(
         trailing_var_arg = true,
@@ -70,18 +68,28 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
+    let mut o = StandardStream::stdout(ColorChoice::Auto);
+
+    let colors = Colors::new();
+
     with_repos!(
         cx,
         "run commands",
         format_args!("for: {opts:?}"),
-        |cx, repo| { run(cx, repo, opts) }
+        |cx, repo| { run(&mut o, &colors, cx, repo, opts) }
     );
 
     Ok(())
 }
 
 #[tracing::instrument(skip_all)]
-fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
+fn run(
+    o: &mut StandardStream,
+    colors: &Colors,
+    cx: &Ctxt<'_>,
+    repo: &Repo,
+    opts: &Opts,
+) -> Result<()> {
     let mut batches = Vec::new();
 
     let mut ignore = HashSet::new();
@@ -157,10 +165,12 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                                     None => None,
                                 };
 
-                            let mut skipped = false;
+                            let mut skipped = None;
 
                             if let Some(expr) = step.get("if").and_then(|v| v.as_str()) {
-                                skipped = !eval.test(expr)?;
+                                if !eval.test(expr)? {
+                                    skipped = Some(expr.to_owned());
+                                }
                             }
 
                             if let Some(rust_toolchain) = rust_toolchain(&step, &eval)? {
@@ -200,7 +210,7 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                                             args,
                                         },
                                         env: BTreeMap::new(),
-                                        skipped,
+                                        skipped: skipped.clone(),
                                         working_directory: None,
                                     });
                                 }
@@ -215,7 +225,7 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                                         ],
                                     },
                                     env: BTreeMap::new(),
-                                    skipped,
+                                    skipped: skipped.clone(),
                                     working_directory: None,
                                 });
                             }
@@ -264,7 +274,7 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                     args: rest.to_vec(),
                 },
                 env: BTreeMap::new(),
-                skipped: false,
+                skipped: None,
                 working_directory: None,
             }],
             runner: None,
@@ -295,9 +305,9 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
         for runner in batch.runners(&argument_runners) {
             let name = Opt(" ", runner.name(), "");
             let matrix = Opt(" ", batch.matrix.as_deref(), "");
-            println!("# {}:{name}{matrix}", path.display());
+            writeln!(o, "# in {}{name}{matrix} ", path.display())?;
 
-            for run in &batch.commands {
+            for (index, run) in batch.commands.iter().enumerate() {
                 let modified;
 
                 let path = match &run.working_directory {
@@ -326,49 +336,99 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                     }
                 }
 
-                let skipped = Opt(" ", run.skipped.then_some(" (skipped)"), "");
+                let color = if run.skipped.is_some() {
+                    &colors.skipped
+                } else {
+                    &colors.run
+                };
+
+                o.set_color(&colors.title)?;
+
+                let mut print_command = opts.verbose || opts.dry_run;
+
+                let mut printed = false;
 
                 if let Some(name) = &run.name {
-                    println!("# {name}{skipped}");
+                    write!(o, "# {name}")?;
+                    printed = true;
+                } else if batch.commands.len() > 1 {
+                    write!(o, "# Step {} / {}", index + 1, batch.commands.len())?;
+                    printed = true;
                 } else {
-                    println!("# {}{skipped}", runner.command.display());
+                    print_command = true;
                 }
 
-                if opts.verbose || opts.dry_run {
+                o.reset()?;
+
+                if let Some(skipped) = &run.skipped {
+                    o.set_color(&colors.skip_cond)?;
+
+                    if printed {
+                        writeln!(o, " (Disabled: {skipped})")?;
+                    } else {
+                        writeln!(o, "# Disabled: {skipped}")?;
+                    }
+
+                    o.reset()?;
+                } else if printed {
+                    writeln!(o)?;
+                }
+
+                if print_command {
                     match &flavor {
-                        Flavor::Sh => {
+                        ShellFlavor::Sh => {
+                            o.set_color(&colors.env)?;
+
                             for (key, value) in &runner.command.env {
-                                println!(
-                                    r#"export {}="{}""#,
+                                write!(
+                                    o,
+                                    r#"{}="{}" "#,
                                     key.to_string_lossy(),
                                     value.to_string_lossy()
-                                );
+                                )?;
                             }
 
-                            println!("{}", runner.command.display());
+                            o.reset()?;
+
+                            o.set_color(color)?;
+                            write!(o, "{}", runner.command.display())?;
+                            o.reset()?;
+
+                            writeln!(o)?;
                         }
-                        Flavor::Powershell => {
+                        ShellFlavor::Powershell => {
                             if !runner.command.env.is_empty() {
-                                println!("powershell -Command {{");
+                                write!(o, "powershell -Command {{")?;
+
+                                o.set_color(&colors.env)?;
 
                                 for (key, value) in &runner.command.env {
-                                    println!(
-                                        r#"  $env:{}="{}";"#,
+                                    write!(
+                                        o,
+                                        r#" $env:{}="{}";"#,
                                         key.to_string_lossy(),
                                         value.to_string_lossy()
-                                    );
+                                    )?;
                                 }
 
-                                println!("  {}", runner.command.display());
-                                println!("}}");
+                                o.reset()?;
+
+                                o.set_color(color)?;
+                                write!(o, " {} ", runner.command.display())?;
+                                o.reset()?;
+
+                                writeln!(o, "}}")?;
                             } else {
-                                println!("{}", runner.command.display());
+                                o.set_color(color)?;
+                                write!(o, "{}", runner.command.display())?;
+                                o.reset()?;
+                                writeln!(o)?;
                             }
                         }
                     }
                 }
 
-                if !run.skipped && !opts.dry_run {
+                if run.skipped.is_none() && !opts.dry_run {
                     let status = runner.command.status()?;
                     ensure!(status.success(), status);
                 }
@@ -379,10 +439,10 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     Ok(())
 }
 
-fn default_flavor(os: &Os) -> Flavor {
+fn default_flavor(os: &Os) -> ShellFlavor {
     match os {
-        Os::Windows => Flavor::Powershell,
-        _ => Flavor::Sh,
+        Os::Windows => ShellFlavor::Powershell,
+        _ => ShellFlavor::Sh,
     }
 }
 
@@ -479,6 +539,13 @@ impl CommandBatch {
     }
 }
 
+#[derive(Default, Debug, Clone, Copy, ValueEnum)]
+enum ShellFlavor {
+    #[default]
+    Sh,
+    Powershell,
+}
+
 enum Run {
     Shell { script: String },
     Command { command: String, args: Vec<String> },
@@ -488,7 +555,7 @@ struct RunCommand {
     name: Option<String>,
     run: Run,
     env: BTreeMap<String, String>,
-    skipped: bool,
+    skipped: Option<String>,
     working_directory: Option<RelativePathBuf>,
 }
 
@@ -628,5 +695,41 @@ where
         }
 
         Ok(())
+    }
+}
+
+struct Colors {
+    skipped: ColorSpec,
+    skip_cond: ColorSpec,
+    run: ColorSpec,
+    title: ColorSpec,
+    env: ColorSpec,
+}
+
+impl Colors {
+    fn new() -> Self {
+        let mut skipped = ColorSpec::new();
+        skipped.set_fg(Some(Color::Red));
+
+        let mut skip_cond = ColorSpec::new();
+        skip_cond.set_fg(Some(Color::Red));
+        skip_cond.set_bold(true);
+
+        let mut run = ColorSpec::new();
+        run.set_fg(Some(Color::Green));
+
+        let mut title = ColorSpec::new();
+        title.set_fg(Some(Color::White));
+
+        let mut env = ColorSpec::new();
+        env.set_fg(Some(Color::Yellow));
+
+        Self {
+            skipped,
+            skip_cond,
+            run,
+            title,
+            env,
+        }
     }
 }

@@ -41,6 +41,7 @@ serde_yaml = "0.9.21"
 syntree = "0.14.5"
 tar = "0.4.40"
 tempfile = "3.5.0"
+termcolor = "1.4.1"
 thiserror = "1.0.40"
 time = "0.3.30"
 tokio = { version = "1.27.0", features = ["full"] }
