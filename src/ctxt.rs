@@ -6,12 +6,11 @@ use std::process::{ExitCode, Stdio};
 use anyhow::{anyhow, Context, Result};
 use relative_path::RelativePath;
 
-use super::system::System;
+use super::system::{Git, System};
 use crate::cargo::{self, Package, RustVersion};
 use crate::changes::{Change, Warning};
 use crate::config::{Config, Os};
 use crate::env::Env;
-use crate::git::Git;
 use crate::model::{RenderRustVersions, Repo, RepoParams, RepoRef, State};
 use crate::octokit;
 use crate::process::Command;

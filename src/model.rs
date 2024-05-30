@@ -13,8 +13,8 @@ use url::Url;
 
 use crate::cargo::RustVersion;
 use crate::ctxt::Ctxt;
-use crate::git::Git;
 use crate::gitmodules;
+use crate::system::Git;
 use crate::workspace::Crates;
 
 /// Parameters particular to a given package.

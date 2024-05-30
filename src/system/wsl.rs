@@ -30,7 +30,7 @@ impl Wsl {
     }
 }
 
-pub(crate) fn version(path: &OsStr) -> Result<Option<ExitStatus>> {
+pub(crate) fn test(path: &OsStr) -> Result<Option<ExitStatus>> {
     match std::process::Command::new(path)
         .arg("--version")
         .stdout(Stdio::null())
@@ -39,6 +39,6 @@ pub(crate) fn version(path: &OsStr) -> Result<Option<ExitStatus>> {
     {
         Ok(status) => Ok(Some(status)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).context("docker --version"),
+        Err(e) => Err(e).context("wsl --version"),
     }
 }

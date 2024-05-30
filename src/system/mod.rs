@@ -1,3 +1,7 @@
+mod git;
+mod powershell;
+mod wsl;
+
 use std::env;
 use std::env::consts::EXE_EXTENSION;
 use std::ffi::OsStr;
@@ -6,14 +10,16 @@ use std::process::ExitStatus;
 
 use anyhow::Result;
 
-use super::git;
-use super::wsl;
+pub(crate) use self::git::Git;
+pub(crate) use self::powershell::PowerShell;
+pub(crate) use self::wsl::Wsl;
 
 /// Detect system commands.
 #[derive(Default)]
 pub(crate) struct System {
-    pub(crate) git: Vec<git::Git>,
-    pub(crate) wsl: Vec<wsl::Wsl>,
+    pub(crate) git: Vec<Git>,
+    pub(crate) wsl: Vec<Wsl>,
+    pub(crate) powershell: Vec<PowerShell>,
 }
 
 /// Detect everything useful we can find in the environment.
@@ -23,25 +29,26 @@ pub(crate) fn detect() -> Result<System> {
     if let Some(path) = env::var_os("GIT_PATH") {
         let path = PathBuf::from(path);
 
-        if let Some(status) = git::version(path.as_os_str())? {
+        if let Some(status) = git::test(path.as_os_str())? {
             if status.success() {
-                system.git.push(git::Git::new(path));
+                system.git.push(Git::new(path));
             }
         }
     }
 
-    let add_git =
-        |system: &mut System, path: &Path| system.git.push(git::Git::new(path.to_owned()));
-    let add_wsl =
-        |system: &mut System, path: &Path| system.wsl.push(wsl::Wsl::new(path.to_owned()));
+    let git = |s: &mut System, path: &Path| s.git.push(Git::new(path.to_owned()));
+    let wsl = |s: &mut System, path: &Path| s.wsl.push(Wsl::new(path.to_owned()));
+    let powershell =
+        |s: &mut System, path: &Path| s.powershell.push(PowerShell::new(path.to_owned()));
 
     let tests: &[(
         &str,
         fn(&OsStr) -> Result<Option<ExitStatus>>,
         fn(&mut System, &Path),
     )] = &[
-        ("git", git::version, add_git),
-        ("wsl", wsl::version, add_wsl),
+        ("git", git::test, git),
+        ("wsl", wsl::test, wsl),
+        ("powershell", powershell::test, powershell),
     ];
 
     if let Some(path) = env::var_os("PATH") {

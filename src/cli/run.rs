@@ -12,8 +12,8 @@ use crate::config::Os;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::process::Command;
+use crate::system::Wsl;
 use crate::workflows::{Eval, Workflows};
-use crate::wsl::Wsl;
 
 #[derive(Default, Debug, Clone, Copy, ValueEnum)]
 enum Flavor {
@@ -54,6 +54,9 @@ pub(crate) struct Opts {
     /// Print verbose information about the command being run.
     #[arg(long)]
     verbose: bool,
+    /// Don't actually run any commands, just print what would be done.
+    #[arg(long)]
+    dry_run: bool,
     /// Shell flavor for verbose output.
     #[arg(long, value_name = "<lavor")]
     flavor: Option<Flavor>,
@@ -129,26 +132,22 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
                         let mut commands = Vec::new();
 
+                        let mut env = env.clone();
+                        env.extend(extract_env(&eval, &job.value)?);
+
+                        // Update environment.
+                        let eval = Eval::new(&env, eval.matrix);
+
                         for step in steps {
                             let Some(step) = step.as_mapping() else {
                                 continue;
                             };
 
                             let mut env = env.clone();
-
-                            if let Some(m) = step.get("env").and_then(|v| v.as_mapping()) {
-                                for (key, value) in m {
-                                    let Some(value) = value.as_str() else {
-                                        continue;
-                                    };
-
-                                    let value = eval.eval(value)?;
-                                    env.insert(key.to_string(), value.into_owned());
-                                }
-                            }
+                            env.extend(extract_env(&eval, &step)?);
 
                             // Update environment.
-                            let eval = Eval::new(&env, &matrix);
+                            let eval = Eval::new(&env, eval.matrix);
 
                             let working_directory =
                                 match step.get("working-directory").and_then(|v| v.as_str()) {
@@ -296,7 +295,7 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
         for runner in batch.runners(&argument_runners) {
             let name = Opt(" ", runner.name(), "");
             let matrix = Opt(" ", batch.matrix.as_deref(), "");
-            println!("{}:{name}{matrix}", path.display());
+            println!("# {}:{name}{matrix}", path.display());
 
             for run in &batch.commands {
                 let modified;
@@ -322,7 +321,9 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                 }
 
                 if let Some((key, value)) = runner.extra_env {
-                    runner.command.env(key, value);
+                    if !value.is_empty() {
+                        runner.command.env(key, value);
+                    }
                 }
 
                 let skipped = Opt(" ", run.skipped.then_some(" (skipped)"), "");
@@ -333,7 +334,7 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                     println!("# {}{skipped}", runner.command.display());
                 }
 
-                if opts.verbose {
+                if opts.verbose || opts.dry_run {
                     match &flavor {
                         Flavor::Sh => {
                             for (key, value) in &runner.command.env {
@@ -343,22 +344,31 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                                     value.to_string_lossy()
                                 );
                             }
+
+                            println!("{}", runner.command.display());
                         }
                         Flavor::Powershell => {
-                            for (key, value) in &runner.command.env {
-                                println!(
-                                    r#"$env:{}="{}""#,
-                                    key.to_string_lossy(),
-                                    value.to_string_lossy()
-                                );
+                            if !runner.command.env.is_empty() {
+                                println!("powershell -Command {{");
+
+                                for (key, value) in &runner.command.env {
+                                    println!(
+                                        r#"  $env:{}="{}";"#,
+                                        key.to_string_lossy(),
+                                        value.to_string_lossy()
+                                    );
+                                }
+
+                                println!("  {}", runner.command.display());
+                                println!("}}");
+                            } else {
+                                println!("{}", runner.command.display());
                             }
                         }
                     }
-
-                    println!("{}", runner.command.display());
                 }
 
-                if !run.skipped {
+                if !run.skipped && !opts.dry_run {
                     let status = runner.command.status()?;
                     ensure!(status.success(), status);
                 }
@@ -430,6 +440,25 @@ fn extract_with<'a>(
     Ok(Some(eval.eval(components)?))
 }
 
+fn extract_env(eval: &Eval<'_>, m: &Mapping<'_>) -> Result<BTreeMap<String, String>> {
+    let mut env = BTreeMap::new();
+
+    let Some(m) = m.get("env").and_then(|v| v.as_mapping()) else {
+        return Ok(env);
+    };
+
+    for (key, value) in m {
+        let Some(value) = value.as_str() else {
+            continue;
+        };
+
+        let value = eval.eval(value)?;
+        env.insert(key.to_string(), value.into_owned());
+    }
+
+    Ok(env)
+}
+
 struct CommandBatch {
     commands: Vec<RunCommand>,
     runner: Option<RunnerKind>,
@@ -487,7 +516,7 @@ impl RunnerKind {
 
     fn build(&self, cx: &Ctxt, opts: &Opts, path: &Path, command: &RunCommand) -> Result<Runner> {
         match *self {
-            Self::Same => setup_same(path, command, &cx.os),
+            Self::Same => setup_same(cx, path, command, &cx.os),
             Self::Wsl => {
                 let Some(wsl) = cx.system.wsl.first() else {
                     bail!("No WSL available");
@@ -520,14 +549,15 @@ impl Runner {
     }
 }
 
-fn setup_same(path: &Path, run: &RunCommand, os: &Os) -> Result<Runner> {
+fn setup_same(cx: &Ctxt, path: &Path, run: &RunCommand, os: &Os) -> Result<Runner> {
     match &run.run {
         Run::Shell { script } => match os {
             Os::Windows => {
-                let mut c = Command::new("powershell");
-                c.args(["-Command", script]);
-                c.current_dir(path);
-                Ok(Runner::new(c))
+                let Some(powershell) = cx.system.powershell.first() else {
+                    bail!("No powershell available");
+                };
+
+                Ok(Runner::new(powershell.command(path, script)))
             }
             Os::Linux | Os::Mac => {
                 let mut c = Command::new("bash");

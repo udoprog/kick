@@ -317,7 +317,6 @@ mod deb;
 mod edits;
 mod env;
 mod file;
-mod git;
 mod gitmodules;
 mod glob;
 mod keys;
@@ -335,7 +334,6 @@ mod urls;
 mod wix;
 mod workflows;
 mod workspace;
-mod wsl;
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -842,7 +840,7 @@ fn filter_repos(
     paths: Paths<'_>,
     in_current_path: Option<&RelativePath>,
     repo_opts: &RepoOptions,
-    git: Option<&git::Git>,
+    git: Option<&system::Git>,
     repos: &[model::Repo],
     filters: &[Fragment<'_>],
     set: Option<&HashSet<RelativePathBuf>>,
