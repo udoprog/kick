@@ -78,12 +78,13 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
                     for matrix in job.matrices(&ignore)? {
                         let runs_on = matrix.eval(runs_on);
+                        let runs_on = runs_on.as_ref();
 
-                        let os = match runs_on.as_ref() {
-                            "ubuntu-latest" => Os::Linux,
-                            "windows-latest" => Os::Windows,
-                            "macos-latest" => Os::Mac,
-                            other => bail!("Unsupported runs-on: {other}"),
+                        let os = match runs_on.split_once('-') {
+                            Some(("ubuntu", _)) => Os::Linux,
+                            Some(("windows", _)) => Os::Windows,
+                            Some(("macos", _)) => Os::Mac,
+                            _ => bail!("Unsupported runs-on: {runs_on}"),
                         };
 
                         let runner = RunnerKind::from_os(cx, &os)?;
