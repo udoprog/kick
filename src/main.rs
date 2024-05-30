@@ -332,6 +332,7 @@ mod system;
 mod templates;
 mod urls;
 mod wix;
+mod workflows;
 mod workspace;
 mod wsl;
 
