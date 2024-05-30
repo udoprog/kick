@@ -237,9 +237,9 @@ impl<'a> Eval<'a> {
     }
 
     /// Evaluate a string with matrix variables.
-    pub(crate) fn eval<'s>(&self, s: &'s str) -> Cow<'s, str> {
+    pub(crate) fn eval<'s>(&self, s: &'s str) -> Result<Cow<'s, str>> {
         let Some(i) = s.find("${{") else {
-            return Cow::Borrowed(s);
+            return Ok(Cow::Borrowed(s));
         };
 
         let mut result = String::new();
@@ -263,32 +263,39 @@ impl<'a> Eval<'a> {
                 break;
             };
 
-            let variable = rest[..end].trim();
+            let expr = rest[..end].trim();
 
-            if let Some(value) = self.get(variable) {
-                result.push_str(value);
+            match self.expr(expr)? {
+                Expr::Value(s) => result.push_str(s),
+                Expr::Bool(b) => {
+                    result.push_str(if b { "true" } else { "false" });
+                }
             }
 
             s = &rest[end + 2..];
         }
 
-        Cow::Owned(result)
+        Ok(Cow::Owned(result))
     }
 
-    pub(crate) fn test(&self, source: &str) -> Result<bool> {
+    pub(crate) fn expr<'expr>(&'expr self, source: &'expr str) -> Result<Expr<'expr>> {
         let mut p = parsing::Parser::new(source);
         grammar::root(&mut p)?;
         let tree = p.tree.build()?;
 
         let mut it = self::eval::eval(&tree, source, self);
 
-        let Some(result) = it.next() else {
+        let Some(expr) = it.next().transpose()? else {
             bail!("No expressions");
         };
 
-        match result? {
+        Ok(expr)
+    }
+
+    pub(crate) fn test(&self, source: &str) -> Result<bool> {
+        match self.expr(source)? {
             Expr::Bool(b) => Ok(b),
-            _ => bail!("Expected boolean result"),
+            _ => bail!("Expected boolean expression"),
         }
     }
 

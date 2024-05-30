@@ -107,7 +107,7 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                         let runner = if opts.ignore_runs_on {
                             None
                         } else {
-                            let runs_on = eval.eval(runs_on);
+                            let runs_on = eval.eval(runs_on)?;
                             let runs_on = runs_on.as_ref();
 
                             let os = match runs_on.split_once('-') {
@@ -142,7 +142,7 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                                         continue;
                                     };
 
-                                    let value = eval.eval(value);
+                                    let value = eval.eval(value)?;
                                     env.insert(key.to_string(), value.into_owned());
                                 }
                             }
@@ -150,10 +150,13 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                             // Update environment.
                             let eval = Eval::new(&env, &matrix);
 
-                            let working_directory = step
-                                .get("working-directory")
-                                .and_then(|v| v.as_str())
-                                .map(|dir| RelativePathBuf::from(eval.eval(dir).into_owned()));
+                            let working_directory =
+                                match step.get("working-directory").and_then(|v| v.as_str()) {
+                                    Some(dir) => {
+                                        Some(RelativePathBuf::from(eval.eval(dir)?.into_owned()))
+                                    }
+                                    None => None,
+                                };
 
                             let mut skipped = false;
 
@@ -161,7 +164,7 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                                 skipped = !eval.test(expr)?;
                             }
 
-                            if let Some(rust_toolchain) = rust_toolchain(&step, &eval) {
+                            if let Some(rust_toolchain) = rust_toolchain(&step, &eval)? {
                                 let Some(rust_version) = rust_toolchain.version else {
                                     bail!("uses: */rust-toolchain is specified, but cannot determine version")
                                 };
@@ -219,17 +222,16 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                             }
 
                             if let Some(run) = step.get("run").and_then(|run| run.as_str()) {
-                                let name = step
-                                    .get("name")
-                                    .and_then(|name| Some(eval.eval(name.as_str()?).into_owned()));
+                                let name = match step.get("name").and_then(|v| v.as_str()) {
+                                    Some(name) => Some(eval.eval(name)?.into_owned()),
+                                    None => None,
+                                };
 
-                                let run = eval.eval(run);
+                                let script = eval.eval(run)?.into_owned();
 
                                 commands.push(RunCommand {
                                     name,
-                                    run: Run::Shell {
-                                        script: run.into_owned(),
-                                    },
+                                    run: Run::Shell { script },
                                     env,
                                     skipped,
                                     working_directory,
@@ -381,36 +383,51 @@ struct RustToolchain<'a> {
 }
 
 /// Extract a rust version from a `rust-toolchain` job.
-fn rust_toolchain<'a>(step: &Mapping<'a>, eval: &Eval<'_>) -> Option<RustToolchain<'a>> {
-    let uses = step.get("uses")?.as_str()?;
-    let uses = eval.eval(uses);
-
-    let (head, version) = uses.split_once('@')?;
-
-    let (_, "rust-toolchain") = head.split_once('/')? else {
-        return None;
+fn rust_toolchain<'a>(step: &Mapping<'a>, eval: &Eval<'_>) -> Result<Option<RustToolchain<'a>>> {
+    let Some(uses) = step.get("uses").and_then(|v| v.as_str()) else {
+        return Ok(None);
     };
 
-    let version = match extract_with(step, eval, "toolchain") {
+    let uses = eval.eval(uses)?;
+
+    let Some((head, version)) = uses.split_once('@') else {
+        return Ok(None);
+    };
+
+    let Some((_, "rust-toolchain")) = head.split_once('/') else {
+        return Ok(None);
+    };
+
+    let version = match extract_with(step, eval, "toolchain")? {
         Some(toolchain) => Some(toolchain),
         None => Some(Cow::Owned(version.to_owned())),
     };
 
-    let components = extract_with(step, eval, "components");
-    let targets = extract_with(step, eval, "targets");
+    let components = extract_with(step, eval, "components")?;
+    let targets = extract_with(step, eval, "targets")?;
 
-    Some(RustToolchain {
+    Ok(Some(RustToolchain {
         version,
         components,
         targets,
-    })
+    }))
 }
 
 /// Extract explicitly specified toolchain version.
-fn extract_with<'a>(step: &Mapping<'a>, eval: &Eval<'_>, key: &str) -> Option<Cow<'a, str>> {
-    let with = step.get("with")?.as_mapping()?;
-    let components = with.get(key)?.as_str()?;
-    Some(eval.eval(components))
+fn extract_with<'a>(
+    step: &Mapping<'a>,
+    eval: &Eval<'_>,
+    key: &str,
+) -> Result<Option<Cow<'a, str>>> {
+    let Some(with) = step.get("with").and_then(|v| v.as_mapping()) else {
+        return Ok(None);
+    };
+
+    let Some(components) = with.get(key).and_then(|v| v.as_str()) else {
+        return Ok(None);
+    };
+
+    Ok(Some(eval.eval(components)?))
 }
 
 struct CommandBatch {
