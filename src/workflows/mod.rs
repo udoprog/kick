@@ -1,3 +1,32 @@
+mod eval;
+mod grammar;
+mod lexer;
+mod parsing;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+enum Syntax {
+    Variable,
+    Eq,
+    Neq,
+    And,
+    Or,
+    SingleString,
+    DoubleString,
+    Whitespace,
+    Operator,
+    OpenParen,
+    CloseParen,
+
+    // An operation.
+    Operation,
+    // Precedence group.
+    Group,
+    // Enf of file.
+    Eof,
+    Error,
+}
+
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
@@ -5,13 +34,15 @@ use std::fs;
 use std::io;
 use std::str;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use bstr::BStr;
 use nondestructive::yaml;
 use relative_path::{RelativePath, RelativePathBuf};
 
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
+
+use self::eval::Expr;
 
 pub struct Workflows<'cx> {
     cx: &'cx Ctxt<'cx>,
@@ -188,6 +219,15 @@ impl Matrix {
         self.matrix.is_empty()
     }
 
+    /// Get a variable from the matrix.
+    fn get(&self, key: &str) -> Option<&str> {
+        let Some(("matrix", key)) = key.split_once('.') else {
+            return None;
+        };
+
+        self.matrix.get(key).map(String::as_str)
+    }
+
     /// Evaluate a string with matrix variables.
     pub(crate) fn eval<'a>(&self, s: &'a str) -> Cow<'a, str> {
         let Some(i) = s.find("${{") else {
@@ -231,6 +271,23 @@ impl Matrix {
 
         Cow::Owned(result)
     }
+
+    pub(crate) fn test(&self, source: &str) -> Result<bool> {
+        let mut p = parsing::Parser::new(source);
+        grammar::root(&mut p)?;
+        let tree = p.tree.build()?;
+
+        let mut it = self::eval::eval(&tree, source, self);
+
+        let Some(result) = it.next() else {
+            bail!("No expressions");
+        };
+
+        match result? {
+            Expr::Bool(b) => Ok(b),
+            _ => bail!("Expected boolean result"),
+        }
+    }
 }
 
 impl fmt::Debug for Matrix {
@@ -256,4 +313,29 @@ fn list_workflow_ids(cx: &Ctxt<'_>, path: &RelativePath) -> Result<BTreeSet<Stri
     }
 
     Ok(ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn matrix_test() {
+        let matrix = Matrix {
+            matrix: vec![
+                ("a".to_owned(), "1".to_owned()),
+                ("b".to_owned(), "2".to_owned()),
+            ]
+            .into_iter()
+            .collect(),
+        };
+
+        assert!(matrix.test("matrix.a == '1'").unwrap());
+        assert!(matrix.test("matrix.a != '2'").unwrap());
+        assert!(matrix.test("matrix.a != matrix.b").unwrap());
+        assert!(!matrix.test("matrix.a == matrix.b").unwrap());
+        assert!(matrix
+            .test("matrix.a == matrix.b || matrix.a != matrix.b")
+            .unwrap());
+    }
 }
