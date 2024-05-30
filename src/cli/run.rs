@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashSet};
 use std::ffi::OsString;
 use std::fmt;
@@ -5,15 +6,14 @@ use std::path::Path;
 
 use anyhow::{bail, ensure, Result};
 use clap::Parser;
+use nondestructive::yaml::Mapping;
 
 use crate::config::Os;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::process::Command;
-use crate::workflows::Workflows;
+use crate::workflows::{Matrix, Workflows};
 use crate::wsl::Wsl;
-
-const IGNORE: &[&str] = &["rust"];
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -68,11 +68,7 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     let mut commands = Vec::new();
 
-    let mut ignore = IGNORE
-        .iter()
-        .copied()
-        .map(String::from)
-        .collect::<HashSet<_>>();
+    let mut ignore = HashSet::new();
 
     for i in &opts.ignore_matrix {
         ignore.insert(i.clone());
@@ -119,30 +115,44 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                                 continue;
                             };
 
-                            let Some(run) = step.get("run").and_then(|run| run.as_str()) else {
-                                continue;
-                            };
+                            if let Some(rust_version) = extract_rust_version(&step, &matrix) {
+                                commands.push(RunCommand {
+                                    command: "rustup".into(),
+                                    args: vec![
+                                        OsString::from("default"),
+                                        OsString::from(rust_version.as_ref()),
+                                    ],
+                                    runner,
+                                    matrix: if matrix.is_empty() {
+                                        None
+                                    } else {
+                                        Some(format!("{matrix:?}"))
+                                    },
+                                });
+                            }
 
-                            let run = matrix.eval(run);
+                            if let Some(run) = step.get("run").and_then(|run| run.as_str()) {
+                                let run = matrix.eval(run);
 
-                            let mut it = run.split_whitespace();
+                                let mut it = run.split_whitespace();
 
-                            let Some(command) = it.next() else {
-                                continue;
-                            };
+                                let Some(command) = it.next() else {
+                                    continue;
+                                };
 
-                            let args = it.map(OsString::from).collect::<Vec<_>>();
+                                let args = it.map(OsString::from).collect::<Vec<_>>();
 
-                            commands.push(RunCommand {
-                                command: command.into(),
-                                args,
-                                runner,
-                                matrix: if matrix.is_empty() {
-                                    None
-                                } else {
-                                    Some(format!("{matrix:?}"))
-                                },
-                            });
+                                commands.push(RunCommand {
+                                    command: command.into(),
+                                    args,
+                                    runner,
+                                    matrix: if matrix.is_empty() {
+                                        None
+                                    } else {
+                                        Some(format!("{matrix:?}"))
+                                    },
+                                });
+                            }
                         }
                     }
                 }
@@ -206,6 +216,26 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Extract a rust version.
+fn extract_rust_version<'a>(step: &Mapping<'a>, matrix: &Matrix) -> Option<Cow<'a, str>> {
+    let uses = step.get("uses")?.as_str()?;
+    let uses = matrix.eval(uses);
+
+    let (head, version) = uses.split_once('@')?;
+
+    let (_, "rust-toolchain") = head.split_once('/')? else {
+        return None;
+    };
+
+    let "master" = version else {
+        return Some(Cow::Owned(version.to_owned()));
+    };
+
+    let with = step.get("with")?.as_mapping()?;
+    let toolchain = with.get("toolchain")?.as_str()?;
+    Some(matrix.eval(toolchain))
 }
 
 struct RunCommand {
