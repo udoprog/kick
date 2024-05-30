@@ -153,13 +153,14 @@ impl<'cx, 'a> Job<'cx, 'a> {
 
             matrices.push(Matrix { matrix });
 
-            for n in 0..variables.len() {
-                if positions[n] + 1 < variables[n].1.len() {
-                    positions[n] += 1;
+            for (p, (_, values)) in positions.iter_mut().zip(&variables) {
+                *p += 1;
+
+                if *p < values.len() {
                     continue 'outer;
                 }
 
-                positions[n] = 0;
+                *p = 0;
             }
 
             break;
