@@ -214,9 +214,12 @@ impl Matrix {
                 break;
             };
 
-            let variable = &rest[..end];
+            let variable = rest[..end].trim();
+            let variable = variable
+                .split_once('.')
+                .map(|(key, value)| (key.trim(), value.trim()));
 
-            if let Some(("matrix", variable)) = variable.split_once('.') {
+            if let Some(("matrix", variable)) = variable {
                 if let Some(value) = self.matrix.get(variable) {
                     result.push_str(value);
                 }
