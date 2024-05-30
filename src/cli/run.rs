@@ -14,7 +14,7 @@ use crate::ctxt::Ctxt;
 use crate::model::{Repo, ShellFlavor};
 use crate::process::Command;
 use crate::system::Wsl;
-use crate::workflows::{Eval, Workflows};
+use crate::workflows::{Eval, Matrix, Workflows};
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -257,10 +257,10 @@ fn run(
                         batches.push(CommandBatch {
                             commands,
                             runner,
-                            matrix: if matrix.is_empty() {
-                                None
+                            matrix: if !matrix.is_empty() {
+                                Some(matrix)
                             } else {
-                                Some(format!("{matrix:?}"))
+                                None
                             },
                         })
                     }
@@ -327,7 +327,7 @@ fn run(
                 write!(o, " ")?;
 
                 o.set_color(&colors.matrix)?;
-                write!(o, "{matrix}")?;
+                write!(o, "{}", matrix.display())?;
                 o.reset()?;
             }
 
@@ -520,7 +520,7 @@ fn extract_env(eval: &Eval<'_>, m: &Mapping<'_>) -> Result<BTreeMap<String, Stri
 struct CommandBatch {
     commands: Vec<RunCommand>,
     runner: Option<RunnerKind>,
-    matrix: Option<String>,
+    matrix: Option<Matrix>,
 }
 
 impl CommandBatch {

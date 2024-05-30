@@ -322,12 +322,56 @@ impl Matrix {
     pub(crate) fn is_empty(&self) -> bool {
         self.matrix.is_empty()
     }
+
+    #[inline]
+    pub(crate) fn display(&self) -> Display<'_> {
+        Display {
+            matrix: &self.matrix,
+        }
+    }
 }
 
-impl fmt::Debug for Matrix {
-    #[inline]
+pub(crate) struct Display<'a> {
+    matrix: &'a BTreeMap<String, String>,
+}
+
+impl fmt::Display for Display<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.matrix.fmt(f)
+        let mut it = self.matrix.iter();
+
+        write!(f, "{{")?;
+
+        if let Some((key, value)) = it.next() {
+            write!(f, "{}={}", escape(key), escape(value))?;
+
+            for (key, value) in it {
+                write!(f, ", {}={}", escape(key), escape(value))?;
+            }
+        }
+
+        write!(f, "}}")?;
+        Ok(())
+    }
+}
+
+fn escape(s: &str) -> Escape<'_> {
+    Escape { s }
+}
+
+struct Escape<'a> {
+    s: &'a str,
+}
+
+impl fmt::Display for Escape<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self
+            .s
+            .contains(|c: char| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_'))
+        {
+            write!(f, "\"{}\"", self.s)
+        } else {
+            write!(f, "{}", self.s)
+        }
     }
 }
 
