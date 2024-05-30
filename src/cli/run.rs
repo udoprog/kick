@@ -1,19 +1,26 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::ffi::OsString;
 use std::fmt;
 use std::path::Path;
 
 use anyhow::{bail, ensure, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use nondestructive::yaml::Mapping;
+use relative_path::RelativePathBuf;
 
 use crate::config::Os;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::process::Command;
-use crate::workflows::{Matrix, Workflows};
+use crate::workflows::{Eval, Workflows};
 use crate::wsl::Wsl;
+
+#[derive(Default, Debug, Clone, Copy, ValueEnum)]
+enum Flavor {
+    #[default]
+    Sh,
+    Powershell,
+}
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -33,24 +40,30 @@ pub(crate) struct Opts {
     ///
     /// For WSL, this constructs the WSLENV environment variable, which dictates
     /// what environments are passed in.
-    #[arg(long, short = 'E', value_name = "<key>[=<value>]")]
+    #[arg(long, short = 'E', value_name = "key[=value]")]
     env: Vec<String>,
     /// Run all commands associated with a Github workflows job.
     #[arg(long)]
     job: Option<String>,
     /// Matrix values to ignore when running a Github workflows job.
-    #[arg(long, value_name = "<value>")]
+    #[arg(long, value_name = "value")]
     ignore_matrix: Vec<String>,
     /// Ignore `runs-on` specification in github workflow.
     #[arg(long)]
     ignore_runs_on: bool,
+    /// Print verbose information about the command being run.
+    #[arg(long)]
+    verbose: bool,
+    /// Shell flavor for verbose output.
+    #[arg(long, value_name = "<lavor")]
+    flavor: Option<Flavor>,
     /// Arguments to pass to the command to run.
     #[arg(
         trailing_var_arg = true,
         allow_hyphen_values = true,
         value_name = "command"
     )]
-    command: Vec<OsString>,
+    command: Vec<String>,
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
@@ -79,6 +92,8 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
         for id in workflows.ids() {
             if let Some(workflow) = workflows.open(id)? {
+                let env = workflow.env();
+
                 for (job_name, job) in workflow.jobs() {
                     if job_name != to_run {
                         continue;
@@ -87,10 +102,12 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                     let runs_on = job.runs_on()?;
 
                     for matrix in job.matrices(&ignore)? {
+                        let eval = Eval::new(&env, &matrix);
+
                         let runner = if opts.ignore_runs_on {
                             None
                         } else {
-                            let runs_on = matrix.eval(runs_on);
+                            let runs_on = eval.eval(runs_on);
                             let runs_on = runs_on.as_ref();
 
                             let os = match runs_on.split_once('-') {
@@ -117,13 +134,7 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                                 continue;
                             };
 
-                            let mut skipped = false;
-
-                            if let Some(expr) = step.get("if").and_then(|v| v.as_str()) {
-                                skipped = !matrix.test(expr)?;
-                            }
-
-                            let mut env = BTreeMap::new();
+                            let mut env = env.clone();
 
                             if let Some(m) = step.get("env").and_then(|v| v.as_mapping()) {
                                 for (key, value) in m {
@@ -131,38 +142,97 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                                         continue;
                                     };
 
-                                    env.insert(key.to_string(), value.to_string());
+                                    let value = eval.eval(value);
+                                    env.insert(key.to_string(), value.into_owned());
                                 }
                             }
 
-                            if let Some(rust_version) = extract_rust_version(&step, &matrix) {
+                            // Update environment.
+                            let eval = Eval::new(&env, &matrix);
+
+                            let working_directory = step
+                                .get("working-directory")
+                                .and_then(|v| v.as_str())
+                                .map(|dir| RelativePathBuf::from(eval.eval(dir).into_owned()));
+
+                            let mut skipped = false;
+
+                            if let Some(expr) = step.get("if").and_then(|v| v.as_str()) {
+                                skipped = !eval.test(expr)?;
+                            }
+
+                            if let Some(rust_toolchain) = rust_toolchain(&step, &eval) {
+                                let Some(rust_version) = rust_toolchain.version else {
+                                    bail!("uses: */rust-toolchain is specified, but cannot determine version")
+                                };
+
+                                if rust_toolchain.components.is_some()
+                                    || rust_toolchain.targets.is_some()
+                                {
+                                    let mut args = vec![
+                                        String::from("toolchain"),
+                                        String::from("install"),
+                                        String::from(rust_version.as_ref()),
+                                    ];
+
+                                    if let Some(c) = rust_toolchain.components {
+                                        args.push(String::from("-c"));
+                                        args.push(String::from(c.as_ref()));
+                                    }
+
+                                    if let Some(t) = rust_toolchain.targets {
+                                        args.push(String::from("-t"));
+                                        args.push(String::from(t.as_ref()));
+                                    }
+
+                                    args.extend([
+                                        String::from("--profile"),
+                                        String::from("minimal"),
+                                        String::from("--no-self-update"),
+                                    ]);
+
+                                    commands.push(RunCommand {
+                                        name: None,
+                                        run: Run::Command {
+                                            command: "rustup".into(),
+                                            args,
+                                        },
+                                        env: BTreeMap::new(),
+                                        skipped,
+                                        working_directory: None,
+                                    });
+                                }
+
                                 commands.push(RunCommand {
-                                    command: "rustup".into(),
-                                    args: vec![
-                                        OsString::from("default"),
-                                        OsString::from(rust_version.as_ref()),
-                                    ],
+                                    name: None,
+                                    run: Run::Command {
+                                        command: "rustup".into(),
+                                        args: vec![
+                                            String::from("default"),
+                                            String::from(rust_version.as_ref()),
+                                        ],
+                                    },
                                     env: BTreeMap::new(),
                                     skipped,
+                                    working_directory: None,
                                 });
                             }
 
                             if let Some(run) = step.get("run").and_then(|run| run.as_str()) {
-                                let run = matrix.eval(run);
+                                let name = step
+                                    .get("name")
+                                    .and_then(|name| Some(eval.eval(name.as_str()?).into_owned()));
 
-                                let mut it = run.split_whitespace();
-
-                                let Some(command) = it.next() else {
-                                    continue;
-                                };
-
-                                let args = it.map(OsString::from).collect::<Vec<_>>();
+                                let run = eval.eval(run);
 
                                 commands.push(RunCommand {
-                                    command: command.into(),
-                                    args,
+                                    name,
+                                    run: Run::Shell {
+                                        script: run.into_owned(),
+                                    },
                                     env,
                                     skipped,
+                                    working_directory,
                                 });
                             }
                         }
@@ -187,10 +257,14 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
         batches.push(CommandBatch {
             commands: vec![RunCommand {
-                command: command.clone(),
-                args: rest.to_vec(),
+                name: None,
+                run: Run::Command {
+                    command: command.clone(),
+                    args: rest.to_vec(),
+                },
                 env: BTreeMap::new(),
                 skipped: false,
+                working_directory: None,
             }],
             runner: None,
             matrix: None,
@@ -212,19 +286,28 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
         }
     }
 
+    let flavor = opts.flavor.unwrap_or_else(|| default_flavor(&cx.os));
+
     let path = cx.to_path(repo.path());
 
     for batch in batches {
         for runner in batch.runners(&argument_runners) {
-            {
-                let path = path.display();
-                let name = Optional(runner.name());
-                let matrix = Optional(batch.matrix.as_deref());
-                println!("{path}:{name}{matrix}");
-            }
+            let name = Opt(" ", runner.name(), "");
+            let matrix = Opt(" ", batch.matrix.as_deref(), "");
+            println!("{}:{name}{matrix}", path.display());
 
             for run in &batch.commands {
-                let mut runner = runner.build(cx, opts, &path, run)?;
+                let modified;
+
+                let path = match &run.working_directory {
+                    Some(working_directory) => {
+                        modified = working_directory.to_logical_path(&path);
+                        &modified
+                    }
+                    None => &path,
+                };
+
+                let mut runner = runner.build(cx, opts, path, run)?;
 
                 for e in &opts.env {
                     if let Some((key, value)) = e.split_once('=') {
@@ -232,16 +315,46 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                     }
                 }
 
-                if let Some((key, value)) = runner.extra_env {
-                    runner.command.env(key, value);
-                }
-
                 for (key, value) in &run.env {
                     runner.command.env(key, value);
                 }
 
-                let skipped = Optional(if run.skipped { Some("(skipped)") } else { None });
-                println!(">> {}{skipped}", runner.command.display());
+                if let Some((key, value)) = runner.extra_env {
+                    runner.command.env(key, value);
+                }
+
+                let skipped = Opt(" ", run.skipped.then_some(" (skipped)"), "");
+
+                if let Some(name) = &run.name {
+                    println!("# {name}{skipped}");
+                } else {
+                    println!("# {}{skipped}", runner.command.display());
+                }
+
+                if opts.verbose {
+                    match &flavor {
+                        Flavor::Sh => {
+                            for (key, value) in &runner.command.env {
+                                println!(
+                                    r#"export {}="{}""#,
+                                    key.to_string_lossy(),
+                                    value.to_string_lossy()
+                                );
+                            }
+                        }
+                        Flavor::Powershell => {
+                            for (key, value) in &runner.command.env {
+                                println!(
+                                    r#"$env:{}="{}""#,
+                                    key.to_string_lossy(),
+                                    value.to_string_lossy()
+                                );
+                            }
+                        }
+                    }
+
+                    println!("{}", runner.command.display());
+                }
 
                 if !run.skipped {
                     let status = runner.command.status()?;
@@ -254,10 +367,23 @@ fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     Ok(())
 }
 
-/// Extract a rust version.
-fn extract_rust_version<'a>(step: &Mapping<'a>, matrix: &Matrix) -> Option<Cow<'a, str>> {
+fn default_flavor(os: &Os) -> Flavor {
+    match os {
+        Os::Windows => Flavor::Powershell,
+        _ => Flavor::Sh,
+    }
+}
+
+struct RustToolchain<'a> {
+    version: Option<Cow<'a, str>>,
+    components: Option<Cow<'a, str>>,
+    targets: Option<Cow<'a, str>>,
+}
+
+/// Extract a rust version from a `rust-toolchain` job.
+fn rust_toolchain<'a>(step: &Mapping<'a>, eval: &Eval<'_>) -> Option<RustToolchain<'a>> {
     let uses = step.get("uses")?.as_str()?;
-    let uses = matrix.eval(uses);
+    let uses = eval.eval(uses);
 
     let (head, version) = uses.split_once('@')?;
 
@@ -265,13 +391,26 @@ fn extract_rust_version<'a>(step: &Mapping<'a>, matrix: &Matrix) -> Option<Cow<'
         return None;
     };
 
-    let "master" = version else {
-        return Some(Cow::Owned(version.to_owned()));
+    let version = match extract_with(step, eval, "toolchain") {
+        Some(toolchain) => Some(toolchain),
+        None => Some(Cow::Owned(version.to_owned())),
     };
 
+    let components = extract_with(step, eval, "components");
+    let targets = extract_with(step, eval, "targets");
+
+    Some(RustToolchain {
+        version,
+        components,
+        targets,
+    })
+}
+
+/// Extract explicitly specified toolchain version.
+fn extract_with<'a>(step: &Mapping<'a>, eval: &Eval<'_>, key: &str) -> Option<Cow<'a, str>> {
     let with = step.get("with")?.as_mapping()?;
-    let toolchain = with.get("toolchain")?.as_str()?;
-    Some(matrix.eval(toolchain))
+    let components = with.get(key)?.as_str()?;
+    Some(eval.eval(components))
 }
 
 struct CommandBatch {
@@ -294,11 +433,17 @@ impl CommandBatch {
     }
 }
 
+enum Run {
+    Shell { script: String },
+    Command { command: String, args: Vec<String> },
+}
+
 struct RunCommand {
-    command: OsString,
-    args: Vec<OsString>,
+    name: Option<String>,
+    run: Run,
     env: BTreeMap<String, String>,
     skipped: bool,
+    working_directory: Option<RelativePathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -325,7 +470,7 @@ impl RunnerKind {
 
     fn build(&self, cx: &Ctxt, opts: &Opts, path: &Path, command: &RunCommand) -> Result<Runner> {
         match *self {
-            Self::Same => Ok(setup_same(path, command)),
+            Self::Same => setup_same(path, command, &cx.os),
             Self::Wsl => {
                 let Some(wsl) = cx.system.wsl.first() else {
                     bail!("No WSL available");
@@ -358,21 +503,48 @@ impl Runner {
     }
 }
 
-fn setup_same(path: &Path, run: &RunCommand) -> Runner {
-    let mut c = Command::new(&run.command);
-    c.args(&run.args);
-    c.current_dir(path);
-    Runner::new(c)
+fn setup_same(path: &Path, run: &RunCommand, os: &Os) -> Result<Runner> {
+    match &run.run {
+        Run::Shell { script } => match os {
+            Os::Windows => {
+                let mut c = Command::new("powershell");
+                c.args(["-Command", script]);
+                c.current_dir(path);
+                Ok(Runner::new(c))
+            }
+            Os::Linux | Os::Mac => {
+                let mut c = Command::new("bash");
+                c.args(["-i", "-c", script]);
+                c.current_dir(path);
+                Ok(Runner::new(c))
+            }
+            Os::Other(..) => bail!("Cannot run shell script on {os:?}"),
+        },
+        Run::Command { command, args } => {
+            let mut c = Command::new(command);
+            c.args(args);
+            c.current_dir(path);
+            Ok(Runner::new(c))
+        }
+    }
 }
 
 fn setup_wsl(path: &Path, wsl: &Wsl, opts: &Opts, run: &RunCommand) -> Runner {
     let mut c = wsl.shell(path);
-    c.arg(&run.command);
-    c.args(&run.args);
+
+    match &run.run {
+        Run::Shell { script } => {
+            c.args(["bash", "-i", "-c", script]);
+        }
+        Run::Command { command, args } => {
+            c.arg(command);
+            c.args(args);
+        }
+    }
 
     let mut wslenv = String::new();
 
-    for e in opts.env.iter().chain(run.env.keys()) {
+    for e in &opts.env {
         if !wslenv.is_empty() {
             wslenv.push(':');
         }
@@ -384,20 +556,28 @@ fn setup_wsl(path: &Path, wsl: &Wsl, opts: &Opts, run: &RunCommand) -> Runner {
         }
     }
 
+    for e in run.env.keys() {
+        if !wslenv.is_empty() {
+            wslenv.push(':');
+        }
+
+        wslenv.push_str(e);
+    }
+
     let mut runner = Runner::new(c);
     runner.extra_env = Some(("WSLENV", wslenv));
     runner
 }
 
-struct Optional<T>(Option<T>);
+struct Opt<T>(&'static str, Option<T>, &'static str);
 
-impl<T> fmt::Display for Optional<T>
+impl<T> fmt::Display for Opt<T>
 where
     T: fmt::Display,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(value) = &self.0 {
-            write!(f, " {}", value)?;
+        if let Self(prefix, Some(ref value), suffix) = *self {
+            write!(f, "{prefix}{value}{suffix}")?;
         }
 
         Ok(())

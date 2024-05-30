@@ -328,6 +328,7 @@ mod packaging;
 mod process;
 mod release;
 mod repo_sets;
+mod shell;
 mod system;
 mod templates;
 mod urls;

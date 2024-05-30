@@ -14,7 +14,7 @@ pub(crate) struct Command {
     stdin: Option<Stdio>,
     stdout: Option<Stdio>,
     stderr: Option<Stdio>,
-    env: Vec<(OsString, OsString)>,
+    pub(crate) env: Vec<(OsString, OsString)>,
 }
 
 impl Command {
@@ -199,11 +199,15 @@ pub(crate) struct Display<'a> {
 
 impl fmt::Display for Display<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.inner.command.to_string_lossy().as_ref())?;
+        let lossy = self.inner.command.to_string_lossy();
+        let escaped = crate::shell::escape(lossy.as_ref());
+        f.write_str(&escaped)?;
 
         for arg in &self.inner.args {
             f.write_char(' ')?;
-            f.write_str(arg.to_string_lossy().as_ref())?;
+            let lossy = arg.to_string_lossy();
+            let escaped = crate::shell::escape(lossy.as_ref());
+            f.write_str(&escaped)?;
         }
 
         Ok(())

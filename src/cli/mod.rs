@@ -22,9 +22,9 @@ macro_rules! with_repos {
             tracing::trace!("Running `{}`", $what);
 
             if let Err(error) = ::anyhow::Context::with_context(result, $cx.context($repo)) {
-                tracing::error!("Failed to {}", $what);
+                tracing::error!("{error}");
 
-                for cause in error.chain() {
+                for cause in error.chain().skip(1) {
                     tracing::error!("Caused by: {}", cause);
                 }
 

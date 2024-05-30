@@ -108,6 +108,25 @@ impl<'cx> Workflow<'cx> {
                 .flat_map(|(key, job)| Some((key, Job::new(self.cx, job.as_mapping()?))))
         })
     }
+
+    /// Get the root level environment variables.
+    pub(crate) fn env(&self) -> BTreeMap<String, String> {
+        let mut env = BTreeMap::new();
+
+        if let Some(root) = self.doc.as_ref().as_mapping() {
+            if let Some(m) = root.get("env").and_then(|v| v.as_mapping()) {
+                for (key, value) in m {
+                    let Some(value) = value.as_str() else {
+                        continue;
+                    };
+
+                    env.insert(key.to_string(), value.to_string());
+                }
+            }
+        }
+
+        env
+    }
 }
 
 pub(crate) struct Job<'cx, 'a> {
@@ -207,29 +226,18 @@ impl<'cx, 'a> Job<'cx, 'a> {
     }
 }
 
-/// A matrix of variables.
-pub(crate) struct Matrix {
-    matrix: BTreeMap<String, String>,
+pub(crate) struct Eval<'a> {
+    pub(crate) matrix: &'a Matrix,
+    env: &'a BTreeMap<String, String>,
 }
 
-impl Matrix {
-    /// Test if the matrix is empty.
-    #[inline]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.matrix.is_empty()
-    }
-
-    /// Get a variable from the matrix.
-    fn get(&self, key: &str) -> Option<&str> {
-        let Some(("matrix", key)) = key.split_once('.') else {
-            return None;
-        };
-
-        self.matrix.get(key).map(String::as_str)
+impl<'a> Eval<'a> {
+    pub(crate) fn new(env: &'a BTreeMap<String, String>, matrix: &'a Matrix) -> Self {
+        Self { matrix, env }
     }
 
     /// Evaluate a string with matrix variables.
-    pub(crate) fn eval<'a>(&self, s: &'a str) -> Cow<'a, str> {
+    pub(crate) fn eval<'s>(&self, s: &'s str) -> Cow<'s, str> {
         let Some(i) = s.find("${{") else {
             return Cow::Borrowed(s);
         };
@@ -256,14 +264,9 @@ impl Matrix {
             };
 
             let variable = rest[..end].trim();
-            let variable = variable
-                .split_once('.')
-                .map(|(key, value)| (key.trim(), value.trim()));
 
-            if let Some(("matrix", variable)) = variable {
-                if let Some(value) = self.matrix.get(variable) {
-                    result.push_str(value);
-                }
+            if let Some(value) = self.get(variable) {
+                result.push_str(value);
             }
 
             s = &rest[end + 2..];
@@ -287,6 +290,30 @@ impl Matrix {
             Expr::Bool(b) => Ok(b),
             _ => bail!("Expected boolean result"),
         }
+    }
+
+    /// Get a variable from the matrix.
+    fn get(&self, key: &str) -> Option<&'a str> {
+        let (key, value) = key.split_once('.')?;
+
+        match (key.trim(), value.trim()) {
+            ("env", key) => self.env.get(key).map(String::as_str),
+            ("matrix", key) => self.matrix.matrix.get(key).map(String::as_str),
+            _ => None,
+        }
+    }
+}
+
+/// A matrix of variables.
+pub(crate) struct Matrix {
+    matrix: BTreeMap<String, String>,
+}
+
+impl Matrix {
+    /// Test if the matrix is empty.
+    #[inline]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.matrix.is_empty()
     }
 }
 
@@ -330,11 +357,15 @@ mod tests {
             .collect(),
         };
 
-        assert!(matrix.test("matrix.a == '1'").unwrap());
-        assert!(matrix.test("matrix.a != '2'").unwrap());
-        assert!(matrix.test("matrix.a != matrix.b").unwrap());
-        assert!(!matrix.test("matrix.a == matrix.b").unwrap());
-        assert!(matrix
+        let env = BTreeMap::new();
+
+        let eval = Eval::new(&env, &matrix);
+
+        assert!(eval.test("matrix.a == '1'").unwrap());
+        assert!(eval.test("matrix.a != '2'").unwrap());
+        assert!(eval.test("matrix.a != matrix.b").unwrap());
+        assert!(!eval.test("matrix.a == matrix.b").unwrap());
+        assert!(eval
             .test("matrix.a == matrix.b || matrix.a != matrix.b")
             .unwrap());
     }

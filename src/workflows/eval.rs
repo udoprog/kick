@@ -1,4 +1,4 @@
-use super::{Matrix, Syntax};
+use super::{Eval, Syntax};
 
 use syntree::{index, pointer, Node, Span, Tree};
 use thiserror::Error;
@@ -64,7 +64,7 @@ pub(crate) enum Expr<'m> {
 fn eval_node<'a, I, W>(
     mut node: Node<'_, Syntax, I, W>,
     source: &'a str,
-    matrix: &'a Matrix,
+    eval: &Eval<'a>,
 ) -> Result<Expr<'a>, EvalError<I>>
 where
     I: index::Index,
@@ -81,7 +81,7 @@ where
             Variable => {
                 let variable = &source[node.range()];
 
-                let Some(value) = matrix.get(variable) else {
+                let Some(value) = eval.get(variable) else {
                     return Err(EvalError::new(*node.span(), BadVariable));
                 };
 
@@ -103,7 +103,7 @@ where
                     .next()
                     .ok_or(EvalError::new(*node.span(), Missing(Variable)))?;
 
-                let mut base = eval_node(first, source, matrix)?;
+                let mut base = eval_node(first, source, eval)?;
 
                 while let Some(op) = it.next() {
                     let op = op
@@ -125,7 +125,7 @@ where
                         .next()
                         .ok_or(EvalError::new(*node.span(), Missing(Variable)))?;
 
-                    let b = eval_node(first, source, matrix)?;
+                    let b = eval_node(first, source, eval)?;
 
                     base = match calculate(base, b) {
                         Some(n) => n,
@@ -163,11 +163,11 @@ fn op_or(a: Expr<'_>, b: Expr<'_>) -> Option<Expr<'static>> {
 }
 
 /// Eval a tree emitting all available expressions parsed from it.
-pub(crate) fn eval<'a, I, W>(
-    tree: &'a Tree<Syntax, I, W>,
+pub(crate) fn eval<'b, 'a, I, W>(
+    tree: &'b Tree<Syntax, I, W>,
     source: &'a str,
-    matrix: &'a Matrix,
-) -> impl Iterator<Item = Result<Expr<'a>, EvalError<I>>> + 'a
+    eval: &'b Eval<'a>,
+) -> impl Iterator<Item = Result<Expr<'a>, EvalError<I>>> + 'b
 where
     I: index::Index,
     W: pointer::Width,
@@ -176,6 +176,6 @@ where
 
     std::iter::from_fn(move || {
         let node = it.next()?;
-        Some(eval_node(node, source, matrix))
+        Some(eval_node(node, source, eval))
     })
 }
