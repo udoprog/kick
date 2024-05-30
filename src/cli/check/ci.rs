@@ -14,7 +14,7 @@ use crate::ctxt::Ctxt;
 use crate::edits;
 use crate::keys::Keys;
 use crate::model::Repo;
-use crate::workflows::{Workflow, Workflows};
+use crate::workflows::{Job, Workflow, Workflows};
 use crate::workspace::Crates;
 
 pub(crate) struct Ci<'a> {
@@ -105,7 +105,7 @@ pub(crate) fn build(cx: &Ctxt<'_>, package: &Package, repo: &Repo, crates: &Crat
     let default_config = WorkflowConfig::default();
 
     for id in ids {
-        validate_workflow(cx, &mut ci, &id, &default_config)?;
+        validate_workflow(cx, &mut ci, id, &default_config)?;
     }
 
     Ok(())
@@ -178,25 +178,19 @@ fn validate_jobs(
         validate_on(cx, ci, w, config, value);
     }
 
-    if let Some(jobs) = table.get("jobs").and_then(|v| v.as_mapping()) {
-        for (job_name, job) in jobs {
-            let Some(job) = job.as_mapping() else {
-                continue;
-            };
+    for (job_name, job) in w.jobs() {
+        check_strategy_rust_version(ci, job_name, &job);
+        check_actions(ci, job_name, &job)?;
 
-            check_strategy_rust_version(ci, job_name, &job);
-            check_actions(ci, job_name, &job)?;
-
-            if ci.crates.is_single_crate() {
-                verify_single_project_build(cx, ci, w, job)?;
-            }
+        if ci.crates.is_single_crate() {
+            verify_single_project_build(cx, ci, w, &job)?;
         }
     }
 
     Ok(())
 }
 
-fn check_actions(ci: &mut Ci<'_>, job_name: &BStr, job: &yaml::Mapping) -> Result<()> {
+fn check_actions(ci: &mut Ci<'_>, job_name: &BStr, job: &Job<'_, '_>) -> Result<()> {
     let policy = if job_name == "clippy" {
         RustVersionPolicy::Named("stable")
     } else {
@@ -204,6 +198,7 @@ fn check_actions(ci: &mut Ci<'_>, job_name: &BStr, job: &yaml::Mapping) -> Resul
     };
 
     for action in job
+        .value
         .get("steps")
         .and_then(|v| v.as_sequence())
         .into_iter()
@@ -343,12 +338,13 @@ fn check_if_rust_version(ci: &mut Ci<'_>, at: Id, value: &str) -> Result<()> {
 }
 
 /// Check that the correct rust-version is used in a job.
-fn check_strategy_rust_version(ci: &mut Ci, job_name: &BStr, job: &yaml::Mapping) {
+fn check_strategy_rust_version(ci: &mut Ci, job_name: &BStr, job: &Job<'_, '_>) {
     let Some(rust_version) = ci.package.rust_version() else {
         return;
     };
 
     if let Some(matrix) = job
+        .value
         .get("strategy")
         .and_then(|v| v.as_mapping()?.get("matrix")?.as_mapping())
     {
@@ -445,12 +441,13 @@ fn verify_single_project_build(
     cx: &Ctxt<'_>,
     ci: &mut Ci<'_>,
     w: &Workflow<'_>,
-    job: yaml::Mapping<'_>,
+    job: &Job<'_, '_>,
 ) -> Result<()> {
     let mut cargo_combos = Vec::new();
     let features = ci.package.manifest().features(ci.crates)?;
 
     for step in job
+        .value
         .get("steps")
         .and_then(|v| v.as_sequence())
         .into_iter()
