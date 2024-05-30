@@ -462,6 +462,9 @@ struct SharedOptions {
     /// Save any proposed or loaded changes.
     #[arg(long)]
     save: bool,
+    /// Enable trace level logging.
+    #[arg(long)]
+    trace: bool,
     /// Provide an access token to use to access the Github API.
     ///
     /// This can also be set through the `GITHUB_TOKEN` environment variable, or
@@ -554,19 +557,6 @@ struct Opts {
 
 #[tokio::main]
 async fn main() -> Result<ExitCode> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env_lossy(),
-        )
-        .try_init()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    entry().await
-}
-
-async fn entry() -> Result<ExitCode> {
     let opts = match Opts::try_parse() {
         Ok(opts) => opts,
         Err(error) => {
@@ -583,6 +573,29 @@ async fn entry() -> Result<ExitCode> {
         }
     };
 
+    let filter = if let Some(shared) = opts.action.as_ref().map(|a| a.shared()) {
+        if shared.trace {
+            LevelFilter::TRACE
+        } else {
+            LevelFilter::INFO
+        }
+    } else {
+        LevelFilter::INFO
+    };
+
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::builder()
+                .with_default_directive(filter.into())
+                .from_env_lossy(),
+        )
+        .try_init()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    entry(opts).await
+}
+
+async fn entry(opts: Opts) -> Result<ExitCode> {
     let action = opts.action.unwrap_or_default();
     let shared = action.shared();
 

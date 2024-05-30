@@ -25,6 +25,8 @@ pub(crate) fn escape(source: &str) -> Cow<'_, str> {
             '\\' => out.push_str("\\\\"),
             '"' => out.push_str("\\\""),
             '!' => out.push_str("\\!"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
             _ => out.push(c),
         }
     }

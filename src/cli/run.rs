@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::fmt;
 use std::io::Write;
 use std::path::Path;
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
@@ -128,7 +127,14 @@ fn run(
                                 _ => bail!("Unsupported runs-on: {runs_on}"),
                             };
 
-                            let runner = RunnerKind::from_os(cx, &os)?;
+                            let runner = match RunnerKind::from_os(cx, &os) {
+                                Ok(runner) => runner,
+                                Err(error) => {
+                                    tracing::warn!("{error}");
+                                    continue;
+                                }
+                            };
+
                             Some(runner)
                         };
 
@@ -303,9 +309,29 @@ fn run(
 
     for batch in batches {
         for runner in batch.runners(&argument_runners) {
-            let name = Opt(" ", runner.name(), "");
-            let matrix = Opt(" ", batch.matrix.as_deref(), "");
-            writeln!(o, "# in {}{name}{matrix} ", path.display())?;
+            write!(o, "# In ")?;
+
+            o.set_color(&colors.title)?;
+            write!(o, "{}", path.display())?;
+            o.reset()?;
+
+            if let Some(name) = runner.name() {
+                write!(o, " using ")?;
+
+                o.set_color(&colors.title)?;
+                write!(o, "{name}")?;
+                o.reset()?;
+            }
+
+            if let Some(matrix) = &batch.matrix {
+                write!(o, " ")?;
+
+                o.set_color(&colors.matrix)?;
+                write!(o, "{matrix}")?;
+                o.reset()?;
+            }
+
+            writeln!(o)?;
 
             for (index, run) in batch.commands.iter().enumerate() {
                 let modified;
@@ -336,49 +362,35 @@ fn run(
                     }
                 }
 
-                let color = if run.skipped.is_some() {
-                    &colors.skipped
-                } else {
-                    &colors.run
-                };
-
-                o.set_color(&colors.title)?;
-
-                let mut print_command = opts.verbose || opts.dry_run;
-
-                let mut printed = false;
-
                 if let Some(name) = &run.name {
-                    write!(o, "# {name}")?;
-                    printed = true;
-                } else if batch.commands.len() > 1 {
-                    write!(o, "# Step {} / {}", index + 1, batch.commands.len())?;
-                    printed = true;
+                    write!(o, "# ")?;
+                    o.set_color(&colors.title)?;
+                    write!(o, "{name}")?;
+                    o.reset()?;
+                    write!(o, ": ")?;
                 } else {
-                    print_command = true;
+                    write!(o, "# ")?;
+                    o.set_color(&colors.title)?;
+                    write!(o, "Step {} / {}", index + 1, batch.commands.len())?;
+                    o.reset()?;
+                    write!(o, ": ")?;
                 }
 
-                o.reset()?;
+                write!(o, "{}", runner.command.display())?;
 
                 if let Some(skipped) = &run.skipped {
+                    write!(o, " (Skipped: ")?;
                     o.set_color(&colors.skip_cond)?;
-
-                    if printed {
-                        writeln!(o, " (Disabled: {skipped})")?;
-                    } else {
-                        writeln!(o, "# Disabled: {skipped}")?;
-                    }
-
+                    write!(o, "{skipped}")?;
                     o.reset()?;
-                } else if printed {
-                    writeln!(o)?;
+                    write!(o, ")")?;
                 }
 
-                if print_command {
+                writeln!(o)?;
+
+                if opts.verbose || opts.dry_run {
                     match &flavor {
                         ShellFlavor::Sh => {
-                            o.set_color(&colors.env)?;
-
                             for (key, value) in &runner.command.env {
                                 write!(
                                     o,
@@ -388,19 +400,12 @@ fn run(
                                 )?;
                             }
 
-                            o.reset()?;
-
-                            o.set_color(color)?;
                             write!(o, "{}", runner.command.display())?;
-                            o.reset()?;
-
                             writeln!(o)?;
                         }
                         ShellFlavor::Powershell => {
                             if !runner.command.env.is_empty() {
                                 write!(o, "powershell -Command {{")?;
-
-                                o.set_color(&colors.env)?;
 
                                 for (key, value) in &runner.command.env {
                                     write!(
@@ -411,17 +416,10 @@ fn run(
                                     )?;
                                 }
 
-                                o.reset()?;
-
-                                o.set_color(color)?;
                                 write!(o, " {} ", runner.command.display())?;
-                                o.reset()?;
-
                                 writeln!(o, "}}")?;
                             } else {
-                                o.set_color(color)?;
                                 write!(o, "{}", runner.command.display())?;
-                                o.reset()?;
                                 writeln!(o)?;
                             }
                         }
@@ -586,7 +584,7 @@ impl RunnerKind {
             Self::Same => setup_same(cx, path, command, &cx.os),
             Self::Wsl => {
                 let Some(wsl) = cx.system.wsl.first() else {
-                    bail!("No WSL available");
+                    bail!("WSL not available");
                 };
 
                 Ok(setup_wsl(path, wsl, opts, command))
@@ -621,7 +619,7 @@ fn setup_same(cx: &Ctxt, path: &Path, run: &RunCommand, os: &Os) -> Result<Runne
         Run::Shell { script } => match os {
             Os::Windows => {
                 let Some(powershell) = cx.system.powershell.first() else {
-                    bail!("No powershell available");
+                    bail!("PowerShell not available");
                 };
 
                 Ok(Runner::new(powershell.command(path, script)))
@@ -683,53 +681,29 @@ fn setup_wsl(path: &Path, wsl: &Wsl, opts: &Opts, run: &RunCommand) -> Runner {
     runner
 }
 
-struct Opt<T>(&'static str, Option<T>, &'static str);
-
-impl<T> fmt::Display for Opt<T>
-where
-    T: fmt::Display,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Self(prefix, Some(ref value), suffix) = *self {
-            write!(f, "{prefix}{value}{suffix}")?;
-        }
-
-        Ok(())
-    }
-}
-
 struct Colors {
-    skipped: ColorSpec,
     skip_cond: ColorSpec,
-    run: ColorSpec,
     title: ColorSpec,
-    env: ColorSpec,
+    matrix: ColorSpec,
 }
 
 impl Colors {
     fn new() -> Self {
-        let mut skipped = ColorSpec::new();
-        skipped.set_fg(Some(Color::Red));
-
         let mut skip_cond = ColorSpec::new();
         skip_cond.set_fg(Some(Color::Red));
         skip_cond.set_bold(true);
 
-        let mut run = ColorSpec::new();
-        run.set_fg(Some(Color::Green));
-
         let mut title = ColorSpec::new();
         title.set_fg(Some(Color::White));
+        title.set_bold(true);
 
-        let mut env = ColorSpec::new();
-        env.set_fg(Some(Color::Yellow));
+        let mut matrix = ColorSpec::new();
+        matrix.set_fg(Some(Color::Yellow));
 
         Self {
-            skipped,
             skip_cond,
-            run,
             title,
-            env,
+            matrix,
         }
     }
 }
