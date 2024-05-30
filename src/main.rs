@@ -372,7 +372,7 @@ enum Action {
     /// Manage sets.
     Set(SharedAction<cli::set::Opts>),
     /// Run a custom command for each repo.
-    For(SharedAction<cli::r#for::Opts>),
+    Run(SharedAction<cli::run::Opts>),
     /// Fetch github actions build status for each repo.
     Status(SharedAction<cli::status::Opts>),
     /// Find the minimum supported rust version for each repo.
@@ -408,7 +408,7 @@ impl Action {
             Action::Changes(shared) => shared,
             Action::Define(action) => &action.shared,
             Action::Set(action) => &action.shared,
-            Action::For(action) => &action.shared,
+            Action::Run(action) => &action.shared,
             Action::Status(action) => &action.shared,
             Action::Msrv(action) => &action.shared,
             Action::Version(action) => &action.shared,
@@ -429,7 +429,7 @@ impl Action {
             Action::Changes(..) => None,
             Action::Define(..) => None,
             Action::Set(action) => Some(&action.repo),
-            Action::For(action) => Some(&action.repo),
+            Action::Run(action) => Some(&action.repo),
             Action::Status(action) => Some(&action.repo),
             Action::Msrv(action) => Some(&action.repo),
             Action::Version(action) => Some(&action.repo),
@@ -771,8 +771,8 @@ async fn entry() -> Result<ExitCode> {
         Action::Set(opts) => {
             cli::set::entry(&mut cx, &opts.action)?;
         }
-        Action::For(opts) => {
-            cli::r#for::entry(&mut cx, &opts.action)?;
+        Action::Run(opts) => {
+            cli::run::entry(&mut cx, &opts.action)?;
         }
         Action::Status(opts) => {
             cli::status::entry(&mut cx, &opts.action).await?;

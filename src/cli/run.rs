@@ -52,14 +52,14 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
         cx,
         "run commands",
         format_args!("for: {opts:?}"),
-        |cx, repo| { r#for(cx, repo, opts) }
+        |cx, repo| { run(cx, repo, opts) }
     );
 
     Ok(())
 }
 
-#[tracing::instrument(name = "for", skip_all)]
-fn r#for(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
+#[tracing::instrument(skip_all)]
+fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     let mut commands = Vec::new();
 
     let ignore = IGNORE.iter().copied().map(String::from).collect();
