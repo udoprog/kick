@@ -18,16 +18,22 @@ static ACCEPT: header::HeaderValue = header::HeaderValue::from_static("applicati
 static OCTET_STREAM: header::HeaderValue =
     header::HeaderValue::from_static("application/octet-stream");
 
+pub(crate) enum Auth {
+    Bearer(SecretString),
+    Basic(SecretString),
+    None,
+}
+
 /// A github client.
 pub(crate) struct Client {
     uploads_url: Url,
     url: Url,
-    token: Option<SecretString>,
+    auth: Auth,
     client: reqwest::Client,
 }
 
 impl Client {
-    pub(crate) fn new(token: Option<SecretString>) -> Result<Self> {
+    pub(crate) fn new(auth: Auth) -> Result<Self> {
         let uploads_url = Url::parse(UPLOADS_URL)?;
         let url = Url::parse(API_URL)?;
 
@@ -38,7 +44,7 @@ impl Client {
         Ok(Self {
             uploads_url,
             url,
-            token,
+            auth,
             client,
         })
     }
@@ -432,11 +438,18 @@ impl Client {
             .request(method, url.clone())
             .header(header::ACCEPT, &ACCEPT);
 
-        if let Some(token) = &self.token {
-            builder = builder.header(
-                header::AUTHORIZATION,
-                format!("Bearer {}", token.as_secret()),
-            );
+        match &self.auth {
+            Auth::Bearer(token) => {
+                builder = builder.header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {}", token.as_secret()),
+                );
+            }
+            Auth::Basic(auth) => {
+                builder =
+                    builder.header(header::AUTHORIZATION, format!("Basic {}", auth.as_secret()));
+            }
+            Auth::None => {}
         }
 
         builder
