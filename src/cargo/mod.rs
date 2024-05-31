@@ -25,7 +25,7 @@ use std::path::Path;
 use anyhow::{anyhow, Context, Result};
 use musli::{Decode, Encode};
 use relative_path::{RelativePath, RelativePathBuf};
-use toml_edit::{Array, Document, Formatted, Item, Key, Table, Value};
+use toml_edit::{Array, Document, Formatted, Item, Key, Table, TableLike, Value};
 
 use crate::ctxt::Paths;
 use crate::workspace::Crates;
@@ -344,11 +344,39 @@ impl Manifest {
         self.doc.get_mut(key)
     }
 
-    /// Remove the given key.
     pub(crate) fn remove(&mut self, key: &str) -> bool {
         self.doc.remove(key).is_some()
     }
 
+    /// Remove everything related to the given key, including target keys.
+    pub(crate) fn remove_all(&mut self, key: &str) -> bool {
+        let mut removed = self.remove(key);
+
+        self.for_each_target_mut(|table| {
+            removed |= table.remove(key).is_some();
+        });
+
+        removed
+    }
+
     insert_list!(insert_keywords, "keywords");
     insert_list!(insert_categories, "categories");
+
+    fn for_each_target_mut(&mut self, mut f: impl FnMut(&mut dyn TableLike)) {
+        let Some(target) = self.doc.get_mut("target") else {
+            return;
+        };
+
+        let Some(table) = target.as_table_like_mut() else {
+            return;
+        };
+
+        for (_, value) in table.iter_mut() {
+            let Some(table) = value.as_table_like_mut() else {
+                continue;
+            };
+
+            f(table);
+        }
+    }
 }

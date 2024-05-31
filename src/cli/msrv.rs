@@ -156,7 +156,7 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
             if !opts.no_remove_dev_dependencies {
                 tracing::info!("{}: Removing dev-dependencies", manifest_path.display());
-                save |= manifest.remove(cargo::DEV_DEPENDENCIES);
+                save |= manifest.remove_all(cargo::DEV_DEPENDENCIES);
             }
 
             if version < RUST_VERSION_SUPPORTED {
