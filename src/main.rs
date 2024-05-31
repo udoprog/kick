@@ -39,6 +39,7 @@
 //!
 //! * [Configuration](#configuration)
 //! * [Tour of commands](#tour-of-commands)
+//! * [Run Github Workflows](#run-github-workflows)
 //! * [Github Actions](#github-actions)
 //! * [Staged changes](#staged-changes)
 //! * [Repo sets](#repo-sets)
@@ -77,6 +78,24 @@
 //!   remote? Try `kick for --outdated`.
 //!
 //! And much much more!
+//!
+//! <br>
+//!
+//! ## Run Github Workflows
+//!
+//! ![Matrix and WSL integration](https://raw.githubusercontent.com/udoprog/kick/main/images/wsl.png)
+//!
+//! Kick can run Github workflows locally using `kick run --job <job>`.
+//!
+//! This tries to use system utilities which are available locally in order to
+//! run the workflow on the appropriate operating system as specified through
+//! `runs-on`.
+//!
+//! This also comes with support for matrix expansion.
+//!
+//! Supported integrations are:
+//! * Running on the same operating system as where Kick is run (default).
+//! * Running Linux on Windows through WSL.
 //!
 //! <br>
 //!
