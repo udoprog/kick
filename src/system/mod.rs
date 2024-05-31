@@ -1,4 +1,4 @@
-mod git;
+pub(crate) mod git;
 mod powershell;
 mod wsl;
 

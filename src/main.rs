@@ -358,6 +358,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
+use std::str::FromStr;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, FromArgMatches, Parser, Subcommand};
@@ -366,6 +367,7 @@ use config::{Config, Os};
 use env::SecretString;
 use relative_path::{RelativePath, RelativePathBuf};
 use tracing::metadata::LevelFilter;
+use tracing_subscriber::filter::Directive;
 
 use crate::ctxt::Paths;
 use crate::env::Env;
@@ -594,18 +596,18 @@ async fn main() -> Result<ExitCode> {
 
     let filter = if let Some(shared) = opts.action.as_ref().map(|a| a.shared()) {
         if shared.trace {
-            LevelFilter::TRACE
+            Directive::from_str("kick=trace")?
         } else {
-            LevelFilter::INFO
+            Directive::from(LevelFilter::INFO)
         }
     } else {
-        LevelFilter::INFO
+        Directive::from(LevelFilter::INFO)
     };
 
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::builder()
-                .with_default_directive(filter.into())
+                .with_default_directive(filter)
                 .from_env_lossy(),
         )
         .try_init()
@@ -778,8 +780,23 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
 
     let changes_path = root.join("changes.gz");
 
+    let git_credentials = match system.git.first() {
+        Some(git) => match git.get_credentials("github.com", "https") {
+            Ok(credentials) => {
+                tracing::trace!("Using git credentials for github.com");
+                Some(credentials)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to get git credentials: {e}");
+                None
+            }
+        },
+        None => None,
+    };
+
     let mut cx = ctxt::Ctxt {
         system: &system,
+        git_credentials: &git_credentials,
         os,
         paths,
         config: &config,

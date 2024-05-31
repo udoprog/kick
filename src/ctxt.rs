@@ -12,9 +12,9 @@ use crate::changes::{Change, Warning};
 use crate::config::{Config, Os};
 use crate::env::Env;
 use crate::model::{RenderRustVersions, Repo, RepoParams, RepoRef, State};
-use crate::octokit;
 use crate::process::Command;
 use crate::repo_sets::RepoSets;
+use crate::{octokit, system};
 
 /// Paths being used.
 #[derive(Debug, Clone, Copy)]
@@ -65,6 +65,7 @@ impl Paths<'_> {
 
 pub(crate) struct Ctxt<'a> {
     pub(crate) system: &'a System,
+    pub(crate) git_credentials: &'a Option<system::git::Credentials>,
     pub(crate) os: Os,
     pub(crate) paths: Paths<'a>,
     pub(crate) config: &'a Config<'a>,
@@ -79,7 +80,13 @@ pub(crate) struct Ctxt<'a> {
 impl<'a> Ctxt<'a> {
     /// Grab an octokit client optionally configured with a token.
     pub(crate) fn octokit(&self) -> Result<octokit::Client> {
-        octokit::Client::new(self.env.github_token.clone())
+        let auth = match (&self.git_credentials, &self.env.github_token) {
+            (Some(auth_manager), _) => octokit::Auth::Basic(auth_manager.get()),
+            (_, Some(token)) => octokit::Auth::Bearer(token.clone()),
+            _ => octokit::Auth::None,
+        };
+
+        octokit::Client::new(auth)
     }
 
     pub(crate) fn root(&self) -> &Path {

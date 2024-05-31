@@ -1,13 +1,18 @@
 use std::ffi::OsStr;
 use std::fmt::Display;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::str;
 
-use crate::process::Command;
 use anyhow::{bail, ensure, Context, Result};
+use base64::engine::general_purpose::STANDARD_NO_PAD;
+use base64::Engine;
+use bstr::ByteSlice;
 use reqwest::Url;
+
+use crate::env::SecretString;
+use crate::process::Command;
 
 #[derive(Debug)]
 pub(crate) struct Git {
@@ -265,6 +270,53 @@ impl Git {
         let url = String::from_utf8(output.stdout)?;
         Ok(Url::parse(url.trim())?)
     }
+
+    /// Get credentials.
+    pub(crate) fn get_credentials(&self, host: &str, protocol: &str) -> Result<Credentials> {
+        let mut child = Command::new(&self.command)
+            .args(["credential-manager-core", "get"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        let mut stdin = child.stdin()?;
+
+        write!(stdin, "host={host}\nprotocol={protocol}\n")?;
+        drop(stdin);
+
+        let output = child.wait_with_output()?;
+        ensure!(output.status.success(), output.status);
+
+        let mut username = None;
+        let mut password = None;
+
+        for line in output.stdout.split_str("\n") {
+            if let Some((head, tail)) = line.trim().split_once_str("=") {
+                match head {
+                    b"protocol" => {}
+                    b"host" => {}
+                    b"username" => {
+                        username = Some(tail.to_vec());
+                    }
+                    b"password" => {
+                        password = Some(tail.to_vec());
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let username = username.context("missing username")?;
+        let password = password.context("missing password")?;
+
+        let mut combined = Vec::with_capacity(username.len() + password.len() + 1);
+        combined.extend_from_slice(&username);
+        combined.push(b':');
+        combined.extend_from_slice(&password);
+
+        Ok(Credentials { combined })
+    }
 }
 
 pub(crate) struct DescribeTags {
@@ -282,5 +334,19 @@ pub(crate) fn test(path: &OsStr) -> Result<Option<ExitStatus>> {
         Ok(status) => Ok(Some(status)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e).context("git --version"),
+    }
+}
+
+/// Git credentials.
+pub(crate) struct Credentials {
+    combined: Vec<u8>,
+}
+
+impl Credentials {
+    /// Get secret credentials.
+    pub(crate) fn get(&self) -> SecretString {
+        let mut string = String::new();
+        STANDARD_NO_PAD.encode_string(&self.combined, &mut string);
+        SecretString::new(string)
     }
 }
