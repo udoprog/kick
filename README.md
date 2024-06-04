@@ -40,7 +40,7 @@ commands in regular repositories.
 
 This is an overview of the sections in the README:
 
-* [Configuration](#configuration)
+* [Configuration][config]
 * [Tour of commands](#tour-of-commands)
 * [Run Github Workflows](#run-github-workflows)
 * [Github Actions](#github-actions)
@@ -55,7 +55,7 @@ This is an overview of the sections in the README:
 ## Configuration
 
 Kick optionally reads `Kick.toml`, for how to configure projects. See the
-[configuration documentation].
+[configuration documentation][config].
 
 <br>
 
@@ -76,9 +76,9 @@ Kick can run custom commands over git modules using convenient filters.
 Combined with [repo sets](#repo-sets). Performing batch maintenance over
 many git projects has never been easier!
 * Want to do something with every project that hasn't been released yet? Try
-  `kick for --unreleased`.
+  `kick run --unreleased`.
 * Want to do something with every project that is out-of-sync with their
-  remote? Try `kick for --outdated`.
+  remote? Try `kick run --outdated`.
 
 And much much more!
 
@@ -323,5 +323,5 @@ Note that version information is exported by default when specifying
 `--github-action`. For other information that can be exported, see `define
 --help`.
 
-[configuration documentation]: https://github.com/udoprog/kick/blob/main/CONFIGURATION.md
+[config]: https://github.com/udoprog/kick/blob/main/config.md
 [wobbly-versions]: https://github.com/udoprog/kick/blob/main/WOBBLY_VERSIONS.md

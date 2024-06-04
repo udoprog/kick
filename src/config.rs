@@ -500,7 +500,7 @@ impl IdSet {
         self.disabled.extend(other.disabled);
     }
 
-    /// Test if id is enabled.
+    /// Test if an id is enabled.
     pub(crate) fn is_enabled(&self, id: &str, enabled: bool) -> bool {
         if enabled {
             !self.disabled.contains(id)
@@ -730,11 +730,13 @@ impl Config<'_> {
 
     /// Get Cargo.toml path for the given repo.
     pub(crate) fn is_enabled(&self, repo: &RepoRef, feature: &str) -> bool {
+        let base = !self.base.disabled.contains(feature);
+
         let Some(repo) = self.repos.get(repo.path()) else {
-            return true;
+            return base;
         };
 
-        !repo.disabled.contains(feature)
+        base && !repo.disabled.contains(feature)
     }
 
     /// Get version replacements.
@@ -1044,6 +1046,7 @@ impl<'a> ConfigCtxt<'a> {
             })
         })?;
 
+        let lib_badges = cx.in_array("lib_badges", None, |cx, item| Id::parse(cx.string(item)?))?;
         let readme_badges = cx.in_array("readme_badges", None, |cx, item| {
             Id::parse(cx.string(item)?)
         })?;
@@ -1094,7 +1097,7 @@ impl<'a> ConfigCtxt<'a> {
             badges,
             cargo_toml: cx.as_relative_path("cargo_toml")?,
             disabled: cx.in_array("disabled", None, Self::string)?,
-            lib_badges: cx.in_array("lib_badges", None, |cx, item| Id::parse(cx.string(item)?))?,
+            lib_badges,
             readme_badges,
             variables,
             version,
@@ -1195,7 +1198,11 @@ impl<'a> ConfigCtxt<'a> {
     fn rpm(&mut self, value: toml::Value) -> Result<RpmPackage> {
         self.with_table(value, |cx| {
             Ok(RpmPackage {
-                requires: cx.in_array("requires", None, Self::rpm_require)?,
+                requires: cx.in_array(
+                    "requires",
+                    Some(("package", "version")),
+                    Self::rpm_require,
+                )?,
             })
         })
     }
@@ -1203,7 +1210,11 @@ impl<'a> ConfigCtxt<'a> {
     fn deb(&mut self, value: toml::Value) -> Result<DebPackage> {
         self.with_table(value, |cx| {
             Ok(DebPackage {
-                depends: cx.in_array("depends", None, Self::deb_dependency)?,
+                depends: cx.in_array(
+                    "depends",
+                    Some(("package", "version")),
+                    Self::deb_dependency,
+                )?,
             })
         })
     }
