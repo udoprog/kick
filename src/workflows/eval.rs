@@ -1,3 +1,6 @@
+use std::borrow::Cow;
+use std::fmt;
+
 use super::{Eval, Syntax};
 
 use syntree::{index, pointer, Node, Span, Tree};
@@ -19,46 +22,83 @@ impl<I> EvalError<I> {
     }
 }
 
+#[derive(Debug)]
+pub(crate) enum Operator {
+    And,
+    Or,
+}
+
+impl fmt::Display for Operator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::And => write!(f, "&&"),
+            Self::Or => write!(f, "||"),
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub(crate) enum EvalErrorKind {
-    #[error("expected {0:?} but was {1:?}")]
+    #[error("Expected {0:?} but was {1:?}")]
     Expected(Syntax, Syntax),
 
-    #[error("expected {0:?}")]
+    #[error("Expected {0:?}")]
     Missing(Syntax),
 
-    #[error("bad variable")]
-    BadVariable,
+    #[error("Bad variable `{0}`")]
+    BadVariable(Box<str>),
 
-    #[error("bad string")]
-    BadString,
+    #[error("Bad string literal `{0}`")]
+    BadString(Box<str>),
 
-    #[error("{0:?} is not a valid operator")]
+    #[error("Token `{0:?}` is not a valid operator")]
     UnexpectedOperator(Syntax),
 
-    #[error("expected an operator")]
+    #[error("Expected an operator")]
     ExpectedOperator,
 
-    #[error("numerical overflow")]
-    Overflow,
-
-    #[error("numerical underflow")]
-    Underflow,
-
-    #[error("divide by zero")]
-    DivideByZero,
+    #[error("Expected <bool> {op} <bool> but got {lhs} {op} {rhs}")]
+    ExpectedBoolean {
+        lhs: ExprKind,
+        rhs: ExprKind,
+        op: Operator,
+    },
 }
 
 use EvalErrorKind::{
-    BadString, BadVariable, DivideByZero, Expected, ExpectedOperator, Missing, Overflow, Underflow,
+    BadString, BadVariable, Expected, ExpectedBoolean, ExpectedOperator, Missing,
     UnexpectedOperator,
 };
 
 /// The outcome of evaluating an expression.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Expr<'m> {
-    Value(&'m str),
+    String(Cow<'m, str>),
     Bool(bool),
+}
+
+impl Expr<'_> {
+    fn kind(&self) -> ExprKind {
+        match self {
+            Self::String(_) => ExprKind::String,
+            Self::Bool(_) => ExprKind::Bool,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum ExprKind {
+    String,
+    Bool,
+}
+
+impl fmt::Display for ExprKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::String => write!(f, "<string>"),
+            Self::Bool => write!(f, "<bool>"),
+        }
+    }
 }
 
 fn eval_node<'a, I, W>(
@@ -82,19 +122,23 @@ where
                 let variable = &source[node.range()];
 
                 let Some(value) = eval.get(variable) else {
-                    return Err(EvalError::new(*node.span(), BadVariable));
+                    return Err(EvalError::new(*node.span(), BadVariable(variable.into())));
                 };
 
-                Ok(Expr::Value(value))
+                Ok(Expr::String(Cow::Borrowed(value)))
             }
             SingleString | DoubleString => {
                 let value = &source[node.range()];
 
                 let Some(value) = value.get(1..value.len().saturating_sub(1)) else {
-                    return Err(EvalError::new(*node.span(), BadString));
+                    return Err(EvalError::new(*node.span(), BadString(value.into())));
                 };
 
-                Ok(Expr::Value(value))
+                let Some(value) = unescape(value) else {
+                    return Err(EvalError::new(*node.span(), BadString(value.into())));
+                };
+
+                Ok(Expr::String(value))
             }
             Operation => {
                 let mut it = node.children().skip_tokens();
@@ -110,16 +154,17 @@ where
                         .first()
                         .ok_or(EvalError::new(*node.span(), ExpectedOperator))?;
 
-                    let (calculate, error): (fn(Expr<'_>, Expr<'_>) -> Option<Expr<'static>>, _) =
-                        match *op.value() {
-                            Eq => (op_eq, Overflow),
-                            Neq => (op_neq, Underflow),
-                            And => (op_and, Overflow),
-                            Or => (op_or, DivideByZero),
-                            what => {
-                                return Err(EvalError::new(*node.span(), UnexpectedOperator(what)))
-                            }
-                        };
+                    let calculate: fn(
+                        &Span<I>,
+                        Expr<'_>,
+                        Expr<'_>,
+                    ) -> Result<Expr<'static>, EvalError<I>> = match *op.value() {
+                        Eq => op_eq::<I>,
+                        Neq => op_neq::<I>,
+                        And => op_and::<I>,
+                        Or => op_or::<I>,
+                        what => return Err(EvalError::new(*node.span(), UnexpectedOperator(what))),
+                    };
 
                     let first = it
                         .next()
@@ -127,10 +172,7 @@ where
 
                     let b = eval_node(first, source, eval)?;
 
-                    base = match calculate(base, b) {
-                        Some(n) => n,
-                        None => return Err(EvalError::new(op.span().join(node.span()), error)),
-                    }
+                    base = calculate(node.span(), base, b)?;
                 }
 
                 Ok(base)
@@ -140,26 +182,89 @@ where
     }
 }
 
-fn op_eq(a: Expr<'_>, b: Expr<'_>) -> Option<Expr<'static>> {
-    Some(Expr::Bool(a == b))
+fn op_eq<I>(_: &Span<I>, a: Expr<'_>, b: Expr<'_>) -> Result<Expr<'static>, EvalError<I>>
+where
+    I: index::Index,
+{
+    Ok(Expr::Bool(a == b))
 }
 
-fn op_neq(a: Expr<'_>, b: Expr<'_>) -> Option<Expr<'static>> {
-    Some(Expr::Bool(a != b))
+fn op_neq<I>(_: &Span<I>, a: Expr<'_>, b: Expr<'_>) -> Result<Expr<'static>, EvalError<I>>
+where
+    I: index::Index,
+{
+    Ok(Expr::Bool(a != b))
 }
 
-fn op_and(a: Expr<'_>, b: Expr<'_>) -> Option<Expr<'static>> {
+fn op_and<I>(span: &Span<I>, a: Expr<'_>, b: Expr<'_>) -> Result<Expr<'static>, EvalError<I>>
+where
+    I: index::Index,
+{
     match (a, b) {
-        (Expr::Bool(a), Expr::Bool(b)) => Some(Expr::Bool(a & b)),
-        _ => None,
+        (Expr::Bool(a), Expr::Bool(b)) => Ok(Expr::Bool(a & b)),
+        (lhs, rhs) => Err(EvalError::new(
+            *span,
+            ExpectedBoolean {
+                lhs: lhs.kind(),
+                rhs: rhs.kind(),
+                op: Operator::And,
+            },
+        )),
     }
 }
 
-fn op_or(a: Expr<'_>, b: Expr<'_>) -> Option<Expr<'static>> {
+fn op_or<I>(span: &Span<I>, a: Expr<'_>, b: Expr<'_>) -> Result<Expr<'static>, EvalError<I>>
+where
+    I: index::Index,
+{
     match (a, b) {
-        (Expr::Bool(a), Expr::Bool(b)) => Some(Expr::Bool(a | b)),
-        _ => None,
+        (Expr::Bool(a), Expr::Bool(b)) => Ok(Expr::Bool(a | b)),
+        (lhs, rhs) => Err(EvalError::new(
+            *span,
+            ExpectedBoolean {
+                lhs: lhs.kind(),
+                rhs: rhs.kind(),
+                op: Operator::Or,
+            },
+        )),
     }
+}
+
+fn unescape(string: &str) -> Option<Cow<'_, str>> {
+    let escaped = 'escaped: {
+        for (i, c) in string.char_indices() {
+            if c == '\\' {
+                break 'escaped i;
+            }
+        }
+
+        return Some(Cow::Borrowed(string));
+    };
+
+    let mut unescaped = String::with_capacity(string.len());
+    unescaped.push_str(&string[..escaped]);
+
+    let mut it = string[escaped..].chars();
+
+    while let Some(c) = it.next() {
+        if c == '\\' {
+            let b = it.next()?;
+
+            match b {
+                'n' => unescaped.push('\n'),
+                'r' => unescaped.push('\r'),
+                't' => unescaped.push('\t'),
+                '\\' => unescaped.push('\\'),
+                '"' => unescaped.push('"'),
+                '\'' => unescaped.push('\''),
+                _ => unescaped.push(b),
+            }
+        } else {
+            unescaped.push(c);
+        }
+    }
+
+    Some(Cow::Owned(unescaped))
 }
 
 /// Eval a tree emitting all available expressions parsed from it.

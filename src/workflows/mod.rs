@@ -266,7 +266,7 @@ impl<'a> Eval<'a> {
             let expr = rest[..end].trim();
 
             match self.expr(expr)? {
-                Expr::Value(s) => result.push_str(s),
+                Expr::String(s) => result.push_str(s.as_ref()),
                 Expr::Bool(b) => {
                     result.push_str(if b { "true" } else { "false" });
                 }
@@ -285,11 +285,20 @@ impl<'a> Eval<'a> {
 
         let mut it = self::eval::eval(&tree, source, self);
 
-        let Some(expr) = it.next().transpose()? else {
+        let Some(expr) = it.next() else {
             bail!("No expressions");
         };
 
-        Ok(expr)
+        if it.next().is_some() {
+            bail!("Multiple expressions");
+        }
+
+        match expr {
+            Ok(expr) => Ok(expr),
+            Err(e) => {
+                bail!("{e}: {}", &source[e.span.range()]);
+            }
+        }
     }
 
     pub(crate) fn test(&self, source: &str) -> Result<bool> {
