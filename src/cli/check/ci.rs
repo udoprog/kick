@@ -167,7 +167,7 @@ fn validate_workflow(
 fn validate_jobs(
     cx: &Ctxt<'_>,
     ci: &mut Ci<'_>,
-    w: &Workflow<'_>,
+    w: &Workflow,
     config: &WorkflowConfig,
 ) -> Result<()> {
     let Some(table) = w.doc.as_ref().as_mapping() else {
@@ -190,7 +190,7 @@ fn validate_jobs(
     Ok(())
 }
 
-fn check_actions(ci: &mut Ci<'_>, job_name: &BStr, job: &Job<'_, '_>) -> Result<()> {
+fn check_actions(ci: &mut Ci<'_>, job_name: &BStr, job: &Job<'_>) -> Result<()> {
     let policy = if job_name == "clippy" {
         RustVersionPolicy::Named("stable")
     } else {
@@ -338,7 +338,7 @@ fn check_if_rust_version(ci: &mut Ci<'_>, at: Id, value: &str) -> Result<()> {
 }
 
 /// Check that the correct rust-version is used in a job.
-fn check_strategy_rust_version(ci: &mut Ci, job_name: &BStr, job: &Job<'_, '_>) {
+fn check_strategy_rust_version(ci: &mut Ci, job_name: &BStr, job: &Job<'_>) {
     let Some(rust_version) = ci.package.rust_version() else {
         return;
     };
@@ -375,7 +375,7 @@ fn check_strategy_rust_version(ci: &mut Ci, job_name: &BStr, job: &Job<'_, '_>) 
 fn validate_on(
     cx: &Ctxt<'_>,
     ci: &mut Ci<'_>,
-    w: &Workflow<'_>,
+    w: &Workflow,
     config: &WorkflowConfig,
     value: yaml::Value<'_>,
 ) {
@@ -440,8 +440,8 @@ fn validate_on(
 fn verify_single_project_build(
     cx: &Ctxt<'_>,
     ci: &mut Ci<'_>,
-    w: &Workflow<'_>,
-    job: &Job<'_, '_>,
+    w: &Workflow,
+    job: &Job<'_>,
 ) -> Result<()> {
     let mut cargo_combos = Vec::new();
     let features = ci.package.manifest().features(ci.crates)?;

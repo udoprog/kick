@@ -83,34 +83,30 @@ impl<'cx> Workflows<'cx> {
         };
 
         let doc = yaml::from_slice(bytes).with_context(|| anyhow!("{}", p.display()))?;
-        Ok(Some(Workflow {
-            cx: self.cx,
-            path,
-            doc,
-        }))
+
+        Ok(Some(Workflow { path, doc }))
     }
 }
 
-pub(crate) struct Workflow<'cx> {
-    cx: &'cx Ctxt<'cx>,
+pub(crate) struct Workflow {
     pub(crate) path: RelativePathBuf,
     pub(crate) doc: yaml::Document,
 }
 
-impl<'cx> Workflow<'cx> {
+impl Workflow {
     /// Iterate over all jobs.
-    pub(crate) fn jobs(&self) -> impl Iterator<Item = (&BStr, Job<'cx, '_>)> {
+    pub(crate) fn jobs(&self) -> impl Iterator<Item = (&BStr, Job<'_>)> {
         self.doc.as_ref().as_mapping().into_iter().flat_map(|m| {
             m.get("jobs")
                 .and_then(|jobs| jobs.as_mapping())
                 .into_iter()
                 .flatten()
-                .flat_map(|(key, job)| Some((key, Job::new(self.cx, job.as_mapping()?))))
+                .flat_map(|(key, job)| Some((key, Job::new(job.as_mapping()?))))
         })
     }
 
     /// Get the root level environment variables.
-    pub(crate) fn env(&self) -> BTreeMap<String, String> {
+    pub(crate) fn env(&self, eval: &Eval<'_>) -> Result<BTreeMap<String, String>> {
         let mut env = BTreeMap::new();
 
         if let Some(root) = self.doc.as_ref().as_mapping() {
@@ -120,24 +116,23 @@ impl<'cx> Workflow<'cx> {
                         continue;
                     };
 
-                    env.insert(key.to_string(), value.to_string());
+                    let value = eval.eval(value)?;
+                    env.insert(key.to_string(), value.into_owned());
                 }
             }
         }
 
-        env
+        Ok(env)
     }
 }
 
-pub(crate) struct Job<'cx, 'a> {
-    #[allow(unused)]
-    cx: &'cx Ctxt<'cx>,
+pub(crate) struct Job<'a> {
     pub(crate) value: yaml::Mapping<'a>,
 }
 
-impl<'cx, 'a> Job<'cx, 'a> {
-    pub(crate) fn new(cx: &'cx Ctxt<'cx>, value: yaml::Mapping<'a>) -> Self {
-        Self { cx, value }
+impl<'a> Job<'a> {
+    pub(crate) fn new(value: yaml::Mapping<'a>) -> Self {
+        Self { value }
     }
 
     /// Get the runs-on value.
@@ -226,14 +221,39 @@ impl<'cx, 'a> Job<'cx, 'a> {
     }
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct Eval<'a> {
-    pub(crate) matrix: &'a Matrix,
-    env: &'a BTreeMap<String, String>,
+    pub(crate) matrix: Option<&'a Matrix>,
+    env: Option<&'a BTreeMap<String, String>>,
 }
 
 impl<'a> Eval<'a> {
-    pub(crate) fn new(env: &'a BTreeMap<String, String>, matrix: &'a Matrix) -> Self {
-        Self { matrix, env }
+    pub(crate) const fn new() -> Eval<'a> {
+        Self {
+            matrix: None,
+            env: None,
+        }
+    }
+
+    /// Get the environment associated with the evaluation.
+    pub(crate) fn env(&self) -> BTreeMap<String, String> {
+        self.env.cloned().unwrap_or_default()
+    }
+
+    /// Associate a matrix with the evaluation.
+    pub(crate) fn with_matrix(self, matrix: &'a Matrix) -> Self {
+        Self {
+            matrix: Some(matrix),
+            ..self
+        }
+    }
+
+    /// Associate an environment with the evaluation.
+    pub(crate) fn with_env(self, env: &'a BTreeMap<String, String>) -> Self {
+        Self {
+            env: Some(env),
+            ..self
+        }
     }
 
     /// Evaluate a string with matrix variables.
@@ -270,6 +290,7 @@ impl<'a> Eval<'a> {
                 Expr::Bool(b) => {
                     result.push_str(if b { "true" } else { "false" });
                 }
+                Expr::Null => {}
             }
 
             s = &rest[end + 2..];
@@ -313,10 +334,23 @@ impl<'a> Eval<'a> {
         let (key, value) = key.split_once('.')?;
 
         match (key.trim(), value.trim()) {
-            ("env", key) => self.env.get(key).map(String::as_str),
-            ("matrix", key) => self.matrix.matrix.get(key).map(String::as_str),
+            ("env", key) => self.env?.get(key).map(String::as_str),
+            ("matrix", key) => self.matrix?.matrix.get(key).map(String::as_str),
+            ("github", key) => {
+                let (what, rest) = key.split_once('.')?;
+
+                match what {
+                    "event" => self.event(rest),
+                    _ => None,
+                }
+            }
             _ => None,
         }
+    }
+
+    fn event(&self, _: &str) -> Option<&'a str> {
+        // TODO: Support setting event variables.
+        None
     }
 }
 
@@ -326,6 +360,25 @@ pub(crate) struct Matrix {
 }
 
 impl Matrix {
+    /// Create a new matrix.
+    #[cfg(test)]
+    pub(crate) fn new() -> Self {
+        Self {
+            matrix: BTreeMap::new(),
+        }
+    }
+
+    /// Insert a value into the matrix.
+    #[cfg(test)]
+    pub(crate) fn insert<K, V>(&mut self, key: K, value: V)
+    where
+        K: AsRef<str>,
+        V: AsRef<str>,
+    {
+        self.matrix
+            .insert(key.as_ref().to_owned(), value.as_ref().to_owned());
+    }
+
     /// Test if the matrix is empty.
     #[inline]
     pub(crate) fn is_empty(&self) -> bool {
@@ -408,18 +461,13 @@ mod tests {
 
     #[test]
     fn matrix_test() {
-        let matrix = Matrix {
-            matrix: vec![
-                ("a".to_owned(), "1".to_owned()),
-                ("b".to_owned(), "2".to_owned()),
-            ]
-            .into_iter()
-            .collect(),
-        };
+        let mut matrix = Matrix::new();
+        matrix.insert("a", "1");
+        matrix.insert("b", "2");
 
         let env = BTreeMap::new();
 
-        let eval = Eval::new(&env, &matrix);
+        let eval = Eval::new().with_env(&env).with_matrix(&matrix);
 
         assert!(eval.test("matrix.a == '1'").unwrap());
         assert!(eval.test("matrix.a != '2'").unwrap());
@@ -428,5 +476,34 @@ mod tests {
         assert!(eval
             .test("matrix.a == matrix.b || matrix.a != matrix.b")
             .unwrap());
+    }
+
+    #[test]
+    fn or_test() {
+        let mut matrix = Matrix::new();
+        matrix.insert("bar", "right");
+
+        let eval = Eval::new().with_matrix(&matrix);
+
+        assert_eq!(
+            eval.expr("matrix.foo || matrix.bar").unwrap(),
+            Expr::String(Cow::Borrowed("right"))
+        );
+    }
+
+    #[test]
+    fn and_test() {
+        let mut matrix = Matrix::new();
+        matrix.insert("foo", "wrong");
+        matrix.insert("bar", "right");
+
+        let eval = Eval::new().with_matrix(&matrix);
+
+        assert_eq!(
+            eval.expr("matrix.foo && matrix.bar").unwrap(),
+            Expr::String(Cow::Borrowed("right"))
+        );
+
+        assert_eq!(eval.expr("matrix.baz && matrix.bar").unwrap(), Expr::Null);
     }
 }
