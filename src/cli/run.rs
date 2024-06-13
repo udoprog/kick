@@ -2,19 +2,20 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::Write;
 use std::path::Path;
-use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
+use std::str;
 
-use anyhow::{bail, ensure, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use clap::Parser;
 use nondestructive::yaml::Mapping;
 use relative_path::RelativePathBuf;
+use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 use crate::config::Os;
 use crate::ctxt::Ctxt;
 use crate::model::{Repo, ShellFlavor};
 use crate::process::Command;
 use crate::system::Wsl;
-use crate::workflows::{Eval, Matrix, Workflows};
+use crate::workflows::{Eval, Job, Matrix, Workflow, Workflows};
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -97,181 +98,32 @@ fn run(
         ignore.insert(i.clone());
     }
 
-    if let Some(to_run) = &opts.job {
+    let mut jobs = HashSet::new();
+    jobs.extend(opts.job.clone());
+
+    if !jobs.is_empty() {
         let workflows = Workflows::new(cx, repo)?;
 
         for id in workflows.ids() {
-            if let Some(workflow) = workflows.open(id)? {
-                let env = workflow.env();
+            let Some(workflow) = workflows.open(id)? else {
+                continue;
+            };
 
-                for (job_name, job) in workflow.jobs() {
-                    if job_name != to_run {
-                        continue;
-                    }
-
-                    let runs_on = job.runs_on()?;
-
-                    for matrix in job.matrices(&ignore)? {
-                        let eval = Eval::new(&env, &matrix);
-
-                        let runner = if opts.ignore_runs_on {
-                            None
-                        } else {
-                            let runs_on = eval.eval(runs_on)?;
-                            let runs_on = runs_on.as_ref();
-
-                            let os = match runs_on.split_once('-') {
-                                Some(("ubuntu", _)) => Os::Linux,
-                                Some(("windows", _)) => Os::Windows,
-                                Some(("macos", _)) => Os::Mac,
-                                _ => bail!("Unsupported runs-on: {runs_on}"),
-                            };
-
-                            let runner = match RunnerKind::from_os(cx, &os) {
-                                Ok(runner) => runner,
-                                Err(error) => {
-                                    tracing::warn!("{error}");
-                                    continue;
-                                }
-                            };
-
-                            Some(runner)
-                        };
-
-                        let Some(steps) =
-                            job.value.get("steps").and_then(|steps| steps.as_sequence())
-                        else {
-                            continue;
-                        };
-
-                        let mut commands = Vec::new();
-
-                        let mut env = env.clone();
-                        env.extend(extract_env(&eval, &job.value)?);
-
-                        // Update environment.
-                        let eval = Eval::new(&env, eval.matrix);
-
-                        for step in steps {
-                            let Some(step) = step.as_mapping() else {
-                                continue;
-                            };
-
-                            let mut env = env.clone();
-                            env.extend(extract_env(&eval, &step)?);
-
-                            // Update environment.
-                            let eval = Eval::new(&env, eval.matrix);
-
-                            let working_directory =
-                                match step.get("working-directory").and_then(|v| v.as_str()) {
-                                    Some(dir) => {
-                                        Some(RelativePathBuf::from(eval.eval(dir)?.into_owned()))
-                                    }
-                                    None => None,
-                                };
-
-                            let mut skipped = None;
-
-                            if let Some(expr) = step.get("if").and_then(|v| v.as_str()) {
-                                if !eval.test(expr)? {
-                                    skipped = Some(expr.to_owned());
-                                }
-                            }
-
-                            if let Some(rust_toolchain) = rust_toolchain(&step, &eval)? {
-                                let Some(rust_version) = rust_toolchain.version else {
-                                    bail!("uses: */rust-toolchain is specified, but cannot determine version")
-                                };
-
-                                if rust_toolchain.components.is_some()
-                                    || rust_toolchain.targets.is_some()
-                                {
-                                    let mut args = vec![
-                                        String::from("toolchain"),
-                                        String::from("install"),
-                                        String::from(rust_version.as_ref()),
-                                    ];
-
-                                    if let Some(c) = rust_toolchain.components {
-                                        args.push(String::from("-c"));
-                                        args.push(String::from(c.as_ref()));
-                                    }
-
-                                    if let Some(t) = rust_toolchain.targets {
-                                        args.push(String::from("-t"));
-                                        args.push(String::from(t.as_ref()));
-                                    }
-
-                                    args.extend([
-                                        String::from("--profile"),
-                                        String::from("minimal"),
-                                        String::from("--no-self-update"),
-                                    ]);
-
-                                    commands.push(RunCommand {
-                                        name: None,
-                                        run: Run::Command {
-                                            command: "rustup".into(),
-                                            args,
-                                        },
-                                        env: BTreeMap::new(),
-                                        skipped: skipped.clone(),
-                                        working_directory: None,
-                                    });
-                                }
-
-                                commands.push(RunCommand {
-                                    name: None,
-                                    run: Run::Command {
-                                        command: "rustup".into(),
-                                        args: vec![
-                                            String::from("default"),
-                                            String::from(rust_version.as_ref()),
-                                        ],
-                                    },
-                                    env: BTreeMap::new(),
-                                    skipped: skipped.clone(),
-                                    working_directory: None,
-                                });
-                            }
-
-                            if let Some(run) = step.get("run").and_then(|run| run.as_str()) {
-                                let name = match step.get("name").and_then(|v| v.as_str()) {
-                                    Some(name) => Some(eval.eval(name)?.into_owned()),
-                                    None => None,
-                                };
-
-                                let script = eval.eval(run)?.into_owned();
-
-                                commands.push(RunCommand {
-                                    name,
-                                    run: Run::Shell { script },
-                                    env,
-                                    skipped,
-                                    working_directory,
-                                });
-                            }
-                        }
-
-                        batches.push(CommandBatch {
-                            commands,
-                            runner,
-                            matrix: if !matrix.is_empty() {
-                                Some(matrix)
-                            } else {
-                                None
-                            },
-                        })
-                    }
-                }
-            }
+            workflow_to_batches(
+                cx,
+                &mut batches,
+                &workflow,
+                &jobs,
+                &ignore,
+                opts.ignore_runs_on,
+            )
+            .with_context(|| {
+                anyhow!("{}: Workflow `{id}`", cx.to_path(&workflow.path).display())
+            })?;
         }
-    } else {
-        let [command, rest @ ..] = &opts.command[..] else {
-            bail!("No command specified");
-        };
+    }
 
+    if let [command, rest @ ..] = &opts.command[..] {
         batches.push(CommandBatch {
             commands: vec![RunCommand {
                 name: None,
@@ -432,6 +284,188 @@ fn run(
                 }
             }
         }
+    }
+
+    Ok(())
+}
+
+fn job_to_batches(
+    cx: &Ctxt<'_>,
+    batches: &mut Vec<CommandBatch>,
+    job: &Job<'_>,
+    ignore: &HashSet<String>,
+    ignore_runs_on: bool,
+    eval: &Eval<'_>,
+) -> Result<()> {
+    let runs_on = job.runs_on()?;
+
+    for matrix in job.matrices(ignore)? {
+        let eval = eval.with_matrix(&matrix);
+
+        let runner = if ignore_runs_on {
+            None
+        } else {
+            let runs_on = eval.eval(runs_on)?;
+            let runs_on = runs_on.as_ref();
+
+            let os = match runs_on.split_once('-') {
+                Some(("ubuntu", _)) => Os::Linux,
+                Some(("windows", _)) => Os::Windows,
+                Some(("macos", _)) => Os::Mac,
+                _ => bail!("Unsupported runs-on: {runs_on}"),
+            };
+
+            let runner = match RunnerKind::from_os(cx, &os) {
+                Ok(runner) => runner,
+                Err(error) => {
+                    tracing::warn!("{error}");
+                    continue;
+                }
+            };
+
+            Some(runner)
+        };
+
+        let Some(steps) = job.value.get("steps").and_then(|steps| steps.as_sequence()) else {
+            continue;
+        };
+
+        let mut commands = Vec::new();
+
+        let mut env = eval.env();
+        env.extend(extract_env(&eval, &job.value)?);
+        // Update environment.
+        let eval = eval.with_env(&env);
+
+        for step in steps {
+            let Some(step) = step.as_mapping() else {
+                continue;
+            };
+
+            let mut env = eval.env();
+            env.extend(extract_env(&eval, &step)?);
+            // Update environment.
+            let eval = eval.with_env(&env);
+
+            let working_directory = match step.get("working-directory").and_then(|v| v.as_str()) {
+                Some(dir) => Some(RelativePathBuf::from(eval.eval(dir)?.into_owned())),
+                None => None,
+            };
+
+            let mut skipped = None;
+
+            if let Some(expr) = step.get("if").and_then(|v| v.as_str()) {
+                if !eval.test(expr)? {
+                    skipped = Some(expr.to_owned());
+                }
+            }
+
+            if let Some(rust_toolchain) = rust_toolchain(&step, &eval)? {
+                let Some(rust_version) = rust_toolchain.version else {
+                    bail!("uses: */rust-toolchain is specified, but cannot determine version")
+                };
+
+                if rust_toolchain.components.is_some() || rust_toolchain.targets.is_some() {
+                    let mut args = vec![
+                        String::from("toolchain"),
+                        String::from("install"),
+                        String::from(rust_version.as_ref()),
+                    ];
+
+                    if let Some(c) = rust_toolchain.components {
+                        args.push(String::from("-c"));
+                        args.push(String::from(c.as_ref()));
+                    }
+
+                    if let Some(t) = rust_toolchain.targets {
+                        args.push(String::from("-t"));
+                        args.push(String::from(t.as_ref()));
+                    }
+
+                    args.extend([
+                        String::from("--profile"),
+                        String::from("minimal"),
+                        String::from("--no-self-update"),
+                    ]);
+
+                    commands.push(RunCommand {
+                        name: None,
+                        run: Run::Command {
+                            command: "rustup".into(),
+                            args,
+                        },
+                        env: BTreeMap::new(),
+                        skipped: skipped.clone(),
+                        working_directory: None,
+                    });
+                }
+
+                commands.push(RunCommand {
+                    name: None,
+                    run: Run::Command {
+                        command: "rustup".into(),
+                        args: vec![String::from("default"), String::from(rust_version.as_ref())],
+                    },
+                    env: BTreeMap::new(),
+                    skipped: skipped.clone(),
+                    working_directory: None,
+                });
+            }
+
+            if let Some(run) = step.get("run").and_then(|run| run.as_str()) {
+                let name = match step.get("name").and_then(|v| v.as_str()) {
+                    Some(name) => Some(eval.eval(name)?.into_owned()),
+                    None => None,
+                };
+
+                let script = eval.eval(run)?.into_owned();
+
+                commands.push(RunCommand {
+                    name,
+                    run: Run::Shell { script },
+                    env: eval.env(),
+                    skipped,
+                    working_directory,
+                });
+            }
+        }
+
+        batches.push(CommandBatch {
+            commands,
+            runner,
+            matrix: if !matrix.is_empty() {
+                Some(matrix)
+            } else {
+                None
+            },
+        })
+    }
+
+    Ok(())
+}
+
+/// Convert a workflow into batches.
+fn workflow_to_batches(
+    cx: &Ctxt<'_>,
+    batches: &mut Vec<CommandBatch>,
+    workflow: &Workflow,
+    jobs: &HashSet<String>,
+    ignore: &HashSet<String>,
+    ignore_runs_on: bool,
+) -> Result<()> {
+    let eval = Eval::new();
+    let env = workflow.env(&eval)?;
+    let eval = eval.with_env(&env);
+
+    for (job_name, job) in workflow.jobs() {
+        let job_name = str::from_utf8(job_name).context("Bad job name")?;
+
+        if !jobs.contains(job_name) {
+            continue;
+        }
+
+        job_to_batches(cx, batches, &job, ignore, ignore_runs_on, &eval)
+            .with_context(|| anyhow!("Job `{job_name}`"))?;
     }
 
     Ok(())

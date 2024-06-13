@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::fmt;
 
 use super::{Eval, Syntax};
 
@@ -22,21 +21,6 @@ impl<I> EvalError<I> {
     }
 }
 
-#[derive(Debug)]
-pub(crate) enum Operator {
-    And,
-    Or,
-}
-
-impl fmt::Display for Operator {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::And => write!(f, "&&"),
-            Self::Or => write!(f, "||"),
-        }
-    }
-}
-
 #[derive(Debug, Error)]
 pub(crate) enum EvalErrorKind {
     #[error("Expected {0:?} but was {1:?}")]
@@ -44,9 +28,6 @@ pub(crate) enum EvalErrorKind {
 
     #[error("Expected {0:?}")]
     Missing(Syntax),
-
-    #[error("Bad variable `{0}`")]
-    BadVariable(Box<str>),
 
     #[error("Bad string literal `{0}`")]
     BadString(Box<str>),
@@ -56,47 +37,25 @@ pub(crate) enum EvalErrorKind {
 
     #[error("Expected an operator")]
     ExpectedOperator,
-
-    #[error("Expected <bool> {op} <bool> but got {lhs} {op} {rhs}")]
-    ExpectedBoolean {
-        lhs: ExprKind,
-        rhs: ExprKind,
-        op: Operator,
-    },
 }
 
-use EvalErrorKind::{
-    BadString, BadVariable, Expected, ExpectedBoolean, ExpectedOperator, Missing,
-    UnexpectedOperator,
-};
+use EvalErrorKind::{BadString, Expected, ExpectedOperator, Missing, UnexpectedOperator};
 
 /// The outcome of evaluating an expression.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Expr<'m> {
     String(Cow<'m, str>),
     Bool(bool),
+    /// Expression evaluates to nothing.
+    Null,
 }
 
 impl Expr<'_> {
-    fn kind(&self) -> ExprKind {
+    fn as_true(&self) -> bool {
         match self {
-            Self::String(_) => ExprKind::String,
-            Self::Bool(_) => ExprKind::Bool,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub(crate) enum ExprKind {
-    String,
-    Bool,
-}
-
-impl fmt::Display for ExprKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::String => write!(f, "<string>"),
-            Self::Bool => write!(f, "<bool>"),
+            Self::String(string) => !string.is_empty(),
+            Self::Bool(b) => *b,
+            Self::Null => false,
         }
     }
 }
@@ -122,7 +81,7 @@ where
                 let variable = &source[node.range()];
 
                 let Some(value) = eval.get(variable) else {
-                    return Err(EvalError::new(*node.span(), BadVariable(variable.into())));
+                    return Ok(Expr::Null);
                 };
 
                 Ok(Expr::String(Cow::Borrowed(value)))
@@ -154,11 +113,12 @@ where
                         .first()
                         .ok_or(EvalError::new(*node.span(), ExpectedOperator))?;
 
-                    let calculate: fn(
+                    let calculate: for<'eval> fn(
                         &Span<I>,
-                        Expr<'_>,
-                        Expr<'_>,
-                    ) -> Result<Expr<'static>, EvalError<I>> = match *op.value() {
+                        Expr<'eval>,
+                        Expr<'eval>,
+                    )
+                        -> Result<Expr<'eval>, EvalError<I>> = match *op.value() {
                         Eq => op_eq::<I>,
                         Neq => op_neq::<I>,
                         And => op_and::<I>,
@@ -182,51 +142,50 @@ where
     }
 }
 
-fn op_eq<I>(_: &Span<I>, a: Expr<'_>, b: Expr<'_>) -> Result<Expr<'static>, EvalError<I>>
+fn op_eq<'a, I>(_: &Span<I>, a: Expr<'a>, b: Expr<'a>) -> Result<Expr<'a>, EvalError<I>>
 where
     I: index::Index,
 {
     Ok(Expr::Bool(a == b))
 }
 
-fn op_neq<I>(_: &Span<I>, a: Expr<'_>, b: Expr<'_>) -> Result<Expr<'static>, EvalError<I>>
+fn op_neq<'a, I>(_: &Span<I>, a: Expr<'a>, b: Expr<'a>) -> Result<Expr<'a>, EvalError<I>>
 where
     I: index::Index,
 {
     Ok(Expr::Bool(a != b))
 }
 
-fn op_and<I>(span: &Span<I>, a: Expr<'_>, b: Expr<'_>) -> Result<Expr<'static>, EvalError<I>>
+fn op_and<'a, I>(_: &Span<I>, a: Expr<'a>, b: Expr<'a>) -> Result<Expr<'a>, EvalError<I>>
 where
     I: index::Index,
 {
     match (a, b) {
-        (Expr::Bool(a), Expr::Bool(b)) => Ok(Expr::Bool(a & b)),
-        (lhs, rhs) => Err(EvalError::new(
-            *span,
-            ExpectedBoolean {
-                lhs: lhs.kind(),
-                rhs: rhs.kind(),
-                op: Operator::And,
-            },
-        )),
+        (Expr::Bool(a), Expr::Bool(b)) => Ok(Expr::Bool(a && b)),
+        (lhs, rhs) => {
+            if lhs.as_true() && rhs.as_true() {
+                return Ok(rhs);
+            }
+
+            Ok(Expr::Null)
+        }
     }
 }
 
-fn op_or<I>(span: &Span<I>, a: Expr<'_>, b: Expr<'_>) -> Result<Expr<'static>, EvalError<I>>
+fn op_or<'a, I>(_: &Span<I>, a: Expr<'a>, b: Expr<'a>) -> Result<Expr<'a>, EvalError<I>>
 where
     I: index::Index,
 {
     match (a, b) {
-        (Expr::Bool(a), Expr::Bool(b)) => Ok(Expr::Bool(a | b)),
-        (lhs, rhs) => Err(EvalError::new(
-            *span,
-            ExpectedBoolean {
-                lhs: lhs.kind(),
-                rhs: rhs.kind(),
-                op: Operator::Or,
-            },
-        )),
+        (Expr::Bool(a), Expr::Bool(b)) => Ok(Expr::Bool(a || b)),
+        // Lasy true:ish evaluation.
+        (lhs, rhs) => {
+            if lhs.as_true() {
+                Ok(lhs)
+            } else {
+                Ok(rhs)
+            }
+        }
     }
 }
 
