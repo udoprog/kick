@@ -10,13 +10,14 @@ fn matrix_test() {
 
     let eval = Eval::new().with_env(&env).with_matrix(&matrix);
 
-    assert!(eval.test("matrix.a == '1'").unwrap());
-    assert!(eval.test("matrix.a != '2'").unwrap());
-    assert!(eval.test("matrix.a != matrix.b").unwrap());
-    assert!(!eval.test("matrix.a == matrix.b").unwrap());
-    assert!(eval
-        .test("matrix.a == matrix.b || matrix.a != matrix.b")
-        .unwrap());
+    assert_eq!(eval.test("matrix.a == '1'"), Ok(true));
+    assert_eq!(eval.test("matrix.a != '2'"), Ok(true));
+    assert_eq!(eval.test("matrix.a != matrix.b"), Ok(true));
+    assert_eq!(eval.test("matrix.a == matrix.b"), Ok(false));
+    assert_eq!(
+        eval.test("matrix.a == matrix.b || matrix.a != matrix.b"),
+        Ok(true)
+    );
 }
 
 #[test]
@@ -27,8 +28,8 @@ fn or_test() {
     let eval = Eval::new().with_matrix(&matrix);
 
     assert_eq!(
-        eval.expr("matrix.foo || matrix.bar").unwrap(),
-        Expr::String(Cow::Borrowed("right"))
+        eval.expr("matrix.foo || matrix.bar"),
+        Ok(Expr::String(Cow::Borrowed("right")))
     );
 }
 
@@ -41,11 +42,11 @@ fn and_test() {
     let eval = Eval::new().with_matrix(&matrix);
 
     assert_eq!(
-        eval.expr("matrix.foo && matrix.bar").unwrap(),
-        Expr::String(Cow::Borrowed("right"))
+        eval.expr("matrix.foo && matrix.bar"),
+        Ok(Expr::String(Cow::Borrowed("right")))
     );
 
-    assert_eq!(eval.expr("matrix.baz && matrix.bar").unwrap(), Expr::Null);
+    assert_eq!(eval.expr("matrix.baz && matrix.bar"), Ok(Expr::Null));
 }
 
 #[test]
@@ -57,11 +58,11 @@ fn group() {
     let eval = Eval::new().with_matrix(&matrix);
 
     assert_eq!(
-        eval.expr("${{ matrix.foo }} && matrix.bar").unwrap(),
-        Expr::String(Cow::Borrowed("right"))
+        eval.expr("${{ matrix.foo }} && matrix.bar"),
+        Ok(Expr::String(Cow::Borrowed("right")))
     );
 
-    assert_eq!(eval.expr("matrix.baz && matrix.bar").unwrap(), Expr::Null);
+    assert_eq!(eval.expr("matrix.baz && matrix.bar"), Ok(Expr::Null));
 }
 
 #[test]
@@ -72,7 +73,35 @@ fn not() {
 
     let eval = Eval::new().with_matrix(&matrix);
 
-    assert_eq!(eval.expr("!matrix.foo").unwrap(), Expr::Bool(true));
-    assert_eq!(eval.expr("!matrix.bar").unwrap(), Expr::Bool(false));
-    assert_eq!(eval.expr("!matrix.baz").unwrap(), Expr::Bool(true));
+    assert_eq!(eval.expr("!matrix.foo"), Ok(Expr::Bool(true)));
+    assert_eq!(eval.expr("!matrix.bar"), Ok(Expr::Bool(false)));
+    assert_eq!(eval.expr("!matrix.baz"), Ok(Expr::Bool(true)));
+}
+
+#[test]
+fn lazy_expansion() {
+    let mut matrix = Matrix::new();
+    matrix.insert("ref", "refs/heads/main");
+    matrix.insert("ref2", "refs/heads/feature");
+    let eval = Eval::new().with_matrix(&matrix);
+
+    assert_eq!(
+        eval.expr(
+            r#"
+        matrix.ref == 'refs/heads/main' && 'value_for_main_branch' ||
+        'value_for_other_branches'
+        "#
+        ),
+        Ok(Expr::String(Cow::Borrowed("value_for_main_branch")))
+    );
+
+    assert_eq!(
+        eval.expr(
+            r#"
+        matrix.ref2 == 'refs/heads/main' && 'value_for_main_branch' ||
+        'value_for_other_branches'
+        "#
+        ),
+        Ok(Expr::String(Cow::Borrowed("value_for_other_branches")))
+    );
 }

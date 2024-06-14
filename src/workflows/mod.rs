@@ -8,7 +8,7 @@ mod parsing;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
-enum Syntax {
+pub(crate) enum Syntax {
     Variable,
     Not,
     Eq,
@@ -53,6 +53,45 @@ use crate::ctxt::Ctxt;
 use crate::model::Repo;
 
 use self::eval::Expr;
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ExprError {
+    NoExpressions(Box<str>),
+    MultipleExpressions(Box<str>),
+    EvalError(eval::EvalError<u32>, Box<str>),
+    SynTree(syntree::Error),
+}
+
+impl From<syntree::Error> for ExprError {
+    fn from(e: syntree::Error) -> Self {
+        Self::SynTree(e)
+    }
+}
+
+impl fmt::Display for ExprError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            ExprError::NoExpressions(ref source) => write!(f, "No expressions: {source}"),
+            ExprError::MultipleExpressions(ref source) => {
+                write!(f, "Multiple expressions: {source}")
+            }
+            ExprError::EvalError(ref e, ref source) => {
+                write!(f, "Evaluation error: {e}: `{source}`")
+            }
+            ExprError::SynTree(..) => write!(f, "Syntax tree error"),
+        }
+    }
+}
+
+impl std::error::Error for ExprError {
+    #[inline]
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match *self {
+            ExprError::SynTree(ref e) => Some(e),
+            _ => None,
+        }
+    }
+}
 
 pub struct Workflows<'cx> {
     cx: &'cx Ctxt<'cx>,
@@ -523,7 +562,7 @@ impl<'a> Eval<'a> {
         Ok(Cow::Owned(result))
     }
 
-    pub(crate) fn expr<'expr>(&'expr self, source: &'expr str) -> Result<Expr<'expr>> {
+    pub(crate) fn expr<'expr>(&'expr self, source: &'expr str) -> Result<Expr<'expr>, ExprError> {
         let mut p = parsing::Parser::new(source);
         grammar::root(&mut p)?;
         let tree = p.tree.build()?;
@@ -531,22 +570,23 @@ impl<'a> Eval<'a> {
         let mut it = self::eval::eval(&tree, source, self);
 
         let Some(expr) = it.next() else {
-            bail!("No expressions: {source}");
+            return Err(ExprError::NoExpressions(source.into()));
         };
 
         if it.next().is_some() {
-            bail!("Multiple expressions: {source}");
+            return Err(ExprError::MultipleExpressions(source.into()));
         }
 
         match expr {
             Ok(expr) => Ok(expr),
             Err(e) => {
-                bail!("{e}: {}", &source[e.span.range()]);
+                let source = source[e.span.range()].into();
+                Err(ExprError::EvalError(e, source))
             }
         }
     }
 
-    pub(crate) fn test(&self, source: &str) -> Result<bool> {
+    pub(crate) fn test(&self, source: &str) -> Result<bool, ExprError> {
         Ok(self.expr(source)?.as_bool())
     }
 

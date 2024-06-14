@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use super::parsing::Parser;
-use super::Syntax;
+use super::{ExprError, Syntax};
 
 use self::Syntax::*;
 
@@ -15,7 +15,7 @@ fn op(syntax: Syntax) -> Option<(u8, u8)> {
     Some(prio)
 }
 
-fn expr(p: &mut Parser<'_>, min: u8) -> Result<(), syntree::Error> {
+fn expr(p: &mut Parser<'_>, min: u8) -> Result<(), ExprError> {
     // Eat all available whitespace before getting a checkpoint.
     let tok = p.peek()?;
 
@@ -71,7 +71,7 @@ fn expr(p: &mut Parser<'_>, min: u8) -> Result<(), syntree::Error> {
     Ok(())
 }
 
-fn group(p: &mut Parser, until: Syntax) -> Result<(), syntree::Error> {
+fn group(p: &mut Parser, until: Syntax) -> Result<(), ExprError> {
     p.token()?;
     let c = p.tree.checkpoint()?;
     expr(p, 0)?;
@@ -85,7 +85,7 @@ fn group(p: &mut Parser, until: Syntax) -> Result<(), syntree::Error> {
 }
 
 /// Parse the root.
-pub(crate) fn root(p: &mut Parser<'_>) -> Result<()> {
+pub(crate) fn root(p: &mut Parser<'_>) -> Result<(), ExprError> {
     loop {
         expr(p, 0)?;
 

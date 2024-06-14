@@ -12,7 +12,7 @@ type UnaryFn<I> = for<'eval> fn(&Span<I>, Expr<'eval>) -> Result<Expr<'eval>, Ev
 type BinaryFn<I> =
     for<'eval> fn(&Span<I>, Expr<'eval>, Expr<'eval>) -> Result<Expr<'eval>, EvalError<I>>;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, PartialEq, Eq)]
 #[error("{kind}")]
 #[non_exhaustive]
 pub(crate) struct EvalError<I> {
@@ -26,7 +26,7 @@ impl<I> EvalError<I> {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, PartialEq, Eq)]
 pub(crate) enum EvalErrorKind {
     #[error("Expected {0:?} but was {1:?}")]
     Expected(Syntax, Syntax),
