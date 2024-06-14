@@ -530,7 +530,7 @@ struct RepoOptions {
     /// Only run over repos which have declared that the same operating system
     /// is supported.
     #[arg(long)]
-    same_os: bool,
+    supported_os: bool,
     /// Load sets with the given id.
     #[arg(long, value_name = "set")]
     set: Vec<String>,
@@ -925,7 +925,7 @@ fn filter_repos(
             continue;
         }
 
-        if repo_opts.same_os {
+        if repo_opts.supported_os {
             let os = config.os(repo);
 
             if !os.is_empty() && !os.contains(expected) {

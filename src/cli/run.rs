@@ -27,6 +27,11 @@ pub(crate) struct Opts {
     /// Executes the command over all supported operating systems.
     #[arg(long)]
     each_os: bool,
+    /// Only run expanded commands on the same operating system. If you're
+    /// running any workflow this will ignore any commands which are not
+    /// scheduled to run on the same operating system as kick is run on.
+    #[arg(long)]
+    same_os: bool,
     /// Environment variables to pass to the command to run. Only specifying
     /// `<key>` means that the specified environment variable should be passed
     /// through.
@@ -159,7 +164,7 @@ fn run(
     let path = cx.to_path(repo.path());
 
     for batch in batches {
-        for runner in batch.runners(&argument_runners) {
+        for runner in batch.runners(&argument_runners, opts.same_os) {
             write!(o, "# In ")?;
 
             o.set_color(&colors.title)?;
@@ -230,7 +235,7 @@ fn run(
                 write!(o, "{}", runner.command.display_with(flavor))?;
 
                 if let Some(skipped) = &run.skipped {
-                    write!(o, " (Skipped: ")?;
+                    write!(o, " (Skip: ")?;
                     o.set_color(&colors.skip_cond)?;
                     write!(o, "{skipped}")?;
                     o.reset()?;
@@ -468,10 +473,14 @@ struct CommandBatch {
 }
 
 impl CommandBatch {
-    fn runners(&self, opts: &[RunnerKind]) -> BTreeSet<RunnerKind> {
+    fn runners(&self, opts: &[RunnerKind], same_os: bool) -> BTreeSet<RunnerKind> {
         let mut set = BTreeSet::new();
         set.extend(opts.iter().copied());
         set.extend(self.runner);
+
+        if same_os {
+            set.retain(|r| *r == RunnerKind::Same);
+        }
 
         if set.is_empty() {
             set.insert(RunnerKind::Same);
