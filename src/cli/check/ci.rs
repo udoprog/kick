@@ -3,7 +3,7 @@ use std::fmt;
 use std::mem::take;
 
 use anyhow::{anyhow, Result};
-use nondestructive::yaml::{self, Id, Mapping};
+use nondestructive::yaml::{self, Id};
 
 use crate::actions::{self, Actions};
 use crate::cargo::{Package, RustVersion};
@@ -13,7 +13,7 @@ use crate::ctxt::Ctxt;
 use crate::edits;
 use crate::keys::Keys;
 use crate::model::Repo;
-use crate::workflows::{Job, Workflow, Workflows};
+use crate::workflows::{Job, Step, Workflow, Workflows};
 use crate::workspace::Crates;
 
 pub(crate) struct Ci<'a> {
@@ -183,35 +183,30 @@ fn validate_jobs(
     Ok(())
 }
 
-fn check_actions(ci: &mut Ci<'_>, job: &Job<'_>) -> Result<()> {
+fn check_actions(ci: &mut Ci<'_>, job: &Job) -> Result<()> {
     let policy = if job.name == "clippy" {
         RustVersionPolicy::Named("stable")
     } else {
         RustVersionPolicy::MinimumSupported
     };
 
-    for action in job
-        .value
-        .get("steps")
-        .and_then(|v| v.as_sequence())
-        .into_iter()
-        .flatten()
-        .flat_map(|v| v.as_mapping())
-    {
-        if let Some((uses, value)) = action.get("uses").and_then(|v| Some((v.id(), v.as_str()?))) {
-            check_action(ci, &action, uses, value)?;
-            check_uses_rust_version(ci, uses, value, policy)?;
-        }
+    for (_, steps) in &job.matrices {
+        for step in &steps.steps {
+            if let Some((uses, value)) = &step.uses {
+                check_action(ci, step, *uses, value)?;
+                check_uses_rust_version(ci, *uses, value, policy)?;
+            }
 
-        if let Some((if_id, value)) = action.get("if").and_then(|v| Some((v.id(), v.as_str()?))) {
-            check_if_rust_version(ci, if_id, value)?;
+            if let Some((if_id, value)) = &step.condition {
+                check_if_rust_version(ci, *if_id, value)?;
+            }
         }
     }
 
     Ok(())
 }
 
-fn check_action(ci: &mut Ci<'_>, action: &Mapping<'_>, at: Id, name: &str) -> Result<()> {
+fn check_action(ci: &mut Ci<'_>, step: &Step, at: Id, name: &str) -> Result<()> {
     let Some((base, version)) = name.split_once('@') else {
         return Ok(());
     };
@@ -239,7 +234,7 @@ fn check_action(ci: &mut Ci<'_>, action: &Mapping<'_>, at: Id, name: &str) -> Re
     }
 
     if let Some(check) = ci.actions.get_check(base) {
-        check.check(name, action, &mut ci.edits, &mut ci.errors)?;
+        check.check(name, step, &mut ci.edits, &mut ci.errors)?;
     }
 
     Ok(())
@@ -331,37 +326,29 @@ fn check_if_rust_version(ci: &mut Ci<'_>, at: Id, value: &str) -> Result<()> {
 }
 
 /// Check that the correct rust-version is used in a job.
-fn check_strategy_rust_version(ci: &mut Ci, job: &Job<'_>) {
+fn check_strategy_rust_version(ci: &mut Ci, job: &Job) {
     let Some(rust_version) = ci.package.rust_version() else {
         return;
     };
 
-    if let Some(matrix) = job
-        .value
-        .get("strategy")
-        .and_then(|v| v.as_mapping()?.get("matrix")?.as_mapping())
-    {
-        for (index, value) in matrix
-            .get("rust")
-            .and_then(|v| v.as_sequence())
-            .into_iter()
-            .flatten()
-            .enumerate()
-        {
-            let Some(version) = value.as_str().and_then(RustVersion::parse) else {
-                continue;
-            };
+    for (matrix, _) in &job.matrices {
+        let Some((version, id)) = matrix.get_with_id("rust") else {
+            continue;
+        };
 
-            if rust_version > version {
-                ci.edits.set(
-                    value.id(),
-                    format_args!(
-                        "build.{name}.strategy.matrix.rust[{index}]: Found rust version `{version}` but expected `{rust_version}`",
-                        name = job.name,
-                    ),
-                    rust_version.to_string(),
-                );
-            }
+        let Some(version) = RustVersion::parse(version) else {
+            continue;
+        };
+
+        if rust_version > version {
+            ci.edits.set(
+                id,
+                format_args!(
+                    "build.{name}.strategy.matrix.rust: Found rust version `{version}` but expected `{rust_version}`",
+                    name = job.name,
+                ),
+                rust_version.to_string(),
+            );
         }
     }
 }
@@ -435,32 +422,27 @@ fn verify_single_project_build(
     cx: &Ctxt<'_>,
     ci: &mut Ci<'_>,
     w: &Workflow,
-    job: &Job<'_>,
+    job: &Job,
 ) -> Result<()> {
     let mut cargo_combos = Vec::new();
     let features = ci.package.manifest().features(ci.crates)?;
 
-    for step in job
-        .value
-        .get("steps")
-        .and_then(|v| v.as_sequence())
-        .into_iter()
-        .flatten()
-        .flat_map(|v| v.as_mapping())
-    {
-        if let Some(command) = step.get("run").and_then(|v| v.as_str()) {
-            let identity = identify_command(command, &features);
+    for (_, step) in &job.matrices {
+        for step in &step.steps {
+            if let Some(command) = &step.run {
+                let identity = identify_command(command, &features);
 
-            if let RunIdentity::Cargo(cargo) = identity {
-                for feature in &cargo.missing_features {
-                    cx.warning(Warning::MissingFeature {
-                        path: w.path.clone(),
-                        feature: feature.clone(),
-                    });
-                }
+                if let RunIdentity::Cargo(cargo) = identity {
+                    for feature in &cargo.missing_features {
+                        cx.warning(Warning::MissingFeature {
+                            path: w.path.clone(),
+                            feature: feature.clone(),
+                        });
+                    }
 
-                if matches!(cargo.kind, CargoKind::Build) {
-                    cargo_combos.push(cargo);
+                    if matches!(cargo.kind, CargoKind::Build) {
+                        cargo_combos.push(cargo);
+                    }
                 }
             }
         }

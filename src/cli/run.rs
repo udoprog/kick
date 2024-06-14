@@ -433,7 +433,7 @@ struct RustToolchain<'a> {
 
 /// Extract a rust version from a `rust-toolchain` job.
 fn rust_toolchain(step: &Step) -> Result<Option<RustToolchain<'_>>> {
-    let Some(uses) = step.uses.as_deref() else {
+    let Some((_, uses)) = &step.uses else {
         return Ok(None);
     };
 
