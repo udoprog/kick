@@ -35,7 +35,6 @@ use std::io;
 use std::str;
 
 use anyhow::{anyhow, bail, Context, Result};
-use bstr::BStr;
 use nondestructive::yaml;
 use relative_path::{RelativePath, RelativePathBuf};
 
@@ -84,7 +83,8 @@ impl<'cx> Workflows<'cx> {
             Err(e) => return Err(e).with_context(|| anyhow!("{}", p.display())),
         };
 
-        let doc = yaml::from_slice(bytes).with_context(|| anyhow!("{}", p.display()))?;
+        let doc = yaml::from_slice(bytes)
+            .with_context(|| anyhow!("{}: Reading YAML file", p.display()))?;
 
         Ok(Some(Workflow {
             id: id.to_owned(),
@@ -92,6 +92,220 @@ impl<'cx> Workflows<'cx> {
             doc,
         }))
     }
+}
+
+fn build_job<'a>(
+    name: &str,
+    value: yaml::Mapping<'a>,
+    ignore: &HashSet<String>,
+    eval: &Eval<'_>,
+) -> Result<Job<'a>> {
+    let runs_on = value
+        .get("runs-on")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow!("Missing runs-on"))?;
+
+    let name = value
+        .get("name")
+        .and_then(|value| Some(eval.eval(value.as_str()?)))
+        .transpose()?
+        .unwrap_or(Cow::Borrowed(name));
+
+    let mut matrices = Vec::new();
+
+    for matrix in build_matrices(&value, ignore, eval)? {
+        let eval = eval.with_matrix(&matrix);
+
+        let mut steps = Vec::new();
+
+        if let Some(s) = value.get("steps").and_then(|steps| steps.as_sequence()) {
+            let mut env = eval.env();
+            env.extend(extract_env(&eval, &value)?);
+            // Update environment.
+            let eval = eval.with_env(&env);
+
+            for s in s {
+                let Some(value) = s.as_mapping() else {
+                    continue;
+                };
+
+                let mut env = eval.env();
+                env.extend(extract_env(&eval, &value)?);
+                // Update environment.
+                let eval = eval.with_env(&env);
+
+                let working_directory =
+                    match value.get("working-directory").and_then(|v| v.as_str()) {
+                        Some(dir) => Some(RelativePathBuf::from(eval.eval(dir)?.into_owned())),
+                        None => None,
+                    };
+
+                let mut skipped = None;
+
+                if let Some(expr) = value.get("if").and_then(|v| v.as_str()) {
+                    if !eval.test(expr)? {
+                        skipped = Some(expr.to_owned());
+                    }
+                }
+
+                let uses = if let Some(uses) = value.get("uses").and_then(|v| v.as_str()) {
+                    Some(eval.eval(uses)?.into_owned())
+                } else {
+                    None
+                };
+
+                let mut with = BTreeMap::new();
+
+                if let Some(mapping) = value.get("with").and_then(|v| v.as_mapping()) {
+                    for (key, value) in mapping {
+                        let (Ok(key), Some(value)) = (str::from_utf8(key), value.as_str()) else {
+                            continue;
+                        };
+
+                        with.insert(key.to_owned(), eval.eval(value)?.into_owned());
+                    }
+                }
+
+                let name = value
+                    .get("name")
+                    .and_then(|v| Some(eval.eval(v.as_str()?)))
+                    .transpose()?;
+
+                let run = value
+                    .get("run")
+                    .and_then(|v| Some(eval.eval(v.as_str()?)))
+                    .transpose()?;
+
+                steps.push(Step {
+                    env: eval.env().clone(),
+                    working_directory,
+                    skipped,
+                    uses,
+                    with,
+                    name: name.map(Cow::into_owned),
+                    run: run.map(Cow::into_owned),
+                })
+            }
+        };
+
+        let steps = Steps {
+            runs_on: eval.eval(runs_on)?.into_owned(),
+            steps,
+        };
+
+        matrices.push((matrix, steps));
+    }
+
+    Ok(Job {
+        name: name.into_owned(),
+        value,
+        matrices,
+    })
+}
+
+/// Iterate over all matrices.
+pub(crate) fn build_matrices(
+    value: &yaml::Mapping<'_>,
+    ignore: &HashSet<String>,
+    eval: &Eval<'_>,
+) -> Result<Vec<Matrix>> {
+    let mut matrices = Vec::new();
+    let mut variables = Vec::new();
+
+    'bail: {
+        let Some(strategy) = value.get("strategy").and_then(|s| s.as_mapping()) else {
+            break 'bail;
+        };
+
+        let Some(matrix) = strategy
+            .get("matrix")
+            .and_then(|matrix| matrix.as_mapping())
+        else {
+            break 'bail;
+        };
+
+        for (key, value) in matrix {
+            let key = str::from_utf8(key).context("Bad matrix key")?;
+
+            if ignore.contains(key) {
+                continue;
+            }
+
+            let mut values = Vec::new();
+
+            match value.into_any() {
+                yaml::Any::Sequence(sequence) => {
+                    for value in sequence {
+                        if let Some(value) = value.as_str() {
+                            values.push(eval.eval(value)?.into_owned());
+                        }
+                    }
+                }
+                yaml::Any::Scalar(value) => {
+                    if let Some(value) = value.as_str() {
+                        values.push(eval.eval(value)?.into_owned());
+                    }
+                }
+                _ => {}
+            }
+
+            variables.push((key, values));
+        }
+    };
+
+    let mut positions = vec![0usize; variables.len()];
+
+    'outer: loop {
+        let mut matrix = BTreeMap::new();
+
+        for (n, &p) in positions.iter().enumerate() {
+            let (key, ref values) = variables[n];
+            matrix.insert(key.to_owned(), values[p].to_owned());
+        }
+
+        matrices.push(Matrix { matrix });
+
+        for (p, (_, values)) in positions.iter_mut().zip(&variables) {
+            *p += 1;
+
+            if *p < values.len() {
+                continue 'outer;
+            }
+
+            *p = 0;
+        }
+
+        break;
+    }
+
+    if matrices.is_empty() {
+        matrices.push(Matrix {
+            matrix: BTreeMap::new(),
+        });
+    }
+
+    Ok(matrices)
+}
+
+fn extract_env(eval: &Eval<'_>, m: &yaml::Mapping<'_>) -> Result<BTreeMap<String, String>> {
+    let mut env = BTreeMap::new();
+
+    let Some(m) = m.get("env").and_then(|v| v.as_mapping()) else {
+        return Ok(env);
+    };
+
+    for (key, value) in m {
+        let key = str::from_utf8(key).context("Decoding key")?;
+
+        let Some(value) = value.as_str() else {
+            continue;
+        };
+
+        let value = eval.eval(value)?;
+        env.insert(key.to_owned(), value.into_owned());
+    }
+
+    Ok(env)
 }
 
 pub(crate) struct Workflow {
@@ -107,129 +321,61 @@ impl Workflow {
     }
 
     /// Iterate over all jobs.
-    pub(crate) fn jobs(&self) -> impl Iterator<Item = (&BStr, Job<'_>)> {
-        self.doc.as_ref().as_mapping().into_iter().flat_map(|m| {
-            m.get("jobs")
-                .and_then(|jobs| jobs.as_mapping())
-                .into_iter()
-                .flatten()
-                .flat_map(|(key, job)| Some((key, Job::new(job.as_mapping()?))))
-        })
-    }
+    pub(crate) fn jobs(&self, ignore: &HashSet<String>) -> Result<Vec<Job>> {
+        let Some(mapping) = self.doc.as_ref().as_mapping() else {
+            bail!("Root is not a mapping");
+        };
 
-    /// Get the root level environment variables.
-    pub(crate) fn env(&self, eval: &Eval<'_>) -> Result<BTreeMap<String, String>> {
-        let mut env = BTreeMap::new();
+        let eval = Eval::new();
+        let env = extract_env(&eval, &mapping)?;
+        let eval = eval.with_env(&env);
 
-        if let Some(root) = self.doc.as_ref().as_mapping() {
-            if let Some(m) = root.get("env").and_then(|v| v.as_mapping()) {
-                for (key, value) in m {
-                    let Some(value) = value.as_str() else {
-                        continue;
-                    };
+        let jobs = mapping
+            .get("jobs")
+            .and_then(|jobs| jobs.as_mapping())
+            .into_iter()
+            .flatten()
+            .flat_map(|(key, job)| Some((key, job.as_mapping()?)));
 
-                    let value = eval.eval(value)?;
-                    env.insert(key.to_string(), value.into_owned());
-                }
-            }
+        let mut outputs = Vec::new();
+
+        for (name, job) in jobs {
+            let name = str::from_utf8(name).context("Decoding job name")?;
+            outputs.push(
+                build_job(name, job, ignore, &eval)
+                    .with_context(|| anyhow!("Building job {name}"))?,
+            );
         }
 
-        Ok(env)
+        Ok(outputs)
     }
 }
 
 pub(crate) struct Job<'a> {
+    pub(crate) name: String,
     pub(crate) value: yaml::Mapping<'a>,
+    pub(crate) matrices: Vec<(Matrix, Steps)>,
 }
 
-impl<'a> Job<'a> {
-    pub(crate) fn new(value: yaml::Mapping<'a>) -> Self {
-        Self { value }
-    }
+pub(crate) struct Steps {
+    pub(crate) runs_on: String,
+    pub(crate) steps: Vec<Step>,
+}
 
-    /// Get the runs-on value.
-    pub(crate) fn runs_on(&self) -> Result<&str> {
-        self.value
-            .get("runs-on")
-            .and_then(|runs_on| runs_on.as_str())
-            .ok_or_else(|| anyhow!("Missing runs-on"))
-    }
+pub(crate) struct Step {
+    pub(crate) env: BTreeMap<String, String>,
+    pub(crate) working_directory: Option<RelativePathBuf>,
+    pub(crate) skipped: Option<String>,
+    pub(crate) uses: Option<String>,
+    pub(crate) with: BTreeMap<String, String>,
+    pub(crate) name: Option<String>,
+    pub(crate) run: Option<String>,
+}
 
-    /// Iterate over all matrices.
-    pub(crate) fn matrices(&self, ignore: &HashSet<String>) -> Result<Vec<Matrix>> {
-        let mut matrices = Vec::new();
-        let mut variables = Vec::new();
-
-        'bail: {
-            let Some(strategy) = self.value.get("strategy").and_then(|s| s.as_mapping()) else {
-                break 'bail;
-            };
-
-            let Some(matrix) = strategy
-                .get("matrix")
-                .and_then(|matrix| matrix.as_mapping())
-            else {
-                break 'bail;
-            };
-
-            for (key, value) in matrix {
-                let key = str::from_utf8(key).context("matrix key")?;
-
-                if ignore.contains(key) {
-                    tracing::trace!("Ignoring matrix variable `{key}`");
-                    continue;
-                }
-
-                let mut values = Vec::new();
-
-                match value.into_any() {
-                    yaml::Any::Sequence(sequence) => {
-                        for value in sequence {
-                            values.extend(value.as_str());
-                        }
-                    }
-                    yaml::Any::Scalar(value) => {
-                        values.extend(value.as_str());
-                    }
-                    _ => {}
-                }
-
-                variables.push((key, values));
-            }
-        };
-
-        let mut positions = vec![0usize; variables.len()];
-
-        'outer: loop {
-            let mut matrix = BTreeMap::new();
-
-            for (n, &p) in positions.iter().enumerate() {
-                let (key, values) = &variables[n];
-                matrix.insert(key.to_string(), values[p].to_owned());
-            }
-
-            matrices.push(Matrix { matrix });
-
-            for (p, (_, values)) in positions.iter_mut().zip(&variables) {
-                *p += 1;
-
-                if *p < values.len() {
-                    continue 'outer;
-                }
-
-                *p = 0;
-            }
-
-            break;
-        }
-
-        if matrices.is_empty() {
-            matrices.push(Matrix {
-                matrix: BTreeMap::new(),
-            });
-        }
-
-        Ok(matrices)
+impl Step {
+    /// Construct an environment from a step.
+    pub(crate) fn env(&self) -> &BTreeMap<String, String> {
+        &self.env
     }
 }
 
@@ -346,8 +492,8 @@ impl<'a> Eval<'a> {
         let (key, value) = key.split_once('.')?;
 
         match (key.trim(), value.trim()) {
-            ("env", key) => self.env?.get(key).map(String::as_str),
-            ("matrix", key) => self.matrix?.matrix.get(key).map(String::as_str),
+            ("env", key) => self.env?.get(key).map(|v| v.as_ref()),
+            ("matrix", key) => self.matrix?.matrix.get(key).map(|v| v.as_ref()),
             ("github", key) => {
                 let (what, rest) = key.split_once('.')?;
 
@@ -367,6 +513,7 @@ impl<'a> Eval<'a> {
 }
 
 /// A matrix of variables.
+#[derive(Clone)]
 pub(crate) struct Matrix {
     matrix: BTreeMap<String, String>,
 }
