@@ -401,7 +401,7 @@ fn job_to_batches(
 fn workflow_to_batches(
     cx: &Ctxt<'_>,
     batches: &mut Vec<CommandBatch>,
-    workflow: &Workflow,
+    workflow: &Workflow<'_>,
     jobs: &HashSet<String>,
     ignore: &HashSet<String>,
     ignore_runs_on: bool,

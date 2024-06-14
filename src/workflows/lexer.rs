@@ -5,6 +5,8 @@ use Syntax::{
     Whitespace,
 };
 
+const NUL: char = '\0';
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Token {
     pub(crate) len: usize,
@@ -24,15 +26,15 @@ impl<'a> Lexer<'a> {
     /// Peek the next character of input.
     fn peek(&self) -> char {
         let s = self.source.get(self.cursor..).unwrap_or_default();
-        s.chars().next().unwrap_or('\0')
+        s.chars().next().unwrap_or(NUL)
     }
 
     /// Peek the next character of input.
     fn peek2(&self) -> (char, char) {
         let s = self.source.get(self.cursor..).unwrap_or_default();
         let mut it = s.chars();
-        let a = it.next().unwrap_or('\0');
-        let b = it.next().unwrap_or('\0');
+        let a = it.next().unwrap_or(NUL);
+        let b = it.next().unwrap_or(NUL);
         (a, b)
     }
 
@@ -40,7 +42,7 @@ impl<'a> Lexer<'a> {
     fn step(&mut self) {
         let c = self.peek();
 
-        if self.peek() != '\0' {
+        if self.peek() != NUL {
             self.cursor += c.len_utf8();
         }
     }
@@ -56,7 +58,7 @@ impl<'a> Lexer<'a> {
 
         loop {
             match self.peek() {
-                '\0' => return false,
+                NUL => return false,
                 '\\' => {
                     self.step();
                     self.step();
@@ -77,7 +79,7 @@ impl<'a> Lexer<'a> {
         loop {
             let c = self.peek();
 
-            if !cond(c) {
+            if c == NUL || !cond(c) {
                 break;
             }
 
@@ -91,7 +93,7 @@ impl<'a> Lexer<'a> {
         let start = self.cursor;
 
         let syntax = match (a, b) {
-            ('\0', _) => {
+            (NUL, _) => {
                 return Token {
                     len: 0,
                     syntax: Syntax::Eof,

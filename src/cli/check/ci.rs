@@ -122,7 +122,7 @@ pub(crate) fn build(cx: &Ctxt<'_>, package: &Package, repo: &Repo, crates: &Crat
 fn validate_workflow(
     cx: &Ctxt<'_>,
     ci: &mut Ci<'_>,
-    w: &Workflow,
+    w: &Workflow<'_>,
     config: &WorkflowConfig,
 ) -> Result<()> {
     let name = w
@@ -160,7 +160,7 @@ fn validate_workflow(
 fn validate_jobs(
     cx: &Ctxt<'_>,
     ci: &mut Ci<'_>,
-    w: &Workflow,
+    w: &Workflow<'_>,
     config: &WorkflowConfig,
 ) -> Result<()> {
     let Some(table) = w.doc.as_ref().as_mapping() else {
@@ -356,7 +356,7 @@ fn check_strategy_rust_version(ci: &mut Ci, job: &Job) {
 fn validate_on(
     cx: &Ctxt<'_>,
     ci: &mut Ci<'_>,
-    w: &Workflow,
+    w: &Workflow<'_>,
     config: &WorkflowConfig,
     value: yaml::Value<'_>,
 ) {
@@ -421,7 +421,7 @@ fn validate_on(
 fn verify_single_project_build(
     cx: &Ctxt<'_>,
     ci: &mut Ci<'_>,
-    w: &Workflow,
+    w: &Workflow<'_>,
     job: &Job,
 ) -> Result<()> {
     let mut cargo_combos = Vec::new();
@@ -466,7 +466,7 @@ fn verify_single_project_build(
 }
 
 /// Ensure that feature combination is valid.
-fn ensure_feature_combo(cx: &Ctxt<'_>, w: &Workflow, cargos: &[Cargo]) -> bool {
+fn ensure_feature_combo(cx: &Ctxt<'_>, w: &Workflow<'_>, cargos: &[Cargo]) -> bool {
     let mut all_features = false;
     let mut empty_features = false;
 
