@@ -3,7 +3,6 @@ use std::fmt;
 use std::mem::take;
 
 use anyhow::{anyhow, Result};
-use bstr::BStr;
 use nondestructive::yaml::{self, Id, Mapping};
 
 use crate::actions::{self, Actions};
@@ -143,7 +142,7 @@ fn validate_workflow(
         }
     }
 
-    validate_jobs(cx, ci, &w, config)?;
+    validate_jobs(cx, ci, w, config)?;
 
     if !ci.edits.is_empty() || !ci.errors.is_empty() {
         cx.change(Change::BadWorkflow {
@@ -172,9 +171,9 @@ fn validate_jobs(
         validate_on(cx, ci, w, config, value);
     }
 
-    for (job_name, job) in w.jobs() {
-        check_strategy_rust_version(ci, job_name, &job);
-        check_actions(ci, job_name, &job)?;
+    for job in w.jobs(&HashSet::new())? {
+        check_strategy_rust_version(ci, &job);
+        check_actions(ci, &job)?;
 
         if ci.crates.is_single_crate() {
             verify_single_project_build(cx, ci, w, &job)?;
@@ -184,8 +183,8 @@ fn validate_jobs(
     Ok(())
 }
 
-fn check_actions(ci: &mut Ci<'_>, job_name: &BStr, job: &Job<'_>) -> Result<()> {
-    let policy = if job_name == "clippy" {
+fn check_actions(ci: &mut Ci<'_>, job: &Job<'_>) -> Result<()> {
+    let policy = if job.name == "clippy" {
         RustVersionPolicy::Named("stable")
     } else {
         RustVersionPolicy::MinimumSupported
@@ -332,7 +331,7 @@ fn check_if_rust_version(ci: &mut Ci<'_>, at: Id, value: &str) -> Result<()> {
 }
 
 /// Check that the correct rust-version is used in a job.
-fn check_strategy_rust_version(ci: &mut Ci, job_name: &BStr, job: &Job<'_>) {
+fn check_strategy_rust_version(ci: &mut Ci, job: &Job<'_>) {
     let Some(rust_version) = ci.package.rust_version() else {
         return;
     };
@@ -357,7 +356,8 @@ fn check_strategy_rust_version(ci: &mut Ci, job_name: &BStr, job: &Job<'_>) {
                 ci.edits.set(
                     value.id(),
                     format_args!(
-                        "build.{job_name}.strategy.matrix.rust[{index}]: Found rust version `{version}` but expected `{rust_version}`"
+                        "build.{name}.strategy.matrix.rust[{index}]: Found rust version `{version}` but expected `{rust_version}`",
+                        name = job.name,
                     ),
                     rust_version.to_string(),
                 );
