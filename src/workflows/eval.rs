@@ -51,7 +51,8 @@ pub(crate) enum Expr<'m> {
 }
 
 impl Expr<'_> {
-    fn as_true(&self) -> bool {
+    /// Coerce an expression into a boolean value.
+    pub(crate) fn as_bool(&self) -> bool {
         match self {
             Self::String(string) => !string.is_empty(),
             Self::Bool(b) => *b,
@@ -163,7 +164,7 @@ where
     match (a, b) {
         (Expr::Bool(a), Expr::Bool(b)) => Ok(Expr::Bool(a && b)),
         (lhs, rhs) => {
-            if lhs.as_true() && rhs.as_true() {
+            if lhs.as_bool() && rhs.as_bool() {
                 return Ok(rhs);
             }
 
@@ -180,7 +181,7 @@ where
         (Expr::Bool(a), Expr::Bool(b)) => Ok(Expr::Bool(a || b)),
         // Lasy true:ish evaluation.
         (lhs, rhs) => {
-            if lhs.as_true() {
+            if lhs.as_bool() {
                 Ok(lhs)
             } else {
                 Ok(rhs)

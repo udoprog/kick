@@ -536,10 +536,7 @@ impl<'a> Eval<'a> {
     }
 
     pub(crate) fn test(&self, source: &str) -> Result<bool> {
-        match self.expr(source)? {
-            Expr::Bool(b) => Ok(b),
-            _ => bail!("Expected boolean expression"),
-        }
+        Ok(self.expr(source)?.as_bool())
     }
 
     /// Get a variable from the matrix.
