@@ -104,10 +104,8 @@ fn run(
     if !jobs.is_empty() {
         let workflows = Workflows::new(cx, repo)?;
 
-        for id in workflows.ids() {
-            let Some(workflow) = workflows.open(id)? else {
-                continue;
-            };
+        for workflow in workflows.workflows() {
+            let workflow = workflow?;
 
             workflow_to_batches(
                 cx,
@@ -118,7 +116,11 @@ fn run(
                 opts.ignore_runs_on,
             )
             .with_context(|| {
-                anyhow!("{}: Workflow `{id}`", cx.to_path(&workflow.path).display())
+                anyhow!(
+                    "{}: Workflow `{}`",
+                    cx.to_path(&workflow.path).display(),
+                    workflow.id()
+                )
             })?;
         }
     }

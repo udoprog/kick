@@ -59,8 +59,10 @@ impl<'cx> Workflows<'cx> {
     }
 
     /// Get ids of existing workflows.
-    pub(crate) fn ids(&self) -> impl Iterator<Item = &str> {
-        self.ids.iter().map(|s| s.as_str())
+    pub(crate) fn workflows(&self) -> impl Iterator<Item = Result<Workflow>> + '_ {
+        self.ids
+            .iter()
+            .flat_map(|s| self.open(s.as_str()).transpose())
     }
 
     /// Return the expected workflow path.
@@ -72,7 +74,7 @@ impl<'cx> Workflows<'cx> {
     }
 
     /// Open a workflow by id.
-    pub(crate) fn open(&self, id: &str) -> Result<Option<Workflow>> {
+    fn open(&self, id: &str) -> Result<Option<Workflow>> {
         let path = self.path(id);
         let p = self.cx.to_path(&path);
 
@@ -84,16 +86,26 @@ impl<'cx> Workflows<'cx> {
 
         let doc = yaml::from_slice(bytes).with_context(|| anyhow!("{}", p.display()))?;
 
-        Ok(Some(Workflow { path, doc }))
+        Ok(Some(Workflow {
+            id: id.to_owned(),
+            path,
+            doc,
+        }))
     }
 }
 
 pub(crate) struct Workflow {
+    pub(crate) id: String,
     pub(crate) path: RelativePathBuf,
     pub(crate) doc: yaml::Document,
 }
 
 impl Workflow {
+    /// Get the identifier of the workflow.
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+
     /// Iterate over all jobs.
     pub(crate) fn jobs(&self) -> impl Iterator<Item = (&BStr, Job<'_>)> {
         self.doc.as_ref().as_mapping().into_iter().flat_map(|m| {
