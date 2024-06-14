@@ -23,16 +23,10 @@ fn expr(p: &mut Parser<'_>, min: u8) -> Result<(), syntree::Error> {
 
     match tok.syntax {
         OpenParen => {
-            p.token()?;
-
-            let c = p.tree.checkpoint()?;
-            expr(p, 0)?;
-            p.tree.close_at(&c, Group)?;
-
-            if !p.eat(CloseParen)? {
-                p.bump(Error)?;
-                return Ok(());
-            }
+            group(p, CloseParen)?;
+        }
+        OpenExpr => {
+            group(p, CloseExpr)?;
         }
         Variable => {
             p.bump(Variable)?;
@@ -66,6 +60,19 @@ fn expr(p: &mut Parser<'_>, min: u8) -> Result<(), syntree::Error> {
 
     if operation {
         p.tree.close_at(&c, Operation)?;
+    }
+
+    Ok(())
+}
+
+fn group(p: &mut Parser, until: Syntax) -> Result<(), syntree::Error> {
+    p.token()?;
+    let c = p.tree.checkpoint()?;
+    expr(p, 0)?;
+    p.tree.close_at(&c, Group)?;
+
+    if !p.eat(until)? {
+        p.bump(Error)?;
     }
 
     Ok(())

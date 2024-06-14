@@ -61,20 +61,22 @@ impl Expr<'_> {
     }
 }
 
-fn eval_node<'a, I, W>(
-    mut node: Node<'_, Syntax, I, W>,
+fn eval_node<'node, 'a, I, W>(
+    mut node: Node<'node, Syntax, I, W>,
     source: &'a str,
     eval: &Eval<'a>,
 ) -> Result<Expr<'a>, EvalError<I>>
 where
     I: index::Index,
-    W: pointer::Width,
+    W: 'node + pointer::Width,
 {
     loop {
         return match *node.value() {
             Group => {
                 node = node
-                    .first()
+                    .children()
+                    .skip_tokens()
+                    .next()
                     .ok_or(EvalError::new(*node.span(), Missing(Variable)))?;
                 continue;
             }
@@ -234,13 +236,10 @@ pub(crate) fn eval<'b, 'a, I, W>(
     eval: &'b Eval<'a>,
 ) -> impl Iterator<Item = Result<Expr<'a>, EvalError<I>>> + 'b
 where
-    I: index::Index,
+    I: index::Index + std::fmt::Display,
     W: pointer::Width,
 {
-    let mut it = tree.children().skip_tokens();
-
-    std::iter::from_fn(move || {
-        let node = it.next()?;
-        Some(eval_node(node, source, eval))
-    })
+    tree.children()
+        .skip_tokens()
+        .map(move |node| eval_node(node, source, eval))
 }

@@ -1,8 +1,10 @@
+use core::array;
+
 use super::Syntax;
 
 use Syntax::{
-    And, CloseParen, DoubleString, Eq, Error, Neq, OpenParen, Or, SingleString, Variable,
-    Whitespace,
+    And, CloseExpr, CloseParen, DoubleString, Eq, Error, Neq, OpenExpr, OpenParen, Or,
+    SingleString, Variable, Whitespace,
 };
 
 const NUL: char = '\0';
@@ -23,51 +25,40 @@ impl<'a> Lexer<'a> {
         Self { source, cursor: 0 }
     }
 
-    /// Peek the next character of input.
-    fn peek(&self) -> char {
-        let s = self.source.get(self.cursor..).unwrap_or_default();
-        s.chars().next().unwrap_or(NUL)
-    }
-
-    /// Peek the next character of input.
-    fn peek2(&self) -> (char, char) {
+    /// Peek `N` characters of input.
+    fn peek<const N: usize>(&self) -> [char; N] {
         let s = self.source.get(self.cursor..).unwrap_or_default();
         let mut it = s.chars();
-        let a = it.next().unwrap_or(NUL);
-        let b = it.next().unwrap_or(NUL);
-        (a, b)
+        array::from_fn(move |_| it.next().unwrap_or(NUL))
     }
 
     /// Step over the next character.
-    fn step(&mut self) {
-        let c = self.peek();
+    fn step(&mut self, n: usize) {
+        let Some(string) = self.source.get(self.cursor..) else {
+            return;
+        };
 
-        if self.peek() != NUL {
+        for c in string.chars().take(n) {
             self.cursor += c.len_utf8();
         }
     }
 
-    /// Step over the two next characters.
-    fn step2(&mut self) {
-        self.step();
-        self.step();
-    }
-
     fn string(&mut self, delim: char) -> bool {
-        self.step();
+        self.step(1);
 
         loop {
-            match self.peek() {
+            let [c] = self.peek();
+
+            match c {
                 NUL => return false,
                 '\\' => {
-                    self.step();
-                    self.step();
+                    self.step(2);
                 }
                 c if c == delim => {
-                    self.step();
+                    self.step(1);
                     break;
                 }
-                _ => self.step(),
+                _ => self.step(1),
             }
         }
 
@@ -77,7 +68,7 @@ impl<'a> Lexer<'a> {
     /// Consume input until we hit non-numerics.
     fn consume_while(&mut self, cond: fn(char) -> bool) {
         loop {
-            let c = self.peek();
+            let [c] = self.peek();
 
             if c == NUL || !cond(c) {
                 break;
@@ -89,61 +80,69 @@ impl<'a> Lexer<'a> {
 
     /// Get the next token.
     pub(crate) fn next(&mut self) -> Token {
-        let (a, b) = self.peek2();
+        let [a, b, c] = self.peek();
         let start = self.cursor;
 
-        let syntax = match (a, b) {
-            (NUL, _) => {
+        let syntax = match (a, b, c) {
+            (NUL, _, _) => {
                 return Token {
                     len: 0,
                     syntax: Syntax::Eof,
                 }
             }
-            (c, _) if c.is_whitespace() => {
+            (c, _, _) if c.is_whitespace() => {
                 self.consume_while(char::is_whitespace);
                 Whitespace
             }
-            ('&', '&') => {
-                self.step2();
+            ('&', '&', _) => {
+                self.step(2);
                 And
             }
-            ('|', '|') => {
-                self.step2();
+            ('|', '|', _) => {
+                self.step(2);
                 Or
             }
-            ('=', '=') => {
-                self.step2();
+            ('=', '=', _) => {
+                self.step(2);
                 Eq
             }
-            ('!', '=') => {
-                self.step2();
+            ('!', '=', _) => {
+                self.step(2);
                 Neq
             }
-            ('(', _) => {
-                self.step();
+            ('(', _, _) => {
+                self.step(1);
                 OpenParen
             }
-            (')', _) => {
-                self.step();
+            (')', _, _) => {
+                self.step(1);
                 CloseParen
             }
-            ('a'..='z', _) => {
+            ('a'..='z', _, _) => {
                 self.consume_while(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '.'));
                 Variable
             }
-            ('\'', _) => {
+            ('\'', _, _) => {
                 if self.string('\'') {
                     SingleString
                 } else {
                     Error
                 }
             }
-            ('\"', _) => {
+            ('\"', _, _) => {
                 if self.string('"') {
                     DoubleString
                 } else {
                     Error
                 }
+            }
+            ('$', '{', '{') => {
+                self.step(3);
+                OpenExpr
+            }
+            ('}', '}', _) => {
+                self.step(2);
+                CloseExpr
             }
             _ => {
                 self.consume_while(|c| !c.is_whitespace());
