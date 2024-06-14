@@ -10,6 +10,7 @@ mod parsing;
 #[allow(non_camel_case_types)]
 enum Syntax {
     Variable,
+    Not,
     Eq,
     Neq,
     And,
@@ -26,8 +27,10 @@ enum Syntax {
     OpenExpr,
     // `}}`.
     CloseExpr,
-    // An operation.
-    Operation,
+    // A unary operation.
+    Unary,
+    // A binary operation.
+    Binary,
     // Precedence group.
     Group,
     // Enf of file.

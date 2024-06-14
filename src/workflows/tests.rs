@@ -63,3 +63,16 @@ fn group() {
 
     assert_eq!(eval.expr("matrix.baz && matrix.bar").unwrap(), Expr::Null);
 }
+
+#[test]
+fn not() {
+    let mut matrix = Matrix::new();
+    matrix.insert("foo", "");
+    matrix.insert("bar", "right");
+
+    let eval = Eval::new().with_matrix(&matrix);
+
+    assert_eq!(eval.expr("!matrix.foo").unwrap(), Expr::Bool(true));
+    assert_eq!(eval.expr("!matrix.bar").unwrap(), Expr::Bool(false));
+    assert_eq!(eval.expr("!matrix.baz").unwrap(), Expr::Bool(true));
+}

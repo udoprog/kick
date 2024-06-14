@@ -3,7 +3,7 @@ use core::array;
 use super::Syntax;
 
 use Syntax::{
-    And, CloseExpr, CloseParen, DoubleString, Eq, Error, Neq, OpenExpr, OpenParen, Or,
+    And, CloseExpr, CloseParen, DoubleString, Eq, Error, Neq, Not, OpenExpr, OpenParen, Or,
     SingleString, Variable, Whitespace,
 };
 
@@ -109,6 +109,10 @@ impl<'a> Lexer<'a> {
             ('!', '=', _) => {
                 self.step(2);
                 Neq
+            }
+            ('!', _, _) => {
+                self.step(1);
+                Not
             }
             ('(', _, _) => {
                 self.step(1);

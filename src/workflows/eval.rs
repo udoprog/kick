@@ -5,7 +5,12 @@ use super::{Eval, Syntax};
 use syntree::{index, pointer, Node, Span, Tree};
 use thiserror::Error;
 
-use Syntax::{And, DoubleString, Eq, Group, Neq, Operation, Or, SingleString, Variable};
+use Syntax::{And, Binary, DoubleString, Eq, Group, Neq, Not, Or, SingleString, Unary, Variable};
+
+type UnaryFn<I> = for<'eval> fn(&Span<I>, Expr<'eval>) -> Result<Expr<'eval>, EvalError<I>>;
+
+type BinaryFn<I> =
+    for<'eval> fn(&Span<I>, Expr<'eval>, Expr<'eval>) -> Result<Expr<'eval>, EvalError<I>>;
 
 #[derive(Debug, Error)]
 #[error("{kind}")]
@@ -44,7 +49,9 @@ use EvalErrorKind::{BadString, Expected, ExpectedOperator, Missing, UnexpectedOp
 /// The outcome of evaluating an expression.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Expr<'m> {
+    /// A string expression.
     String(Cow<'m, str>),
+    /// A boolean expression.
     Bool(bool),
     /// Expression evaluates to nothing.
     Null,
@@ -102,26 +109,40 @@ where
 
                 Ok(Expr::String(value))
             }
-            Operation => {
+            Unary => {
+                let mut it = node.children().skip_tokens();
+
+                let op = it
+                    .next()
+                    .ok_or(EvalError::new(*node.span(), ExpectedOperator))?;
+
+                let calculate: UnaryFn<I> = match *op.value() {
+                    Not => op_not::<I>,
+                    what => return Err(EvalError::new(*node.span(), UnexpectedOperator(what))),
+                };
+
+                let rhs = it
+                    .next()
+                    .ok_or(EvalError::new(*node.span(), Missing(Variable)))?;
+
+                let rhs = eval_node(rhs, source, eval)?;
+                Ok(calculate(node.span(), rhs)?)
+            }
+            Binary => {
                 let mut it = node.children().skip_tokens();
 
                 let first = it
                     .next()
                     .ok_or(EvalError::new(*node.span(), Missing(Variable)))?;
 
-                let mut base = eval_node(first, source, eval)?;
+                let mut lhs = eval_node(first, source, eval)?;
 
                 while let Some(op) = it.next() {
                     let op = op
                         .first()
                         .ok_or(EvalError::new(*node.span(), ExpectedOperator))?;
 
-                    let calculate: for<'eval> fn(
-                        &Span<I>,
-                        Expr<'eval>,
-                        Expr<'eval>,
-                    )
-                        -> Result<Expr<'eval>, EvalError<I>> = match *op.value() {
+                    let calculate: BinaryFn<I> = match *op.value() {
                         Eq => op_eq::<I>,
                         Neq => op_neq::<I>,
                         And => op_and::<I>,
@@ -129,41 +150,47 @@ where
                         what => return Err(EvalError::new(*node.span(), UnexpectedOperator(what))),
                     };
 
-                    let first = it
+                    let rhs = it
                         .next()
                         .ok_or(EvalError::new(*node.span(), Missing(Variable)))?;
 
-                    let b = eval_node(first, source, eval)?;
-
-                    base = calculate(node.span(), base, b)?;
+                    let rhs = eval_node(rhs, source, eval)?;
+                    lhs = calculate(node.span(), lhs, rhs)?;
                 }
 
-                Ok(base)
+                Ok(lhs)
             }
             what => Err(EvalError::new(*node.span(), Expected(Variable, what))),
         };
     }
 }
 
-fn op_eq<'a, I>(_: &Span<I>, a: Expr<'a>, b: Expr<'a>) -> Result<Expr<'a>, EvalError<I>>
+fn op_not<'a, I>(_: &Span<I>, expr: Expr<'a>) -> Result<Expr<'a>, EvalError<I>>
 where
     I: index::Index,
 {
-    Ok(Expr::Bool(a == b))
+    Ok(Expr::Bool(!expr.as_bool()))
 }
 
-fn op_neq<'a, I>(_: &Span<I>, a: Expr<'a>, b: Expr<'a>) -> Result<Expr<'a>, EvalError<I>>
+fn op_eq<'a, I>(_: &Span<I>, lhs: Expr<'a>, rhs: Expr<'a>) -> Result<Expr<'a>, EvalError<I>>
 where
     I: index::Index,
 {
-    Ok(Expr::Bool(a != b))
+    Ok(Expr::Bool(lhs == rhs))
 }
 
-fn op_and<'a, I>(_: &Span<I>, a: Expr<'a>, b: Expr<'a>) -> Result<Expr<'a>, EvalError<I>>
+fn op_neq<'a, I>(_: &Span<I>, lhs: Expr<'a>, rhs: Expr<'a>) -> Result<Expr<'a>, EvalError<I>>
 where
     I: index::Index,
 {
-    match (a, b) {
+    Ok(Expr::Bool(lhs != rhs))
+}
+
+fn op_and<'a, I>(_: &Span<I>, lhs: Expr<'a>, rhs: Expr<'a>) -> Result<Expr<'a>, EvalError<I>>
+where
+    I: index::Index,
+{
+    match (lhs, rhs) {
         (Expr::Bool(a), Expr::Bool(b)) => Ok(Expr::Bool(a && b)),
         (lhs, rhs) => {
             if lhs.as_bool() && rhs.as_bool() {
@@ -175,13 +202,12 @@ where
     }
 }
 
-fn op_or<'a, I>(_: &Span<I>, a: Expr<'a>, b: Expr<'a>) -> Result<Expr<'a>, EvalError<I>>
+fn op_or<'a, I>(_: &Span<I>, lhs: Expr<'a>, rhs: Expr<'a>) -> Result<Expr<'a>, EvalError<I>>
 where
     I: index::Index,
 {
-    match (a, b) {
-        (Expr::Bool(a), Expr::Bool(b)) => Ok(Expr::Bool(a || b)),
-        // Lasy true:ish evaluation.
+    match (lhs, rhs) {
+        (Expr::Bool(lhs), Expr::Bool(rhs)) => Ok(Expr::Bool(lhs || rhs)),
         (lhs, rhs) => {
             if lhs.as_bool() {
                 Ok(lhs)

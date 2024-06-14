@@ -22,6 +22,12 @@ fn expr(p: &mut Parser<'_>, min: u8) -> Result<(), syntree::Error> {
     let c = p.tree.checkpoint()?;
 
     match tok.syntax {
+        Not => {
+            p.bump(Not)?;
+            expr(p, 0)?;
+            p.tree.close_at(&c, Unary)?;
+            return Ok(());
+        }
         OpenParen => {
             group(p, CloseParen)?;
         }
@@ -59,7 +65,7 @@ fn expr(p: &mut Parser<'_>, min: u8) -> Result<(), syntree::Error> {
     }
 
     if operation {
-        p.tree.close_at(&c, Operation)?;
+        p.tree.close_at(&c, Binary)?;
     }
 
     Ok(())
