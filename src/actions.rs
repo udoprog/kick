@@ -1,17 +1,17 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use nondestructive::yaml;
 
 use crate::changes::WorkflowError;
 use crate::edits::{self, Edits};
+use crate::workflows::Step;
 
 /// A single actions check.
 pub(crate) trait ActionsCheck {
     fn check(
         &self,
         name: &str,
-        action: &yaml::Mapping<'_>,
+        action: &Step,
         edits: &mut Edits,
         errors: &mut Vec<WorkflowError>,
     ) -> Result<()>;
@@ -68,11 +68,11 @@ impl ActionsCheck for ActionsRsToolchainActionsCheck {
     fn check(
         &self,
         name: &str,
-        mapping: &yaml::Mapping<'_>,
+        step: &Step,
         edits: &mut Edits,
         errors: &mut Vec<WorkflowError>,
     ) -> Result<()> {
-        let Some(uses) = mapping.get("uses") else {
+        let Some((uses_id, _)) = &step.uses else {
             errors.push(WorkflowError::Error {
                 name: name.to_string(),
                 reason: String::from("there are better alternatives"),
@@ -80,21 +80,18 @@ impl ActionsCheck for ActionsRsToolchainActionsCheck {
             return Ok(());
         };
 
-        let toolchain = if let Some(toolchain) = mapping
-            .get("with")
-            .and_then(|v| v.as_mapping()?.get("toolchain")?.as_str())
-        {
-            toolchain
+        let toolchain = if let Some(toolchain) = step.with.get("toolchain") {
+            toolchain.as_str()
         } else {
             "stable"
         };
 
         let toolchain = if !toolchain.starts_with("${{") {
-            edits.remove_key(mapping.id(), "With is incorrect", String::from("with"));
+            edits.remove_key(step.id, "With is incorrect", String::from("with"));
             toolchain
         } else {
             edits.insert(
-                mapping.id(),
+                step.id,
                 "Update toolchain",
                 String::from("with"),
                 edits::Value::Mapping(vec![(
@@ -107,7 +104,7 @@ impl ActionsCheck for ActionsRsToolchainActionsCheck {
         };
 
         edits.set(
-            uses.id(),
+            *uses_id,
             "actions-rs/toolchain has better alternatives",
             edits::Value::String(format!("dtolnay/rust-toolchain@{toolchain}")),
         );

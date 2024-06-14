@@ -94,12 +94,12 @@ impl<'cx> Workflows<'cx> {
     }
 }
 
-fn build_job<'a>(
+fn build_job(
     name: &str,
-    value: yaml::Mapping<'a>,
+    value: yaml::Mapping<'_>,
     ignore: &HashSet<String>,
     eval: &Eval<'_>,
-) -> Result<Job<'a>> {
+) -> Result<Job> {
     let runs_on = value
         .get("runs-on")
         .and_then(|value| value.as_str())
@@ -141,15 +141,21 @@ fn build_job<'a>(
                     };
 
                 let mut skipped = None;
+                let mut condition = None;
 
-                if let Some(expr) = value.get("if").and_then(|v| v.as_str()) {
+                if let Some((id, expr)) = value.get("if").and_then(|v| Some((v.id(), v.as_str()?)))
+                {
                     if !eval.test(expr)? {
                         skipped = Some(expr.to_owned());
                     }
+
+                    condition = Some((id, expr.to_owned()));
                 }
 
-                let uses = if let Some(uses) = value.get("uses").and_then(|v| v.as_str()) {
-                    Some(eval.eval(uses)?.into_owned())
+                let uses = if let Some((id, uses)) =
+                    value.get("uses").and_then(|v| Some((v.id(), v.as_str()?)))
+                {
+                    Some((id, eval.eval(uses)?.into_owned()))
                 } else {
                     None
                 };
@@ -177,9 +183,11 @@ fn build_job<'a>(
                     .transpose()?;
 
                 steps.push(Step {
+                    id: value.id(),
                     env: eval.env().clone(),
                     working_directory,
                     skipped,
+                    condition,
                     uses,
                     with,
                     name: name.map(Cow::into_owned),
@@ -198,7 +206,6 @@ fn build_job<'a>(
 
     Ok(Job {
         name: name.into_owned(),
-        value,
         matrices,
     })
 }
@@ -236,14 +243,18 @@ pub(crate) fn build_matrices(
             match value.into_any() {
                 yaml::Any::Sequence(sequence) => {
                     for value in sequence {
+                        let id = value.id();
+
                         if let Some(value) = value.as_str() {
-                            values.push(eval.eval(value)?.into_owned());
+                            values.push((eval.eval(value)?.into_owned(), id));
                         }
                     }
                 }
                 yaml::Any::Scalar(value) => {
+                    let id = value.id();
+
                     if let Some(value) = value.as_str() {
-                        values.push(eval.eval(value)?.into_owned());
+                        values.push((eval.eval(value)?.into_owned(), id));
                     }
                 }
                 _ => {}
@@ -256,14 +267,15 @@ pub(crate) fn build_matrices(
     let mut positions = vec![0usize; variables.len()];
 
     'outer: loop {
-        let mut matrix = BTreeMap::new();
+        let mut matrix = Matrix::new();
 
         for (n, &p) in positions.iter().enumerate() {
             let (key, ref values) = variables[n];
-            matrix.insert(key.to_owned(), values[p].to_owned());
+            let (ref value, id) = values[p];
+            matrix.insert_with_id(key, value, id);
         }
 
-        matrices.push(Matrix { matrix });
+        matrices.push(matrix);
 
         for (p, (_, values)) in positions.iter_mut().zip(&variables) {
             *p += 1;
@@ -279,9 +291,7 @@ pub(crate) fn build_matrices(
     }
 
     if matrices.is_empty() {
-        matrices.push(Matrix {
-            matrix: BTreeMap::new(),
-        });
+        matrices.push(Matrix::new());
     }
 
     Ok(matrices)
@@ -351,9 +361,8 @@ impl Workflow {
     }
 }
 
-pub(crate) struct Job<'a> {
+pub(crate) struct Job {
     pub(crate) name: String,
-    pub(crate) value: yaml::Mapping<'a>,
     pub(crate) matrices: Vec<(Matrix, Steps)>,
 }
 
@@ -363,10 +372,12 @@ pub(crate) struct Steps {
 }
 
 pub(crate) struct Step {
+    pub(crate) id: yaml::Id,
     pub(crate) env: BTreeMap<String, String>,
     pub(crate) working_directory: Option<RelativePathBuf>,
     pub(crate) skipped: Option<String>,
-    pub(crate) uses: Option<String>,
+    pub(crate) condition: Option<(yaml::Id, String)>,
+    pub(crate) uses: Option<(yaml::Id, String)>,
     pub(crate) with: BTreeMap<String, String>,
     pub(crate) name: Option<String>,
     pub(crate) run: Option<String>,
@@ -516,15 +527,23 @@ impl<'a> Eval<'a> {
 #[derive(Clone)]
 pub(crate) struct Matrix {
     matrix: BTreeMap<String, String>,
+    ids: BTreeMap<String, yaml::Id>,
 }
 
 impl Matrix {
     /// Create a new matrix.
-    #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self {
             matrix: BTreeMap::new(),
+            ids: BTreeMap::new(),
         }
+    }
+
+    /// Get a value from the matrix.
+    pub(crate) fn get_with_id(&self, key: &str) -> Option<(&str, yaml::Id)> {
+        let value = self.matrix.get(key)?;
+        let id = self.ids.get(key)?;
+        Some((value.as_str(), *id))
     }
 
     /// Insert a value into the matrix.
@@ -536,6 +555,17 @@ impl Matrix {
     {
         self.matrix
             .insert(key.as_ref().to_owned(), value.as_ref().to_owned());
+    }
+
+    /// Insert a value into the matrix.
+    pub(crate) fn insert_with_id<K, V>(&mut self, key: K, value: V, id: yaml::Id)
+    where
+        K: AsRef<str>,
+        V: AsRef<str>,
+    {
+        self.matrix
+            .insert(key.as_ref().to_owned(), value.as_ref().to_owned());
+        self.ids.insert(key.as_ref().to_owned(), id);
     }
 
     /// Test if the matrix is empty.
