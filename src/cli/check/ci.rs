@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::fmt;
 use std::mem::take;
 
@@ -95,17 +95,25 @@ pub(crate) fn build(cx: &Ctxt<'_>, package: &Package, repo: &Repo, crates: &Crat
         errors: Vec::new(),
     };
 
-    let mut ids = workflows.ids().collect::<BTreeSet<_>>();
+    let mut configs = cx.config.workflows(ci.repo)?;
 
-    for (id, config) in cx.config.workflows(ci.repo)? {
-        ids.remove(id.as_str());
-        validate_workflow(cx, &mut ci, &id, &config)?;
+    for workflow in workflows.workflows() {
+        let workflow = workflow?;
+        let config = configs.remove(workflow.id()).unwrap_or_default();
+
+        if config.disable {
+            continue;
+        }
+
+        validate_workflow(cx, &mut ci, &workflow, &config)?;
     }
 
-    let default_config = WorkflowConfig::default();
-
-    for id in ids {
-        validate_workflow(cx, &mut ci, id, &default_config)?;
+    for (id, _) in configs {
+        cx.change(Change::MissingWorkflow {
+            id: id.clone(),
+            path: ci.workflows.path(&id),
+            repo: (**ci.repo).clone(),
+        });
     }
 
     Ok(())
@@ -115,23 +123,9 @@ pub(crate) fn build(cx: &Ctxt<'_>, package: &Package, repo: &Repo, crates: &Crat
 fn validate_workflow(
     cx: &Ctxt<'_>,
     ci: &mut Ci<'_>,
-    id: &str,
+    w: &Workflow,
     config: &WorkflowConfig,
 ) -> Result<()> {
-    if config.disable {
-        return Ok(());
-    }
-
-    let Some(w) = ci.workflows.open(id)? else {
-        cx.change(Change::MissingWorkflow {
-            id: id.to_owned(),
-            path: ci.workflows.path(id),
-            repo: (**ci.repo).clone(),
-        });
-
-        return Ok(());
-    };
-
     let name = w
         .doc
         .as_ref()
@@ -153,7 +147,7 @@ fn validate_workflow(
 
     if !ci.edits.is_empty() || !ci.errors.is_empty() {
         cx.change(Change::BadWorkflow {
-            path: ci.workflows.path(id),
+            path: w.path.clone(),
             doc: w.doc.clone(),
             edits: take(&mut ci.edits),
             errors: take(&mut ci.errors),
