@@ -87,6 +87,7 @@ impl<'cx> Workflows<'cx> {
             .with_context(|| anyhow!("{}: Reading YAML file", p.display()))?;
 
         Ok(Some(Workflow {
+            cx: self.cx,
             id: id.to_owned(),
             path,
             doc,
@@ -103,7 +104,7 @@ fn build_job(
     let runs_on = value
         .get("runs-on")
         .and_then(|value| value.as_str())
-        .ok_or_else(|| anyhow!("Missing runs-on"))?;
+        .context("Missing runs-on")?;
 
     let name = value
         .get("name")
@@ -217,6 +218,7 @@ pub(crate) fn build_matrices(
     eval: &Eval<'_>,
 ) -> Result<Vec<Matrix>> {
     let mut matrices = Vec::new();
+    let mut included = Vec::new();
     let mut variables = Vec::new();
 
     'bail: {
@@ -233,6 +235,32 @@ pub(crate) fn build_matrices(
 
         for (key, value) in matrix {
             let key = str::from_utf8(key).context("Bad matrix key")?;
+
+            if key == "include" {
+                for (index, mapping) in value
+                    .as_sequence()
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|v| v.as_mapping())
+                    .enumerate()
+                {
+                    let mut matrix = Matrix::new();
+
+                    for (key, value) in mapping {
+                        let id = value.id();
+                        let key = str::from_utf8(key).context("Bad matrix key")?;
+                        let value = value.as_str().with_context(|| {
+                            anyhow!(".include[{index}][{key}]: Value must be a string")
+                        })?;
+                        let value = eval.eval(value)?;
+                        matrix.insert_with_id(key, value, id);
+                    }
+
+                    included.push(matrix);
+                }
+
+                continue;
+            }
 
             if ignore.contains(key) {
                 continue;
@@ -260,7 +288,9 @@ pub(crate) fn build_matrices(
                 _ => {}
             }
 
-            variables.push((key, values));
+            if !values.is_empty() {
+                variables.push((key, values));
+            }
         }
     };
 
@@ -290,6 +320,8 @@ pub(crate) fn build_matrices(
         break;
     }
 
+    matrices.extend(included);
+
     if matrices.is_empty() {
         matrices.push(Matrix::new());
     }
@@ -318,13 +350,14 @@ fn extract_env(eval: &Eval<'_>, m: &yaml::Mapping<'_>) -> Result<BTreeMap<String
     Ok(env)
 }
 
-pub(crate) struct Workflow {
+pub(crate) struct Workflow<'cx> {
+    cx: &'cx Ctxt<'cx>,
     pub(crate) id: String,
     pub(crate) path: RelativePathBuf,
     pub(crate) doc: yaml::Document,
 }
 
-impl Workflow {
+impl Workflow<'_> {
     /// Get the identifier of the workflow.
     pub(crate) fn id(&self) -> &str {
         &self.id
@@ -333,7 +366,10 @@ impl Workflow {
     /// Iterate over all jobs.
     pub(crate) fn jobs(&self, ignore: &HashSet<String>) -> Result<Vec<Job>> {
         let Some(mapping) = self.doc.as_ref().as_mapping() else {
-            bail!("Root is not a mapping");
+            bail!(
+                "{}: Root is not a mapping",
+                self.cx.to_path(&self.path).display()
+            );
         };
 
         let eval = Eval::new();
@@ -350,11 +386,19 @@ impl Workflow {
         let mut outputs = Vec::new();
 
         for (name, job) in jobs {
-            let name = str::from_utf8(name).context("Decoding job name")?;
-            outputs.push(
-                build_job(name, job, ignore, &eval)
-                    .with_context(|| anyhow!("Building job {name}"))?,
-            );
+            let name = str::from_utf8(name).with_context(|| {
+                anyhow!(
+                    "{}: Decoding job name",
+                    self.cx.to_path(&self.path).display()
+                )
+            })?;
+
+            outputs.push(build_job(name, job, ignore, &eval).with_context(|| {
+                anyhow!(
+                    "{}: Building job `{name}`",
+                    self.cx.to_path(&self.path).display()
+                )
+            })?);
         }
 
         Ok(outputs)
@@ -476,11 +520,11 @@ impl<'a> Eval<'a> {
         let mut it = self::eval::eval(&tree, source, self);
 
         let Some(expr) = it.next() else {
-            bail!("No expressions");
+            bail!("No expressions: {source}");
         };
 
         if it.next().is_some() {
-            bail!("Multiple expressions");
+            bail!("Multiple expressions: {source}");
         }
 
         match expr {
