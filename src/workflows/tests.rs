@@ -2,13 +2,11 @@ use super::*;
 
 #[test]
 fn matrix_test() {
-    let mut matrix = Matrix::new();
-    matrix.insert("a", "1");
-    matrix.insert("b", "2");
+    let mut tree = Tree::new();
+    tree.insert(["matrix", "a"], "1");
+    tree.insert(["matrix", "b"], "2");
 
-    let env = BTreeMap::new();
-
-    let eval = Eval::new().with_env(&env).with_matrix(&matrix);
+    let eval = Eval::new().with_tree(&tree);
 
     assert_eq!(eval.test("matrix.a == '1'"), Ok(true));
     assert_eq!(eval.test("matrix.a != '2'"), Ok(true));
@@ -22,10 +20,9 @@ fn matrix_test() {
 
 #[test]
 fn or_test() {
-    let mut matrix = Matrix::new();
-    matrix.insert("bar", "right");
-
-    let eval = Eval::new().with_matrix(&matrix);
+    let mut tree = Tree::new();
+    tree.insert(["matrix", "bar"], "right");
+    let eval = Eval::new().with_tree(&tree);
 
     assert_eq!(
         eval.expr("matrix.foo || matrix.bar"),
@@ -35,11 +32,11 @@ fn or_test() {
 
 #[test]
 fn and_test() {
-    let mut matrix = Matrix::new();
-    matrix.insert("foo", "wrong");
-    matrix.insert("bar", "right");
+    let mut tree = Tree::new();
+    tree.insert(["matrix", "foo"], "wrong");
+    tree.insert(["matrix", "bar"], "right");
 
-    let eval = Eval::new().with_matrix(&matrix);
+    let eval = Eval::new().with_tree(&tree);
 
     assert_eq!(
         eval.expr("matrix.foo && matrix.bar"),
@@ -51,11 +48,11 @@ fn and_test() {
 
 #[test]
 fn group() {
-    let mut matrix = Matrix::new();
-    matrix.insert("foo", "wrong");
-    matrix.insert("bar", "right");
+    let mut tree = Tree::new();
+    tree.insert(["matrix", "foo"], "wrong");
+    tree.insert(["matrix", "bar"], "right");
 
-    let eval = Eval::new().with_matrix(&matrix);
+    let eval = Eval::new().with_tree(&tree);
 
     assert_eq!(
         eval.expr("${{ matrix.foo }} && matrix.bar"),
@@ -67,11 +64,11 @@ fn group() {
 
 #[test]
 fn not() {
-    let mut matrix = Matrix::new();
-    matrix.insert("foo", "");
-    matrix.insert("bar", "right");
+    let mut tree = Tree::new();
+    tree.insert(["matrix", "foo"], "");
+    tree.insert(["matrix", "bar"], "right");
 
-    let eval = Eval::new().with_matrix(&matrix);
+    let eval = Eval::new().with_tree(&tree);
 
     assert_eq!(eval.expr("!matrix.foo"), Ok(Expr::Bool(true)));
     assert_eq!(eval.expr("!matrix.bar"), Ok(Expr::Bool(false)));
@@ -80,10 +77,10 @@ fn not() {
 
 #[test]
 fn lazy_expansion() {
-    let mut matrix = Matrix::new();
-    matrix.insert("ref", "refs/heads/main");
-    matrix.insert("ref2", "refs/heads/feature");
-    let eval = Eval::new().with_matrix(&matrix);
+    let mut tree = Tree::new();
+    tree.insert(["matrix", "ref"], "refs/heads/main");
+    tree.insert(["matrix", "ref2"], "refs/heads/feature");
+    let eval = Eval::new().with_tree(&tree);
 
     assert_eq!(
         eval.expr(
@@ -140,10 +137,10 @@ fn comparisons() {
 
 #[test]
 fn lookup_star() {
-    let mut matrix = Matrix::new();
-    matrix.insert("a", "first");
-    matrix.insert("b", "second");
-    let eval = Eval::new().with_matrix(&matrix);
+    let mut tree = Tree::new();
+    tree.insert(["matrix", "a"], "first");
+    tree.insert(["matrix", "b"], "second");
+    let eval = Eval::new().with_tree(&tree);
 
     let expected = Expr::Array(["first".into(), "second".into()].into());
     assert_eq!(eval.expr("matrix.*"), Ok(expected));
@@ -151,12 +148,12 @@ fn lookup_star() {
 
 #[test]
 fn function() {
-    let mut matrix = Matrix::new();
-    matrix.insert("a", "true");
-    matrix.insert("b", "false");
-    matrix.insert("c", "[1, 2, 3, 4]");
+    let mut tree = Tree::new();
+    tree.insert(["matrix", "a"], "true");
+    tree.insert(["matrix", "b"], "false");
+    tree.insert(["matrix", "c"], "[1, 2, 3, 4]");
     let functions = default_functions();
-    let eval = Eval::new().with_matrix(&matrix).with_functions(&functions);
+    let eval = Eval::new().with_tree(&tree).with_functions(&functions);
     assert_eq!(eval.expr("fromJSON(matrix.a)"), Ok(Expr::Bool(true)));
     assert_eq!(eval.expr("fromJSON(matrix.b)"), Ok(Expr::Bool(false)));
     assert_eq!(

@@ -54,7 +54,7 @@ pub(crate) enum Syntax {
 }
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fmt;
 use std::fs;
 use std::io;
@@ -181,25 +181,25 @@ fn build_job(
     let mut matrices = Vec::new();
 
     for matrix in build_matrices(&value, ignore, eval)? {
-        let eval = eval.with_matrix(&matrix);
+        let mut tree = eval.tree().clone();
+        tree.insert_prefix("matrix", matrix.matrix.clone());
+        let eval = eval.with_tree(&tree);
 
         let mut steps = Vec::new();
 
         if let Some(s) = value.get("steps").and_then(|steps| steps.as_sequence()) {
-            let mut env = eval.env();
-            env.extend(extract_env(&eval, &value)?);
-            // Update environment.
-            let eval = eval.with_env(&env);
+            let mut tree = eval.tree().clone();
+            tree.insert_prefix("env", extract_env(&eval, &value)?);
+            let eval = eval.with_tree(&tree);
 
             for s in s {
                 let Some(value) = s.as_mapping() else {
                     continue;
                 };
 
-                let mut env = eval.env();
-                env.extend(extract_env(&eval, &value)?);
-                // Update environment.
-                let eval = eval.with_env(&env);
+                let mut tree = eval.tree().clone();
+                tree.insert_prefix("env", extract_env(&eval, &value)?);
+                let eval = eval.with_tree(&tree);
 
                 let working_directory =
                     match value.get("working-directory").and_then(|v| v.as_str()) {
@@ -251,7 +251,7 @@ fn build_job(
 
                 steps.push(Step {
                     id: value.id(),
-                    env: eval.env().clone(),
+                    env: eval.tree().get_prefix("env"),
                     working_directory,
                     skipped,
                     condition,
@@ -439,9 +439,10 @@ impl Workflow<'_> {
         };
 
         let functions = default_functions();
+        let mut tree = Tree::EMPTY;
         let eval = Eval::new().with_functions(&functions);
-        let env = extract_env(&eval, &mapping)?;
-        let eval = eval.with_env(&env);
+        tree.insert_prefix("env", extract_env(&eval, &mapping)?);
+        let eval = eval.with_tree(&tree);
 
         let jobs = mapping
             .get("jobs")
@@ -555,18 +556,135 @@ fn from_json<'m>(span: &Span<u32>, args: &[Expr<'m>]) -> Result<Expr<'m>, eval::
 
 type CustomFunction = for<'m> fn(&Span<u32>, &[Expr<'m>]) -> Result<Expr<'m>, eval::EvalError>;
 
+#[derive(Clone, Default)]
+struct Node {
+    value: Option<String>,
+    children: Option<BTreeMap<String, Node>>,
+}
+
+impl Node {
+    const EMPTY: Node = Node {
+        value: None,
+        children: None,
+    };
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct Tree {
+    root: Node,
+}
+
+impl Tree {
+    const EMPTY: Tree = Tree { root: Node::EMPTY };
+
+    /// Create a new tree.
+    #[cfg(test)]
+    pub(crate) fn new() -> Self {
+        Self::EMPTY
+    }
+
+    /// Insert a prefix into the current tree.
+    fn insert_prefix<V>(&mut self, prefix: &str, vars: V)
+    where
+        V: IntoIterator<Item = (String, String)>,
+    {
+        let child = self
+            .root
+            .children
+            .get_or_insert_with(BTreeMap::new)
+            .entry(prefix.to_owned())
+            .or_default();
+
+        for (key, value) in vars {
+            child
+                .children
+                .get_or_insert_with(BTreeMap::new)
+                .entry(key)
+                .or_default()
+                .value = Some(value);
+        }
+    }
+
+    /// Get a prefix tree.
+    fn get_prefix(&self, prefix: &str) -> BTreeMap<String, String> {
+        let mut output = BTreeMap::new();
+
+        let Some(children) = &self.root.children else {
+            return output;
+        };
+
+        let Some(children) = children.get(prefix).and_then(|n| n.children.as_ref()) else {
+            return output;
+        };
+
+        for (key, node) in children {
+            if let Some(value) = &node.value {
+                output.insert(key.clone(), value.clone());
+            }
+        }
+
+        output
+    }
+
+    /// Insert a value into the tree.
+    #[cfg(test)]
+    pub(crate) fn insert<I, V>(&mut self, keys: I, value: V)
+    where
+        I: IntoIterator<Item: AsRef<str>>,
+        V: AsRef<str>,
+    {
+        let mut current = &mut self.root;
+
+        for key in keys {
+            let key = key.as_ref();
+            current = current
+                .children
+                .get_or_insert_with(BTreeMap::new)
+                .entry(key.to_owned())
+                .or_default();
+        }
+
+        current.value = Some(value.as_ref().into());
+    }
+
+    /// Get a value from the tree.
+    pub(crate) fn get(&self, key: &[&str]) -> Vec<&str> {
+        let mut output = Vec::new();
+
+        let mut queue = VecDeque::new();
+        queue.push_back((&self.root, key));
+
+        while let Some((current, keys)) = queue.pop_front() {
+            let Some((head, tail)) = keys.split_first() else {
+                output.extend(current.value.as_deref());
+                continue;
+            };
+
+            let Some(children) = &current.children else {
+                continue;
+            };
+
+            if *head == "*" {
+                queue.extend(children.values().map(|n| (n, tail)));
+            } else {
+                queue.extend(children.get(*head).map(|n| (n, tail)));
+            }
+        }
+
+        output
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct Eval<'a> {
-    pub(crate) matrix: Option<&'a Matrix>,
-    env: Option<&'a BTreeMap<String, String>>,
+    tree: Option<&'a Tree>,
     functions: Option<&'a BTreeMap<&'static str, CustomFunction>>,
 }
 
 impl<'a> Eval<'a> {
     pub(crate) const fn new() -> Eval<'a> {
         Self {
-            matrix: None,
-            env: None,
+            tree: None,
             functions: None,
         }
     }
@@ -587,25 +705,22 @@ impl<'a> Eval<'a> {
         self.functions?.get(name).copied()
     }
 
-    /// Get the environment associated with the evaluation.
-    pub(crate) fn env(&self) -> BTreeMap<String, String> {
-        self.env.cloned().unwrap_or_default()
-    }
-
-    /// Associate a matrix with the evaluation.
-    pub(crate) fn with_matrix(self, matrix: &'a Matrix) -> Self {
+    /// Modify the environment with a matrix.
+    pub(crate) fn with_tree(self, tree: &'a Tree) -> Self {
         Self {
-            matrix: Some(matrix),
+            tree: Some(tree),
             ..self
         }
     }
 
-    /// Associate an environment with the evaluation.
-    pub(crate) fn with_env(self, env: &'a BTreeMap<String, String>) -> Self {
-        Self {
-            env: Some(env),
-            ..self
-        }
+    /// Clone the current tree so that it can be modified.
+    #[inline]
+    pub(crate) fn tree(&self) -> &Tree {
+        let Some(tree) = self.tree else {
+            return &Tree::EMPTY;
+        };
+
+        tree
     }
 
     /// Evaluate a string with matrix variables.
@@ -690,46 +805,13 @@ impl<'a> Eval<'a> {
     where
         I: IntoIterator<Item: AsRef<str>>,
     {
-        let mut it = keys.into_iter();
-
-        let Some(first) = it.next() else {
+        let Some(tree) = self.tree else {
             return Vec::new();
         };
 
-        let Some(key) = it.next() else {
-            return Vec::new();
-        };
-
-        let mut sources = Vec::new();
-
-        match first.as_ref() {
-            "env" => {
-                sources.extend(self.env.as_ref());
-            }
-            "matrix" => {
-                sources.extend(self.matrix.map(|m| &m.matrix));
-            }
-            "*" => {
-                sources.extend(self.env.as_ref());
-                sources.extend(self.matrix.map(|m| &m.matrix));
-            }
-            _ => {}
-        }
-
-        let mut output = Vec::new();
-
-        for source in sources {
-            match key.as_ref() {
-                "*" => {
-                    output.extend(source.values().map(|s| s.as_str()));
-                }
-                key => {
-                    output.extend(source.get(key).map(|s| s.as_str()));
-                }
-            }
-        }
-
-        output
+        let key = keys.into_iter().collect::<Vec<_>>();
+        let key = key.iter().map(AsRef::as_ref).collect::<Vec<_>>();
+        tree.get(&key)
     }
 }
 
@@ -754,17 +836,6 @@ impl Matrix {
         let value = self.matrix.get(key)?;
         let id = self.ids.get(key)?;
         Some((value.as_str(), *id))
-    }
-
-    /// Insert a value into the matrix.
-    #[cfg(test)]
-    pub(crate) fn insert<K, V>(&mut self, key: K, value: V)
-    where
-        K: AsRef<str>,
-        V: AsRef<str>,
-    {
-        self.matrix
-            .insert(key.as_ref().to_owned(), value.as_ref().to_owned());
     }
 
     /// Insert a value into the matrix.
