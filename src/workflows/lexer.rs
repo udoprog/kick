@@ -2,10 +2,7 @@ use core::array;
 
 use super::Syntax;
 
-use Syntax::{
-    And, CloseExpr, CloseParen, DoubleString, Eq, Error, Neq, Not, OpenExpr, OpenParen, Or,
-    SingleString, Variable, Whitespace,
-};
+use Syntax::*;
 
 const NUL: char = '\0';
 
@@ -23,6 +20,12 @@ pub(crate) struct Lexer<'a> {
 impl<'a> Lexer<'a> {
     pub(crate) fn new(source: &'a str) -> Self {
         Self { source, cursor: 0 }
+    }
+
+    /// Peek a single character.
+    fn peek1(&self) -> char {
+        let [c] = self.peek::<1>();
+        c
     }
 
     /// Peek `N` characters of input.
@@ -65,6 +68,35 @@ impl<'a> Lexer<'a> {
         true
     }
 
+    fn number(&mut self) {
+        if self.peek1() == '-' {
+            self.step(1);
+        }
+
+        let mut has_dot = false;
+        let mut has_e = false;
+
+        loop {
+            match self.peek1() {
+                '0'..='9' => self.step(1),
+                '.' if !has_dot => {
+                    self.step(1);
+                    has_dot = true;
+                }
+                'e' | 'E' if !has_e => {
+                    self.step(1);
+                    has_dot = true;
+                    has_e = true;
+
+                    if self.peek1() == '-' {
+                        self.step(1);
+                    }
+                }
+                _ => break,
+            }
+        }
+    }
+
     /// Consume input until we hit non-numerics.
     fn consume_while(&mut self, cond: fn(char) -> bool) {
         loop {
@@ -94,6 +126,34 @@ impl<'a> Lexer<'a> {
                 self.consume_while(char::is_whitespace);
                 Whitespace
             }
+            ('*', _, _) => {
+                self.step(1);
+                Star
+            }
+            (',', _, _) => {
+                self.step(1);
+                Comma
+            }
+            ('.', _, _) => {
+                self.step(1);
+                Dot
+            }
+            ('<', '=', _) => {
+                self.step(2);
+                LessEqual
+            }
+            ('<', _, _) => {
+                self.step(1);
+                Less
+            }
+            ('>', '=', _) => {
+                self.step(2);
+                GreaterEqual
+            }
+            ('>', _, _) => {
+                self.step(1);
+                Greater
+            }
             ('&', '&', _) => {
                 self.step(2);
                 And
@@ -122,9 +182,19 @@ impl<'a> Lexer<'a> {
                 self.step(1);
                 CloseParen
             }
+            ('-' | '0'..='9', _, _) => {
+                self.number();
+                Number
+            }
             ('a'..='z', _, _) => {
-                self.consume_while(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '.'));
-                Variable
+                self.consume_while(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-'));
+
+                match &self.source[start..self.cursor] {
+                    "true" | "false" => Bool,
+                    "nan" => Number,
+                    "null" => Null,
+                    _ => Ident,
+                }
             }
             ('\'', _, _) => {
                 if self.string('\'') {

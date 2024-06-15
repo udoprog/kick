@@ -9,12 +9,22 @@ mod parsing;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
 pub(crate) enum Syntax {
-    Variable,
+    Number,
+    Bool,
+    Null,
+    Ident,
+    Star,
+    Comma,
+    Dot,
     Not,
     Eq,
     Neq,
     And,
     Or,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
     SingleString,
     DoubleString,
     Whitespace,
@@ -27,6 +37,10 @@ pub(crate) enum Syntax {
     OpenExpr,
     // `}}`.
     CloseExpr,
+    // A lookup expression `<ident> [<dot> <ident>]*`.
+    Lookup,
+    // A function call.
+    Function,
     // A unary operation.
     Unary,
     // A binary operation.
@@ -35,6 +49,7 @@ pub(crate) enum Syntax {
     Group,
     // Enf of file.
     Eof,
+    // An error.
     Error,
 }
 
@@ -48,6 +63,7 @@ use std::str;
 use anyhow::{anyhow, bail, Context, Result};
 use nondestructive::yaml;
 use relative_path::{RelativePath, RelativePathBuf};
+use syntree::Span;
 
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
@@ -58,7 +74,7 @@ use self::eval::Expr;
 pub(crate) enum ExprError {
     NoExpressions(Box<str>),
     MultipleExpressions(Box<str>),
-    EvalError(eval::EvalError<u32>, Box<str>),
+    EvalError(eval::EvalError, Box<str>),
     SynTree(syntree::Error),
 }
 
@@ -422,7 +438,8 @@ impl Workflow<'_> {
             );
         };
 
-        let eval = Eval::new();
+        let functions = default_functions();
+        let eval = Eval::new().with_functions(&functions);
         let env = extract_env(&eval, &mapping)?;
         let eval = eval.with_env(&env);
 
@@ -484,10 +501,65 @@ impl Step {
     }
 }
 
+pub fn default_functions() -> BTreeMap<&'static str, CustomFunction> {
+    let mut functions = BTreeMap::new();
+    functions.insert("fromJSON", from_json as CustomFunction);
+    functions
+}
+
+fn value_to_expr(
+    span: &Span<u32>,
+    value: serde_json::Value,
+) -> Result<Expr<'static>, eval::EvalError> {
+    let expr = match value {
+        serde_json::Value::Null => Expr::Null,
+        serde_json::Value::Bool(b) => Expr::Bool(b),
+        serde_json::Value::Number(n) => {
+            let Some(v) = n.as_f64() else {
+                return Err(eval::EvalError::custom(
+                    *span,
+                    "Failed to convert JSON number",
+                ));
+            };
+
+            Expr::Float(v)
+        }
+        serde_json::Value::String(string) => Expr::String(Cow::Owned(string)),
+        serde_json::Value::Array(array) => {
+            let mut values = Vec::with_capacity(array.len());
+
+            for value in array {
+                values.push(value_to_expr(span, value)?);
+            }
+
+            Expr::Array(values.into())
+        }
+        serde_json::Value::Object(_) => {
+            return Err(eval::EvalError::custom(*span, "Objects are not supported"));
+        }
+    };
+
+    Ok(expr)
+}
+
+fn from_json<'m>(span: &Span<u32>, args: &[Expr<'m>]) -> Result<Expr<'m>, eval::EvalError> {
+    let Some(s) = args.first().and_then(|s| s.as_str()) else {
+        return Ok(Expr::Null);
+    };
+
+    match serde_json::from_str(s) {
+        Ok(value) => value_to_expr(span, value),
+        Err(error) => Err(eval::EvalError::custom(*span, format_args!("{error}"))),
+    }
+}
+
+type CustomFunction = for<'m> fn(&Span<u32>, &[Expr<'m>]) -> Result<Expr<'m>, eval::EvalError>;
+
 #[derive(Clone, Copy)]
 pub(crate) struct Eval<'a> {
     pub(crate) matrix: Option<&'a Matrix>,
     env: Option<&'a BTreeMap<String, String>>,
+    functions: Option<&'a BTreeMap<&'static str, CustomFunction>>,
 }
 
 impl<'a> Eval<'a> {
@@ -495,7 +567,24 @@ impl<'a> Eval<'a> {
         Self {
             matrix: None,
             env: None,
+            functions: None,
         }
+    }
+
+    /// Associate function with the current environment.
+    pub(crate) fn with_functions(
+        self,
+        functions: &'a BTreeMap<&'static str, CustomFunction>,
+    ) -> Self {
+        Self {
+            functions: Some(functions),
+            ..self
+        }
+    }
+
+    /// Get a function by name.
+    pub(crate) fn function(&self, name: &str) -> Option<CustomFunction> {
+        self.functions?.get(name).copied()
     }
 
     /// Get the environment associated with the evaluation.
@@ -521,6 +610,8 @@ impl<'a> Eval<'a> {
 
     /// Evaluate a string with matrix variables.
     pub(crate) fn eval<'s>(&self, s: &'s str) -> Result<Cow<'s, str>> {
+        use std::fmt::Write;
+
         let Some(i) = s.find("${{") else {
             return Ok(Cow::Borrowed(s));
         };
@@ -549,7 +640,11 @@ impl<'a> Eval<'a> {
             let expr = rest[..end].trim();
 
             match self.expr(expr)? {
+                Expr::Array(..) => {}
                 Expr::String(s) => result.push_str(s.as_ref()),
+                Expr::Float(f) => {
+                    write!(result, "{f}").context("Failed to format float")?;
+                }
                 Expr::Bool(b) => {
                     result.push_str(if b { "true" } else { "false" });
                 }
@@ -591,27 +686,50 @@ impl<'a> Eval<'a> {
     }
 
     /// Get a variable from the matrix.
-    fn get(&self, key: &str) -> Option<&'a str> {
-        let (key, value) = key.split_once('.')?;
+    fn lookup<I>(&self, keys: I) -> Vec<&'a str>
+    where
+        I: IntoIterator<Item: AsRef<str>>,
+    {
+        let mut it = keys.into_iter();
 
-        match (key.trim(), value.trim()) {
-            ("env", key) => self.env?.get(key).map(|v| v.as_ref()),
-            ("matrix", key) => self.matrix?.matrix.get(key).map(|v| v.as_ref()),
-            ("github", key) => {
-                let (what, rest) = key.split_once('.')?;
+        let Some(first) = it.next() else {
+            return Vec::new();
+        };
 
-                match what {
-                    "event" => self.event(rest),
-                    _ => None,
+        let Some(key) = it.next() else {
+            return Vec::new();
+        };
+
+        let mut sources = Vec::new();
+
+        match first.as_ref() {
+            "env" => {
+                sources.extend(self.env.as_ref());
+            }
+            "matrix" => {
+                sources.extend(self.matrix.map(|m| &m.matrix));
+            }
+            "*" => {
+                sources.extend(self.env.as_ref());
+                sources.extend(self.matrix.map(|m| &m.matrix));
+            }
+            _ => {}
+        }
+
+        let mut output = Vec::new();
+
+        for source in sources {
+            match key.as_ref() {
+                "*" => {
+                    output.extend(source.values().map(|s| s.as_str()));
+                }
+                key => {
+                    output.extend(source.get(key).map(|s| s.as_str()));
                 }
             }
-            _ => None,
         }
-    }
 
-    fn event(&self, _: &str) -> Option<&'a str> {
-        // TODO: Support setting event variables.
-        None
+        output
     }
 }
 

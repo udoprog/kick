@@ -70,13 +70,16 @@ impl<'a> Parser<'a> {
     }
 
     /// Advance until one of `any` matches.
-    pub(crate) fn advance_until(&mut self, any: &[Syntax]) -> Result<(), Error> {
+    pub(crate) fn advance_until<C>(&mut self, mut c: C) -> Result<(), Error>
+    where
+        C: FnMut(Syntax) -> bool,
+    {
         // Consume until we see another Number (or EOF) for some primitive
         // error recovery.
         loop {
             let t = self.peek()?;
 
-            if t.syntax == Eof || any.iter().any(|s| *s == t.syntax) {
+            if t.syntax == Eof || c(t.syntax) {
                 break;
             }
 

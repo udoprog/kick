@@ -1,3 +1,5 @@
+use std::ops::BitAndAssign;
+
 use anyhow::Result;
 
 use super::parsing::Parser;
@@ -5,17 +7,43 @@ use super::{ExprError, Syntax};
 
 use self::Syntax::*;
 
+#[must_use = "the outcome of parsing an expression must be handled"]
+enum Outcome {
+    Ok,
+    Error,
+}
+
+impl BitAndAssign<Outcome> for Outcome {
+    #[inline]
+    fn bitand_assign(&mut self, rhs: Outcome) {
+        if let Outcome::Error = *self {
+            return;
+        }
+        *self = rhs;
+    }
+}
+
 fn op(syntax: Syntax) -> Option<(u8, u8)> {
     let prio = match syntax {
         And | Or => (1, 2),
         Eq | Neq => (3, 4),
+        Less | LessEqual | Greater | GreaterEqual => (5, 6),
         _ => return None,
     };
 
     Some(prio)
 }
 
-fn expr(p: &mut Parser<'_>, min: u8) -> Result<(), ExprError> {
+fn is_expr_start(syntax: Syntax) -> bool {
+    matches!(
+        syntax,
+        Ident | Number | Null | Bool | SingleString | DoubleString | OpenParen | OpenExpr
+    )
+}
+
+fn expr(p: &mut Parser<'_>, min: u8) -> Result<Outcome, ExprError> {
+    let mut ok = Outcome::Ok;
+
     // Eat all available whitespace before getting a checkpoint.
     let tok = p.peek()?;
 
@@ -24,28 +52,33 @@ fn expr(p: &mut Parser<'_>, min: u8) -> Result<(), ExprError> {
     match tok.syntax {
         Not => {
             p.bump(Not)?;
-            expr(p, 0)?;
+            ok &= expr(p, 0)?;
             p.tree.close_at(&c, Unary)?;
-            return Ok(());
         }
         OpenParen => {
-            group(p, CloseParen)?;
+            ok &= group(p, CloseParen)?;
         }
         OpenExpr => {
-            group(p, CloseExpr)?;
+            ok &= group(p, CloseExpr)?;
         }
-        Variable => {
-            p.bump(Variable)?;
+        Ident => {
+            p.bump(Ident)?;
+
+            if p.eat(OpenParen)? {
+                ok &= function(p)?;
+                p.tree.close_at(&c, Function)?;
+            } else if lookup(p)? {
+                p.tree.close_at(&c, Lookup)?;
+            } else {
+                p.tree.close_at(&c, Error)?;
+            }
         }
-        SingleString => {
-            p.bump(SingleString)?;
-        }
-        DoubleString => {
-            p.bump(DoubleString)?;
+        tok @ (Number | Null | Bool | SingleString | DoubleString) => {
+            p.bump(tok)?;
         }
         _ => {
-            p.bump(Error)?;
-            return Ok(());
+            p.token()?;
+            return Ok(Outcome::Error);
         }
     }
 
@@ -60,7 +93,7 @@ fn expr(p: &mut Parser<'_>, min: u8) -> Result<(), ExprError> {
         };
 
         p.bump(Operator)?;
-        expr(p, min)?;
+        ok &= expr(p, min)?;
         operation = true;
     }
 
@@ -68,35 +101,80 @@ fn expr(p: &mut Parser<'_>, min: u8) -> Result<(), ExprError> {
         p.tree.close_at(&c, Binary)?;
     }
 
-    Ok(())
+    Ok(ok)
 }
 
-fn group(p: &mut Parser, until: Syntax) -> Result<(), ExprError> {
+fn lookup(p: &mut Parser) -> Result<bool, ExprError> {
+    let mut ok = true;
+
+    while p.eat(Dot)? {
+        let what = p.peek()?.syntax;
+        ok &= matches!(what, Ident | Star);
+        // Bump whatever is there anyway in the hope that we can "keep going",
+        // but treat the expression as an error.
+        p.bump(what)?;
+    }
+
+    Ok(ok)
+}
+
+fn function(p: &mut Parser) -> Result<Outcome, ExprError> {
+    let mut ok = Outcome::Ok;
+    let mut end = false;
+
+    loop {
+        match p.peek()?.syntax {
+            CloseParen => {
+                p.token()?;
+                break;
+            }
+            _ => {
+                ok &= expr(p, 0)?;
+            }
+        }
+
+        if end {
+            if !p.eat(CloseParen)? {
+                ok = Outcome::Error;
+            }
+
+            break;
+        }
+
+        if !p.eat(Comma)? {
+            end = true;
+        }
+    }
+
+    Ok(ok)
+}
+
+fn group(p: &mut Parser, until: Syntax) -> Result<Outcome, ExprError> {
     p.token()?;
     let c = p.tree.checkpoint()?;
-    expr(p, 0)?;
+    let mut ok = expr(p, 0)?;
     p.tree.close_at(&c, Group)?;
 
     if !p.eat(until)? {
         p.bump(Error)?;
+        ok = Outcome::Error;
     }
 
-    Ok(())
+    Ok(ok)
 }
 
 /// Parse the root.
 pub(crate) fn root(p: &mut Parser<'_>) -> Result<(), ExprError> {
-    loop {
-        expr(p, 0)?;
+    while !p.is_eof()? {
+        let c = p.tree.checkpoint()?;
 
-        if p.is_eof()? {
-            break;
+        if matches!(expr(p, 0)?, Outcome::Ok) {
+            continue;
         }
 
         // Simple error recovery where we consume until we find an operator
         // which will be consumed as an expression next.
-        let c = p.tree.checkpoint()?;
-        p.advance_until(&[Variable])?;
+        p.advance_until(is_expr_start)?;
         p.tree.close_at(&c, Error)?;
     }
 
