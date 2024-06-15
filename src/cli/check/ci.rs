@@ -13,6 +13,7 @@ use crate::ctxt::Ctxt;
 use crate::edits;
 use crate::keys::Keys;
 use crate::model::Repo;
+use crate::redact::Redact;
 use crate::workflows::{Job, Step, Workflow, Workflows};
 use crate::workspace::Crates;
 
@@ -206,7 +207,9 @@ fn check_actions(ci: &mut Ci<'_>, job: &Job) -> Result<()> {
     Ok(())
 }
 
-fn check_action(ci: &mut Ci<'_>, step: &Step, at: Id, name: &str) -> Result<()> {
+fn check_action(ci: &mut Ci<'_>, step: &Step, at: Id, name: &Redact) -> Result<()> {
+    let name = name.to_redacted();
+
     let Some((base, version)) = name.split_once('@') else {
         return Ok(());
     };
@@ -228,13 +231,13 @@ fn check_action(ci: &mut Ci<'_>, step: &Step, at: Id, name: &str) -> Result<()> 
         };
 
         ci.errors.push(WorkflowError::Error {
-            name: name.to_owned(),
+            name: name.as_ref().to_owned(),
             reason,
         });
     }
 
     if let Some(check) = ci.actions.get_check(base) {
-        check.check(name, step, &mut ci.edits, &mut ci.errors)?;
+        check.check(name.as_ref(), step, &mut ci.edits, &mut ci.errors)?;
     }
 
     Ok(())
@@ -249,9 +252,11 @@ enum RustVersionPolicy<'a> {
 fn check_uses_rust_version(
     ci: &mut Ci<'_>,
     at: Id,
-    name: &str,
+    name: &Redact,
     policy: RustVersionPolicy,
 ) -> Result<()> {
+    let name = name.to_redacted();
+
     let Some((name, version)) = name.split_once('@') else {
         return Ok(());
     };
@@ -336,7 +341,9 @@ fn check_strategy_rust_version(ci: &mut Ci, job: &Job) {
             continue;
         };
 
-        let Some(version) = RustVersion::parse(version) else {
+        let version = &version.to_redacted();
+
+        let Some(version) = RustVersion::parse(version.as_ref()) else {
             continue;
         };
 
@@ -499,7 +506,8 @@ fn ensure_feature_combo(cx: &Ctxt<'_>, w: &Workflow<'_>, cargos: &[Cargo]) -> bo
     false
 }
 
-fn identify_command(command: &str, features: &HashSet<String>) -> RunIdentity {
+fn identify_command(command: &Redact, features: &HashSet<String>) -> RunIdentity {
+    let command = command.to_redacted();
     let mut it = command.split(' ').peekable();
 
     if matches!(it.next(), Some("cargo")) {
@@ -531,8 +539,8 @@ fn identify_command(command: &str, features: &HashSet<String>) -> RunIdentity {
     RunIdentity::None
 }
 
-fn process_features(
-    mut it: std::iter::Peekable<std::str::Split<char>>,
+fn process_features<'a>(
+    mut it: std::iter::Peekable<impl Iterator<Item = &'a str>>,
     features: &HashSet<String>,
 ) -> (CargoFeatures, Vec<String>, Vec<String>) {
     let mut cargo_features = CargoFeatures::Default;
@@ -548,8 +556,8 @@ fn process_features(
                 cargo_features = CargoFeatures::AllFeatures;
             }
             "--features" | "-F" => {
-                if let Some(args) = it.next() {
-                    for feature in args.split(',').map(|s| s.trim()) {
+                if let Some(arg) = it.next() {
+                    for feature in arg.split(',').map(|s| s.trim()) {
                         if !features.contains(feature) {
                             missing_features.push(feature.into());
                         }

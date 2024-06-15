@@ -8,15 +8,39 @@ use std::process::{ChildStdin, ChildStdout, ExitStatus, Output, Stdio};
 use anyhow::{anyhow, Context, Result};
 
 use crate::model::ShellFlavor;
+use crate::redact::{OwnedRedact, Redact};
+
+pub(crate) enum Arg {
+    OsString(OsString),
+    Redact(OwnedRedact),
+}
+
+impl Arg {
+    pub(crate) fn to_string_lossy(&self) -> Cow<'_, str> {
+        match self {
+            Self::OsString(s) => s.to_string_lossy(),
+            Self::Redact(s) => Cow::Owned(s.to_string()),
+        }
+    }
+}
+
+impl fmt::Debug for Arg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OsString(s) => s.fmt(f),
+            Self::Redact(s) => s.fmt(f),
+        }
+    }
+}
 
 pub(crate) struct Command {
-    command: OsString,
-    args: Vec<OsString>,
+    command: Arg,
+    args: Vec<Arg>,
     current_dir: Option<PathBuf>,
     stdin: Option<Stdio>,
     stdout: Option<Stdio>,
     stderr: Option<Stdio>,
-    pub(crate) env: Vec<(OsString, OsString)>,
+    pub(crate) env: Vec<(OsString, Arg)>,
 }
 
 impl Command {
@@ -24,8 +48,19 @@ impl Command {
     where
         S: AsRef<OsStr>,
     {
+        Self::new_inner(Arg::OsString(command.as_ref().into()))
+    }
+
+    pub(crate) fn new_redact<S>(command: S) -> Self
+    where
+        S: AsRef<Redact>,
+    {
+        Self::new_inner(Arg::Redact(command.as_ref().into()))
+    }
+
+    fn new_inner(command: Arg) -> Self {
         Self {
-            command: command.as_ref().into(),
+            command,
             args: Vec::new(),
             current_dir: None,
             stdin: None,
@@ -40,7 +75,16 @@ impl Command {
     where
         S: AsRef<OsStr>,
     {
-        self.args.push(arg.as_ref().to_owned());
+        self.args.push(Arg::OsString(arg.as_ref().to_owned()));
+        self
+    }
+
+    /// Add an argument to the command.
+    pub(crate) fn arg_redact<S>(&mut self, arg: S) -> &mut Self
+    where
+        S: AsRef<Redact>,
+    {
+        self.args.push(Arg::Redact(arg.as_ref().to_owned()));
         self
     }
 
@@ -51,7 +95,7 @@ impl Command {
         I::Item: AsRef<OsStr>,
     {
         for arg in args {
-            self.args.push(arg.as_ref().to_owned());
+            self.args.push(Arg::OsString(arg.as_ref().to_owned()));
         }
 
         self
@@ -63,8 +107,23 @@ impl Command {
         K: AsRef<OsStr>,
         V: AsRef<OsStr>,
     {
-        self.env
-            .push((key.as_ref().to_owned(), value.as_ref().to_owned()));
+        self.env.push((
+            key.as_ref().to_owned(),
+            Arg::OsString(value.as_ref().to_owned()),
+        ));
+        self
+    }
+
+    /// Add an environment variable to the command that might be redacted.
+    pub(crate) fn env_redact<K, V>(&mut self, key: K, value: V) -> &mut Self
+    where
+        K: AsRef<OsStr>,
+        V: AsRef<Redact>,
+    {
+        self.env.push((
+            key.as_ref().to_owned(),
+            Arg::Redact(value.as_ref().to_owned()),
+        ));
         self
     }
 
@@ -127,9 +186,24 @@ impl Command {
     }
 
     fn command(&mut self) -> std::process::Command {
-        let mut command = std::process::Command::new(&self.command);
+        let mut command = match &self.command {
+            Arg::OsString(s) => std::process::Command::new(s),
+            Arg::Redact(s) => {
+                let s = s.to_redacted();
+                std::process::Command::new(s.as_ref())
+            }
+        };
 
-        command.args(&self.args[..]);
+        for arg in &self.args {
+            match arg {
+                Arg::OsString(arg) => {
+                    command.arg(arg);
+                }
+                Arg::Redact(arg) => {
+                    command.arg(arg.to_redacted().as_ref());
+                }
+            }
+        }
 
         if let Some(current_dir) = &self.current_dir {
             command.current_dir(current_dir);
@@ -148,7 +222,14 @@ impl Command {
         }
 
         for (key, value) in &self.env {
-            command.env(key, value);
+            match value {
+                Arg::OsString(value) => {
+                    command.env(key, value);
+                }
+                Arg::Redact(value) => {
+                    command.env(key, value.to_redacted().as_ref());
+                }
+            }
         }
 
         command

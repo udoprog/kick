@@ -10,7 +10,7 @@ use super::system::{Git, System};
 use crate::cargo::{self, Package, RustVersion};
 use crate::changes::{Change, Warning};
 use crate::config::{Config, Os};
-use crate::env::Env;
+use crate::env::{Env, SecretString};
 use crate::model::{RenderRustVersions, Repo, RepoParams, RepoRef, State};
 use crate::process::Command;
 use crate::repo_sets::RepoSets;
@@ -78,6 +78,19 @@ pub(crate) struct Ctxt<'a> {
 }
 
 impl<'a> Ctxt<'a> {
+    /// Get known github authentication.
+    pub(crate) fn github_auth(&self) -> Option<SecretString> {
+        if let Some(credentials) = &self.git_credentials {
+            return Some(credentials.get());
+        }
+
+        if let Some(token) = &self.env.github_token {
+            return Some(token.clone());
+        }
+
+        None
+    }
+
     /// Grab an octokit client optionally configured with a token.
     pub(crate) fn octokit(&self) -> Result<octokit::Client> {
         let auth = match (&self.git_credentials, &self.env.github_token) {

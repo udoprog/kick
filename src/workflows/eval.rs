@@ -3,6 +3,8 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::str::FromStr;
 
+use crate::redact::{OwnedRedact, Redact};
+
 use super::{Eval, Syntax};
 
 use syntree::{pointer, Node, Span, Tree};
@@ -85,7 +87,7 @@ pub(crate) enum Expr<'m> {
     /// An array of values.
     Array(Box<[Expr<'m>]>),
     /// A string expression.
-    String(Cow<'m, str>),
+    String(Cow<'m, Redact>),
     /// A floating-point expression.
     Float(f64),
     /// A boolean expression.
@@ -98,7 +100,7 @@ pub(crate) enum Expr<'m> {
 impl<'m> From<&'m str> for Expr<'m> {
     #[inline]
     fn from(s: &'m str) -> Self {
-        Self::String(Cow::Borrowed(s))
+        Self::String(Cow::Borrowed(Redact::new(s)))
     }
 }
 
@@ -153,7 +155,7 @@ impl Expr<'_> {
     }
 
     /// Get the expression as a string.
-    pub(crate) fn as_str(&self) -> Option<&str> {
+    pub(crate) fn as_str(&self) -> Option<&Redact> {
         match *self {
             Self::String(ref string) => Some(string),
             _ => None,
@@ -243,6 +245,11 @@ where
 
                 let Some(value) = unescape(value) else {
                     return Err(EvalError::new(*node.span(), BadString(value.into())));
+                };
+
+                let value = match value {
+                    Cow::Borrowed(s) => Cow::Borrowed(Redact::new(s)),
+                    Cow::Owned(s) => Cow::Owned(OwnedRedact::from(s)),
                 };
 
                 Ok(Expr::String(value))
