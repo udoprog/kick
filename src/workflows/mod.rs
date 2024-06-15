@@ -67,6 +67,7 @@ use syntree::Span;
 
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
+use crate::redact::{OwnedRedact, Redact};
 
 use self::eval::Expr;
 
@@ -176,7 +177,7 @@ fn build_job(
         .get("name")
         .and_then(|value| Some(eval.eval(value.as_str()?)))
         .transpose()?
-        .unwrap_or(Cow::Borrowed(name));
+        .unwrap_or(Cow::Borrowed(Redact::new(name)));
 
     let mut matrices = Vec::new();
 
@@ -203,7 +204,7 @@ fn build_job(
 
                 let working_directory =
                     match value.get("working-directory").and_then(|v| v.as_str()) {
-                        Some(dir) => Some(RelativePathBuf::from(eval.eval(dir)?.into_owned())),
+                        Some(dir) => Some(eval.eval(dir)?.into_owned()),
                         None => None,
                     };
 
@@ -395,7 +396,7 @@ pub(crate) fn build_matrices(
     Ok(matrices)
 }
 
-fn extract_env(eval: &Eval<'_>, m: &yaml::Mapping<'_>) -> Result<BTreeMap<String, String>> {
+fn extract_env(eval: &Eval<'_>, m: &yaml::Mapping<'_>) -> Result<BTreeMap<String, OwnedRedact>> {
     let mut env = BTreeMap::new();
 
     let Some(m) = m.get("env").and_then(|v| v.as_mapping()) else {
@@ -439,7 +440,14 @@ impl Workflow<'_> {
         };
 
         let functions = default_functions();
-        let mut tree = Tree::EMPTY;
+        let mut tree = Tree::new();
+
+        if let Some(auth) = self.cx.github_auth() {
+            if let Some(owned) = OwnedRedact::redacted(auth.as_secret()) {
+                tree.insert_prefix("secrets", vec![("GITHUB_TOKEN".to_owned(), owned)]);
+            }
+        }
+
         let eval = Eval::new().with_functions(&functions);
         tree.insert_prefix("env", extract_env(&eval, &mapping)?);
         let eval = eval.with_tree(&tree);
@@ -474,30 +482,30 @@ impl Workflow<'_> {
 }
 
 pub(crate) struct Job {
-    pub(crate) name: String,
+    pub(crate) name: OwnedRedact,
     pub(crate) matrices: Vec<(Matrix, Steps)>,
 }
 
 pub(crate) struct Steps {
-    pub(crate) runs_on: String,
+    pub(crate) runs_on: OwnedRedact,
     pub(crate) steps: Vec<Step>,
 }
 
 pub(crate) struct Step {
     pub(crate) id: yaml::Id,
-    pub(crate) env: BTreeMap<String, String>,
-    pub(crate) working_directory: Option<RelativePathBuf>,
+    pub(crate) env: BTreeMap<String, OwnedRedact>,
+    pub(crate) working_directory: Option<OwnedRedact>,
     pub(crate) skipped: Option<String>,
     pub(crate) condition: Option<(yaml::Id, String)>,
-    pub(crate) uses: Option<(yaml::Id, String)>,
-    pub(crate) with: BTreeMap<String, String>,
-    pub(crate) name: Option<String>,
-    pub(crate) run: Option<String>,
+    pub(crate) uses: Option<(yaml::Id, OwnedRedact)>,
+    pub(crate) with: BTreeMap<String, OwnedRedact>,
+    pub(crate) name: Option<OwnedRedact>,
+    pub(crate) run: Option<OwnedRedact>,
 }
 
 impl Step {
     /// Construct an environment from a step.
-    pub(crate) fn env(&self) -> &BTreeMap<String, String> {
+    pub(crate) fn env(&self) -> &BTreeMap<String, OwnedRedact> {
         &self.env
     }
 }
@@ -525,7 +533,7 @@ fn value_to_expr(
 
             Expr::Float(v)
         }
-        serde_json::Value::String(string) => Expr::String(Cow::Owned(string)),
+        serde_json::Value::String(string) => Expr::String(Cow::Owned(OwnedRedact::from(string))),
         serde_json::Value::Array(array) => {
             let mut values = Vec::with_capacity(array.len());
 
@@ -548,7 +556,10 @@ fn from_json<'m>(span: &Span<u32>, args: &[Expr<'m>]) -> Result<Expr<'m>, eval::
         return Ok(Expr::Null);
     };
 
-    match serde_json::from_str(s) {
+    // NB: Figure out if we want to carry redaction into the decoded expression.
+    let string = s.to_redacted();
+
+    match serde_json::from_str(string.as_ref()) {
         Ok(value) => value_to_expr(span, value),
         Err(error) => Err(eval::EvalError::custom(*span, format_args!("{error}"))),
     }
@@ -558,7 +569,7 @@ type CustomFunction = for<'m> fn(&Span<u32>, &[Expr<'m>]) -> Result<Expr<'m>, ev
 
 #[derive(Clone, Default)]
 struct Node {
-    value: Option<String>,
+    value: Option<OwnedRedact>,
     children: Option<BTreeMap<String, Node>>,
 }
 
@@ -575,18 +586,15 @@ pub(crate) struct Tree {
 }
 
 impl Tree {
-    const EMPTY: Tree = Tree { root: Node::EMPTY };
-
     /// Create a new tree.
-    #[cfg(test)]
-    pub(crate) fn new() -> Self {
-        Self::EMPTY
+    pub(crate) const fn new() -> Self {
+        Tree { root: Node::EMPTY }
     }
 
     /// Insert a prefix into the current tree.
     fn insert_prefix<V>(&mut self, prefix: &str, vars: V)
     where
-        V: IntoIterator<Item = (String, String)>,
+        V: IntoIterator<Item = (String, OwnedRedact)>,
     {
         let child = self
             .root
@@ -606,7 +614,7 @@ impl Tree {
     }
 
     /// Get a prefix tree.
-    fn get_prefix(&self, prefix: &str) -> BTreeMap<String, String> {
+    fn get_prefix(&self, prefix: &str) -> BTreeMap<String, OwnedRedact> {
         let mut output = BTreeMap::new();
 
         let Some(children) = &self.root.children else {
@@ -648,7 +656,7 @@ impl Tree {
     }
 
     /// Get a value from the tree.
-    pub(crate) fn get(&self, key: &[&str]) -> Vec<&str> {
+    pub(crate) fn get(&self, key: &[&str]) -> Vec<&Redact> {
         let mut output = Vec::new();
 
         let mut queue = VecDeque::new();
@@ -716,22 +724,24 @@ impl<'a> Eval<'a> {
     /// Clone the current tree so that it can be modified.
     #[inline]
     pub(crate) fn tree(&self) -> &Tree {
+        static EMPTY: Tree = Tree::new();
+
         let Some(tree) = self.tree else {
-            return &Tree::EMPTY;
+            return &EMPTY;
         };
 
         tree
     }
 
     /// Evaluate a string with matrix variables.
-    pub(crate) fn eval<'s>(&self, s: &'s str) -> Result<Cow<'s, str>> {
+    pub(crate) fn eval<'s>(&self, s: &'s str) -> Result<Cow<'s, Redact>> {
         use std::fmt::Write;
 
         let Some(i) = s.find("${{") else {
-            return Ok(Cow::Borrowed(s));
+            return Ok(Cow::Borrowed(Redact::new(s)));
         };
 
-        let mut result = String::new();
+        let mut result = OwnedRedact::new();
         let (head, mut s) = s.split_at(i);
         result.push_str(head);
 
@@ -756,7 +766,7 @@ impl<'a> Eval<'a> {
 
             match self.expr(expr)? {
                 Expr::Array(..) => {}
-                Expr::String(s) => result.push_str(s.as_ref()),
+                Expr::String(s) => result.push_str(s.as_raw()),
                 Expr::Float(f) => {
                     write!(result, "{f}").context("Failed to format float")?;
                 }
@@ -801,7 +811,7 @@ impl<'a> Eval<'a> {
     }
 
     /// Get a variable from the matrix.
-    fn lookup<I>(&self, keys: I) -> Vec<&'a str>
+    fn lookup<I>(&self, keys: I) -> Vec<&'a Redact>
     where
         I: IntoIterator<Item: AsRef<str>>,
     {
@@ -818,7 +828,7 @@ impl<'a> Eval<'a> {
 /// A matrix of variables.
 #[derive(Clone)]
 pub(crate) struct Matrix {
-    matrix: BTreeMap<String, String>,
+    matrix: BTreeMap<String, OwnedRedact>,
     ids: BTreeMap<String, yaml::Id>,
 }
 
@@ -832,17 +842,17 @@ impl Matrix {
     }
 
     /// Get a value from the matrix.
-    pub(crate) fn get_with_id(&self, key: &str) -> Option<(&str, yaml::Id)> {
+    pub(crate) fn get_with_id(&self, key: &str) -> Option<(&Redact, yaml::Id)> {
         let value = self.matrix.get(key)?;
         let id = self.ids.get(key)?;
-        Some((value.as_str(), *id))
+        Some((value, *id))
     }
 
     /// Insert a value into the matrix.
     pub(crate) fn insert_with_id<K, V>(&mut self, key: K, value: V, id: yaml::Id)
     where
         K: AsRef<str>,
-        V: AsRef<str>,
+        V: AsRef<Redact>,
     {
         self.matrix
             .insert(key.as_ref().to_owned(), value.as_ref().to_owned());
@@ -864,7 +874,7 @@ impl Matrix {
 }
 
 pub(crate) struct Display<'a> {
-    matrix: &'a BTreeMap<String, String>,
+    matrix: &'a BTreeMap<String, OwnedRedact>,
 }
 
 impl fmt::Display for Display<'_> {
@@ -874,10 +884,10 @@ impl fmt::Display for Display<'_> {
         write!(f, "{{")?;
 
         if let Some((key, value)) = it.next() {
-            write!(f, "{}={}", escape(key), escape(value))?;
+            write!(f, "{}={}", Escape::new(key), Escape::new(value))?;
 
             for (key, value) in it {
-                write!(f, ", {}={}", escape(key), escape(value))?;
+                write!(f, ", {}={}", Escape::new(key), Escape::new(value))?;
             }
         }
 
@@ -886,18 +896,24 @@ impl fmt::Display for Display<'_> {
     }
 }
 
-fn escape(s: &str) -> Escape<'_> {
-    Escape { s }
+struct Escape<'a> {
+    s: &'a Redact,
 }
 
-struct Escape<'a> {
-    s: &'a str,
+impl<'a> Escape<'a> {
+    fn new<R>(s: &'a R) -> Self
+    where
+        R: ?Sized + AsRef<Redact>,
+    {
+        Escape { s: s.as_ref() }
+    }
 }
 
 impl fmt::Display for Escape<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self
             .s
+            .as_raw()
             .contains(|c: char| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_'))
         {
             write!(f, "\"{}\"", self.s)

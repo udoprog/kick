@@ -186,12 +186,12 @@ impl<'a> Lexer<'a> {
                 self.number();
                 Number
             }
-            ('a'..='z', _, _) => {
+            ('a'..='z' | 'A'..='Z', _, _) => {
                 self.consume_while(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-'));
 
                 match &self.source[start..self.cursor] {
                     "true" | "false" => Bool,
-                    "nan" => Number,
+                    "nan" | "NaN" => Number,
                     "null" => Null,
                     _ => Ident,
                 }

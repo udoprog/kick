@@ -12,6 +12,7 @@ use crate::config::Os;
 use crate::ctxt::Ctxt;
 use crate::model::{Repo, ShellFlavor};
 use crate::process::Command;
+use crate::redact::{OwnedRedact, Redact};
 use crate::system::Wsl;
 use crate::workflows::{Job, Matrix, Step, Workflow, Workflows};
 
@@ -101,7 +102,7 @@ fn run(
     }
 
     let mut jobs = HashSet::new();
-    jobs.extend(opts.job.clone());
+    jobs.extend(opts.job.clone().map(OwnedRedact::from));
 
     if !jobs.is_empty() {
         let workflows = Workflows::new(cx, repo)?;
@@ -132,8 +133,8 @@ fn run(
             commands: vec![RunCommand {
                 name: None,
                 run: Run::Command {
-                    command: command.clone(),
-                    args: rest.to_vec(),
+                    command: OwnedRedact::from(command),
+                    args: rest.iter().map(OwnedRedact::from).collect(),
                 },
                 env: BTreeMap::new(),
                 skipped: None,
@@ -194,6 +195,8 @@ fn run(
 
                 let path = match &run.working_directory {
                     Some(working_directory) => {
+                        let working_directory =
+                            RelativePathBuf::from(working_directory.to_redacted().into_owned());
                         modified = working_directory.to_logical_path(&path);
                         &modified
                     }
@@ -209,7 +212,7 @@ fn run(
                 }
 
                 for (key, value) in &run.env {
-                    runner.command.env(key, value);
+                    runner.command.env_redact(key, value);
                 }
 
                 if let Some((key, value)) = runner.extra_env {
@@ -303,10 +306,10 @@ fn job_to_batches(
         let runner = if ignore_runs_on {
             None
         } else {
-            let os = match steps.runs_on.split_once('-') {
-                Some(("ubuntu", _)) => Os::Linux,
-                Some(("windows", _)) => Os::Windows,
-                Some(("macos", _)) => Os::Mac,
+            let os = match steps.runs_on.split_once('-').map(|(os, _)| os.as_raw()) {
+                Some("ubuntu") => Os::Linux,
+                Some("windows") => Os::Windows,
+                Some("macos") => Os::Mac,
                 _ => bail!("Unsupported runs-on: {}", steps.runs_on),
             };
 
@@ -327,25 +330,25 @@ fn job_to_batches(
             if let Some(rust_toolchain) = rust_toolchain(step)? {
                 if rust_toolchain.components.is_some() || rust_toolchain.targets.is_some() {
                     let mut args = vec![
-                        String::from("toolchain"),
-                        String::from("install"),
-                        String::from(rust_toolchain.version),
+                        OwnedRedact::from("toolchain"),
+                        OwnedRedact::from("install"),
+                        OwnedRedact::from(rust_toolchain.version),
                     ];
 
                     if let Some(c) = rust_toolchain.components {
-                        args.push(String::from("-c"));
-                        args.push(String::from(c));
+                        args.push(OwnedRedact::from("-c"));
+                        args.push(OwnedRedact::from(c));
                     }
 
                     if let Some(t) = rust_toolchain.targets {
-                        args.push(String::from("-t"));
-                        args.push(String::from(t));
+                        args.push(OwnedRedact::from("-t"));
+                        args.push(OwnedRedact::from(t));
                     }
 
                     args.extend([
-                        String::from("--profile"),
-                        String::from("minimal"),
-                        String::from("--no-self-update"),
+                        OwnedRedact::from("--profile"),
+                        OwnedRedact::from("minimal"),
+                        OwnedRedact::from("--no-self-update"),
                     ]);
 
                     commands.push(RunCommand {
@@ -365,8 +368,8 @@ fn job_to_batches(
                     run: Run::Command {
                         command: "rustup".into(),
                         args: vec![
-                            String::from("default"),
-                            String::from(rust_toolchain.version),
+                            OwnedRedact::from("default"),
+                            OwnedRedact::from(rust_toolchain.version),
                         ],
                     },
                     env: BTreeMap::new(),
@@ -407,7 +410,7 @@ fn workflow_to_batches(
     cx: &Ctxt<'_>,
     batches: &mut Vec<CommandBatch>,
     workflow: &Workflow<'_>,
-    jobs: &HashSet<String>,
+    jobs: &HashSet<OwnedRedact>,
     ignore: &HashSet<String>,
     ignore_runs_on: bool,
 ) -> Result<()> {
@@ -431,9 +434,9 @@ fn default_flavor(os: &Os) -> ShellFlavor {
 }
 
 struct RustToolchain<'a> {
-    version: &'a str,
-    components: Option<&'a str>,
-    targets: Option<&'a str>,
+    version: &'a Redact,
+    components: Option<&'a Redact>,
+    targets: Option<&'a Redact>,
 }
 
 /// Extract a rust version from a `rust-toolchain` job.
@@ -446,18 +449,22 @@ fn rust_toolchain(step: &Step) -> Result<Option<RustToolchain<'_>>> {
         return Ok(None);
     };
 
-    let Some((_, "rust-toolchain")) = head.split_once('/') else {
+    let Some((_, what)) = head.split_once('/') else {
         return Ok(None);
     };
+
+    if what != "rust-toolchain" {
+        return Ok(None);
+    }
 
     let version = step
         .with
         .get("toolchain")
-        .map(String::as_str)
+        .map(OwnedRedact::as_redact)
         .unwrap_or(version);
 
-    let components = step.with.get("components").map(String::as_str);
-    let targets = step.with.get("targets").map(String::as_str);
+    let components = step.with.get("components").map(OwnedRedact::as_redact);
+    let targets = step.with.get("targets").map(OwnedRedact::as_redact);
 
     Ok(Some(RustToolchain {
         version,
@@ -491,16 +498,21 @@ impl CommandBatch {
 }
 
 enum Run {
-    Shell { script: String },
-    Command { command: String, args: Vec<String> },
+    Shell {
+        script: OwnedRedact,
+    },
+    Command {
+        command: OwnedRedact,
+        args: Vec<OwnedRedact>,
+    },
 }
 
 struct RunCommand {
-    name: Option<String>,
+    name: Option<OwnedRedact>,
     run: Run,
-    env: BTreeMap<String, String>,
+    env: BTreeMap<String, OwnedRedact>,
     skipped: Option<String>,
-    working_directory: Option<RelativePathBuf>,
+    working_directory: Option<OwnedRedact>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -568,19 +580,25 @@ fn setup_same(cx: &Ctxt, path: &Path, run: &RunCommand, os: &Os) -> Result<Runne
                     bail!("PowerShell not available");
                 };
 
-                Ok(Runner::new(powershell.command(path, script)))
+                let c = powershell.command(path, script);
+                Ok(Runner::new(c))
             }
             Os::Linux | Os::Mac => {
                 let mut c = Command::new("bash");
-                c.args(["-i", "-c", script]);
+                c.args(["-i", "-c"]);
+                c.arg_redact(script);
                 c.current_dir(path);
                 Ok(Runner::new(c))
             }
             Os::Other(..) => bail!("Cannot run shell script on {os:?}"),
         },
         Run::Command { command, args } => {
-            let mut c = Command::new(command);
-            c.args(args);
+            let mut c = Command::new_redact(command.to_redacted().as_ref());
+
+            for arg in args {
+                c.arg(arg.to_redacted().as_ref());
+            }
+
             c.current_dir(path);
             Ok(Runner::new(c))
         }
@@ -592,11 +610,15 @@ fn setup_wsl(path: &Path, wsl: &Wsl, opts: &Opts, run: &RunCommand) -> Runner {
 
     match &run.run {
         Run::Shell { script } => {
-            c.args(["bash", "-i", "-c", script]);
+            c.args(["bash", "-i", "-c"]);
+            c.arg(script.to_redacted().as_ref());
         }
         Run::Command { command, args } => {
-            c.arg(command);
-            c.args(args);
+            c.arg(command.to_redacted().as_ref());
+
+            for arg in args {
+                c.arg(arg.to_redacted().as_ref());
+            }
         }
     }
 

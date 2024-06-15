@@ -344,6 +344,7 @@ mod musli;
 mod octokit;
 mod packaging;
 mod process;
+mod redact;
 mod release;
 mod repo_sets;
 mod shell;
