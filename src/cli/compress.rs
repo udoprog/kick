@@ -207,13 +207,13 @@ impl Archive for GzipArchive {
 }
 
 struct ZipArchive {
-    zip: zip::ZipWriter<Cursor<Vec<u8>>>,
+    zip: Option<zip::ZipWriter<Cursor<Vec<u8>>>>,
 }
 
 impl ZipArchive {
     fn create() -> Self {
         Self {
-            zip: zip::ZipWriter::new(Cursor::new(Vec::new())),
+            zip: Some(zip::ZipWriter::new(Cursor::new(Vec::new()))),
         }
     }
 }
@@ -228,7 +228,12 @@ impl Archive for ZipArchive {
         use zip::write::FileOptions;
         use zip::{CompressionMethod, DateTime};
 
-        let mut options = FileOptions::default().compression_method(CompressionMethod::Deflated);
+        let Some(zip) = &mut self.zip else {
+            bail!("Archive already finished");
+        };
+
+        let mut options =
+            FileOptions::<()>::default().compression_method(CompressionMethod::Deflated);
 
         #[cfg(unix)]
         {
@@ -237,12 +242,16 @@ impl Archive for ZipArchive {
 
         let from = OffsetDateTime::from(metadata.modified()?);
         options = options.last_modified_time(DateTime::try_from(from)?);
-        self.zip.start_file(file_name, options)?;
-        io::copy(&mut input, &mut self.zip).context("Copying file")?;
+        zip.start_file(file_name, options)?;
+        io::copy(&mut input, zip).context("Copying file")?;
         Ok(())
     }
 
     fn finish(&mut self) -> Result<Vec<u8>> {
-        Ok(self.zip.finish()?.into_inner())
+        let Some(zip) = self.zip.take() else {
+            bail!("Archive already finished");
+        };
+
+        Ok(zip.finish()?.into_inner())
     }
 }

@@ -336,7 +336,9 @@ mod deb;
 mod edits;
 mod env;
 mod file;
+mod github_action;
 mod gitmodules;
+mod gix;
 mod glob;
 mod keys;
 mod model;
@@ -365,6 +367,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, FromArgMatches, Parser, Subcommand};
 
 use config::{Config, Os};
+use directories::ProjectDirs;
 use env::SecretString;
 use relative_path::{RelativePath, RelativePathBuf};
 use tracing::metadata::LevelFilter;
@@ -646,9 +649,12 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         }
     };
 
+    let project_dirs = ProjectDirs::from("se", "tedro", "kick");
+
     let paths = Paths {
         root: &root,
         current_path: current_path.as_deref(),
+        project_dirs: project_dirs.as_ref(),
     };
 
     tracing::trace!(?paths, "Using project root");

@@ -29,6 +29,7 @@ pub(crate) fn escape(source: &str, flavor: ShellFlavor) -> Cow<'_, str> {
 
     for c in source[i..].chars() {
         match c {
+            '$' => out.push_str("\\$"),
             '\\' => out.push_str("\\\\"),
             '"' => out.push_str("\\\""),
             '!' => out.push_str("\\!"),

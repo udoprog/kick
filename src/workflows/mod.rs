@@ -163,7 +163,7 @@ impl<'cx> Workflows<'cx> {
 }
 
 fn build_job(
-    name: &str,
+    id: &str,
     value: yaml::Mapping<'_>,
     ignore: &HashSet<String>,
     eval: &Eval<'_>,
@@ -177,7 +177,7 @@ fn build_job(
         .get("name")
         .and_then(|value| Some(eval.eval(value.as_str()?)))
         .transpose()?
-        .unwrap_or(Cow::Borrowed(RStr::new(name)));
+        .unwrap_or(Cow::Borrowed(RStr::new(id)));
 
     let mut matrices = Vec::new();
 
@@ -250,6 +250,11 @@ fn build_job(
                     .and_then(|v| Some(eval.eval(v.as_str()?)))
                     .transpose()?;
 
+                let shell = value
+                    .get("shell")
+                    .and_then(|v| Some(eval.eval(v.as_str()?)))
+                    .transpose()?;
+
                 steps.push(Step {
                     id: value.id(),
                     env: eval.tree().get_prefix("env"),
@@ -260,6 +265,7 @@ fn build_job(
                     with,
                     name: name.map(Cow::into_owned),
                     run: run.map(Cow::into_owned),
+                    shell: shell.map(Cow::into_owned),
                 })
             }
         };
@@ -273,6 +279,7 @@ fn build_job(
     }
 
     Ok(Job {
+        id: RString::from(id),
         name: name.into_owned(),
         matrices,
     })
@@ -482,6 +489,7 @@ impl Workflow<'_> {
 }
 
 pub(crate) struct Job {
+    pub(crate) id: RString,
     pub(crate) name: RString,
     pub(crate) matrices: Vec<(Matrix, Steps)>,
 }
@@ -501,6 +509,7 @@ pub(crate) struct Step {
     pub(crate) with: BTreeMap<String, RString>,
     pub(crate) name: Option<RString>,
     pub(crate) run: Option<RString>,
+    pub(crate) shell: Option<RString>,
 }
 
 impl Step {
@@ -513,6 +522,7 @@ impl Step {
 pub fn default_functions() -> BTreeMap<&'static str, CustomFunction> {
     let mut functions = BTreeMap::new();
     functions.insert("fromJSON", from_json as CustomFunction);
+    functions.insert("startsWith", starts_with as CustomFunction);
     functions
 }
 
@@ -565,6 +575,16 @@ fn from_json<'m>(span: &Span<u32>, args: &[Expr<'m>]) -> Result<Expr<'m>, eval::
     }
 }
 
+fn starts_with<'m>(span: &Span<u32>, args: &[Expr<'m>]) -> Result<Expr<'m>, eval::EvalError> {
+    let [Expr::String(what), Expr::String(expect)] = args else {
+        return Err(eval::EvalError::custom(*span, "Expected two arguments"));
+    };
+
+    let what = what.to_redacted();
+    let expect = expect.to_redacted();
+    Ok(Expr::Bool(what.starts_with(expect.as_ref())))
+}
+
 type CustomFunction = for<'m> fn(&Span<u32>, &[Expr<'m>]) -> Result<Expr<'m>, eval::EvalError>;
 
 #[derive(Clone, Default)]
@@ -592,7 +612,7 @@ impl Tree {
     }
 
     /// Insert a prefix into the current tree.
-    fn insert_prefix<V>(&mut self, prefix: &str, vars: V)
+    pub(crate) fn insert_prefix<V>(&mut self, prefix: &str, vars: V)
     where
         V: IntoIterator<Item = (String, RString)>,
     {
