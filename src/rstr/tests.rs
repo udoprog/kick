@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn test_redact() {
-    let mut owned = OwnedRedact::new();
+    let mut owned = RString::new();
     owned.push_str("this is a password: ");
     owned.push_redacted("hunter2");
     owned.push_str("... now the secret is out!");

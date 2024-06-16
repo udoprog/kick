@@ -8,11 +8,11 @@ use std::process::{ChildStdin, ChildStdout, ExitStatus, Output, Stdio};
 use anyhow::{anyhow, Context, Result};
 
 use crate::model::ShellFlavor;
-use crate::redact::{OwnedRedact, Redact};
+use crate::rstr::{RStr, RString};
 
 pub(crate) enum Arg {
     OsString(OsString),
-    Redact(OwnedRedact),
+    Redact(RString),
 }
 
 impl Arg {
@@ -53,7 +53,7 @@ impl Command {
 
     pub(crate) fn new_redact<S>(command: S) -> Self
     where
-        S: AsRef<Redact>,
+        S: AsRef<RStr>,
     {
         Self::new_inner(Arg::Redact(command.as_ref().into()))
     }
@@ -82,7 +82,7 @@ impl Command {
     /// Add an argument to the command.
     pub(crate) fn arg_redact<S>(&mut self, arg: S) -> &mut Self
     where
-        S: AsRef<Redact>,
+        S: AsRef<RStr>,
     {
         self.args.push(Arg::Redact(arg.as_ref().to_owned()));
         self
@@ -118,7 +118,7 @@ impl Command {
     pub(crate) fn env_redact<K, V>(&mut self, key: K, value: V) -> &mut Self
     where
         K: AsRef<OsStr>,
-        V: AsRef<Redact>,
+        V: AsRef<RStr>,
     {
         self.env.push((
             key.as_ref().to_owned(),

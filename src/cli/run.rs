@@ -12,7 +12,7 @@ use crate::config::Os;
 use crate::ctxt::Ctxt;
 use crate::model::{Repo, ShellFlavor};
 use crate::process::Command;
-use crate::redact::{OwnedRedact, Redact};
+use crate::rstr::{RStr, RString};
 use crate::system::Wsl;
 use crate::workflows::{Job, Matrix, Step, Workflow, Workflows};
 
@@ -102,7 +102,7 @@ fn run(
     }
 
     let mut jobs = HashSet::new();
-    jobs.extend(opts.job.clone().map(OwnedRedact::from));
+    jobs.extend(opts.job.clone().map(RString::from));
 
     if !jobs.is_empty() {
         let workflows = Workflows::new(cx, repo)?;
@@ -133,8 +133,8 @@ fn run(
             commands: vec![RunCommand {
                 name: None,
                 run: Run::Command {
-                    command: OwnedRedact::from(command),
-                    args: rest.iter().map(OwnedRedact::from).collect(),
+                    command: RString::from(command),
+                    args: rest.iter().map(RString::from).collect(),
                 },
                 env: BTreeMap::new(),
                 skipped: None,
@@ -330,25 +330,25 @@ fn job_to_batches(
             if let Some(rust_toolchain) = rust_toolchain(step)? {
                 if rust_toolchain.components.is_some() || rust_toolchain.targets.is_some() {
                     let mut args = vec![
-                        OwnedRedact::from("toolchain"),
-                        OwnedRedact::from("install"),
-                        OwnedRedact::from(rust_toolchain.version),
+                        RString::from("toolchain"),
+                        RString::from("install"),
+                        RString::from(rust_toolchain.version),
                     ];
 
                     if let Some(c) = rust_toolchain.components {
-                        args.push(OwnedRedact::from("-c"));
-                        args.push(OwnedRedact::from(c));
+                        args.push(RString::from("-c"));
+                        args.push(RString::from(c));
                     }
 
                     if let Some(t) = rust_toolchain.targets {
-                        args.push(OwnedRedact::from("-t"));
-                        args.push(OwnedRedact::from(t));
+                        args.push(RString::from("-t"));
+                        args.push(RString::from(t));
                     }
 
                     args.extend([
-                        OwnedRedact::from("--profile"),
-                        OwnedRedact::from("minimal"),
-                        OwnedRedact::from("--no-self-update"),
+                        RString::from("--profile"),
+                        RString::from("minimal"),
+                        RString::from("--no-self-update"),
                     ]);
 
                     commands.push(RunCommand {
@@ -368,8 +368,8 @@ fn job_to_batches(
                     run: Run::Command {
                         command: "rustup".into(),
                         args: vec![
-                            OwnedRedact::from("default"),
-                            OwnedRedact::from(rust_toolchain.version),
+                            RString::from("default"),
+                            RString::from(rust_toolchain.version),
                         ],
                     },
                     env: BTreeMap::new(),
@@ -410,7 +410,7 @@ fn workflow_to_batches(
     cx: &Ctxt<'_>,
     batches: &mut Vec<CommandBatch>,
     workflow: &Workflow<'_>,
-    jobs: &HashSet<OwnedRedact>,
+    jobs: &HashSet<RString>,
     ignore: &HashSet<String>,
     ignore_runs_on: bool,
 ) -> Result<()> {
@@ -434,9 +434,9 @@ fn default_flavor(os: &Os) -> ShellFlavor {
 }
 
 struct RustToolchain<'a> {
-    version: &'a Redact,
-    components: Option<&'a Redact>,
-    targets: Option<&'a Redact>,
+    version: &'a RStr,
+    components: Option<&'a RStr>,
+    targets: Option<&'a RStr>,
 }
 
 /// Extract a rust version from a `rust-toolchain` job.
@@ -460,11 +460,11 @@ fn rust_toolchain(step: &Step) -> Result<Option<RustToolchain<'_>>> {
     let version = step
         .with
         .get("toolchain")
-        .map(OwnedRedact::as_redact)
+        .map(RString::as_redact)
         .unwrap_or(version);
 
-    let components = step.with.get("components").map(OwnedRedact::as_redact);
-    let targets = step.with.get("targets").map(OwnedRedact::as_redact);
+    let components = step.with.get("components").map(RString::as_redact);
+    let targets = step.with.get("targets").map(RString::as_redact);
 
     Ok(Some(RustToolchain {
         version,
@@ -499,20 +499,20 @@ impl CommandBatch {
 
 enum Run {
     Shell {
-        script: OwnedRedact,
+        script: RString,
     },
     Command {
-        command: OwnedRedact,
-        args: Vec<OwnedRedact>,
+        command: RString,
+        args: Vec<RString>,
     },
 }
 
 struct RunCommand {
-    name: Option<OwnedRedact>,
+    name: Option<RString>,
     run: Run,
-    env: BTreeMap<String, OwnedRedact>,
+    env: BTreeMap<String, RString>,
     skipped: Option<String>,
-    working_directory: Option<OwnedRedact>,
+    working_directory: Option<RString>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

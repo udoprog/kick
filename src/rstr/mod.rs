@@ -23,16 +23,16 @@ const TAG_END: &str = "\u{E007F}";
 /// Trying to format the string will result in those redacted sequences being
 /// marked as `***`.
 #[repr(transparent)]
-pub(crate) struct Redact(str);
+pub(crate) struct RStr(str);
 
-impl Redact {
+impl RStr {
     /// Construct a new redacted string wrapping the given string.
     pub(crate) fn new<S>(s: &S) -> &Self
     where
         S: ?Sized + AsRef<str>,
     {
         // This is safe because `Redacted` is a transparent wrapper around `str`.
-        unsafe { &*(s.as_ref() as *const str as *const Redact) }
+        unsafe { &*(s.as_ref() as *const str as *const RStr) }
     }
 
     /// Check if the redacted string is empty.
@@ -46,9 +46,9 @@ impl Redact {
     }
 
     /// Split the redacted string oncoe over the given string.
-    pub(crate) fn split_once(&self, c: char) -> Option<(&Redact, &Redact)> {
+    pub(crate) fn split_once(&self, c: char) -> Option<(&RStr, &RStr)> {
         let (a, b) = self.0.split_once(c)?;
-        Some((Redact::new(a), Redact::new(b)))
+        Some((RStr::new(a), RStr::new(b)))
     }
 
     /// Get the raw underlying string.
@@ -69,7 +69,7 @@ impl Redact {
         let (head, tail) = self.0.split_at(until);
         out.push_str(head);
 
-        for chunk in Redact::new(tail).chunks() {
+        for chunk in RStr::new(tail).chunks() {
             out.push_str(chunk.public());
             out.extend(chunk.redacted());
         }
@@ -78,14 +78,14 @@ impl Redact {
     }
 }
 
-impl AsRef<Redact> for Redact {
+impl AsRef<RStr> for RStr {
     #[inline]
-    fn as_ref(&self) -> &Redact {
+    fn as_ref(&self) -> &RStr {
         self
     }
 }
 
-impl fmt::Display for Redact {
+impl fmt::Display for RStr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for chunk in self.chunks() {
             f.write_str(chunk.public())?;
@@ -99,7 +99,7 @@ impl fmt::Display for Redact {
     }
 }
 
-impl fmt::Debug for Redact {
+impl fmt::Debug for RStr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "\"")?;
 
@@ -128,20 +128,20 @@ impl fmt::Debug for Redact {
 /// [`to_redacted`]: Redact::to_redacted
 /// [`chunks`]: Redact::chunks
 #[derive(Clone)]
-pub(crate) struct OwnedRedact(String);
+pub(crate) struct RString(String);
 
-impl OwnedRedact {
+impl RString {
     /// Construct a new empty redacted string.
     pub(crate) const fn new() -> Self {
-        OwnedRedact(String::new())
+        RString(String::new())
     }
     /// Construct a new empty redacted string with the given `capacity`.
     pub(crate) fn with_capacity(capacity: usize) -> Self {
-        OwnedRedact(String::with_capacity(capacity))
+        RString(String::with_capacity(capacity))
     }
 
     /// Get a reference to the [`Redact`] value corresponding to this instance.
-    pub(crate) fn as_redact(&self) -> &Redact {
+    pub(crate) fn as_redact(&self) -> &RStr {
         self
     }
 
@@ -189,81 +189,81 @@ impl OwnedRedact {
     }
 }
 
-impl From<String> for OwnedRedact {
+impl From<String> for RString {
     #[inline]
     fn from(value: String) -> Self {
-        OwnedRedact(value)
+        RString(value)
     }
 }
 
-impl From<&String> for OwnedRedact {
+impl From<&String> for RString {
     #[inline]
     fn from(value: &String) -> Self {
-        OwnedRedact(value.clone())
+        RString(value.clone())
     }
 }
 
-impl From<&str> for OwnedRedact {
+impl From<&str> for RString {
     #[inline]
     fn from(value: &str) -> Self {
-        OwnedRedact(value.into())
+        RString(value.into())
     }
 }
 
-impl From<&Redact> for OwnedRedact {
+impl From<&RStr> for RString {
     #[inline]
-    fn from(value: &Redact) -> Self {
+    fn from(value: &RStr) -> Self {
         value.to_owned()
     }
 }
 
-impl Deref for OwnedRedact {
-    type Target = Redact;
+impl Deref for RString {
+    type Target = RStr;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        Redact::new(&self.0)
+        RStr::new(&self.0)
     }
 }
 
-impl ToOwned for Redact {
-    type Owned = OwnedRedact;
+impl ToOwned for RStr {
+    type Owned = RString;
 
     #[inline]
     fn to_owned(&self) -> Self::Owned {
-        OwnedRedact(self.0.to_owned())
+        RString(self.0.to_owned())
     }
 }
 
-impl Borrow<Redact> for OwnedRedact {
+impl Borrow<RStr> for RString {
     #[inline]
-    fn borrow(&self) -> &Redact {
+    fn borrow(&self) -> &RStr {
         self
     }
 }
 
-impl AsRef<Redact> for OwnedRedact {
+impl AsRef<RStr> for RString {
     #[inline]
-    fn as_ref(&self) -> &Redact {
+    fn as_ref(&self) -> &RStr {
         self
     }
 }
 
-impl fmt::Display for OwnedRedact {
+impl fmt::Display for RString {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (**self).fmt(f)
     }
 }
 
-impl fmt::Debug for OwnedRedact {
+impl fmt::Debug for RString {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (**self).fmt(f)
     }
 }
 
-impl fmt::Write for OwnedRedact {
+impl fmt::Write for RString {
     #[inline]
     fn write_str(&mut self, s: &str) -> fmt::Result {
         self.push_str(s);
@@ -271,17 +271,17 @@ impl fmt::Write for OwnedRedact {
     }
 }
 
-impl AsRef<Redact> for str {
+impl AsRef<RStr> for str {
     #[inline]
-    fn as_ref(&self) -> &Redact {
-        Redact::new(self)
+    fn as_ref(&self) -> &RStr {
+        RStr::new(self)
     }
 }
 
-impl AsRef<Redact> for String {
+impl AsRef<RStr> for String {
     #[inline]
-    fn as_ref(&self) -> &Redact {
-        Redact::new(self.as_str())
+    fn as_ref(&self) -> &RStr {
+        RStr::new(self.as_str())
     }
 }
 
@@ -349,5 +349,5 @@ macro_rules! cmp {
     };
 }
 
-cmp!(Redact);
-cmp!(OwnedRedact);
+cmp!(RStr);
+cmp!(RString);

@@ -6,7 +6,7 @@ use std::process::{ExitStatus, Stdio};
 use anyhow::{Context, Result};
 
 use crate::process::Command;
-use crate::redact::Redact;
+use crate::rstr::RStr;
 
 #[derive(Debug)]
 pub(crate) struct PowerShell {
@@ -20,7 +20,7 @@ impl PowerShell {
     }
 
     /// Run a powershell command.
-    pub(crate) fn command<D>(&self, dir: D, command: &Redact) -> Command
+    pub(crate) fn command<D>(&self, dir: D, command: &RStr) -> Command
     where
         D: AsRef<Path>,
     {

@@ -67,7 +67,7 @@ use syntree::Span;
 
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
-use crate::redact::{OwnedRedact, Redact};
+use crate::rstr::{RStr, RString};
 
 use self::eval::Expr;
 
@@ -177,7 +177,7 @@ fn build_job(
         .get("name")
         .and_then(|value| Some(eval.eval(value.as_str()?)))
         .transpose()?
-        .unwrap_or(Cow::Borrowed(Redact::new(name)));
+        .unwrap_or(Cow::Borrowed(RStr::new(name)));
 
     let mut matrices = Vec::new();
 
@@ -396,7 +396,7 @@ pub(crate) fn build_matrices(
     Ok(matrices)
 }
 
-fn extract_env(eval: &Eval<'_>, m: &yaml::Mapping<'_>) -> Result<BTreeMap<String, OwnedRedact>> {
+fn extract_env(eval: &Eval<'_>, m: &yaml::Mapping<'_>) -> Result<BTreeMap<String, RString>> {
     let mut env = BTreeMap::new();
 
     let Some(m) = m.get("env").and_then(|v| v.as_mapping()) else {
@@ -443,7 +443,7 @@ impl Workflow<'_> {
         let mut tree = Tree::new();
 
         if let Some(auth) = self.cx.github_auth() {
-            if let Some(owned) = OwnedRedact::redacted(auth.as_secret()) {
+            if let Some(owned) = RString::redacted(auth.as_secret()) {
                 tree.insert_prefix("secrets", vec![("GITHUB_TOKEN".to_owned(), owned)]);
             }
         }
@@ -482,30 +482,30 @@ impl Workflow<'_> {
 }
 
 pub(crate) struct Job {
-    pub(crate) name: OwnedRedact,
+    pub(crate) name: RString,
     pub(crate) matrices: Vec<(Matrix, Steps)>,
 }
 
 pub(crate) struct Steps {
-    pub(crate) runs_on: OwnedRedact,
+    pub(crate) runs_on: RString,
     pub(crate) steps: Vec<Step>,
 }
 
 pub(crate) struct Step {
     pub(crate) id: yaml::Id,
-    pub(crate) env: BTreeMap<String, OwnedRedact>,
-    pub(crate) working_directory: Option<OwnedRedact>,
+    pub(crate) env: BTreeMap<String, RString>,
+    pub(crate) working_directory: Option<RString>,
     pub(crate) skipped: Option<String>,
     pub(crate) condition: Option<(yaml::Id, String)>,
-    pub(crate) uses: Option<(yaml::Id, OwnedRedact)>,
-    pub(crate) with: BTreeMap<String, OwnedRedact>,
-    pub(crate) name: Option<OwnedRedact>,
-    pub(crate) run: Option<OwnedRedact>,
+    pub(crate) uses: Option<(yaml::Id, RString)>,
+    pub(crate) with: BTreeMap<String, RString>,
+    pub(crate) name: Option<RString>,
+    pub(crate) run: Option<RString>,
 }
 
 impl Step {
     /// Construct an environment from a step.
-    pub(crate) fn env(&self) -> &BTreeMap<String, OwnedRedact> {
+    pub(crate) fn env(&self) -> &BTreeMap<String, RString> {
         &self.env
     }
 }
@@ -533,7 +533,7 @@ fn value_to_expr(
 
             Expr::Float(v)
         }
-        serde_json::Value::String(string) => Expr::String(Cow::Owned(OwnedRedact::from(string))),
+        serde_json::Value::String(string) => Expr::String(Cow::Owned(RString::from(string))),
         serde_json::Value::Array(array) => {
             let mut values = Vec::with_capacity(array.len());
 
@@ -569,7 +569,7 @@ type CustomFunction = for<'m> fn(&Span<u32>, &[Expr<'m>]) -> Result<Expr<'m>, ev
 
 #[derive(Clone, Default)]
 struct Node {
-    value: Option<OwnedRedact>,
+    value: Option<RString>,
     children: Option<BTreeMap<String, Node>>,
 }
 
@@ -594,7 +594,7 @@ impl Tree {
     /// Insert a prefix into the current tree.
     fn insert_prefix<V>(&mut self, prefix: &str, vars: V)
     where
-        V: IntoIterator<Item = (String, OwnedRedact)>,
+        V: IntoIterator<Item = (String, RString)>,
     {
         let child = self
             .root
@@ -614,7 +614,7 @@ impl Tree {
     }
 
     /// Get a prefix tree.
-    fn get_prefix(&self, prefix: &str) -> BTreeMap<String, OwnedRedact> {
+    fn get_prefix(&self, prefix: &str) -> BTreeMap<String, RString> {
         let mut output = BTreeMap::new();
 
         let Some(children) = &self.root.children else {
@@ -656,7 +656,7 @@ impl Tree {
     }
 
     /// Get a value from the tree.
-    pub(crate) fn get(&self, key: &[&str]) -> Vec<&Redact> {
+    pub(crate) fn get(&self, key: &[&str]) -> Vec<&RStr> {
         let mut output = Vec::new();
 
         let mut queue = VecDeque::new();
@@ -734,14 +734,14 @@ impl<'a> Eval<'a> {
     }
 
     /// Evaluate a string with matrix variables.
-    pub(crate) fn eval<'s>(&self, s: &'s str) -> Result<Cow<'s, Redact>> {
+    pub(crate) fn eval<'s>(&self, s: &'s str) -> Result<Cow<'s, RStr>> {
         use std::fmt::Write;
 
         let Some(i) = s.find("${{") else {
-            return Ok(Cow::Borrowed(Redact::new(s)));
+            return Ok(Cow::Borrowed(RStr::new(s)));
         };
 
-        let mut result = OwnedRedact::new();
+        let mut result = RString::new();
         let (head, mut s) = s.split_at(i);
         result.push_str(head);
 
@@ -811,7 +811,7 @@ impl<'a> Eval<'a> {
     }
 
     /// Get a variable from the matrix.
-    fn lookup<I>(&self, keys: I) -> Vec<&'a Redact>
+    fn lookup<I>(&self, keys: I) -> Vec<&'a RStr>
     where
         I: IntoIterator<Item: AsRef<str>>,
     {
@@ -828,7 +828,7 @@ impl<'a> Eval<'a> {
 /// A matrix of variables.
 #[derive(Clone)]
 pub(crate) struct Matrix {
-    matrix: BTreeMap<String, OwnedRedact>,
+    matrix: BTreeMap<String, RString>,
     ids: BTreeMap<String, yaml::Id>,
 }
 
@@ -842,7 +842,7 @@ impl Matrix {
     }
 
     /// Get a value from the matrix.
-    pub(crate) fn get_with_id(&self, key: &str) -> Option<(&Redact, yaml::Id)> {
+    pub(crate) fn get_with_id(&self, key: &str) -> Option<(&RStr, yaml::Id)> {
         let value = self.matrix.get(key)?;
         let id = self.ids.get(key)?;
         Some((value, *id))
@@ -852,7 +852,7 @@ impl Matrix {
     pub(crate) fn insert_with_id<K, V>(&mut self, key: K, value: V, id: yaml::Id)
     where
         K: AsRef<str>,
-        V: AsRef<Redact>,
+        V: AsRef<RStr>,
     {
         self.matrix
             .insert(key.as_ref().to_owned(), value.as_ref().to_owned());
@@ -874,7 +874,7 @@ impl Matrix {
 }
 
 pub(crate) struct Display<'a> {
-    matrix: &'a BTreeMap<String, OwnedRedact>,
+    matrix: &'a BTreeMap<String, RString>,
 }
 
 impl fmt::Display for Display<'_> {
@@ -897,13 +897,13 @@ impl fmt::Display for Display<'_> {
 }
 
 struct Escape<'a> {
-    s: &'a Redact,
+    s: &'a RStr,
 }
 
 impl<'a> Escape<'a> {
     fn new<R>(s: &'a R) -> Self
     where
-        R: ?Sized + AsRef<Redact>,
+        R: ?Sized + AsRef<RStr>,
     {
         Escape { s: s.as_ref() }
     }

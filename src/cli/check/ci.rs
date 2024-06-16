@@ -13,7 +13,7 @@ use crate::ctxt::Ctxt;
 use crate::edits;
 use crate::keys::Keys;
 use crate::model::Repo;
-use crate::redact::Redact;
+use crate::rstr::RStr;
 use crate::workflows::{Job, Step, Workflow, Workflows};
 use crate::workspace::Crates;
 
@@ -207,7 +207,7 @@ fn check_actions(ci: &mut Ci<'_>, job: &Job) -> Result<()> {
     Ok(())
 }
 
-fn check_action(ci: &mut Ci<'_>, step: &Step, at: Id, name: &Redact) -> Result<()> {
+fn check_action(ci: &mut Ci<'_>, step: &Step, at: Id, name: &RStr) -> Result<()> {
     let name = name.to_redacted();
 
     let Some((base, version)) = name.split_once('@') else {
@@ -252,7 +252,7 @@ enum RustVersionPolicy<'a> {
 fn check_uses_rust_version(
     ci: &mut Ci<'_>,
     at: Id,
-    name: &Redact,
+    name: &RStr,
     policy: RustVersionPolicy,
 ) -> Result<()> {
     let name = name.to_redacted();
@@ -506,7 +506,7 @@ fn ensure_feature_combo(cx: &Ctxt<'_>, w: &Workflow<'_>, cargos: &[Cargo]) -> bo
     false
 }
 
-fn identify_command(command: &Redact, features: &HashSet<String>) -> RunIdentity {
+fn identify_command(command: &RStr, features: &HashSet<String>) -> RunIdentity {
     let command = command.to_redacted();
     let mut it = command.split(' ').peekable();
 

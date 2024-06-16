@@ -26,7 +26,7 @@ fn or_test() {
 
     assert_eq!(
         eval.expr("matrix.foo || matrix.bar"),
-        Ok(Expr::String(Cow::Borrowed(Redact::new("right"))))
+        Ok(Expr::String(Cow::Borrowed(RStr::new("right"))))
     );
 }
 
@@ -40,7 +40,7 @@ fn and_test() {
 
     assert_eq!(
         eval.expr("matrix.foo && matrix.bar"),
-        Ok(Expr::String(Cow::Borrowed(Redact::new("right"))))
+        Ok(Expr::String(Cow::Borrowed(RStr::new("right"))))
     );
 
     assert_eq!(eval.expr("matrix.baz && matrix.bar"), Ok(Expr::Null));
@@ -56,7 +56,7 @@ fn group() {
 
     assert_eq!(
         eval.expr("${{ matrix.foo }} && matrix.bar"),
-        Ok(Expr::String(Cow::Borrowed(Redact::new("right"))))
+        Ok(Expr::String(Cow::Borrowed(RStr::new("right"))))
     );
 
     assert_eq!(eval.expr("matrix.baz && matrix.bar"), Ok(Expr::Null));
@@ -89,7 +89,7 @@ fn lazy_expansion() {
         'value_for_other_branches'
         "#
         ),
-        Ok(Expr::String(Cow::Borrowed(Redact::new(
+        Ok(Expr::String(Cow::Borrowed(RStr::new(
             "value_for_main_branch"
         ))))
     );
@@ -101,7 +101,7 @@ fn lazy_expansion() {
         'value_for_other_branches'
         "#
         ),
-        Ok(Expr::String(Cow::Borrowed(Redact::new(
+        Ok(Expr::String(Cow::Borrowed(RStr::new(
             "value_for_other_branches"
         ))))
     );
