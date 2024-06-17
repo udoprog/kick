@@ -179,7 +179,7 @@ fn run(
 
     if let [command, rest @ ..] = &opts.command[..] {
         batches.push(CommandBatch {
-            commands: vec![RunCommand::command(command, rest)],
+            commands: vec![Run::command(command, rest)],
             runner: None,
             matrix: None,
         });
@@ -456,7 +456,7 @@ fn job_to_batches(
                                 );
 
                                 commands.push(
-                                    RunCommand::command("node", [main])
+                                    Run::command("node", [main])
                                         .with_name(Some(uses.clone()))
                                         .with_env(env.clone())
                                         .with_skipped(step.skipped.clone())
@@ -468,7 +468,7 @@ fn job_to_batches(
                                         vec![RString::from(post.to_string_lossy().into_owned())];
 
                                     commands.push(
-                                        RunCommand::command("node", args)
+                                        Run::command("node", args)
                                             .with_name(Some(uses.clone()))
                                             .with_env(env.clone())
                                             .with_skipped(step.skipped.clone())
@@ -522,7 +522,7 @@ fn job_to_batches(
                                     };
 
                                     commands.push(
-                                        RunCommand::script(script, flavor)
+                                        Run::script(script, flavor)
                                             .with_env(env)
                                             .with_env_file(Some(env_file.clone())),
                                     );
@@ -557,13 +557,11 @@ fn job_to_batches(
                         RString::from("--no-self-update"),
                     ]);
 
-                    commands.push(
-                        RunCommand::command("rustup", args).with_skipped(step.skipped.clone()),
-                    );
+                    commands.push(Run::command("rustup", args).with_skipped(step.skipped.clone()));
                 }
 
                 commands.push(
-                    RunCommand::command("rustup", [RStr::new("default"), rust_toolchain.version])
+                    Run::command("rustup", [RStr::new("default"), rust_toolchain.version])
                         .with_skipped(step.skipped.clone()),
                 );
             }
@@ -585,7 +583,7 @@ fn job_to_batches(
                     .collect();
 
                 commands.push(
-                    RunCommand::script(script.clone(), shell)
+                    Run::script(script.clone(), shell)
                         .with_name(step.name.clone())
                         .with_env(env)
                         .with_skipped(step.skipped.clone())
@@ -692,7 +690,7 @@ fn rust_toolchain(step: &Step) -> Result<Option<RustToolchain<'_>>> {
 }
 
 struct CommandBatch {
-    commands: Vec<RunCommand>,
+    commands: Vec<Run>,
     runner: Option<RunnerKind>,
     matrix: Option<Matrix>,
 }
@@ -715,7 +713,7 @@ impl CommandBatch {
     }
 }
 
-enum Run {
+enum RunKind {
     Shell {
         script: RString,
         flavor: ShellFlavor,
@@ -726,39 +724,42 @@ enum Run {
     },
 }
 
-struct RunCommand {
-    run: Run,
+struct Run {
+    run: RunKind,
     name: Option<RString>,
     env: BTreeMap<String, OsArg>,
     skipped: Option<String>,
     working_directory: Option<RString>,
+    // If an environment file is supported, this is the path to the file to set up.
     env_file: Option<Rc<Path>>,
 }
 
-impl RunCommand {
+impl Run {
+    /// Setup a command to run.
     fn command<A>(command: impl Into<OsArg>, args: A) -> Self
     where
         A: IntoIterator<Item: Into<OsArg>>,
     {
-        Self::with_run(Run::Command {
+        Self::with_run(RunKind::Command {
             command: command.into(),
             args: args.into_iter().map(Into::into).collect(),
         })
     }
 
+    /// Setup a script to run.
     fn script(script: RString, flavor: ShellFlavor) -> Self {
-        Self::with_run(Run::Shell { script, flavor })
+        Self::with_run(RunKind::Shell { script, flavor })
     }
 
     // Get the shell associated with the run command, if any.
     fn shell(&self) -> Option<ShellFlavor> {
         match &self.run {
-            Run::Shell { flavor, .. } => Some(*flavor),
+            RunKind::Shell { flavor, .. } => Some(*flavor),
             _ => None,
         }
     }
 
-    fn with_run(run: Run) -> Self {
+    fn with_run(run: RunKind) -> Self {
         Self {
             run,
             name: None,
@@ -832,7 +833,7 @@ impl RunnerKind {
         cx: &Ctxt,
         opts: &Opts,
         path: &Path,
-        command: &RunCommand,
+        command: &Run,
         current_env: &BTreeMap<String, String>,
     ) -> Result<Runner> {
         match *self {
@@ -869,9 +870,9 @@ impl Runner {
     }
 }
 
-fn setup_same(cx: &Ctxt, path: &Path, run: &RunCommand) -> Result<Runner> {
+fn setup_same(cx: &Ctxt, path: &Path, run: &Run) -> Result<Runner> {
     match &run.run {
-        Run::Shell { script, flavor } => match flavor {
+        RunKind::Shell { script, flavor } => match flavor {
             ShellFlavor::Powershell => {
                 let Some(powershell) = cx.system.powershell.first() else {
                     bail!("PowerShell not available");
@@ -888,7 +889,7 @@ fn setup_same(cx: &Ctxt, path: &Path, run: &RunCommand) -> Result<Runner> {
                 Ok(Runner::new(c))
             }
         },
-        Run::Command { command, args } => {
+        RunKind::Command { command, args } => {
             let mut c = Command::new(command);
             c.args(args.as_ref());
             c.current_dir(path);
@@ -901,13 +902,13 @@ fn setup_wsl(
     path: &Path,
     wsl: &Wsl,
     opts: &Opts,
-    run: &RunCommand,
+    run: &Run,
     current_env: &BTreeMap<String, String>,
 ) -> Runner {
     let mut c = wsl.shell(path);
 
     match &run.run {
-        Run::Shell { script, flavor } => match flavor {
+        RunKind::Shell { script, flavor } => match flavor {
             ShellFlavor::Powershell => {
                 c.args(["powershell", "-Command"]);
                 c.arg(script);
@@ -917,7 +918,7 @@ fn setup_wsl(
                 c.arg(script);
             }
         },
-        Run::Command { command, args } => {
+        RunKind::Command { command, args } => {
             c.arg(command);
             c.args(args.as_ref());
         }
