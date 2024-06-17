@@ -318,6 +318,17 @@ pub(crate) enum Os {
     Other(String),
 }
 
+impl fmt::Display for Os {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Os::Windows => write!(f, "Windows"),
+            Os::Linux => write!(f, "Linux"),
+            Os::Mac => write!(f, "Mac"),
+            Os::Other(other) => other.fmt(f),
+        }
+    }
+}
+
 #[derive(Default, Debug)]
 pub(crate) struct RepoConfig {
     /// Override crate to use.

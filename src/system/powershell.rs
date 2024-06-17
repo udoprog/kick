@@ -26,7 +26,7 @@ impl PowerShell {
     {
         let mut c = Command::new(&self.command);
         c.arg("-Command");
-        c.arg_redact(command);
+        c.arg(command);
         c.current_dir(dir);
         c
     }

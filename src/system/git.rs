@@ -12,7 +12,7 @@ use bstr::ByteSlice;
 use reqwest::Url;
 
 use crate::env::SecretString;
-use crate::process::Command;
+use crate::process::{Command, OsArg};
 
 #[derive(Debug)]
 pub(crate) struct Git {
@@ -31,7 +31,7 @@ impl Git {
     where
         P: ?Sized + AsRef<Path>,
         A: IntoIterator,
-        A::Item: AsRef<OsStr>,
+        A::Item: Into<OsArg>,
     {
         let status = Command::new(&self.command)
             .arg("add")

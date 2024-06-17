@@ -361,7 +361,6 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
-use std::str::FromStr;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, FromArgMatches, Parser, Subcommand};
@@ -370,8 +369,6 @@ use config::{Config, Os};
 use directories::ProjectDirs;
 use env::SecretString;
 use relative_path::{RelativePath, RelativePathBuf};
-use tracing::metadata::LevelFilter;
-use tracing_subscriber::filter::Directive;
 
 use crate::ctxt::Paths;
 use crate::env::Env;
@@ -598,22 +595,23 @@ async fn main() -> Result<ExitCode> {
         }
     };
 
-    let filter = if let Some(shared) = opts.action.as_ref().map(|a| a.shared()) {
-        if shared.trace {
-            Directive::from_str("kick=trace")?
-        } else {
-            Directive::from(LevelFilter::INFO)
-        }
+    let default_directive = if let Some(true) = opts.action.as_ref().map(|a| a.shared().trace) {
+        "kick=trace"
     } else {
-        Directive::from(LevelFilter::INFO)
+        "kick=info"
+    };
+
+    let filter = tracing_subscriber::EnvFilter::builder();
+
+    let filter = if let Ok(var) = std::env::var("RUST_LOG") {
+        let var = format!("{var},{default_directive}");
+        filter.parse_lossy(var)
+    } else {
+        filter.parse(default_directive)?
     };
 
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::builder()
-                .with_default_directive(filter)
-                .from_env_lossy(),
-        )
+        .with_env_filter(filter)
         .try_init()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 

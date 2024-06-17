@@ -1,23 +1,29 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::rc::Rc;
 use std::str;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use bstr::BString;
 use clap::Parser;
-use relative_path::RelativePathBuf;
+use gix::ObjectId;
+use relative_path::RelativePath;
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 use crate::config::Os;
 use crate::ctxt::Ctxt;
 use crate::github_action::GithubActionKind;
 use crate::model::{Repo, ShellFlavor};
-use crate::process::{Arg, Command};
+use crate::process::{Command, OsArg};
 use crate::rstr::{RStr, RString};
 use crate::system::Wsl;
 use crate::workflows::{Eval, Job, Matrix, Step, Tree, Workflow, Workflows};
+
+const GIT_OBJECT_ID_FILE: &str = ".git-object-id";
+const WORKDIR: &str = "workdir";
+const ENVS: &str = "envs";
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -109,7 +115,9 @@ fn run(
     let mut jobs = HashSet::new();
     jobs.extend(opts.job.clone().map(RString::from));
 
-    let default_flavor = opts.flavor.unwrap_or_else(|| default_flavor(&cx.os));
+    let default_flavor = opts
+        .flavor
+        .unwrap_or_else(|| default_os_shell_flavor(&cx.os));
 
     let mut uses = BTreeMap::<_, BTreeSet<_>>::new();
 
@@ -168,12 +176,10 @@ fn run(
             })?;
         }
     }
+
     if let [command, rest @ ..] = &opts.command[..] {
         batches.push(CommandBatch {
-            commands: vec![RunCommand::command(
-                command,
-                rest.iter().map(RString::from).collect(),
-            )],
+            commands: vec![RunCommand::command(command, rest)],
             runner: None,
             matrix: None,
         });
@@ -229,8 +235,8 @@ fn run(
 
                 let path = match &run.working_directory {
                     Some(working_directory) => {
-                        let working_directory =
-                            RelativePathBuf::from(working_directory.to_redacted().into_owned());
+                        let working_directory = working_directory.to_redacted();
+                        let working_directory = RelativePath::new(working_directory.as_ref());
                         modified = working_directory.to_logical_path(&repo_path);
                         &modified
                     }
@@ -246,7 +252,7 @@ fn run(
                 }
 
                 for (key, value) in &run.env {
-                    runner.command.env_raw(key, value);
+                    runner.command.env(key, value);
                 }
 
                 if let Some((key, value)) = runner.extra_env {
@@ -319,31 +325,31 @@ fn run(
                     }
                 }
 
-                if let Some(env_file) = &run.env_file {
-                    let file = File::create(env_file).with_context(|| {
-                        anyhow!(
-                            "Failed to create temporary environment file: {}",
-                            env_file.display()
-                        )
-                    })?;
-
-                    file.set_len(0).with_context(|| {
-                        anyhow!(
-                            "Failed to truncate temporary environment file: {}",
-                            env_file.display()
-                        )
-                    })?;
-                }
-
                 if run.skipped.is_none() && !opts.dry_run {
+                    if let Some(env_file) = &run.env_file {
+                        let file = File::create(env_file).with_context(|| {
+                            anyhow!(
+                                "Failed to create temporary environment file: {}",
+                                env_file.display()
+                            )
+                        })?;
+
+                        file.set_len(0).with_context(|| {
+                            anyhow!(
+                                "Failed to truncate temporary environment file: {}",
+                                env_file.display()
+                            )
+                        })?;
+                    }
+
                     let status = runner.command.status()?;
                     ensure!(status.success(), status);
-                }
 
-                if let Some(env_file) = &run.env_file {
-                    if let Ok(contents) = fs::read(env_file) {
-                        for (key, value) in parse_env(&contents)? {
-                            current_env.insert(key, value);
+                    if let Some(env_file) = &run.env_file {
+                        if let Ok(contents) = fs::read(env_file) {
+                            for (key, value) in parse_env(&contents)? {
+                                current_env.insert(key, value);
+                            }
                         }
                     }
                 }
@@ -393,28 +399,30 @@ fn job_to_batches(
     runners: &ActionRunners,
     default_flavor: ShellFlavor,
 ) -> Result<()> {
-    for (matrix, steps) in &job.matrices {
-        let runner = if ignore_runs_on {
-            None
-        } else {
+    'outer: for (matrix, steps) in &job.matrices {
+        let (runner, default_flavor) = 'out: {
+            if ignore_runs_on {
+                break 'out (None, default_flavor);
+            }
+
             let runs_on = steps.runs_on.to_redacted();
 
             let os = match runs_on.split_once('-').map(|(os, _)| os) {
                 Some("ubuntu") => Os::Linux,
                 Some("windows") => Os::Windows,
                 Some("macos") => Os::Mac,
-                _ => bail!("Unsupported runs-on: {}", steps.runs_on),
+                _ => bail!("Unsupported runs-on directive: {}", steps.runs_on),
             };
 
             let runner = match RunnerKind::from_os(cx, &os) {
                 Ok(runner) => runner,
                 Err(error) => {
-                    tracing::warn!("{error}");
-                    continue;
+                    tracing::warn!("Failed to set up runner for {os}: {error}");
+                    continue 'outer;
                 }
             };
 
-            Some(runner)
+            (Some(runner), default_os_shell_flavor(&os))
         };
 
         let mut commands = Vec::new();
@@ -425,7 +433,8 @@ fn job_to_batches(
 
                 if !should_skip_use(uses_redacted.as_ref()) {
                     if let Some(runner) = runners.runners.get(uses_redacted.as_ref()) {
-                        let env_file = runner.envs_dir.join(format!("env-{}", runner.id));
+                        let env_file =
+                            Rc::<Path>::from(runner.envs_dir.join(format!("env-{}", runner.id)));
 
                         match &runner.kind {
                             GithubActionKind::Node { main, post } => {
@@ -438,18 +447,16 @@ fn job_to_batches(
                                 let it = it.chain(step.with.clone());
 
                                 for (key, value) in it {
-                                    env.insert(format!("INPUT_{key}"), Arg::RString(value));
+                                    env.insert(format!("INPUT_{key}"), OsArg::from(value));
                                 }
 
                                 env.insert(
                                     String::from("GITHUB_ENV"),
-                                    Arg::OsString(env_file.clone().into_os_string()),
+                                    OsArg::from(env_file.clone()),
                                 );
 
-                                let args = vec![RString::from(main.to_string_lossy().into_owned())];
-
                                 commands.push(
-                                    RunCommand::command("node", args)
+                                    RunCommand::command("node", [main])
                                         .with_name(Some(uses.clone()))
                                         .with_env(env.clone())
                                         .with_skipped(step.skipped.clone())
@@ -493,18 +500,18 @@ fn job_to_batches(
                                     for (k, v) in &step.env {
                                         env.insert(
                                             k.clone(),
-                                            Arg::RString(eval.eval(v)?.into_owned()),
+                                            OsArg::from(eval.eval(v)?.into_owned()),
                                         );
                                     }
 
                                     env.insert(
                                         String::from("GITHUB_ACTION_PATH"),
-                                        Arg::OsString(runner.action_path.clone().into_os_string()),
+                                        OsArg::from(runner.action_path.clone()),
                                     );
 
                                     env.insert(
                                         String::from("GITHUB_ENV"),
-                                        Arg::OsString(env_file.clone().into_os_string()),
+                                        OsArg::from(env_file.clone()),
                                     );
 
                                     let flavor = match step.shell.as_deref() {
@@ -556,14 +563,8 @@ fn job_to_batches(
                 }
 
                 commands.push(
-                    RunCommand::command(
-                        "rustup",
-                        vec![
-                            RString::from("default"),
-                            RString::from(rust_toolchain.version),
-                        ],
-                    )
-                    .with_skipped(step.skipped.clone()),
+                    RunCommand::command("rustup", [RStr::new("default"), rust_toolchain.version])
+                        .with_skipped(step.skipped.clone()),
                 );
             }
 
@@ -580,7 +581,7 @@ fn job_to_batches(
                 let env = step
                     .env()
                     .iter()
-                    .map(|(key, value)| (key.clone(), Arg::RString(value.clone())))
+                    .map(|(key, value)| (key.clone(), OsArg::from(value)))
                     .collect();
 
                 commands.push(
@@ -630,7 +631,7 @@ fn workflow_to_batches(
     Ok(())
 }
 
-fn default_flavor(os: &Os) -> ShellFlavor {
+fn default_os_shell_flavor(os: &Os) -> ShellFlavor {
     match os {
         Os::Windows => ShellFlavor::Powershell,
         _ => ShellFlavor::Sh,
@@ -720,25 +721,28 @@ enum Run {
         flavor: ShellFlavor,
     },
     Command {
-        command: RString,
-        args: Vec<RString>,
+        command: OsArg,
+        args: Box<[OsArg]>,
     },
 }
 
 struct RunCommand {
     run: Run,
     name: Option<RString>,
-    env: BTreeMap<String, Arg>,
+    env: BTreeMap<String, OsArg>,
     skipped: Option<String>,
     working_directory: Option<RString>,
-    env_file: Option<PathBuf>,
+    env_file: Option<Rc<Path>>,
 }
 
 impl RunCommand {
-    fn command(command: impl Into<RString>, args: Vec<RString>) -> Self {
+    fn command<A>(command: impl Into<OsArg>, args: A) -> Self
+    where
+        A: IntoIterator<Item: Into<OsArg>>,
+    {
         Self::with_run(Run::Command {
             command: command.into(),
-            args,
+            args: args.into_iter().map(Into::into).collect(),
         })
     }
 
@@ -774,7 +778,7 @@ impl RunCommand {
 
     /// Modify the environment of the run command.
     #[inline]
-    fn with_env(mut self, env: BTreeMap<String, Arg>) -> Self {
+    fn with_env(mut self, env: BTreeMap<String, OsArg>) -> Self {
         self.env = env;
         self
     }
@@ -795,7 +799,7 @@ impl RunCommand {
 
     /// Modify the environment file of the run command.
     #[inline]
-    fn with_env_file(mut self, env_file: Option<PathBuf>) -> Self {
+    fn with_env_file(mut self, env_file: Option<Rc<Path>>) -> Self {
         self.env_file = env_file;
         self
     }
@@ -879,18 +883,14 @@ fn setup_same(cx: &Ctxt, path: &Path, run: &RunCommand) -> Result<Runner> {
             ShellFlavor::Sh => {
                 let mut c = Command::new("bash");
                 c.args(["-i", "-c"]);
-                c.arg_redact(script);
+                c.arg(script);
                 c.current_dir(path);
                 Ok(Runner::new(c))
             }
         },
         Run::Command { command, args } => {
-            let mut c = Command::new_redact(command.to_redacted().as_ref());
-
-            for arg in args {
-                c.arg(arg.to_redacted().as_ref());
-            }
-
+            let mut c = Command::new(command);
+            c.args(args.as_ref());
             c.current_dir(path);
             Ok(Runner::new(c))
         }
@@ -910,19 +910,16 @@ fn setup_wsl(
         Run::Shell { script, flavor } => match flavor {
             ShellFlavor::Powershell => {
                 c.args(["powershell", "-Command"]);
-                c.arg(script.to_redacted().as_ref());
+                c.arg(script);
             }
             ShellFlavor::Sh => {
                 c.args(["bash", "-i", "-c"]);
-                c.arg(script.to_redacted().as_ref());
+                c.arg(script);
             }
         },
         Run::Command { command, args } => {
-            c.arg(command.to_redacted().as_ref());
-
-            for arg in args {
-                c.arg(arg.to_redacted().as_ref());
-            }
+            c.arg(command);
+            c.args(args.as_ref());
         }
     }
 
@@ -1005,9 +1002,9 @@ impl Colors {
 #[derive(Debug)]
 struct ActionRunner {
     kind: GithubActionKind,
-    action_path: PathBuf,
+    action_path: Rc<Path>,
     defaults: BTreeMap<String, String>,
-    envs_dir: PathBuf,
+    envs_dir: Rc<Path>,
     id: String,
 }
 
@@ -1055,51 +1052,91 @@ fn sync_runners(cx: &Ctxt<'_>, uses: &BTreeMap<String, BTreeSet<String>>) -> Res
         let mut reverse = HashMap::new();
 
         for version in versions {
-            for refspec in [
+            for remote_name in [
                 BString::from(format!("refs/tags/{version}")),
                 BString::from(format!("refs/heads/{version}")),
             ] {
-                refspecs.push(refspec.clone());
-                reverse.insert(refspec, version);
+                refspecs.push(remote_name.clone());
+                reverse.insert(remote_name, version);
             }
         }
 
         let mut out = Vec::new();
 
-        for (name, id) in crate::gix::sync(&r, &url, &refspecs)? {
-            if let Some(version) = reverse.remove(&name) {
-                out.push((name, id, version));
+        match crate::gix::sync(&r, &url, &refspecs) {
+            Ok(remotes) => {
+                for (remote_name, id) in remotes {
+                    let Some(version) = reverse.remove(&remote_name) else {
+                        continue;
+                    };
+
+                    let work_dir = repo_dir.join(WORKDIR).join(version);
+
+                    fs::create_dir_all(&work_dir).with_context(|| {
+                        anyhow!("Failed to create work directory: {}", work_dir.display())
+                    })?;
+
+                    let id_path = work_dir.join(GIT_OBJECT_ID_FILE);
+
+                    fs::write(&id_path, id.as_bytes()).with_context(|| {
+                        anyhow!("Failed to write object ID: {}", id_path.display())
+                    })?;
+
+                    out.push((work_dir, id, repo, name, version));
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "Failed to sync remote `{repo}/{name}` with remote `{url}`: {error}"
+                );
             }
         }
 
-        for (_, id, version) in out {
-            let work_dir = repo_dir.join("workdir").join(version);
+        // Try to read out remaining versions from the workdir cache.
+        for (_, version) in reverse {
+            let work_dir = repo_dir.join(WORKDIR).join(version);
+            let id_path = work_dir.join(GIT_OBJECT_ID_FILE);
 
-            fs::create_dir_all(&work_dir).with_context(|| {
-                anyhow!("Failed to create work directory: {}", work_dir.display())
-            })?;
+            let id = match fs::read(&id_path) {
+                Ok(id) => ObjectId::try_from(&id[..])
+                    .with_context(|| anyhow!("{}: Failed to parse object ID", id_path.display()))?,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    continue;
+                }
+                Err(e) => {
+                    return Err(e)
+                        .context(anyhow!("{}: Failed to read object ID", id_path.display()))
+                }
+            };
+
+            out.push((work_dir, id, repo, name, version));
+        }
+
+        for (work_dir, id, repo, name, version) in out {
+            let key = format!("{repo}/{name}@{version}");
 
             // Load an action runner directly out of a repository without checking it out.
-            if let Some(runner) = crate::github_action::load(&r, id, &work_dir, version)? {
-                let key = format!("{repo}/{name}@{version}");
+            let Some(runner) = crate::github_action::load(&r, id, &work_dir, version)? else {
+                tracing::warn!("Could not load runner for {key}");
+                continue;
+            };
 
-                let envs_dir = cache_dir.join("envs");
+            let envs_dir = cache_dir.join(ENVS);
 
-                fs::create_dir_all(&envs_dir).with_context(|| {
-                    anyhow!("Failed to create envs directory: {}", envs_dir.display())
-                })?;
+            fs::create_dir_all(&envs_dir).with_context(|| {
+                anyhow!("Failed to create envs directory: {}", envs_dir.display())
+            })?;
 
-                runners.runners.insert(
-                    key,
-                    ActionRunner {
-                        kind: runner.kind,
-                        action_path: work_dir.clone(),
-                        defaults: runner.defaults,
-                        envs_dir,
-                        id: id.to_string(),
-                    },
-                );
-            }
+            runners.runners.insert(
+                key,
+                ActionRunner {
+                    kind: runner.kind,
+                    action_path: work_dir.into(),
+                    defaults: runner.defaults,
+                    envs_dir: envs_dir.into(),
+                    id: id.to_string(),
+                },
+            );
         }
     }
 

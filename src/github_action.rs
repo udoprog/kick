@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs::File;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::rc::Rc;
 use std::{fs, str};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -18,8 +19,8 @@ pub(crate) struct GithubAction {
 #[derive(Debug)]
 pub(crate) enum GithubActionKind {
     Node {
-        main: PathBuf,
-        post: Option<PathBuf>,
+        main: Rc<Path>,
+        post: Option<Rc<Path>>,
     },
     Composite {
         steps: Vec<GithubActionStep>,
@@ -112,6 +113,8 @@ pub(crate) fn load(
                 anyhow!("Failed to write main script to: {}", main_path.display())
             })?;
 
+            let main_path = Rc::from(main_path);
+
             let post_path = if let Some(post) = post {
                 let post_path = work_dir.join(format!("post-{node_version}-{version}.js"));
 
@@ -119,7 +122,7 @@ pub(crate) fn load(
                     anyhow!("Failed to write post script to: {}", post_path.display())
                 })?;
 
-                Some(post_path)
+                Some(Rc::from(post_path))
             } else {
                 None
             };

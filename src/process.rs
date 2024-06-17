@@ -4,6 +4,7 @@ use std::fmt;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, ChildStdout, ExitStatus, Output, Stdio};
+use std::rc::Rc;
 
 use anyhow::{anyhow, Context, Result};
 
@@ -11,64 +12,173 @@ use crate::model::ShellFlavor;
 use crate::rstr::{RStr, RString};
 
 #[derive(Clone)]
-pub(crate) enum Arg {
+enum OsArgKind {
+    Path(Rc<Path>),
+    Str(Box<str>),
     OsString(OsString),
     RString(RString),
 }
 
-impl Arg {
+/// A wrapper type that can losslessly represent many types which can be
+/// converted into an `OsStr`.
+#[derive(Clone)]
+pub(crate) struct OsArg {
+    kind: OsArgKind,
+}
+
+impl OsArg {
     pub(crate) fn to_string_lossy(&self) -> Cow<'_, str> {
-        match self {
-            Self::OsString(s) => s.to_string_lossy(),
-            Self::RString(s) => Cow::Owned(s.to_string()),
+        match &self.kind {
+            OsArgKind::Path(p) => p.to_string_lossy(),
+            OsArgKind::Str(p) => Cow::Borrowed(p.as_ref()),
+            OsArgKind::OsString(s) => s.to_string_lossy(),
+            OsArgKind::RString(s) => Cow::Owned(s.to_string()),
         }
     }
 }
 
-impl fmt::Debug for Arg {
+impl fmt::Debug for OsArg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::OsString(s) => s.fmt(f),
-            Self::RString(s) => s.fmt(f),
+        match &self.kind {
+            OsArgKind::Path(s) => s.fmt(f),
+            OsArgKind::Str(s) => s.fmt(f),
+            OsArgKind::OsString(s) => s.fmt(f),
+            OsArgKind::RString(s) => s.fmt(f),
         }
     }
 }
 
-impl AsRef<Arg> for Arg {
+impl AsRef<OsArg> for OsArg {
     #[inline]
-    fn as_ref(&self) -> &Arg {
+    fn as_ref(&self) -> &OsArg {
         self
     }
 }
 
+impl From<&OsArg> for OsArg {
+    #[inline]
+    fn from(s: &OsArg) -> Self {
+        s.clone()
+    }
+}
+
+impl From<Rc<Path>> for OsArg {
+    #[inline]
+    fn from(s: Rc<Path>) -> Self {
+        Self {
+            kind: OsArgKind::Path(s),
+        }
+    }
+}
+
+impl From<&Rc<Path>> for OsArg {
+    #[inline]
+    fn from(path: &Rc<Path>) -> Self {
+        Self::from(path.clone())
+    }
+}
+
+impl From<&Path> for OsArg {
+    #[inline]
+    fn from(s: &Path) -> Self {
+        Self {
+            kind: OsArgKind::Path(Rc::from(s)),
+        }
+    }
+}
+
+impl From<&PathBuf> for OsArg {
+    #[inline]
+    fn from(s: &PathBuf) -> Self {
+        Self::from(s.as_path())
+    }
+}
+
+impl From<RString> for OsArg {
+    #[inline]
+    fn from(s: RString) -> Self {
+        Self {
+            kind: OsArgKind::RString(s),
+        }
+    }
+}
+
+impl From<&str> for OsArg {
+    #[inline]
+    fn from(s: &str) -> Self {
+        Self {
+            kind: OsArgKind::Str(Box::from(s)),
+        }
+    }
+}
+
+impl From<String> for OsArg {
+    #[inline]
+    fn from(s: String) -> Self {
+        Self {
+            kind: OsArgKind::Str(Box::from(s)),
+        }
+    }
+}
+
+impl From<&String> for OsArg {
+    #[inline]
+    fn from(s: &String) -> Self {
+        Self::from(s.as_str())
+    }
+}
+
+impl From<&RStr> for OsArg {
+    #[inline]
+    fn from(s: &RStr) -> Self {
+        Self {
+            kind: OsArgKind::RString(RString::from(s)),
+        }
+    }
+}
+
+impl From<&RString> for OsArg {
+    #[inline]
+    fn from(s: &RString) -> Self {
+        Self {
+            kind: OsArgKind::RString(s.clone()),
+        }
+    }
+}
+
+impl From<&OsStr> for OsArg {
+    #[inline]
+    fn from(s: &OsStr) -> Self {
+        Self {
+            kind: OsArgKind::OsString(OsString::from(s)),
+        }
+    }
+}
+
+impl From<&OsString> for OsArg {
+    #[inline]
+    fn from(s: &OsString) -> Self {
+        Self::from(s.as_os_str())
+    }
+}
+
 pub(crate) struct Command {
-    command: Arg,
-    args: Vec<Arg>,
+    command: OsArg,
+    args: Vec<OsArg>,
     current_dir: Option<PathBuf>,
     stdin: Option<Stdio>,
     stdout: Option<Stdio>,
     stderr: Option<Stdio>,
-    pub(crate) env: Vec<(OsString, Arg)>,
+    pub(crate) env: Vec<(OsString, OsArg)>,
 }
 
 impl Command {
     pub(crate) fn new<S>(command: S) -> Self
     where
-        S: AsRef<OsStr>,
+        S: Into<OsArg>,
     {
-        Self::new_inner(Arg::OsString(command.as_ref().into()))
-    }
-
-    pub(crate) fn new_redact<S>(command: S) -> Self
-    where
-        S: AsRef<RStr>,
-    {
-        Self::new_inner(Arg::RString(command.as_ref().into()))
-    }
-
-    fn new_inner(command: Arg) -> Self {
         Self {
-            command,
+            command: command.into(),
             args: Vec::new(),
             current_dir: None,
             stdin: None,
@@ -81,29 +191,19 @@ impl Command {
     /// Add an argument to the command.
     pub(crate) fn arg<S>(&mut self, arg: S) -> &mut Self
     where
-        S: AsRef<OsStr>,
+        S: Into<OsArg>,
     {
-        self.args.push(Arg::OsString(arg.as_ref().to_owned()));
-        self
-    }
-
-    /// Add an argument to the command.
-    pub(crate) fn arg_redact<S>(&mut self, arg: S) -> &mut Self
-    where
-        S: AsRef<RStr>,
-    {
-        self.args.push(Arg::RString(arg.as_ref().to_owned()));
+        self.args.push(arg.into());
         self
     }
 
     /// Add arguments to the command.
     pub(crate) fn args<I>(&mut self, args: I) -> &mut Self
     where
-        I: IntoIterator,
-        I::Item: AsRef<OsStr>,
+        I: IntoIterator<Item: Into<OsArg>>,
     {
         for arg in args {
-            self.args.push(Arg::OsString(arg.as_ref().to_owned()));
+            self.args.push(arg.into());
         }
 
         self
@@ -113,24 +213,9 @@ impl Command {
     pub(crate) fn env<K, V>(&mut self, key: K, value: V) -> &mut Self
     where
         K: AsRef<OsStr>,
-        V: AsRef<OsStr>,
+        V: Into<OsArg>,
     {
-        self.env.push((
-            key.as_ref().to_owned(),
-            Arg::OsString(value.as_ref().to_owned()),
-        ));
-        self
-    }
-
-    /// Add an environment variable to the command that might be redacted.
-    pub(crate) fn env_raw<K, V>(&mut self, key: K, value: V) -> &mut Self
-    where
-        K: AsRef<OsStr>,
-        V: AsRef<Arg>,
-    {
-        self.env
-            .push((key.as_ref().to_owned(), value.as_ref().clone()));
-
+        self.env.push((key.as_ref().to_owned(), value.into()));
         self
     }
 
@@ -193,20 +278,28 @@ impl Command {
     }
 
     fn command(&mut self) -> std::process::Command {
-        let mut command = match &self.command {
-            Arg::OsString(s) => std::process::Command::new(s),
-            Arg::RString(s) => {
+        let mut command = match &self.command.kind {
+            OsArgKind::Path(s) => std::process::Command::new(s.as_ref()),
+            OsArgKind::Str(s) => std::process::Command::new(s.as_ref()),
+            OsArgKind::OsString(s) => std::process::Command::new(s),
+            OsArgKind::RString(s) => {
                 let s = s.to_redacted();
                 std::process::Command::new(s.as_ref())
             }
         };
 
         for arg in &self.args {
-            match arg {
-                Arg::OsString(arg) => {
+            match &arg.kind {
+                OsArgKind::Path(arg) => {
+                    command.arg(arg.as_ref());
+                }
+                OsArgKind::Str(arg) => {
+                    command.arg(arg.as_ref());
+                }
+                OsArgKind::OsString(arg) => {
                     command.arg(arg);
                 }
-                Arg::RString(arg) => {
+                OsArgKind::RString(arg) => {
                     command.arg(arg.to_redacted().as_ref());
                 }
             }
@@ -229,11 +322,17 @@ impl Command {
         }
 
         for (key, value) in &self.env {
-            match value {
-                Arg::OsString(value) => {
+            match &value.kind {
+                OsArgKind::Path(value) => {
+                    command.env(key, value.as_ref());
+                }
+                OsArgKind::Str(value) => {
+                    command.env(key, value.as_ref());
+                }
+                OsArgKind::OsString(value) => {
                     command.env(key, value);
                 }
-                Arg::RString(value) => {
+                OsArgKind::RString(value) => {
                     command.env(key, value.to_redacted().as_ref());
                 }
             }
