@@ -19,7 +19,7 @@ use crate::model::{Repo, ShellFlavor};
 use crate::process::{Command, OsArg};
 use crate::rstr::{RStr, RString};
 use crate::system::Wsl;
-use crate::workflows::{Eval, Job, Matrix, Step, Tree, Workflow, Workflows};
+use crate::workflows::{Eval, Job, Matrix, Step, Tree, Workflows};
 
 const GIT_OBJECT_ID_FILE: &str = ".git-object-id";
 const WORKDIR: &str = "workdir";
@@ -50,9 +50,15 @@ pub(crate) struct Opts {
     /// what environments are passed in.
     #[arg(long, short = 'E', value_name = "key[=value]")]
     env: Vec<String>,
+    /// Run commands associated with a Github workflow.
+    #[arg(long)]
+    workflow: Option<String>,
     /// Run all commands associated with a Github workflows job.
     #[arg(long)]
     job: Option<String>,
+    /// List all jobs associated with a Github workflows.
+    #[arg(long)]
+    list_jobs: bool,
     /// Matrix values to ignore when running a Github workflows job.
     #[arg(long, value_name = "value")]
     ignore_matrix: Vec<String>,
@@ -112,6 +118,9 @@ fn run(
         ignore.insert(i.clone());
     }
 
+    let mut workflows = HashSet::new();
+    workflows.extend(opts.workflow.clone());
+
     let mut jobs = HashSet::new();
     jobs.extend(opts.job.clone().map(RString::from));
 
@@ -121,16 +130,20 @@ fn run(
 
     let mut uses = BTreeMap::<_, BTreeSet<_>>::new();
 
-    if !jobs.is_empty() {
-        let workflows = Workflows::new(cx, repo)?;
+    if !workflows.is_empty() || !jobs.is_empty() || opts.list_jobs {
+        let wfs = Workflows::new(cx, repo)?;
 
         let mut all = Vec::new();
 
-        for workflow in workflows.workflows() {
+        for workflow in wfs.workflows() {
             let workflow = workflow?;
 
+            if !workflows.is_empty() && !workflows.contains(workflow.id()) {
+                continue;
+            }
+
             for job in workflow.jobs(&ignore)? {
-                if !jobs.contains(&job.id) {
+                if !jobs.is_empty() && !jobs.contains(&job.id) {
                     continue;
                 }
 
@@ -154,26 +167,42 @@ fn run(
             all.push(workflow);
         }
 
-        let runners = sync_runners(cx, &uses)?;
+        let mut enabled = Vec::new();
 
         for workflow in &all {
-            workflow_to_batches(
+            if opts.list_jobs {
+                writeln!(o, "{}", workflow.id())?;
+            }
+
+            for job in workflow.jobs(&ignore)? {
+                if opts.list_jobs {
+                    writeln!(o, "  {}", job.id)?;
+                }
+
+                if !workflows.is_empty() && !workflows.contains(workflow.id()) {
+                    continue;
+                }
+
+                if !jobs.is_empty() && !jobs.contains(&job.id) {
+                    continue;
+                }
+
+                enabled.push((workflow, job));
+            }
+        }
+
+        let runners = sync_runners(cx, &uses)?;
+
+        for (workflow, job) in enabled {
+            job_to_batches(
                 cx,
                 &mut batches,
-                workflow,
-                &jobs,
-                &ignore,
+                &job,
                 opts.ignore_runs_on,
                 &runners,
                 default_flavor,
             )
-            .with_context(|| {
-                anyhow!(
-                    "{}: Workflow `{}`",
-                    cx.to_path(&workflow.path).display(),
-                    workflow.id()
-                )
-            })?;
+            .with_context(|| anyhow!("Workflow `{}` job `{}`", workflow.id(), job.name))?;
         }
     }
 
@@ -601,29 +630,6 @@ fn job_to_batches(
                 None
             },
         })
-    }
-
-    Ok(())
-}
-
-/// Convert a workflow into batches.
-fn workflow_to_batches(
-    cx: &Ctxt<'_>,
-    batches: &mut Vec<CommandBatch>,
-    workflow: &Workflow<'_>,
-    jobs: &HashSet<RString>,
-    ignore: &HashSet<String>,
-    ignore_runs_on: bool,
-    runners: &ActionRunners,
-    default_flavor: ShellFlavor,
-) -> Result<()> {
-    for job in workflow.jobs(ignore)? {
-        if !jobs.contains(&job.id) {
-            continue;
-        }
-
-        job_to_batches(cx, batches, &job, ignore_runs_on, runners, default_flavor)
-            .with_context(|| anyhow!("Job `{}`", job.name))?;
     }
 
     Ok(())
