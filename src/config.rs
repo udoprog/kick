@@ -18,6 +18,7 @@ use crate::ctxt::Paths;
 use crate::glob::Glob;
 use crate::keys::Keys;
 use crate::model::{Repo, RepoParams, RepoRef};
+use crate::shell::Shell;
 use crate::templates::{Template, Templating};
 use crate::KICK_TOML;
 
@@ -316,6 +317,16 @@ pub(crate) enum Os {
     Linux,
     Mac,
     Other(String),
+}
+
+impl Os {
+    /// Get the shell for the given operating system.
+    pub(crate) fn shell(&self) -> Shell {
+        match self {
+            Os::Windows => Shell::Powershell,
+            _ => Shell::Bash,
+        }
+    }
 }
 
 impl fmt::Display for Os {

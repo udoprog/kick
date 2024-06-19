@@ -6,7 +6,6 @@ use std::path::Path;
 use std::rc::Rc;
 
 use anyhow::{anyhow, bail, Context, Error, Result};
-use clap::ValueEnum;
 use musli::{Decode, Encode};
 use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Deserialize, Serialize, Serializer};
@@ -17,71 +16,6 @@ use crate::ctxt::Ctxt;
 use crate::gitmodules;
 use crate::system::Git;
 use crate::workspace::Crates;
-
-#[derive(Default, Debug, Clone, Copy, ValueEnum)]
-pub(crate) enum Shell {
-    #[default]
-    Bash,
-    Powershell,
-}
-
-impl Shell {
-    pub(crate) fn escapes(&self) -> &'static Escapes {
-        match *self {
-            Shell::Bash => &Escapes {
-                dollar: "\\$",
-                backslash: Some("\\\\"),
-                backtick: "\\`",
-                double: "\\\"",
-                single: "\\'",
-                esclamation: "\\!",
-                n: "\\n",
-                r: "\\r",
-                t: "\\t",
-            },
-            Shell::Powershell => &Escapes {
-                dollar: "`$",
-                backslash: None,
-                backtick: "``",
-                double: "`\"",
-                single: "`'",
-                esclamation: "`!",
-                n: "`n",
-                r: "`r",
-                t: "`t",
-            },
-        }
-    }
-}
-
-pub(crate) struct Escapes {
-    dollar: &'static str,
-    backslash: Option<&'static str>,
-    backtick: &'static str,
-    double: &'static str,
-    single: &'static str,
-    esclamation: &'static str,
-    n: &'static str,
-    r: &'static str,
-    t: &'static str,
-}
-
-impl Escapes {
-    pub(crate) fn escape(&self, c: char) -> Option<&str> {
-        match c {
-            '$' => Some(self.dollar),
-            '\\' => self.backslash,
-            '`' => Some(self.backtick),
-            '"' => Some(self.double),
-            '\'' => Some(self.single),
-            '!' => Some(self.esclamation),
-            '\n' => Some(self.n),
-            '\r' => Some(self.r),
-            '\t' => Some(self.t),
-            _ => None,
-        }
-    }
-}
 
 /// Parameters particular to a given package.
 #[derive(Debug, Clone, Copy, Serialize)]

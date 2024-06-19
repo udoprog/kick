@@ -330,6 +330,7 @@ mod actions;
 mod cargo;
 mod changes;
 mod cli;
+mod command_system;
 mod config;
 mod ctxt;
 mod deb;

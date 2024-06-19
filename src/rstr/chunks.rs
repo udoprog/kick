@@ -53,16 +53,19 @@ pub(crate) struct Chunk<'a> {
 
 impl<'a> Chunk<'a> {
     /// Get the public part of the chunk.
-    pub(crate) fn public(&self) -> &str {
+    pub(crate) fn public(&self) -> &'a str {
         self.public
     }
 
     /// Get the redacted part of the chunk.
-    pub(crate) fn redacted(&self) -> Redacted<'_> {
-        // SAFETY: We know that the redacted part is ASCII markup.
-        Redacted {
-            string: self.redacted,
+    pub(crate) fn redacted(&self) -> Option<Redacted<'a>> {
+        if self.redacted.is_empty() {
+            return None;
         }
+
+        Some(Redacted {
+            string: self.redacted,
+        })
     }
 }
 

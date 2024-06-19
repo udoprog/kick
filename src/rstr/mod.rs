@@ -10,6 +10,9 @@ use core::ops::Deref;
 use std::borrow::{Borrow, Cow};
 use std::hash::{Hash, Hasher};
 
+/// The redaction string.
+const REDACTION: &str = "***";
+
 // The start of the Unicode tag sequence.
 //
 // While the sequence is deprecated, it's frequently treated as markup and
@@ -35,6 +38,63 @@ impl RStr {
         unsafe { &*(s.as_ref() as *const str as *const RStr) }
     }
 
+    /// Get the string as a lossy string.
+    pub(crate) fn to_string_lossy(&self) -> Cow<'_, str> {
+        let mut chunks = self.chunks();
+
+        let Some(chunk) = chunks.next() else {
+            return Cow::Borrowed("");
+        };
+
+        if chunk.redacted().is_none() {
+            return Cow::Borrowed(chunk.public());
+        };
+
+        let mut out = String::with_capacity(self.0.len());
+
+        out.push_str(chunk.public());
+        out.push_str(REDACTION);
+
+        for chunk in chunks {
+            out.push_str(chunk.public());
+
+            if chunk.redacted().is_some() {
+                out.push_str(REDACTION);
+            }
+        }
+
+        Cow::Owned(out)
+    }
+
+    /// Get the exposed string which contains any redacted components in clear
+    /// text.
+    pub(crate) fn to_exposed(&self) -> Cow<'_, str> {
+        let mut chunks = self.chunks();
+
+        let Some(chunk) = chunks.next() else {
+            return Cow::Borrowed("");
+        };
+
+        let Some(redacted) = chunk.redacted() else {
+            return Cow::Borrowed(chunk.public());
+        };
+
+        let mut out = String::with_capacity(self.0.len());
+
+        out.push_str(chunk.public());
+        out.extend(redacted);
+
+        for chunk in chunks {
+            out.push_str(chunk.public());
+
+            while let Some(redacted) = chunk.redacted() {
+                out.extend(redacted);
+            }
+        }
+
+        Cow::Owned(out)
+    }
+
     /// Check if the redacted string is empty.
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
@@ -58,24 +118,6 @@ impl RStr {
     pub(crate) fn as_raw(&self) -> &str {
         &self.0
     }
-
-    /// Coerce into the interior string, removing the redaction markup.
-    pub(crate) fn to_redacted(&self) -> Cow<'_, str> {
-        let Some(until) = self.0.find(TAG_START) else {
-            return Cow::Borrowed(&self.0);
-        };
-
-        let mut out = String::with_capacity(self.0.len());
-        let (head, tail) = self.0.split_at(until);
-        out.push_str(head);
-
-        for chunk in RStr::new(tail).chunks() {
-            out.push_str(chunk.public());
-            out.extend(chunk.redacted());
-        }
-
-        Cow::Owned(out)
-    }
 }
 
 impl AsRef<RStr> for RStr {
@@ -90,8 +132,8 @@ impl fmt::Display for RStr {
         for chunk in self.chunks() {
             f.write_str(chunk.public())?;
 
-            if chunk.redacted().next().is_some() {
-                f.write_str("***")?;
+            if chunk.redacted().is_some() {
+                f.write_str(REDACTION)?;
             }
         }
 
@@ -106,8 +148,8 @@ impl fmt::Debug for RStr {
         for chunk in self.chunks() {
             f.write_str(chunk.public())?;
 
-            if chunk.redacted().next().is_some() {
-                f.write_str("***")?;
+            if chunk.redacted().is_some() {
+                f.write_str(REDACTION)?;
             }
         }
 

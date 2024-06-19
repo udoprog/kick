@@ -13,7 +13,7 @@ fn test_redact() {
     );
 
     assert_eq!(
-        owned.to_redacted(),
+        owned.to_exposed(),
         "this is a password: hunter2... now the secret is out!"
     );
 }

@@ -110,22 +110,22 @@ impl std::error::Error for ExprError {
     }
 }
 
-pub struct Workflows<'cx> {
-    cx: &'cx Ctxt<'cx>,
+pub struct Workflows<'a, 'cx> {
+    cx: &'a Ctxt<'cx>,
     path: RelativePathBuf,
     ids: BTreeSet<String>,
 }
 
-impl<'cx> Workflows<'cx> {
+impl<'a, 'cx> Workflows<'a, 'cx> {
     /// Open the workflows directory in the specified repo.
-    pub(crate) fn new(cx: &'cx Ctxt<'cx>, repo: &Repo) -> Result<Self> {
+    pub(crate) fn new(cx: &'a Ctxt<'cx>, repo: &Repo) -> Result<Self> {
         let path = repo.path().join(".github").join("workflows");
         let ids = list_workflow_ids(cx, &path)?;
         Ok(Self { cx, path, ids })
     }
 
     /// Get ids of existing workflows.
-    pub(crate) fn workflows(&self) -> impl Iterator<Item = Result<Workflow>> + '_ {
+    pub(crate) fn workflows(&self) -> impl Iterator<Item = Result<Workflow<'a, 'cx>>> + '_ {
         self.ids
             .iter()
             .flat_map(|s| self.open(s.as_str()).transpose())
@@ -140,7 +140,7 @@ impl<'cx> Workflows<'cx> {
     }
 
     /// Open a workflow by id.
-    fn open(&self, id: &str) -> Result<Option<Workflow>> {
+    fn open(&self, id: &str) -> Result<Option<Workflow<'a, 'cx>>> {
         let path = self.path(id);
         let p = self.cx.to_path(&path);
 
@@ -193,7 +193,7 @@ fn build_job(
             tree.insert_prefix("env", extract_env(&eval, &value)?);
             let eval = eval.with_tree(&tree);
 
-            for s in s {
+            for (index, s) in s.iter().enumerate() {
                 let Some(value) = s.as_mapping() else {
                     continue;
                 };
@@ -256,6 +256,7 @@ fn build_job(
                     .transpose()?;
 
                 steps.push(Step {
+                    index,
                     id: value.id(),
                     env: eval.tree().get_prefix("env"),
                     working_directory,
@@ -424,14 +425,14 @@ fn extract_env(eval: &Eval<'_>, m: &yaml::Mapping<'_>) -> Result<BTreeMap<String
     Ok(env)
 }
 
-pub(crate) struct Workflow<'cx> {
-    cx: &'cx Ctxt<'cx>,
+pub(crate) struct Workflow<'a, 'cx> {
+    cx: &'a Ctxt<'cx>,
     pub(crate) id: String,
     pub(crate) path: RelativePathBuf,
     pub(crate) doc: yaml::Document,
 }
 
-impl Workflow<'_> {
+impl<'a> Workflow<'a, '_> {
     /// Get the identifier of the workflow.
     pub(crate) fn id(&self) -> &str {
         &self.id
@@ -500,6 +501,7 @@ pub(crate) struct Steps {
 }
 
 pub(crate) struct Step {
+    pub(crate) index: usize,
     pub(crate) id: yaml::Id,
     pub(crate) env: BTreeMap<String, RString>,
     pub(crate) working_directory: Option<RString>,
@@ -513,6 +515,19 @@ pub(crate) struct Step {
 }
 
 impl Step {
+    /// Get the diagnostical name of the step.
+    pub(crate) fn name(&self) -> Cow<'_, str> {
+        if let Some(name) = &self.name {
+            return name.to_string_lossy();
+        }
+
+        if let Some(run) = &self.run {
+            return run.to_string_lossy();
+        }
+
+        Cow::Owned(format!("Step #{}", self.index + 1))
+    }
+
     /// Construct an environment from a step.
     pub(crate) fn env(&self) -> &BTreeMap<String, RString> {
         &self.env
@@ -567,7 +582,7 @@ fn from_json<'m>(span: &Span<u32>, args: &[Expr<'m>]) -> Result<Expr<'m>, eval::
     };
 
     // NB: Figure out if we want to carry redaction into the decoded expression.
-    let string = s.to_redacted();
+    let string = s.to_exposed();
 
     match serde_json::from_str(string.as_ref()) {
         Ok(value) => value_to_expr(span, value),
@@ -580,8 +595,8 @@ fn starts_with<'m>(span: &Span<u32>, args: &[Expr<'m>]) -> Result<Expr<'m>, eval
         return Err(eval::EvalError::custom(*span, "Expected two arguments"));
     };
 
-    let what = what.to_redacted();
-    let expect = expect.to_redacted();
+    let what = what.to_exposed();
+    let expect = expect.to_exposed();
     Ok(Expr::Bool(what.starts_with(expect.as_ref())))
 }
 

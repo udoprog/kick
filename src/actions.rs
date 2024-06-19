@@ -82,7 +82,7 @@ impl ActionsCheck for ActionsRsToolchainActionsCheck {
         };
 
         let toolchain = if let Some(toolchain) = step.with.get("toolchain") {
-            toolchain.to_redacted()
+            toolchain.to_exposed()
         } else {
             Cow::Borrowed("stable")
         };

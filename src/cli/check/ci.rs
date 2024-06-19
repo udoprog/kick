@@ -18,7 +18,7 @@ use crate::workflows::{Job, Step, Workflow, Workflows};
 use crate::workspace::Crates;
 
 pub(crate) struct Ci<'a> {
-    workflows: &'a Workflows<'a>,
+    workflows: &'a Workflows<'a, 'a>,
     actions: Actions<'a>,
     repo: &'a Repo,
     package: &'a Package<'a>,
@@ -123,7 +123,7 @@ pub(crate) fn build(cx: &Ctxt<'_>, package: &Package, repo: &Repo, crates: &Crat
 fn validate_workflow(
     cx: &Ctxt<'_>,
     ci: &mut Ci<'_>,
-    w: &Workflow<'_>,
+    w: &Workflow<'_, '_>,
     config: &WorkflowConfig,
 ) -> Result<()> {
     let name = w
@@ -161,7 +161,7 @@ fn validate_workflow(
 fn validate_jobs(
     cx: &Ctxt<'_>,
     ci: &mut Ci<'_>,
-    w: &Workflow<'_>,
+    w: &Workflow<'_, '_>,
     config: &WorkflowConfig,
 ) -> Result<()> {
     let Some(table) = w.doc.as_ref().as_mapping() else {
@@ -208,7 +208,7 @@ fn check_actions(ci: &mut Ci<'_>, job: &Job) -> Result<()> {
 }
 
 fn check_action(ci: &mut Ci<'_>, step: &Step, at: Id, name: &RStr) -> Result<()> {
-    let name = name.to_redacted();
+    let name = name.to_exposed();
 
     let Some((base, version)) = name.split_once('@') else {
         return Ok(());
@@ -255,7 +255,7 @@ fn check_uses_rust_version(
     name: &RStr,
     policy: RustVersionPolicy,
 ) -> Result<()> {
-    let name = name.to_redacted();
+    let name = name.to_exposed();
 
     let Some((name, version)) = name.split_once('@') else {
         return Ok(());
@@ -341,7 +341,7 @@ fn check_strategy_rust_version(ci: &mut Ci, job: &Job) {
             continue;
         };
 
-        let version = &version.to_redacted();
+        let version = &version.to_exposed();
 
         let Some(version) = RustVersion::parse(version.as_ref()) else {
             continue;
@@ -363,7 +363,7 @@ fn check_strategy_rust_version(ci: &mut Ci, job: &Job) {
 fn validate_on(
     cx: &Ctxt<'_>,
     ci: &mut Ci<'_>,
-    w: &Workflow<'_>,
+    w: &Workflow<'_, '_>,
     config: &WorkflowConfig,
     value: yaml::Value<'_>,
 ) {
@@ -428,7 +428,7 @@ fn validate_on(
 fn verify_single_project_build(
     cx: &Ctxt<'_>,
     ci: &mut Ci<'_>,
-    w: &Workflow<'_>,
+    w: &Workflow<'_, '_>,
     job: &Job,
 ) -> Result<()> {
     let mut cargo_combos = Vec::new();
@@ -473,7 +473,7 @@ fn verify_single_project_build(
 }
 
 /// Ensure that feature combination is valid.
-fn ensure_feature_combo(cx: &Ctxt<'_>, w: &Workflow<'_>, cargos: &[Cargo]) -> bool {
+fn ensure_feature_combo(cx: &Ctxt<'_>, w: &Workflow<'_, '_>, cargos: &[Cargo]) -> bool {
     let mut all_features = false;
     let mut empty_features = false;
 
@@ -507,7 +507,7 @@ fn ensure_feature_combo(cx: &Ctxt<'_>, w: &Workflow<'_>, cargos: &[Cargo]) -> bo
 }
 
 fn identify_command(command: &RStr, features: &HashSet<String>) -> RunIdentity {
-    let command = command.to_redacted();
+    let command = command.to_exposed();
     let mut it = command.split(' ').peekable();
 
     if matches!(it.next(), Some("cargo")) {

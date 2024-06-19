@@ -8,8 +8,8 @@ use std::rc::Rc;
 
 use anyhow::{anyhow, Context, Result};
 
-use crate::model::Shell;
 use crate::rstr::{RStr, RString};
+use crate::shell::Shell;
 
 #[derive(Clone)]
 enum OsArgKind {
@@ -297,7 +297,7 @@ impl Command {
             OsArgKind::Str(s) => std::process::Command::new(s.as_ref()),
             OsArgKind::OsString(s) => std::process::Command::new(s),
             OsArgKind::RString(s) => {
-                let s = s.to_redacted();
+                let s = s.to_exposed();
                 std::process::Command::new(s.as_ref())
             }
         };
@@ -314,7 +314,7 @@ impl Command {
                     command.arg(arg);
                 }
                 OsArgKind::RString(arg) => {
-                    command.arg(arg.to_redacted().as_ref());
+                    command.arg(arg.to_exposed().as_ref());
                 }
             }
         }
@@ -347,7 +347,7 @@ impl Command {
                     command.env(key, value);
                 }
                 OsArgKind::RString(value) => {
-                    command.env(key, value.to_redacted().as_ref());
+                    command.env(key, value.to_exposed().as_ref());
                 }
             }
         }
@@ -355,17 +355,15 @@ impl Command {
         command
     }
 
-    /// Build a command representation.
+    /// Display the current command as a bash command.
+    #[inline]
     pub(crate) fn display(&self) -> Display<'_> {
-        self.display_with(Shell::default())
+        self.display_with(Shell::Bash)
     }
 
     /// Build a command representation.
-    pub(crate) fn display_with(&self, flavor: Shell) -> Display<'_> {
-        Display {
-            inner: self,
-            flavor,
-        }
+    pub(crate) fn display_with(&self, shell: Shell) -> Display<'_> {
+        Display { inner: self, shell }
     }
 
     /// Current dir representation.
@@ -406,15 +404,15 @@ impl Child {
 
 pub(crate) struct Display<'a> {
     inner: &'a Command,
-    flavor: Shell,
+    shell: Shell,
 }
 
 impl fmt::Display for Display<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let lossy = self.inner.command.to_string_lossy();
-        let escaped = crate::shell::escape(lossy.as_ref(), self.flavor);
+        let escaped = self.shell.escape(lossy.as_ref());
 
-        if let (Shell::Powershell, Cow::Owned(..)) = (self.flavor, &escaped) {
+        if let (Shell::Powershell, Cow::Owned(..)) = (self.shell, &escaped) {
             "& ".fmt(f)?;
         }
 
@@ -423,7 +421,7 @@ impl fmt::Display for Display<'_> {
         for arg in &self.inner.args {
             f.write_char(' ')?;
             let lossy = arg.to_string_lossy();
-            let escaped = crate::shell::escape(lossy.as_ref(), self.flavor);
+            let escaped = self.shell.escape(lossy.as_ref());
             f.write_str(&escaped)?;
         }
 
