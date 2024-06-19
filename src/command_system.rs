@@ -26,6 +26,15 @@ const GIT_OBJECT_ID_FILE: &str = ".git-object-id";
 const WORKDIR: &str = "workdir";
 const ENVS: &str = "envs";
 
+const WINDOWS_BASH_MESSAGE: &str = r#"Bash is not installed by default on Windows!
+
+To install it, consider:
+* Run: winget install msys2.msys2
+* Install manually from https://www.msys2.org/
+
+If you install it in a non-standard location (other than C:\\msys64),
+make sure that its usr/bin directory is in the system PATH."#;
+
 /// A system of commands to be run.
 pub struct CommandSystem<'a, 'cx> {
     cx: &'a Ctxt<'cx>,
@@ -863,6 +872,10 @@ fn setup_same(cx: &Ctxt<'_>, path: &Path, run: &Run) -> Result<Runner> {
             }
             Shell::Bash => {
                 let Some(bash) = cx.system.bash.first() else {
+                    if let Os::Windows = &cx.os {
+                        tracing::warn!("{WINDOWS_BASH_MESSAGE}");
+                    };
+
                     bail!("Bash is not available");
                 };
 

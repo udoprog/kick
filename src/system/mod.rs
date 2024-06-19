@@ -3,10 +3,12 @@ pub(crate) mod git;
 mod node;
 mod wsl;
 
+use core::fmt;
 use std::collections::HashSet;
 use std::env;
 use std::env::consts::EXE_EXTENSION;
 use std::ffi::OsStr;
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -21,16 +23,16 @@ pub(crate) use self::wsl::Wsl;
 
 type ProbeFn = fn(&mut System, &Path) -> Result<()>;
 
-const TESTS: &[(&str, ProbeFn)] = &[
-    ("git", git_probe),
-    ("wsl", wsl_probe),
-    ("powershell", powershell_probe),
-    ("bash", bash_probe),
-    ("node", node_probe),
+const TESTS: &[(&str, ProbeFn, Allow)] = &[
+    ("git", git_probe, Allow::None),
+    ("wsl", wsl_probe, Allow::System32),
+    ("powershell", powershell_probe, Allow::None),
+    ("bash", bash_probe, Allow::None),
+    ("node", node_probe, Allow::None),
 ];
 
 #[cfg(windows)]
-const MSYS_TESTS: &[(&str, ProbeFn)] = &[("bash", bash_probe)];
+const MSYS_TESTS: &[(&str, ProbeFn, Allow)] = &[("bash", bash_probe, Allow::None)];
 
 /// Detect system commands.
 #[derive(Default)]
@@ -63,14 +65,30 @@ impl System {
         Ok(())
     }
 
-    fn walk_paths(&mut self, path: &mut PathBuf, tests: &[(&str, ProbeFn)]) -> Result<()> {
-        for &(name, test) in tests {
+    fn walk_paths(&mut self, path: &mut PathBuf, tests: &[(&str, ProbeFn, Allow)]) -> Result<()> {
+        for &(name, test, allow) in tests {
             path.push(name);
             path.set_extension(EXE_EXTENSION);
 
             if self.visited.insert(path.clone()) {
-                tracing::trace!(path = ?path.display(), "testing");
-                test(self, path).with_context(|| anyhow!("Testing {}", path.display()))?;
+                let mut ignored = false;
+
+                if cfg!(windows) {
+                    if let Some(reason) = test_windows_ignored(&path, allow) {
+                        // Non-existant files will be I/O ignored, avoid
+                        // spamming log entries for it.
+                        if reason != IgnoreReason::Io {
+                            tracing::debug!(path = ?path.display(), "Ignored: {reason}");
+                        }
+
+                        ignored = true;
+                    }
+                }
+
+                if !ignored {
+                    tracing::trace!(path = ?path.display(), "testing");
+                    test(self, path).with_context(|| anyhow!("Testing {}", path.display()))?;
+                }
             }
 
             path.pop();
@@ -146,6 +164,51 @@ fn bash_probe(s: &mut System, path: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Allow {
+    None,
+    System32,
+}
+
+#[derive(PartialEq)]
+enum IgnoreReason {
+    Io,
+    System32,
+    ZeroSized,
+}
+
+impl fmt::Display for IgnoreReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            IgnoreReason::Io => write!(f, "Failed to get metadata"),
+            IgnoreReason::System32 => write!(f, "System32 binary (Probably WSL)"),
+            IgnoreReason::ZeroSized => write!(f, "Zero-sized Execution Alias (Probably WSL)"),
+        }
+    }
+}
+
+/// Test if the path should be ignored through the policy.
+fn test_windows_ignored(path: &Path, allow: Allow) -> Option<IgnoreReason> {
+    if allow != Allow::System32 {
+        if let Some(dir) = path.parent().and_then(|p| p.file_name()) {
+            if dir.eq_ignore_ascii_case("System32") {
+                return Some(IgnoreReason::System32);
+            }
+        }
+    }
+
+    let Ok(m) = fs::metadata(path) else {
+        return Some(IgnoreReason::Io);
+    };
+
+    // On Windows, empty files are used as App Execution Aliases.
+    if m.len() == 0 {
+        return Some(IgnoreReason::ZeroSized);
+    }
+
+    None
 }
 
 fn probe<C, A>(command: C, arg: A) -> Result<bool>
