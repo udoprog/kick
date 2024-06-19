@@ -260,27 +260,45 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
                         }
                     }
 
+                    write!(o, "# ")?;
+
                     if let Some(name) = &run.name {
-                        write!(o, "# ")?;
                         o.set_color(&self.colors.title)?;
                         write!(o, "{name}")?;
                         o.reset()?;
-                        write!(o, ": ")?;
                     } else {
-                        write!(o, "# ")?;
                         o.set_color(&self.colors.title)?;
                         write!(o, "Step {} / {}", index + 1, batch.commands.len())?;
                         o.reset()?;
-                        write!(o, ": ")?;
+                        write!(o, "")?;
                     }
 
                     if let Some(skipped) = &run.skipped {
-                        write!(o, " Skip: ")?;
+                        write!(o, " ")?;
                         o.set_color(&self.colors.skip_cond)?;
-                        write!(o, "{skipped}")?;
+                        write!(o, "(skipped: {skipped})")?;
                         o.reset()?;
-                        write!(o, ":")?;
                     }
+
+                    if !self.verbose && !runner.command.env.is_empty() {
+                        let plural = if runner.command.env.len() == 1 {
+                            "variable"
+                        } else {
+                            "variables"
+                        };
+
+                        write!(o, " ")?;
+
+                        o.set_color(&self.colors.warn)?;
+                        write!(
+                            o,
+                            "(see {} env {plural} with `--verbose`)",
+                            runner.command.env.len()
+                        )?;
+                        o.reset()?;
+                    }
+
+                    writeln!(o)?;
 
                     match &default_shell {
                         Shell::Bash => {
@@ -297,14 +315,13 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
                         }
                         Shell::Powershell => {
                             if self.verbose && !runner.command.env.is_empty() {
-                                writeln!(o)?;
                                 writeln!(o, "powershell -Command {{")?;
 
                                 for (key, value) in &runner.command.env {
                                     let key = key.to_string_lossy();
                                     let value = value.to_string_lossy();
                                     let value = default_shell.escape(value.as_ref());
-                                    writeln!(o, r#"  $Env:{key}={value};"#,)?;
+                                    writeln!(o, "  $Env:{key}={value};")?;
                                 }
 
                                 writeln!(o, "  {}", runner.command.display_with(default_shell))?;
@@ -313,20 +330,6 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
                                 write!(o, "{}", runner.command.display_with(default_shell))?;
                             }
                         }
-                    }
-
-                    if !self.verbose && !runner.command.env.is_empty() {
-                        let plural = if runner.command.env.len() == 1 {
-                            "variable"
-                        } else {
-                            "variables"
-                        };
-
-                        write!(
-                            o,
-                            " (See {} env {plural} with `--verbose`)",
-                            runner.command.env.len()
-                        )?;
                     }
 
                     writeln!(o)?;
@@ -944,6 +947,7 @@ pub(crate) struct Colors {
     skip_cond: ColorSpec,
     title: ColorSpec,
     matrix: ColorSpec,
+    warn: ColorSpec,
 }
 
 impl Colors {
@@ -960,10 +964,14 @@ impl Colors {
         let mut matrix = ColorSpec::new();
         matrix.set_fg(Some(Color::Yellow));
 
+        let mut warn = ColorSpec::new();
+        warn.set_fg(Some(Color::Yellow));
+
         Self {
             skip_cond,
             title,
             matrix,
+            warn,
         }
     }
 }
