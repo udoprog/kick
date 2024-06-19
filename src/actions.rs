@@ -5,14 +5,15 @@ use anyhow::Result;
 
 use crate::changes::WorkflowError;
 use crate::edits::{self, Edits};
-use crate::workflows::Step;
+use crate::workflows::{Step, StepMapping};
 
 /// A single actions check.
 pub(crate) trait ActionsCheck {
     fn check(
         &self,
         name: &str,
-        action: &Step,
+        step: &Step,
+        mapping: &StepMapping,
         edits: &mut Edits,
         errors: &mut Vec<WorkflowError>,
     ) -> Result<()>;
@@ -70,10 +71,11 @@ impl ActionsCheck for ActionsRsToolchainActionsCheck {
         &self,
         name: &str,
         step: &Step,
+        mapping: &StepMapping,
         edits: &mut Edits,
         errors: &mut Vec<WorkflowError>,
     ) -> Result<()> {
-        let Some((uses_id, _)) = &step.uses else {
+        let Some(uses_id) = mapping.uses else {
             errors.push(WorkflowError::Error {
                 name: name.to_string(),
                 reason: String::from("there are better alternatives"),
@@ -88,11 +90,11 @@ impl ActionsCheck for ActionsRsToolchainActionsCheck {
         };
 
         let toolchain = if !toolchain.starts_with("${{") {
-            edits.remove_key(step.id, "With is incorrect", String::from("with"));
+            edits.remove_key(mapping.id, "With is incorrect", String::from("with"));
             toolchain
         } else {
             edits.insert(
-                step.id,
+                mapping.id,
                 "Update toolchain",
                 String::from("with"),
                 edits::Value::Mapping(vec![(
@@ -105,7 +107,7 @@ impl ActionsCheck for ActionsRsToolchainActionsCheck {
         };
 
         edits.set(
-            *uses_id,
+            uses_id,
             "actions-rs/toolchain has better alternatives",
             edits::Value::String(format!("dtolnay/rust-toolchain@{toolchain}")),
         );

@@ -187,6 +187,7 @@ fn build_job(
         let eval = eval.with_tree(&tree);
 
         let mut steps = Vec::new();
+        let mut step_mappings = Vec::new();
 
         if let Some(s) = value.get("steps").and_then(|steps| steps.as_sequence()) {
             let mut tree = eval.tree().clone();
@@ -210,6 +211,7 @@ fn build_job(
 
                 let mut skipped = None;
                 let mut condition = None;
+                let mut condition_mapping = None;
 
                 if let Some((id, expr)) = value.get("if").and_then(|v| Some((v.id(), v.as_str()?)))
                 {
@@ -217,16 +219,17 @@ fn build_job(
                         skipped = Some(expr.to_owned());
                     }
 
-                    condition = Some((id, expr.to_owned()));
+                    condition = Some(expr.to_owned());
+                    condition_mapping = Some(id);
                 }
 
-                let uses = if let Some((id, uses)) =
-                    value.get("uses").and_then(|v| Some((v.id(), v.as_str()?)))
-                {
-                    Some((id, eval.eval(uses)?.into_owned()))
-                } else {
-                    None
-                };
+                let mut uses = None;
+                let mut uses_mapping = None;
+
+                if let Some((id, s)) = value.get("uses").and_then(|v| Some((v.id(), v.as_str()?))) {
+                    uses = Some(eval.eval(s)?.into_owned());
+                    uses_mapping = Some(id);
+                }
 
                 let mut with = BTreeMap::new();
 
@@ -257,7 +260,6 @@ fn build_job(
 
                 steps.push(Step {
                     index,
-                    id: value.id(),
                     env: eval.tree().get_prefix("env"),
                     working_directory,
                     skipped,
@@ -267,13 +269,20 @@ fn build_job(
                     name: name.map(Cow::into_owned),
                     run: run.map(Cow::into_owned),
                     shell: shell.map(Cow::into_owned),
-                })
+                });
+
+                step_mappings.push(StepMapping {
+                    id: value.id(),
+                    condition: condition_mapping,
+                    uses: uses_mapping,
+                });
             }
         };
 
         let steps = Steps {
             runs_on: eval.eval(runs_on)?.into_owned(),
             steps,
+            step_mappings,
         };
 
         matrices.push((matrix, steps));
@@ -500,16 +509,22 @@ pub(crate) struct Job {
 pub(crate) struct Steps {
     pub(crate) runs_on: RString,
     pub(crate) steps: Vec<Step>,
+    pub(crate) step_mappings: Vec<StepMapping>,
+}
+
+pub(crate) struct StepMapping {
+    pub(crate) id: yaml::Id,
+    pub(crate) condition: Option<yaml::Id>,
+    pub(crate) uses: Option<yaml::Id>,
 }
 
 pub(crate) struct Step {
     pub(crate) index: usize,
-    pub(crate) id: yaml::Id,
     pub(crate) env: BTreeMap<String, RString>,
     pub(crate) working_directory: Option<RString>,
     pub(crate) skipped: Option<String>,
-    pub(crate) condition: Option<(yaml::Id, String)>,
-    pub(crate) uses: Option<(yaml::Id, RString)>,
+    pub(crate) condition: Option<String>,
+    pub(crate) uses: Option<RString>,
     pub(crate) with: BTreeMap<String, RString>,
     pub(crate) name: Option<RString>,
     pub(crate) run: Option<RString>,

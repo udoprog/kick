@@ -13,7 +13,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
 pub(crate) use self::generic::Generic;
 pub(crate) use self::git::Git;
@@ -46,6 +46,26 @@ pub(crate) struct System {
 }
 
 impl System {
+    /// Find a node version to use.
+    pub(crate) fn find_node(&self, major: u32) -> Result<&Node> {
+        if self.node.is_empty() {
+            bail!("Could not find any node installations on the system");
+        }
+
+        let Some(node) = self.node.iter().find(|n| n.version.major >= major) else {
+            let alternatives = self
+                .node
+                .iter()
+                .map(|n| n.version.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            bail!("Could not find node {major} on the system, alternatives: {alternatives}");
+        };
+
+        Ok(node)
+    }
+
     #[cfg(windows)]
     fn windows(&mut self) -> Result<()> {
         let msys = Path::new("C:\\msys64");

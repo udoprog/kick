@@ -14,7 +14,7 @@ use crate::edits;
 use crate::keys::Keys;
 use crate::model::Repo;
 use crate::rstr::RStr;
-use crate::workflows::{Job, Step, Workflow, Workflows};
+use crate::workflows::{Job, Step, StepMapping, Workflow, Workflows};
 use crate::workspace::Crates;
 
 pub(crate) struct Ci<'a> {
@@ -192,14 +192,14 @@ fn check_actions(ci: &mut Ci<'_>, job: &Job) -> Result<()> {
     };
 
     for (_, steps) in &job.matrices {
-        for step in &steps.steps {
-            if let Some((uses, value)) = &step.uses {
-                check_action(ci, step, *uses, value)?;
-                check_uses_rust_version(ci, *uses, value, policy)?;
+        for (step, mapping) in steps.steps.iter().zip(&steps.step_mappings) {
+            if let (Some(value), Some(uses)) = (&step.uses, mapping.uses) {
+                check_action(ci, step, mapping, uses, value)?;
+                check_uses_rust_version(ci, uses, value, policy)?;
             }
 
-            if let Some((if_id, value)) = &step.condition {
-                check_if_rust_version(ci, *if_id, value)?;
+            if let (Some(value), Some(if_id)) = (&step.condition, mapping.condition) {
+                check_if_rust_version(ci, if_id, value)?;
             }
         }
     }
@@ -207,7 +207,13 @@ fn check_actions(ci: &mut Ci<'_>, job: &Job) -> Result<()> {
     Ok(())
 }
 
-fn check_action(ci: &mut Ci<'_>, step: &Step, at: Id, name: &RStr) -> Result<()> {
+fn check_action(
+    ci: &mut Ci<'_>,
+    step: &Step,
+    mapping: &StepMapping,
+    at: Id,
+    name: &RStr,
+) -> Result<()> {
     let name = name.to_exposed();
 
     let Some((base, version)) = name.split_once('@') else {
@@ -237,7 +243,7 @@ fn check_action(ci: &mut Ci<'_>, step: &Step, at: Id, name: &RStr) -> Result<()>
     }
 
     if let Some(check) = ci.actions.get_check(base) {
-        check.check(name.as_ref(), step, &mut ci.edits, &mut ci.errors)?;
+        check.check(name.as_ref(), step, mapping, &mut ci.edits, &mut ci.errors)?;
     }
 
     Ok(())

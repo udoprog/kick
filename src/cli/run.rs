@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use termcolor::{ColorChoice, StandardStream};
 
-use crate::command_system::{Colors, CommandSystem};
+use crate::command_system::{Colors, CommandSystem, RunOn};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::shell::Shell;
@@ -21,6 +21,13 @@ pub(crate) struct Opts {
     /// Executes the command over all supported operating systems.
     #[arg(long)]
     each_os: bool,
+    /// Run the command using the specified execution methods.
+    ///
+    /// Available methods are:
+    /// * `same` (default).
+    /// * `wsl` - to run the command over WSL.
+    #[arg(long)]
+    run_on: Vec<RunOn>,
     /// Environment variables to pass to the command to run. Only specifying
     /// `<key>` means that the specified environment variable should be passed
     /// through.
@@ -151,6 +158,10 @@ fn run(
         for os in cx.config.os(repo).into_iter().take(limit) {
             system.add_os(os)?;
         }
+    }
+
+    for &run_on in &opts.run_on {
+        system.add_run_on(run_on)?;
     }
 
     let default_shell = opts.shell.unwrap_or_else(|| cx.os.shell());
