@@ -386,7 +386,7 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
                 let runner = match RunnerKind::from_os(self.cx, &os) {
                     Ok(runner) => runner,
                     Err(error) => {
-                        tracing::warn!("Failed to set up runner for {os}: {error}");
+                        tracing::warn!("Failed to set up runner: {error}");
                         continue 'outer;
                     }
                 };

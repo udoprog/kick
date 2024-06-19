@@ -369,30 +369,32 @@ pub(crate) fn build_matrices(
         }
     };
 
-    let mut positions = vec![0usize; variables.len()];
+    if !variables.is_empty() {
+        let mut positions = vec![0usize; variables.len()];
 
-    'outer: loop {
-        let mut matrix = Matrix::new();
+        'outer: loop {
+            let mut matrix = Matrix::new();
 
-        for (n, &p) in positions.iter().enumerate() {
-            let (key, ref values) = variables[n];
-            let (ref value, id) = values[p];
-            matrix.insert_with_id(key, value, id);
-        }
-
-        matrices.push(matrix);
-
-        for (p, (_, values)) in positions.iter_mut().zip(&variables) {
-            *p += 1;
-
-            if *p < values.len() {
-                continue 'outer;
+            for (n, &p) in positions.iter().enumerate() {
+                let (key, ref values) = variables[n];
+                let (ref value, id) = values[p];
+                matrix.insert_with_id(key, value, id);
             }
 
-            *p = 0;
-        }
+            matrices.push(matrix);
 
-        break;
+            for (p, (_, values)) in positions.iter_mut().zip(&variables) {
+                *p += 1;
+
+                if *p < values.len() {
+                    continue 'outer;
+                }
+
+                *p = 0;
+            }
+
+            break;
+        }
     }
 
     matrices.extend(included);
