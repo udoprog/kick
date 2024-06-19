@@ -74,7 +74,7 @@ impl System {
                 let mut ignored = false;
 
                 if cfg!(windows) {
-                    if let Some(reason) = test_windows_ignored(&path, allow) {
+                    if let Some(reason) = test_windows_ignored(path, allow) {
                         // Non-existant files will be I/O ignored, avoid
                         // spamming log entries for it.
                         if reason != IgnoreReason::Io {

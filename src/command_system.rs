@@ -41,6 +41,7 @@ pub struct CommandSystem<'a, 'cx> {
     colors: &'a Colors,
     verbose: bool,
     dry_run: bool,
+    same_os: bool,
     env: BTreeMap<String, String>,
     env_passthrough: BTreeSet<String>,
     workflows: HashSet<String>,
@@ -58,6 +59,7 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
             colors,
             verbose: false,
             dry_run: false,
+            same_os: false,
             env: BTreeMap::new(),
             env_passthrough: BTreeSet::new(),
             workflows: HashSet::new(),
@@ -77,13 +79,19 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
     }
 
     /// Set the command system to be verbose.
-    pub(crate) fn set_verbose(&mut self) {
+    pub(crate) fn verbose(&mut self) {
         self.verbose = true;
     }
 
     /// Set the command system to be a dry run.
-    pub(crate) fn set_dry_run(&mut self) {
+    pub(crate) fn dry_run(&mut self) {
         self.dry_run = true;
+    }
+
+    /// Set commands to ignore the `runs-on` directive in workflows, forcing the
+    /// runner to run on the current OS.
+    pub(crate) fn same_os(&mut self) {
+        self.same_os = true;
     }
 
     /// Parse an environment.
@@ -137,7 +145,6 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
     pub(crate) fn load_workflows(
         &mut self,
         repo: &Repo,
-        ignore_runs_on: bool,
     ) -> Result<Vec<(Workflow<'a, 'cx>, Vec<Job>)>> {
         let mut uses = BTreeMap::<_, BTreeSet<_>>::new();
         let mut workflows = Vec::new();
@@ -194,7 +201,7 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
 
         for (workflow, jobs) in &workflows {
             for job in jobs {
-                self.job_to_batches(job, ignore_runs_on, &runners)
+                self.job_to_batches(job, &runners)
                     .with_context(|| anyhow!("Workflow `{}` job `{}`", workflow.id(), job.name))?;
             }
         }
@@ -202,18 +209,12 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
         Ok(workflows)
     }
 
-    pub(crate) fn commit<O>(
-        self,
-        o: &mut O,
-        repo_path: &Path,
-        same_os: bool,
-        default_shell: Shell,
-    ) -> Result<()>
+    pub(crate) fn commit<O>(self, o: &mut O, repo_path: &Path, default_shell: Shell) -> Result<()>
     where
         O: ?Sized + WriteColor,
     {
         for batch in &self.batches {
-            for runner in batch.runners(&self.argument_runners, same_os) {
+            for runner in batch.runners(&self.argument_runners) {
                 write!(o, "# In ")?;
 
                 o.set_color(&self.colors.title)?;
@@ -378,35 +379,28 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
         Ok(())
     }
 
-    fn job_to_batches(
-        &mut self,
-        job: &Job,
-        ignore_runs_on: bool,
-        runners: &ActionRunners,
-    ) -> Result<()> {
-        'outer: for (matrix, steps) in &job.matrices {
-            let runner = {
-                let runs_on = steps.runs_on.to_exposed();
+    fn job_to_batches(&mut self, job: &Job, runners: &ActionRunners) -> Result<()> {
+        for (matrix, steps) in &job.matrices {
+            let runs_on = steps.runs_on.to_exposed();
 
-                let os = match runs_on.split_once('-').map(|(os, _)| os) {
-                    Some("ubuntu") => Os::Linux,
-                    Some("windows") => Os::Windows,
-                    Some("macos") => Os::Mac,
-                    _ => bail!("Unsupported runs-on directive: {}", steps.runs_on),
-                };
-
-                let runner = match RunnerKind::from_os(self.cx, &os) {
-                    Ok(runner) => runner,
-                    Err(error) => {
-                        tracing::warn!("Failed to set up runner: {error}");
-                        continue 'outer;
-                    }
-                };
-
-                Some(runner)
+            let os = match runs_on.split_once('-').map(|(os, _)| os) {
+                Some("ubuntu") => Os::Linux,
+                Some("windows") => Os::Windows,
+                Some("macos") => Os::Mac,
+                _ => bail!("Unsupported runs-on directive: {}", steps.runs_on),
             };
 
-            let runner = if ignore_runs_on { None } else { runner };
+            let runner = if self.same_os {
+                None
+            } else {
+                match RunnerKind::from_os(self.cx, &os) {
+                    Ok(runner) => Some(runner),
+                    Err(error) => {
+                        tracing::warn!("Failed to set up runner: {error}");
+                        continue;
+                    }
+                }
+            };
 
             let mut commands = Vec::new();
 
@@ -610,14 +604,10 @@ struct CommandBatch {
 }
 
 impl CommandBatch {
-    fn runners(&self, opts: &[RunnerKind], same_os: bool) -> BTreeSet<RunnerKind> {
+    fn runners(&self, opts: &[RunnerKind]) -> BTreeSet<RunnerKind> {
         let mut set = BTreeSet::new();
         set.extend(opts.iter().copied());
         set.extend(self.runner);
-
-        if same_os {
-            set.retain(|r| *r == RunnerKind::Same);
-        }
 
         if set.is_empty() {
             set.insert(RunnerKind::Same);
@@ -726,10 +716,7 @@ impl RunnerKind {
             return Ok(Self::Wsl);
         }
 
-        bail!(
-            "No supported runner for {os:?} on current system {:?}",
-            cx.os
-        );
+        bail!("No support for {os:?} on current system {:?}", cx.os);
     }
 
     fn build(

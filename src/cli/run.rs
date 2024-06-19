@@ -21,11 +21,6 @@ pub(crate) struct Opts {
     /// Executes the command over all supported operating systems.
     #[arg(long)]
     each_os: bool,
-    /// Only run expanded commands on the same operating system. If you're
-    /// running any workflow this will ignore any commands which are not
-    /// scheduled to run on the same operating system as kick is run on.
-    #[arg(long)]
-    same_os: bool,
     /// Environment variables to pass to the command to run. Only specifying
     /// `<key>` means that the specified environment variable should be passed
     /// through.
@@ -46,9 +41,12 @@ pub(crate) struct Opts {
     /// Matrix values to ignore when running a Github workflows job.
     #[arg(long, value_name = "value")]
     ignore_matrix: Vec<String>,
-    /// Ignore `runs-on` specification in github workflow.
+    /// Only runs command on the current OS.
+    ///
+    /// When loading workflows, this causes the `runs-on` directive to be
+    /// effectively ignored.
     #[arg(long)]
-    ignore_runs_on: bool,
+    same_os: bool,
     /// Print verbose information about the command being run.
     #[arg(long)]
     verbose: bool,
@@ -98,11 +96,11 @@ fn run(
     let mut system = CommandSystem::new(cx, colors);
 
     if opts.verbose {
-        system.set_verbose();
+        system.verbose();
     }
 
     if opts.dry_run {
-        system.set_dry_run();
+        system.dry_run();
     }
 
     for i in &opts.ignore_matrix {
@@ -121,8 +119,12 @@ fn run(
         system.add_job(job);
     }
 
+    if opts.same_os {
+        system.same_os();
+    }
+
     if opts.workflow.is_some() || opts.job.is_some() || opts.list_jobs {
-        let workflows = system.load_workflows(repo, opts.ignore_runs_on)?;
+        let workflows = system.load_workflows(repo)?;
 
         if opts.list_jobs {
             for (workflow, jobs) in workflows {
@@ -152,6 +154,6 @@ fn run(
     }
 
     let default_shell = opts.shell.unwrap_or_else(|| cx.os.shell());
-    system.commit(o, &repo_path, opts.same_os, default_shell)?;
+    system.commit(o, &repo_path, default_shell)?;
     Ok(())
 }
