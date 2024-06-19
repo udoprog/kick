@@ -1,8 +1,7 @@
-use std::ffi::OsStr;
 use std::fmt::Display;
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{ExitStatus, Stdio};
+use std::process::Stdio;
 use std::str;
 
 use anyhow::{bail, ensure, Context, Result};
@@ -16,24 +15,24 @@ use crate::process::{Command, OsArg};
 
 #[derive(Debug)]
 pub(crate) struct Git {
-    command: PathBuf,
+    pub(crate) path: PathBuf,
 }
 
 impl Git {
     #[inline]
-    pub(crate) fn new(command: PathBuf) -> Self {
-        Self { command }
+    pub(crate) fn new(path: PathBuf) -> Self {
+        Self { path }
     }
 
     /// Make a commit.
-    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command))]
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
     pub(crate) fn add<P, A>(&self, dir: &P, args: A) -> Result<()>
     where
         P: ?Sized + AsRef<Path>,
         A: IntoIterator,
         A::Item: Into<OsArg>,
     {
-        let status = Command::new(&self.command)
+        let status = Command::new(&self.path)
             .arg("add")
             .args(args)
             .stdin(Stdio::null())
@@ -47,13 +46,13 @@ impl Git {
     }
 
     /// Make a commit.
-    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command))]
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
     pub(crate) fn commit<P, M>(&self, dir: &P, message: M) -> Result<()>
     where
         P: ?Sized + AsRef<Path>,
         M: Display,
     {
-        let status = Command::new(&self.command)
+        let status = Command::new(&self.path)
             .args(["commit", "-m"])
             .arg(message.to_string())
             .stdin(Stdio::null())
@@ -67,13 +66,13 @@ impl Git {
     }
 
     /// Make a tag.
-    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command))]
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
     pub(crate) fn tag<P, M>(&self, dir: &P, tag: M) -> Result<()>
     where
         P: ?Sized + AsRef<Path>,
         M: Display,
     {
-        let status = Command::new(&self.command)
+        let status = Command::new(&self.path)
             .args(["tag"])
             .arg(tag.to_string())
             .stdin(Stdio::null())
@@ -86,12 +85,12 @@ impl Git {
         Ok(())
     }
 
-    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command))]
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
     pub(crate) fn is_cached<P>(&self, dir: &P) -> Result<bool>
     where
         P: ?Sized + AsRef<Path>,
     {
-        let status = Command::new(&self.command)
+        let status = Command::new(&self.path)
             .args(["diff", "--cached", "--exit-code", "--quiet"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -102,12 +101,12 @@ impl Git {
         Ok(!status.success())
     }
 
-    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command))]
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
     pub(crate) fn is_dirty<P>(&self, dir: &P) -> Result<bool>
     where
         P: ?Sized + AsRef<Path>,
     {
-        let output = Command::new(&self.command)
+        let output = Command::new(&self.path)
             .args(["status", "--short"])
             .stdin(Stdio::null())
             .stderr(Stdio::null())
@@ -127,7 +126,7 @@ impl Git {
     {
         tracing::info!("Updating remote");
 
-        let status = Command::new(&self.command)
+        let status = Command::new(&self.path)
             .args(["remote", "update"])
             .stdin(Stdio::null())
             .current_dir(dir)
@@ -141,7 +140,7 @@ impl Git {
     where
         P: AsRef<Path>,
     {
-        let output = Command::new(&self.command)
+        let output = Command::new(&self.path)
             .args(["status", "-sb"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -173,7 +172,7 @@ impl Git {
     }
 
     /// Test if the local branch is outdated.
-    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command, ?fetch))]
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path, ?fetch))]
     pub(crate) fn is_outdated<P>(&self, dir: P, fetch: bool) -> Result<bool>
     where
         P: AsRef<Path>,
@@ -186,7 +185,7 @@ impl Git {
 
         let (local, remote) = self.remote_branch(dir)?;
 
-        let status = Command::new(&self.command)
+        let status = Command::new(&self.path)
             .args(["diff", "--quiet", &local, &remote])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -198,12 +197,12 @@ impl Git {
     }
 
     /// Parse a commit.
-    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command))]
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
     pub(crate) fn rev_parse<P>(&self, dir: P, rev: &str) -> Result<String>
     where
         P: AsRef<Path>,
     {
-        let output = Command::new(&self.command)
+        let output = Command::new(&self.path)
             .args(["rev-parse", rev])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -216,7 +215,7 @@ impl Git {
     }
 
     /// Get HEAD commit.
-    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.command, ?fetch))]
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path, ?fetch))]
     pub(crate) fn describe_tags<P>(&self, dir: &P, fetch: bool) -> Result<Option<DescribeTags>>
     where
         P: ?Sized + AsRef<Path>,
@@ -225,7 +224,7 @@ impl Git {
             self.remote_update(dir)?;
         }
 
-        let output = Command::new(&self.command)
+        let output = Command::new(&self.path)
             .args(["describe", "--tags"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -260,7 +259,7 @@ impl Git {
     where
         P: AsRef<Path>,
     {
-        let output = Command::new(&self.command)
+        let output = Command::new(&self.path)
             .args(["remote", "get-url", remote])
             .current_dir(dir)
             .stdout(Stdio::piped())
@@ -273,7 +272,7 @@ impl Git {
 
     /// Get credentials.
     pub(crate) fn get_credentials(&self, host: &str, protocol: &str) -> Result<Credentials> {
-        let mut child = Command::new(&self.command)
+        let mut child = Command::new(&self.path)
             .args(["credential-manager-core", "get"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -322,19 +321,6 @@ impl Git {
 pub(crate) struct DescribeTags {
     pub(crate) tag: String,
     pub(crate) offset: Option<usize>,
-}
-
-pub(crate) fn test(path: &OsStr) -> Result<Option<ExitStatus>> {
-    match std::process::Command::new(path)
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-    {
-        Ok(status) => Ok(Some(status)),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).context("git --version"),
-    }
 }
 
 /// Git credentials.

@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::fs;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 use std::rc::Rc;
-use std::{fs, str};
+use std::str::{self, FromStr};
 
 use anyhow::{anyhow, bail, Context, Result};
 use gix::objs::Kind;
@@ -21,6 +22,7 @@ pub(crate) enum GithubActionKind {
     Node {
         main: Rc<Path>,
         post: Option<Rc<Path>>,
+        node_version: u32,
     },
     Composite {
         steps: Vec<GithubActionStep>,
@@ -93,6 +95,10 @@ pub(crate) fn load(
 
     let kind = match kind {
         RunnerKind::Node(node_version) => {
+            let Ok(node_version) = u32::from_str(node_version.as_ref()) else {
+                return Err(anyhow!("Invalid node runner version `{node_version}`"));
+            };
+
             let Some((main, _)) = cx.main.and_then(|p| paths.remove(&p)) else {
                 return Ok(None);
             };
@@ -130,6 +136,7 @@ pub(crate) fn load(
             GithubActionKind::Node {
                 main: main_path,
                 post: post_path,
+                node_version,
             }
         }
         RunnerKind::Composite => {

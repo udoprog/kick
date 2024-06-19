@@ -1,16 +1,32 @@
 use std::borrow::Cow;
 
-use crate::model::ShellFlavor;
+use crate::model::Shell;
 
 /// Escape a string into a bash command.
-pub(crate) fn escape(source: &str, flavor: ShellFlavor) -> Cow<'_, str> {
+pub(crate) fn escape(source: &str, flavor: Shell) -> Cow<'_, str> {
+    macro_rules! base_pat {
+        ($($pat:pat_param)|*) => {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '=' | '/' | ',' | '.' | '+' $(| $pat)*
+        }
+    }
+
     let i = 'bail: {
-        for (i, c) in source.char_indices() {
-            match c {
-                'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '=' | '/' | ',' | '.' | '+' => {
-                    continue
+        match flavor {
+            Shell::Bash => {
+                for (i, c) in source.char_indices() {
+                    match c {
+                        base_pat!() => continue,
+                        _ => break 'bail i,
+                    }
                 }
-                _ => break 'bail i,
+            }
+            Shell::Powershell => {
+                for (i, c) in source.char_indices() {
+                    match c {
+                        base_pat!('\\' | ':' | '`') => continue,
+                        _ => break 'bail i,
+                    }
+                }
             }
         }
 
@@ -22,22 +38,15 @@ pub(crate) fn escape(source: &str, flavor: ShellFlavor) -> Cow<'_, str> {
     out.push('"');
     out.push_str(&source[..i]);
 
-    let (nl, tab, cr) = match flavor {
-        ShellFlavor::Sh => ("\\n", "\\t", "\\r"),
-        ShellFlavor::Powershell => ("`n", "`t", "`r"),
-    };
+    let e = flavor.escapes();
 
     for c in source[i..].chars() {
-        match c {
-            '$' => out.push_str("\\$"),
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '!' => out.push_str("\\!"),
-            '\n' => out.push_str(nl),
-            '\r' => out.push_str(cr),
-            '\t' => out.push_str(tab),
-            _ => out.push(c),
+        if let Some(ext) = e.escape(c) {
+            out.push_str(ext);
+            continue;
         }
+
+        out.push(c)
     }
 
     out.push('"');

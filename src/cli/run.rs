@@ -15,9 +15,10 @@ use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 use crate::config::Os;
 use crate::ctxt::Ctxt;
 use crate::github_action::GithubActionKind;
-use crate::model::{Repo, ShellFlavor};
+use crate::model::{Repo, Shell};
 use crate::process::{Command, OsArg};
 use crate::rstr::{RStr, RString};
+use crate::shell;
 use crate::system::Wsl;
 use crate::workflows::{Eval, Job, Matrix, Step, Tree, Workflows};
 
@@ -71,12 +72,12 @@ pub(crate) struct Opts {
     /// Don't actually run any commands, just print what would be done.
     #[arg(long)]
     dry_run: bool,
-    /// Shell flavor to use for local shell.
+    /// The default shell to use when printing command invocations.
     ///
     /// By default this is `bash` for unix-like environments and `powershell`
     /// for windows.
     #[arg(long, value_name = "<lavor")]
-    flavor: Option<ShellFlavor>,
+    shell: Option<Shell>,
     /// Arguments to pass to the command to run.
     #[arg(
         trailing_var_arg = true,
@@ -124,9 +125,7 @@ fn run(
     let mut jobs = HashSet::new();
     jobs.extend(opts.job.clone().map(RString::from));
 
-    let default_flavor = opts
-        .flavor
-        .unwrap_or_else(|| default_os_shell_flavor(&cx.os));
+    let default_shell = opts.shell.unwrap_or_else(|| os_to_shell(&cx.os));
 
     let mut uses = BTreeMap::<_, BTreeSet<_>>::new();
 
@@ -194,15 +193,8 @@ fn run(
         let runners = sync_runners(cx, &uses)?;
 
         for (workflow, job) in enabled {
-            job_to_batches(
-                cx,
-                &mut batches,
-                &job,
-                opts.ignore_runs_on,
-                &runners,
-                default_flavor,
-            )
-            .with_context(|| anyhow!("Workflow `{}` job `{}`", workflow.id(), job.name))?;
+            job_to_batches(cx, &mut batches, &job, opts.ignore_runs_on, &runners)
+                .with_context(|| anyhow!("Workflow `{}` job `{}`", workflow.id(), job.name))?;
         }
     }
 
@@ -258,8 +250,6 @@ fn run(
             let mut current_env = BTreeMap::new();
 
             for (index, run) in batch.commands.iter().enumerate() {
-                let flavor = run.shell().unwrap_or(default_flavor);
-
                 let modified;
 
                 let path = match &run.working_directory {
@@ -304,55 +294,62 @@ fn run(
                     write!(o, ": ")?;
                 }
 
-                write!(o, "{}", runner.command.display_with(flavor))?;
-
                 if let Some(skipped) = &run.skipped {
-                    write!(o, " (Skip: ")?;
+                    write!(o, " Skip: ")?;
                     o.set_color(&colors.skip_cond)?;
                     write!(o, "{skipped}")?;
                     o.reset()?;
-                    write!(o, ")")?;
+                    write!(o, ":")?;
                 }
 
-                writeln!(o)?;
-
-                if opts.verbose || opts.dry_run {
-                    match &flavor {
-                        ShellFlavor::Sh => {
+                match &default_shell {
+                    Shell::Bash => {
+                        if opts.verbose {
                             for (key, value) in &runner.command.env {
-                                write!(
-                                    o,
-                                    r#"{}="{}" "#,
-                                    key.to_string_lossy(),
-                                    value.to_string_lossy()
-                                )?;
+                                let key = key.to_string_lossy();
+                                let value = value.to_string_lossy();
+                                let value = shell::escape(value.as_ref(), Shell::Bash);
+                                write!(o, "{key}={value} ")?;
                             }
-
-                            write!(o, "{}", runner.command.display_with(flavor))?;
-                            writeln!(o)?;
                         }
-                        ShellFlavor::Powershell => {
-                            if !runner.command.env.is_empty() {
-                                writeln!(o, "powershell -Command {{")?;
 
-                                for (key, value) in &runner.command.env {
-                                    writeln!(
-                                        o,
-                                        r#"  $Env:{}="{}";"#,
-                                        key.to_string_lossy(),
-                                        value.to_string_lossy()
-                                    )?;
-                                }
+                        write!(o, "{}", runner.command.display_with(default_shell))?;
+                    }
+                    Shell::Powershell => {
+                        if opts.verbose {
+                            writeln!(o)?;
+                            writeln!(o, "powershell -Command {{")?;
 
-                                writeln!(o, "  {}", runner.command.display_with(flavor))?;
-                                writeln!(o, "}}")?;
-                            } else {
-                                write!(o, "{}", runner.command.display_with(flavor))?;
-                                writeln!(o)?;
+                            for (key, value) in &runner.command.env {
+                                let key = key.to_string_lossy();
+                                let value = value.to_string_lossy();
+                                let value = shell::escape(value.as_ref(), Shell::Powershell);
+                                writeln!(o, r#"  $Env:{key}={value};"#,)?;
                             }
+
+                            writeln!(o, "  {}", runner.command.display_with(default_shell))?;
+                            write!(o, "}}")?;
+                        } else {
+                            write!(o, "{}", runner.command.display_with(default_shell))?;
                         }
                     }
                 }
+
+                if !opts.verbose && !runner.command.env.is_empty() {
+                    let plural = if runner.command.env.len() == 1 {
+                        "variable"
+                    } else {
+                        "variables"
+                    };
+
+                    write!(
+                        o,
+                        " (See {} env {plural} with `--verbose`)",
+                        runner.command.env.len()
+                    )?;
+                }
+
+                writeln!(o)?;
 
                 if run.skipped.is_none() && !opts.dry_run {
                     if let Some(env_file) = &run.env_file {
@@ -426,14 +423,9 @@ fn job_to_batches(
     job: &Job,
     ignore_runs_on: bool,
     runners: &ActionRunners,
-    default_flavor: ShellFlavor,
 ) -> Result<()> {
     'outer: for (matrix, steps) in &job.matrices {
-        let (runner, default_flavor) = 'out: {
-            if ignore_runs_on {
-                break 'out (None, default_flavor);
-            }
-
+        let runner = {
             let runs_on = steps.runs_on.to_redacted();
 
             let os = match runs_on.split_once('-').map(|(os, _)| os) {
@@ -451,8 +443,10 @@ fn job_to_batches(
                 }
             };
 
-            (Some(runner), default_os_shell_flavor(&os))
+            Some(runner)
         };
+
+        let runner = if ignore_runs_on { None } else { runner };
 
         let mut commands = Vec::new();
 
@@ -466,7 +460,27 @@ fn job_to_batches(
                             Rc::<Path>::from(runner.envs_dir.join(format!("env-{}", runner.id)));
 
                         match &runner.kind {
-                            GithubActionKind::Node { main, post } => {
+                            GithubActionKind::Node {
+                                main,
+                                post,
+                                node_version,
+                            } => {
+                                let Some(node) = cx
+                                    .system
+                                    .node
+                                    .iter()
+                                    .find(|n| n.version.major >= *node_version)
+                                else {
+                                    let alternatives = cx
+                                        .system
+                                        .node
+                                        .iter()
+                                        .map(|n| n.version.to_string())
+                                        .collect::<Vec<_>>()
+                                        .join(", ");
+                                    bail!("Could not find node {node_version} on the system, alternatives: {alternatives}");
+                                };
+
                                 let mut env = BTreeMap::new();
 
                                 let it = runner
@@ -485,7 +499,7 @@ fn job_to_batches(
                                 );
 
                                 commands.push(
-                                    Run::command("node", [main])
+                                    Run::command(&node.path, [main])
                                         .with_name(Some(uses.clone()))
                                         .with_env(env.clone())
                                         .with_skipped(step.skipped.clone())
@@ -497,7 +511,7 @@ fn job_to_batches(
                                         vec![RString::from(post.to_string_lossy().into_owned())];
 
                                     commands.push(
-                                        Run::command("node", args)
+                                        Run::command(&node.path, args)
                                             .with_name(Some(uses.clone()))
                                             .with_env(env.clone())
                                             .with_skipped(step.skipped.clone())
@@ -543,15 +557,10 @@ fn job_to_batches(
                                         OsArg::from(env_file.clone()),
                                     );
 
-                                    let flavor = match step.shell.as_deref() {
-                                        Some("bash") => ShellFlavor::Sh,
-                                        Some("powershell") => ShellFlavor::Powershell,
-                                        Some(other) => bail!("Unsupported shell: {}", other),
-                                        None => default_flavor,
-                                    };
+                                    let shell = to_shell(step.shell.as_deref())?;
 
                                     commands.push(
-                                        Run::script(script, flavor)
+                                        Run::script(script, shell)
                                             .with_env(env)
                                             .with_env_file(Some(env_file.clone())),
                                     );
@@ -595,14 +604,7 @@ fn job_to_batches(
                 );
             }
 
-            let shell = step.shell.as_deref().map(RStr::to_redacted);
-
-            let shell = match shell.as_deref() {
-                Some("bash") => ShellFlavor::Sh,
-                Some("powershell") => ShellFlavor::Powershell,
-                Some(other) => bail!("Unsupported shell: {}", other),
-                None => default_flavor,
-            };
+            let shell = to_shell(step.shell.as_deref().map(RStr::to_redacted).as_deref())?;
 
             if let Some(script) = &step.run {
                 let env = step
@@ -612,7 +614,7 @@ fn job_to_batches(
                     .collect();
 
                 commands.push(
-                    Run::script(script.clone(), shell)
+                    Run::script(script, shell)
                         .with_name(step.name.clone())
                         .with_env(env)
                         .with_skipped(step.skipped.clone())
@@ -633,13 +635,6 @@ fn job_to_batches(
     }
 
     Ok(())
-}
-
-fn default_os_shell_flavor(os: &Os) -> ShellFlavor {
-    match os {
-        Os::Windows => ShellFlavor::Powershell,
-        _ => ShellFlavor::Sh,
-    }
 }
 
 struct RustToolchain<'a> {
@@ -682,11 +677,11 @@ fn rust_toolchain(step: &Step) -> Result<Option<RustToolchain<'_>>> {
     let version = step
         .with
         .get("toolchain")
-        .map(RString::as_redact)
+        .map(RString::as_rstr)
         .unwrap_or(version);
 
-    let components = step.with.get("components").map(RString::as_redact);
-    let targets = step.with.get("targets").map(RString::as_redact);
+    let components = step.with.get("components").map(RString::as_rstr);
+    let targets = step.with.get("targets").map(RString::as_rstr);
 
     Ok(Some(RustToolchain {
         version,
@@ -720,14 +715,8 @@ impl CommandBatch {
 }
 
 enum RunKind {
-    Shell {
-        script: RString,
-        flavor: ShellFlavor,
-    },
-    Command {
-        command: OsArg,
-        args: Box<[OsArg]>,
-    },
+    Shell { script: Box<RStr>, shell: Shell },
+    Command { command: OsArg, args: Box<[OsArg]> },
 }
 
 struct Run {
@@ -753,16 +742,11 @@ impl Run {
     }
 
     /// Setup a script to run.
-    fn script(script: RString, flavor: ShellFlavor) -> Self {
-        Self::with_run(RunKind::Shell { script, flavor })
-    }
-
-    // Get the shell associated with the run command, if any.
-    fn shell(&self) -> Option<ShellFlavor> {
-        match &self.run {
-            RunKind::Shell { flavor, .. } => Some(*flavor),
-            _ => None,
-        }
+    fn script(script: impl Into<Box<RStr>>, shell: Shell) -> Self {
+        Self::with_run(RunKind::Shell {
+            script: script.into(),
+            shell,
+        })
     }
 
     fn with_run(run: RunKind) -> Self {
@@ -878,20 +862,25 @@ impl Runner {
 
 fn setup_same(cx: &Ctxt, path: &Path, run: &Run) -> Result<Runner> {
     match &run.run {
-        RunKind::Shell { script, flavor } => match flavor {
-            ShellFlavor::Powershell => {
+        RunKind::Shell { script, shell } => match shell {
+            Shell::Powershell => {
                 let Some(powershell) = cx.system.powershell.first() else {
                     bail!("PowerShell not available");
                 };
 
-                let c = powershell.command(path, script);
+                let mut c = powershell.command(path);
+                c.arg("-Command");
+                c.arg(script);
                 Ok(Runner::new(c))
             }
-            ShellFlavor::Sh => {
-                let mut c = Command::new("bash");
+            Shell::Bash => {
+                let Some(bash) = cx.system.bash.first() else {
+                    bail!("Bash is not available");
+                };
+
+                let mut c = bash.command(path);
                 c.args(["-i", "-c"]);
                 c.arg(script);
-                c.current_dir(path);
                 Ok(Runner::new(c))
             }
         },
@@ -914,12 +903,12 @@ fn setup_wsl(
     let mut c = wsl.shell(path);
 
     match &run.run {
-        RunKind::Shell { script, flavor } => match flavor {
-            ShellFlavor::Powershell => {
+        RunKind::Shell { script, shell } => match shell {
+            Shell::Powershell => {
                 c.args(["powershell", "-Command"]);
                 c.arg(script);
             }
-            ShellFlavor::Sh => {
+            Shell::Bash => {
                 c.args(["bash", "-i", "-c"]);
                 c.arg(script);
             }
@@ -1148,4 +1137,23 @@ fn sync_runners(cx: &Ctxt<'_>, uses: &BTreeMap<String, BTreeSet<String>>) -> Res
     }
 
     Ok(runners)
+}
+
+fn os_to_shell(os: &Os) -> Shell {
+    match os {
+        Os::Windows => Shell::Powershell,
+        _ => Shell::Bash,
+    }
+}
+
+fn to_shell(shell: Option<&str>) -> Result<Shell> {
+    let Some(shell) = shell else {
+        return Ok(Shell::Bash);
+    };
+
+    match shell {
+        "bash" => Ok(Shell::Bash),
+        "powershell" => Ok(Shell::Powershell),
+        other => bail!("Unsupported shell: {}", other),
+    }
 }

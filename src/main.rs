@@ -487,6 +487,9 @@ struct SharedOptions {
     /// Enable trace level logging.
     #[arg(long)]
     trace: bool,
+    /// Enable debug level logging.
+    #[arg(long)]
+    debug: bool,
     /// Provide an access token to use to access the Github API.
     ///
     /// This can also be set through the `GITHUB_TOKEN` environment variable, or
@@ -494,6 +497,20 @@ struct SharedOptions {
     /// project.
     #[arg(long, value_name = "token")]
     github_token: Option<SecretString>,
+}
+
+impl SharedOptions {
+    fn directive(&self) -> &'static str {
+        if self.trace {
+            return "kick=trace";
+        }
+
+        if self.debug {
+            return "kick=debug";
+        }
+
+        "kick=info"
+    }
 }
 
 #[derive(Default, Parser)]
@@ -595,11 +612,12 @@ async fn main() -> Result<ExitCode> {
         }
     };
 
-    let default_directive = if let Some(true) = opts.action.as_ref().map(|a| a.shared().trace) {
-        "kick=trace"
-    } else {
-        "kick=info"
-    };
+    let default_directive =
+        if let Some(logging) = opts.action.as_ref().map(|a| a.shared().directive()) {
+            logging
+        } else {
+            "kick=info"
+        };
 
     let filter = tracing_subscriber::EnvFilter::builder();
 
@@ -683,6 +701,30 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     }
 
     let system = system::detect()?;
+
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        tracing::debug!("Found system tools:");
+
+        for git in &system.git {
+            tracing::debug!("git: {}", git.path.display());
+        }
+
+        for wsl in &system.wsl {
+            tracing::debug!("wsl: {}", wsl.path.display());
+        }
+
+        for powershell in &system.powershell {
+            tracing::debug!("powershell: {}", powershell.path.display());
+        }
+
+        for bash in &system.bash {
+            tracing::debug!("bash: {}", bash.path.display());
+        }
+
+        for node in &system.node {
+            tracing::debug!("node ({}): {}", node.version, node.path.display());
+        }
+    }
 
     let templating = templates::Templating::new()?;
     let repos = model::load_gitmodules(&root)?;

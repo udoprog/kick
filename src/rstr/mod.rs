@@ -128,6 +128,7 @@ impl fmt::Debug for RStr {
 /// [`to_redacted`]: Redact::to_redacted
 /// [`chunks`]: Redact::chunks
 #[derive(Clone)]
+#[repr(transparent)]
 pub(crate) struct RString(String);
 
 impl RString {
@@ -141,7 +142,7 @@ impl RString {
     }
 
     /// Get a reference to the [`Redact`] value corresponding to this instance.
-    pub(crate) fn as_redact(&self) -> &RStr {
+    pub(crate) fn as_rstr(&self) -> &RStr {
         self
     }
 
@@ -351,3 +352,45 @@ macro_rules! cmp {
 
 cmp!(RStr);
 cmp!(RString);
+
+impl From<RString> for Box<RStr> {
+    #[inline]
+    fn from(value: RString) -> Self {
+        Box::from(Box::<str>::from(value.0))
+    }
+}
+
+impl From<&RString> for Box<RStr> {
+    #[inline]
+    fn from(value: &RString) -> Self {
+        Box::from(value.as_rstr())
+    }
+}
+
+impl From<Box<str>> for Box<RStr> {
+    #[inline]
+    fn from(value: Box<str>) -> Self {
+        unsafe { Box::from_raw(Box::into_raw(value) as *mut RStr) }
+    }
+}
+
+impl From<&str> for Box<RStr> {
+    #[inline]
+    fn from(value: &str) -> Self {
+        Box::from(Box::<str>::from(value))
+    }
+}
+
+impl From<&RStr> for Box<RStr> {
+    #[inline]
+    fn from(value: &RStr) -> Self {
+        Box::from(&value.0)
+    }
+}
+
+impl Clone for Box<RStr> {
+    #[inline]
+    fn clone(&self) -> Self {
+        Box::from(self.as_ref())
+    }
+}
