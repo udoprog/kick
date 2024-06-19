@@ -35,6 +35,15 @@ impl OsArg {
             OsArgKind::RString(s) => Cow::Owned(s.to_string()),
         }
     }
+
+    pub(crate) fn to_exposed_lossy(&self) -> Cow<'_, str> {
+        match &self.kind {
+            OsArgKind::Path(p) => p.to_string_lossy(),
+            OsArgKind::Str(p) => Cow::Borrowed(p.as_ref()),
+            OsArgKind::OsString(s) => s.to_string_lossy(),
+            OsArgKind::RString(s) => s.to_exposed(),
+        }
+    }
 }
 
 impl fmt::Debug for OsArg {
@@ -363,7 +372,11 @@ impl Command {
 
     /// Build a command representation.
     pub(crate) fn display_with(&self, shell: Shell) -> Display<'_> {
-        Display { inner: self, shell }
+        Display {
+            inner: self,
+            shell,
+            exposed: false,
+        }
     }
 
     /// Current dir representation.
@@ -405,11 +418,24 @@ impl Child {
 pub(crate) struct Display<'a> {
     inner: &'a Command,
     shell: Shell,
+    exposed: bool,
+}
+
+impl Display<'_> {
+    /// Configure display to be exposed.
+    pub(crate) fn with_exposed(self, exposed: bool) -> Self {
+        Self { exposed, ..self }
+    }
 }
 
 impl fmt::Display for Display<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let lossy = self.inner.command.to_string_lossy();
+        let lossy = if self.exposed {
+            self.inner.command.to_exposed_lossy()
+        } else {
+            self.inner.command.to_string_lossy()
+        };
+
         let escaped = self.shell.escape(lossy.as_ref());
 
         if let (Shell::Powershell, Cow::Owned(..)) = (self.shell, &escaped) {
@@ -420,7 +446,13 @@ impl fmt::Display for Display<'_> {
 
         for arg in &self.inner.args {
             f.write_char(' ')?;
-            let lossy = arg.to_string_lossy();
+
+            let lossy = if self.exposed {
+                arg.to_exposed_lossy()
+            } else {
+                arg.to_string_lossy()
+            };
+
             let escaped = self.shell.escape(lossy.as_ref());
             f.write_str(&escaped)?;
         }

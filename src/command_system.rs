@@ -43,6 +43,7 @@ pub struct CommandSystem<'a, 'cx> {
     verbose: bool,
     dry_run: bool,
     same_os: bool,
+    exposed: bool,
     env: BTreeMap<String, String>,
     env_passthrough: BTreeSet<String>,
     workflows: HashSet<String>,
@@ -61,6 +62,7 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
             verbose: false,
             dry_run: false,
             same_os: false,
+            exposed: false,
             env: BTreeMap::new(),
             env_passthrough: BTreeSet::new(),
             workflows: HashSet::new(),
@@ -93,6 +95,11 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
     /// runner to run on the current OS.
     pub(crate) fn same_os(&mut self) {
         self.same_os = true;
+    }
+
+    /// When printing commands, expose secrets.
+    pub(crate) fn exposed(&mut self) {
+        self.exposed = true;
     }
 
     /// Parse an environment.
@@ -234,19 +241,19 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
         Ok(workflows)
     }
 
-    pub(crate) fn commit<O>(self, o: &mut O, repo_path: &Path, default_shell: Shell) -> Result<()>
+    pub(crate) fn commit<O>(self, o: &mut O, repo_path: &Path, shell: Shell) -> Result<()>
     where
         O: ?Sized + WriteColor,
     {
         for batch in &self.batches {
-            for runner in batch.runners(&self.run_on) {
+            for run_on in batch.runners(&self.run_on) {
                 write!(o, "# In ")?;
 
                 o.set_color(&self.colors.title)?;
                 write!(o, "{}", repo_path.display())?;
                 o.reset()?;
 
-                if let Some(name) = runner.name() {
+                if let Some(name) = run_on.name() {
                     write!(o, " using ")?;
 
                     o.set_color(&self.colors.title)?;
@@ -279,7 +286,8 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
                         None => repo_path,
                     };
 
-                    let mut runner = runner.build(self.cx, &self, path, run, &current_env)?;
+                    let mut runner =
+                        run_on.build_runner(self.cx, &self, path, run, &current_env)?;
 
                     for (key, value) in &self.env {
                         runner.command.env(key, value);
@@ -289,24 +297,20 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
                         runner.command.env(key, value);
                     }
 
-                    if let Some((key, value)) = runner.extra_env {
-                        if !value.is_empty() {
-                            runner.command.env(key, value);
-                        }
+                    for (key, value) in &runner.extra_env {
+                        runner.command.env(key, value);
                     }
 
                     write!(o, "# ")?;
 
+                    o.set_color(&self.colors.title)?;
+                    write!(o, "{} / {}", index + 1, batch.commands.len())?;
+
                     if let Some(name) = &run.name {
-                        o.set_color(&self.colors.title)?;
-                        write!(o, "{name}")?;
-                        o.reset()?;
-                    } else {
-                        o.set_color(&self.colors.title)?;
-                        write!(o, "Step {} / {}", index + 1, batch.commands.len())?;
-                        o.reset()?;
-                        write!(o, "")?;
+                        write!(o, ": {name}")?;
                     }
+
+                    o.reset()?;
 
                     if let Some(skipped) = &run.skipped {
                         write!(o, " ")?;
@@ -335,18 +339,31 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
 
                     writeln!(o)?;
 
-                    match &default_shell {
+                    match &shell {
                         Shell::Bash => {
                             if self.verbose {
                                 for (key, value) in &runner.command.env {
                                     let key = key.to_string_lossy();
-                                    let value = value.to_string_lossy();
-                                    let value = default_shell.escape(value.as_ref());
+
+                                    let value = if self.exposed {
+                                        value.to_exposed_lossy()
+                                    } else {
+                                        value.to_string_lossy()
+                                    };
+
+                                    let value = shell.escape(value.as_ref());
                                     write!(o, "{key}={value} ")?;
                                 }
                             }
 
-                            write!(o, "{}", runner.command.display_with(default_shell))?;
+                            write!(
+                                o,
+                                "{}",
+                                runner
+                                    .command
+                                    .display_with(shell)
+                                    .with_exposed(self.exposed)
+                            )?;
                         }
                         Shell::Powershell => {
                             if self.verbose && !runner.command.env.is_empty() {
@@ -354,15 +371,35 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
 
                                 for (key, value) in &runner.command.env {
                                     let key = key.to_string_lossy();
-                                    let value = value.to_string_lossy();
-                                    let value = default_shell.escape(value.as_ref());
-                                    writeln!(o, "  $Env:{key}={value};")?;
+
+                                    let value = if self.exposed {
+                                        value.to_exposed_lossy()
+                                    } else {
+                                        value.to_string_lossy()
+                                    };
+
+                                    let value = shell.escape_string(value.as_ref());
+                                    writeln!(o, r#"  $Env:{key}={value};"#)?;
                                 }
 
-                                writeln!(o, "  {}", runner.command.display_with(default_shell))?;
+                                writeln!(
+                                    o,
+                                    "  {}",
+                                    runner
+                                        .command
+                                        .display_with(shell)
+                                        .with_exposed(self.exposed)
+                                )?;
                                 write!(o, "}}")?;
                             } else {
-                                write!(o, "{}", runner.command.display_with(default_shell))?;
+                                write!(
+                                    o,
+                                    "{}",
+                                    runner
+                                        .command
+                                        .display_with(shell)
+                                        .with_exposed(self.exposed)
+                                )?;
                             }
                         }
                     }
@@ -426,6 +463,7 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
         };
 
         let mut commands = Vec::new();
+        let mut post_commands = Vec::new();
 
         for step in &steps.steps {
             if let Some(uses) = &step.uses {
@@ -445,8 +483,6 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
                             post,
                             node_version,
                         } => {
-                            let node = self.cx.system.find_node(*node_version)?;
-
                             let mut env = BTreeMap::new();
 
                             let it = runner
@@ -456,24 +492,24 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
                             let it = it.chain(step.with.clone());
 
                             for (key, value) in it {
+                                let key = key.to_uppercase();
                                 env.insert(format!("INPUT_{key}"), OsArg::from(value));
                             }
 
                             env.insert(String::from("GITHUB_ENV"), OsArg::from(env_file.clone()));
 
                             commands.push(
-                                Run::command(&node.path, [main])
+                                Run::node(*node_version, main.clone())
                                     .with_name(Some(uses.clone()))
                                     .with_env(env.clone())
+                                    .with_env_is_file(["GITHUB_ENV"])
                                     .with_skipped(step.skipped.clone())
                                     .with_env_file(Some(env_file.clone())),
                             );
 
                             if let Some(post) = post {
-                                let args = vec![RString::from(post.to_string_lossy().into_owned())];
-
-                                commands.push(
-                                    Run::command(&node.path, args)
+                                post_commands.push(
+                                    Run::node(*node_version, post.clone())
                                         .with_name(Some(uses.clone()))
                                         .with_env(env.clone())
                                         .with_skipped(step.skipped.clone())
@@ -581,6 +617,8 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
             }
         }
 
+        commands.append(&mut post_commands);
+
         Ok(Batch {
             commands,
             run_on,
@@ -609,14 +647,25 @@ impl Batch {
 }
 
 enum RunKind {
-    Shell { script: Box<RStr>, shell: Shell },
-    Command { command: OsArg, args: Box<[OsArg]> },
+    Shell {
+        script: Box<RStr>,
+        shell: Shell,
+    },
+    Command {
+        command: OsArg,
+        args: Box<[OsArg]>,
+    },
+    Node {
+        node_version: u32,
+        script_file: Rc<Path>,
+    },
 }
 
 struct Run {
     run: RunKind,
     name: Option<RString>,
     env: BTreeMap<String, OsArg>,
+    env_is_file: HashSet<String>,
     skipped: Option<String>,
     working_directory: Option<RString>,
     // If an environment file is supported, this is the path to the file to set up.
@@ -644,6 +693,14 @@ impl Run {
         })
     }
 
+    /// Setup a command to run.
+    fn node(node_version: u32, script_file: Rc<Path>) -> Self {
+        Self::with_run(RunKind::Node {
+            node_version,
+            script_file: script_file.clone(),
+        })
+    }
+
     fn with_run(run: RunKind) -> Self {
         Self {
             run,
@@ -652,6 +709,7 @@ impl Run {
             skipped: None,
             working_directory: None,
             env_file: None,
+            env_is_file: HashSet::new(),
         }
     }
 
@@ -666,6 +724,19 @@ impl Run {
     #[inline]
     fn with_env(mut self, env: BTreeMap<String, OsArg>) -> Self {
         self.env = env;
+        self
+    }
+
+    /// Mark environment variables which are files.
+    #[inline]
+    fn with_env_is_file<I>(mut self, env_is_file: I) -> Self
+    where
+        I: IntoIterator<Item: AsRef<str>>,
+    {
+        self.env_is_file = env_is_file
+            .into_iter()
+            .map(|s| s.as_ref().to_owned())
+            .collect();
         self
     }
 
@@ -699,22 +770,22 @@ pub(crate) enum RunOn {
 }
 
 impl RunOn {
-    fn build(
+    fn build_runner(
         &self,
         cx: &Ctxt<'_>,
         system: &CommandSystem,
         path: &Path,
-        command: &Run,
+        run: &Run,
         current_env: &BTreeMap<String, String>,
     ) -> Result<Runner> {
         match *self {
-            Self::Same => setup_same(cx, path, command),
+            Self::Same => setup_same(cx, path, run),
             Self::Wsl => {
                 let Some(wsl) = cx.system.wsl.first() else {
                     bail!("WSL not available");
                 };
 
-                Ok(setup_wsl(system, path, wsl, command, current_env))
+                Ok(setup_wsl(system, path, wsl, run, current_env))
             }
         }
     }
@@ -729,14 +800,14 @@ impl RunOn {
 
 struct Runner {
     command: Command,
-    extra_env: Option<(&'static str, String)>,
+    extra_env: BTreeMap<&'static str, OsArg>,
 }
 
 impl Runner {
     fn new(command: Command) -> Self {
         Self {
             command,
-            extra_env: None,
+            extra_env: BTreeMap::new(),
         }
     }
 }
@@ -858,6 +929,16 @@ fn setup_same(cx: &Ctxt<'_>, path: &Path, run: &Run) -> Result<Runner> {
             c.current_dir(path);
             Ok(Runner::new(c))
         }
+        RunKind::Node {
+            node_version,
+            script_file,
+        } => {
+            let node = cx.system.find_node(*node_version)?;
+            let mut c = Command::new(&node.path);
+            c.arg(script_file);
+            c.current_dir(path);
+            Ok(Runner::new(c))
+        }
     }
 }
 
@@ -869,6 +950,10 @@ fn setup_wsl(
     current_env: &BTreeMap<String, String>,
 ) -> Runner {
     let mut c = wsl.shell(path);
+
+    let mut seen = HashSet::new();
+    let mut wslenv = String::new();
+    let mut extra_env = BTreeMap::new();
 
     match &run.run {
         RunKind::Shell { script, shell } => match shell {
@@ -885,11 +970,12 @@ fn setup_wsl(
             c.arg(command);
             c.args(args.as_ref());
         }
+        RunKind::Node { script_file, .. } => {
+            c.args(["bash", "-i", "-c", "node $KICK_SCRIPT_FILE"]);
+            wslenv.push_str("KICK_SCRIPT_FILE/p");
+            extra_env.insert("KICK_SCRIPT_FILE", OsArg::from(script_file));
+        }
     }
-
-    let mut seen = HashSet::new();
-
-    let mut wslenv = String::new();
 
     for e in system
         .env_passthrough
@@ -907,6 +993,10 @@ fn setup_wsl(
         }
 
         wslenv.push_str(e);
+
+        if run.env_is_file.contains(e) {
+            wslenv.push_str("/p");
+        }
     }
 
     for key in current_env.keys() {
@@ -917,8 +1007,10 @@ fn setup_wsl(
         wslenv.push_str(key);
     }
 
+    extra_env.insert("WSLENV", OsArg::from(wslenv));
+
     let mut runner = Runner::new(c);
-    runner.extra_env = Some(("WSLENV", wslenv));
+    runner.extra_env = extra_env;
     runner
 }
 
@@ -1025,10 +1117,17 @@ fn sync_github_uses(
 
         let mut out = Vec::new();
 
-        tracing::debug!("Syncing {} from {url}", git_dir.display());
+        tracing::debug!(?git_dir, ?url, "Syncing");
 
         match crate::gix::sync(&r, &url, &refspecs) {
             Ok(remotes) => {
+                if remotes.is_empty() {
+                    tracing::warn!(?url, ?repo, ?name, ?refspecs, "No remotes found");
+                    continue;
+                }
+
+                tracing::debug!(?url, ?repo, ?name, ?remotes, "Found remotes");
+
                 for (remote_name, id) in remotes {
                     let Some(version) = reverse.remove(&remote_name) else {
                         continue;
@@ -1078,6 +1177,7 @@ fn sync_github_uses(
 
         for (work_dir, id, repo, name, version) in out {
             let key = format!("{repo}/{name}@{version}");
+            tracing::debug!(?work_dir, "Exporting {key}");
 
             // Load an action runner directly out of a repository without checking it out.
             let Some(runner) = crate::action::load(&r, id, &work_dir, version)? else {

@@ -44,15 +44,28 @@ pub(crate) fn sync(
     let mut output = Vec::new();
 
     for mapping in outcome.ref_map.mappings {
-        let Source::Ref(Ref::Direct {
-            full_ref_name,
-            object,
-        }) = mapping.remote
-        else {
+        let Source::Ref(r) = mapping.remote else {
             continue;
         };
 
-        output.push((full_ref_name, object));
+        match r {
+            Ref::Direct {
+                full_ref_name,
+                object,
+            } => {
+                output.push((full_ref_name, object));
+            }
+            Ref::Peeled {
+                full_ref_name,
+                object,
+                ..
+            } => {
+                output.push((full_ref_name, object));
+            }
+            other => {
+                tracing::warn!("Unexpected ref: {:?}", other);
+            }
+        }
     }
 
     Ok(output)

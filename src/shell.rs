@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use clap::ValueEnum;
 
-macro_rules! base_pat {
+macro_rules! base {
     ($($pat:pat_param)|*) => {
         'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '=' | '/' | ',' | '.' | '+' $(| $pat)*
     }
@@ -16,14 +16,14 @@ pub(crate) enum Shell {
 }
 
 impl Shell {
-    /// Escape a string into a bash command.
+    /// Perform a command escape.
     pub(crate) fn escape<'a>(&self, source: &'a str) -> Cow<'a, str> {
         let i = 'escape: {
             match *self {
                 Shell::Bash => {
                     for (i, c) in source.char_indices() {
                         match c {
-                            base_pat!() => continue,
+                            base!() => continue,
                             _ => break 'escape i,
                         }
                     }
@@ -31,7 +31,7 @@ impl Shell {
                 Shell::Powershell => {
                     for (i, c) in source.char_indices() {
                         match c {
-                            base_pat!('\\' | ':' | '`') => continue,
+                            base!('\\' | ':' | '`') => continue,
                             _ => break 'escape i,
                         }
                     }
@@ -41,12 +41,21 @@ impl Shell {
             return Cow::Borrowed(source);
         };
 
+        Cow::Owned(self.inner_escape_string(source, i))
+    }
+
+    /// Explicitly perform a string escape.
+    pub(crate) fn escape_string(&self, source: &str) -> String {
+        self.inner_escape_string(source, 0)
+    }
+
+    fn inner_escape_string(&self, source: &str, i: usize) -> String {
+        let e = self.escapes();
+
         let mut out = String::with_capacity(source.len() + 2);
 
         out.push('"');
         out.push_str(&source[..i]);
-
-        let e = self.escapes();
 
         for c in source[i..].chars() {
             if let Some(ext) = e.escape(c) {
@@ -58,7 +67,7 @@ impl Shell {
         }
 
         out.push('"');
-        Cow::Owned(out)
+        out
     }
 
     fn escapes(&self) -> &'static Escapes {

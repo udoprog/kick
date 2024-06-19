@@ -68,9 +68,10 @@ pub(crate) fn load(
                         let object = id.object()?;
 
                         let action_yml = serde_yaml::from_slice::<serde_yaml::Value>(&object.data)
-                            .context("Loading action.yml")?;
+                            .context("Opening action.yml")?;
 
-                        cx.process_actions_yml(&action_yml)?;
+                        cx.process_actions_yml(&action_yml)
+                            .context("Processing action.yml")?;
                     }
 
                     paths.insert(path.clone(), (id, entry.mode()));
@@ -213,12 +214,17 @@ impl Cx {
         let runs = action_yml.get("runs").and_then(|value| value.as_mapping());
 
         if let Some(runs) = runs {
-            if let Some(using) = runs.get("using").and_then(|v| v.as_str()) {
-                if let Some(version) = using.strip_prefix("node") {
-                    self.kind = Some(RunnerKind::Node(version.into()));
-                } else if using == "composite" {
-                    self.kind = Some(RunnerKind::Composite);
-                }
+            let using = runs
+                .get("using")
+                .and_then(|v| v.as_str())
+                .context("Missing runs.using")?;
+
+            if let Some(version) = using.strip_prefix("node") {
+                self.kind = Some(RunnerKind::Node(version.into()));
+            } else if using == "composite" {
+                self.kind = Some(RunnerKind::Composite);
+            } else {
+                bail!("Unsupported .runs.using: {using}");
             }
 
             if let Some(values) = runs.get("steps").and_then(|v| v.as_sequence()) {

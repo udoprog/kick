@@ -57,6 +57,11 @@ pub(crate) struct Opts {
     /// Print verbose information about the command being run.
     #[arg(long)]
     verbose: bool,
+    /// When printing diagnostics output, exposed secrets.
+    ///
+    /// If this is not specified, secrets will be printed as `***`.
+    #[arg(long)]
+    exposed: bool,
     /// Don't actually run any commands, just print what would be done.
     #[arg(long)]
     dry_run: bool,
@@ -128,6 +133,10 @@ fn run(
 
     if opts.same_os {
         system.same_os();
+    }
+
+    if opts.exposed {
+        system.exposed();
     }
 
     if opts.workflow.is_some() || opts.job.is_some() || opts.list_jobs {
