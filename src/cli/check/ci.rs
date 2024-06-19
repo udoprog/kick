@@ -185,7 +185,7 @@ fn validate_jobs(
 }
 
 fn check_actions(ci: &mut Ci<'_>, job: &Job) -> Result<()> {
-    let policy = if job.name == "clippy" {
+    let policy = if job.id == "clippy" {
         RustVersionPolicy::Named("stable")
     } else {
         RustVersionPolicy::MinimumSupported
@@ -357,8 +357,8 @@ fn check_strategy_rust_version(ci: &mut Ci, job: &Job) {
             ci.edits.set(
                 id,
                 format_args!(
-                    "build.{name}.strategy.matrix.rust: Found rust version `{version}` but expected `{rust_version}`",
-                    name = job.name,
+                    "build.{id}.strategy.matrix.rust: Found rust version `{version}` but expected `{rust_version}`",
+                    id = job.id,
                 ),
                 rust_version.to_string(),
             );

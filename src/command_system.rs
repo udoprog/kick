@@ -46,7 +46,9 @@ pub struct CommandSystem<'a, 'cx> {
     exposed: bool,
     env: BTreeMap<String, String>,
     env_passthrough: BTreeSet<String>,
+    all_workflows: bool,
     workflows: HashSet<String>,
+    all_jobs: bool,
     jobs: HashSet<String>,
     run_on: Vec<RunOn>,
     batches: Vec<Batch>,
@@ -65,7 +67,9 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
             exposed: false,
             env: BTreeMap::new(),
             env_passthrough: BTreeSet::new(),
+            all_workflows: false,
             workflows: HashSet::new(),
+            all_jobs: false,
             jobs: HashSet::new(),
             run_on: Vec::new(),
             batches: Vec::new(),
@@ -113,16 +117,26 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
         Ok(())
     }
 
+    /// Set if all workflows should be loaded.
+    pub(crate) fn set_all_workflows(&mut self, all_workflows: bool) {
+        self.all_workflows = all_workflows;
+    }
+
     /// Add a workflow to be loaded.
-    pub(crate) fn add_workflow<S>(&mut self, workflow: S)
+    pub(crate) fn insert_workflow_id<S>(&mut self, workflow: S)
     where
         S: AsRef<str>,
     {
         self.workflows.insert(workflow.as_ref().to_owned());
     }
 
+    /// Set if all jobs should be loaded.
+    pub(crate) fn set_all_jobs(&mut self, all_jobs: bool) {
+        self.all_jobs = all_jobs;
+    }
+
     /// Add a job to be loaded.
-    pub(crate) fn add_job<S>(&mut self, job: S)
+    pub(crate) fn insert_job_id<S>(&mut self, job: S)
     where
         S: AsRef<str>,
     {
@@ -173,19 +187,9 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
         for workflow in wfs.workflows() {
             let workflow = workflow?;
 
-            if !self.workflows.is_empty() && !self.workflows.contains(workflow.id()) {
-                continue;
-            }
-
             let mut jobs = Vec::new();
 
             for job in workflow.jobs(&self.matrix_ignore)? {
-                let id = job.id.to_exposed();
-
-                if !self.jobs.is_empty() && !self.jobs.contains(id.as_ref()) {
-                    continue;
-                }
-
                 for (_, steps) in &job.matrices {
                     for step in &steps.steps {
                         if let Some(name) = &step.uses {
@@ -194,7 +198,7 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
                             let u = parse_uses(name.as_ref()).with_context(|| {
                                 anyhow!(
                                     "Uses statement in job `{}` and step `{}`",
-                                    job.name,
+                                    job.id,
                                     step.name()
                                 )
                             })?;
@@ -219,7 +223,15 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
         let action_runners = sync_github_uses(self.cx, &uses)?;
 
         for (workflow, jobs) in &workflows {
+            if !self.all_workflows && !self.workflows.contains(&workflow.id) {
+                continue;
+            }
+
             for job in jobs {
+                if !self.all_jobs && !self.jobs.contains(&job.id) {
+                    continue;
+                }
+
                 for (matrix, steps) in &job.matrices {
                     match self.build_job_matrix_batch(&action_runners, matrix, steps) {
                         Ok(batch) => {
@@ -227,10 +239,11 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
                         }
                         Err(error) => {
                             tracing::warn!(
-                                "Failed to build job {}/{} with matrix {}: {error}",
-                                workflow.id,
-                                job.name,
-                                matrix.display()
+                                ?workflow.id,
+                                ?job.id,
+                                ?matrix,
+                                ?error,
+                                "Failed to build job",
                             );
                         }
                     }
@@ -557,6 +570,7 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
                                 commands.push(
                                     Run::script(script, shell)
                                         .with_env(env)
+                                        .with_env_is_file(["GITHUB_ACTION_PATH", "GITHUB_ENV"])
                                         .with_env_file(Some(env_file.clone())),
                                 );
                             }

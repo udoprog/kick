@@ -68,6 +68,7 @@ use syntree::Span;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::rstr::{RStr, RString};
+use crate::shell::Shell;
 
 use self::eval::Expr;
 
@@ -176,8 +177,7 @@ fn build_job(
     let name = value
         .get("name")
         .and_then(|value| Some(eval.eval(value.as_str()?)))
-        .transpose()?
-        .unwrap_or(Cow::Borrowed(RStr::new(id)));
+        .transpose()?;
 
     let mut matrices = Vec::new();
 
@@ -289,8 +289,8 @@ fn build_job(
     }
 
     Ok(Job {
-        id: RString::from(id),
-        name: name.into_owned(),
+        id: id.to_owned(),
+        name: name.map(Cow::into_owned),
         matrices,
     })
 }
@@ -501,8 +501,8 @@ impl<'a> Workflow<'a, '_> {
 }
 
 pub(crate) struct Job {
-    pub(crate) id: RString,
-    pub(crate) name: RString,
+    pub(crate) id: String,
+    pub(crate) name: Option<RString>,
     pub(crate) matrices: Vec<(Matrix, Steps)>,
 }
 
@@ -925,6 +925,13 @@ impl Matrix {
     }
 }
 
+impl fmt::Debug for Matrix {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.matrix.fmt(f)
+    }
+}
+
 pub(crate) struct Display<'a> {
     matrix: &'a BTreeMap<String, RString>,
 }
@@ -933,13 +940,17 @@ impl fmt::Display for Display<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut it = self.matrix.iter();
 
+        let shell = Shell::Bash;
+
         write!(f, "{{")?;
 
         if let Some((key, value)) = it.next() {
-            write!(f, "{}={}", Escape::new(key), Escape::new(value))?;
+            let value = value.to_string_lossy();
+            write!(f, "{key}={}", shell.escape(value.as_ref()))?;
 
             for (key, value) in it {
-                write!(f, ", {}={}", Escape::new(key), Escape::new(value))?;
+                let value = value.to_string_lossy();
+                write!(f, ", {key}={}", shell.escape(value.as_ref()))?;
             }
         }
 
@@ -948,30 +959,10 @@ impl fmt::Display for Display<'_> {
     }
 }
 
-struct Escape<'a> {
-    s: &'a RStr,
-}
-
-impl<'a> Escape<'a> {
-    fn new<R>(s: &'a R) -> Self
-    where
-        R: ?Sized + AsRef<RStr>,
-    {
-        Escape { s: s.as_ref() }
-    }
-}
-
-impl fmt::Display for Escape<'_> {
+impl fmt::Debug for Display<'_> {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self
-            .s
-            .as_raw()
-            .contains(|c: char| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_'))
-        {
-            write!(f, "\"{}\"", self.s)
-        } else {
-            write!(f, "{}", self.s)
-        }
+        self.matrix.fmt(f)
     }
 }
 

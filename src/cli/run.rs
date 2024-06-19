@@ -124,11 +124,16 @@ fn run(
     }
 
     if let Some(workflow) = &opts.workflow {
-        system.add_workflow(workflow);
+        system.insert_workflow_id(workflow);
+        system.set_all_jobs(true);
     }
 
     if let Some(job) = &opts.job {
-        system.add_job(job);
+        system.insert_job_id(job);
+        // NB: If no workflow is specified we must enable all workflows to
+        // ensure that the specified job is run.
+        system.set_all_workflows(opts.workflow.is_none());
+        system.set_all_jobs(false);
     }
 
     if opts.same_os {
@@ -147,7 +152,11 @@ fn run(
                 writeln!(o, "Workflow: {}", workflow.id())?;
 
                 for job in jobs {
-                    writeln!(o, "  Job: {}", job.name)?;
+                    if let Some(name) = &job.name {
+                        writeln!(o, "  Job: {} ({})", job.id, name)?;
+                    } else {
+                        writeln!(o, "  Job: {}", job.id)?;
+                    }
                 }
             }
         }
