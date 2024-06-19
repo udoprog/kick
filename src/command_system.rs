@@ -11,9 +11,9 @@ use gix::ObjectId;
 use relative_path::RelativePath;
 use termcolor::{Color, ColorSpec, WriteColor};
 
+use crate::action::ActionKind;
 use crate::config::Os;
 use crate::ctxt::Ctxt;
-use crate::github_action::GithubActionKind;
 use crate::model::Repo;
 use crate::process::{Command, OsArg};
 use crate::rstr::{RStr, RString};
@@ -379,7 +379,7 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
         Ok(())
     }
 
-    fn job_to_batches(&mut self, job: &Job, runners: &ActionRunners) -> Result<()> {
+    fn job_to_batches(&mut self, job: &Job, action_runners: &ActionRunners) -> Result<()> {
         for (matrix, steps) in &job.matrices {
             let runs_on = steps.runs_on.to_exposed();
 
@@ -409,13 +409,17 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
                     let uses_redacted = uses.to_exposed();
 
                     if !should_skip_use(uses_redacted.as_ref()) {
-                        if let Some(runner) = runners.runners.get(uses_redacted.as_ref()) {
+                        if let Some(action_runner) =
+                            action_runners.runners.get(uses_redacted.as_ref())
+                        {
                             let env_file = Rc::<Path>::from(
-                                runner.envs_dir.join(format!("env-{}", runner.id)),
+                                action_runner
+                                    .envs_dir
+                                    .join(format!("env-{}", action_runner.id)),
                             );
 
-                            match &runner.kind {
-                                GithubActionKind::Node {
+                            match &action_runner.kind {
+                                ActionKind::Node {
                                     main,
                                     post,
                                     node_version,
@@ -440,7 +444,7 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
 
                                     let mut env = BTreeMap::new();
 
-                                    let it = runner
+                                    let it = action_runner
                                         .defaults
                                         .iter()
                                         .map(|(k, v)| (k.clone(), RString::from(v.clone())));
@@ -477,11 +481,11 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
                                         );
                                     }
                                 }
-                                GithubActionKind::Composite { steps } => {
+                                ActionKind::Composite { steps } => {
                                     let mut tree = Tree::new();
                                     tree.insert_prefix(
                                         "inputs",
-                                        runner
+                                        action_runner
                                             .defaults
                                             .iter()
                                             .map(|(k, v)| (k.clone(), RString::from(v.clone()))),
@@ -507,7 +511,7 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
 
                                         env.insert(
                                             String::from("GITHUB_ACTION_PATH"),
-                                            OsArg::from(runner.action_path.clone()),
+                                            OsArg::from(action_runner.action_path.clone()),
                                         );
 
                                         env.insert(
@@ -978,7 +982,7 @@ impl Colors {
 
 #[derive(Debug)]
 struct ActionRunner {
-    kind: GithubActionKind,
+    kind: ActionKind,
     action_path: Rc<Path>,
     defaults: BTreeMap<String, String>,
     envs_dir: Rc<Path>,
@@ -1094,7 +1098,7 @@ fn sync_github_uses(
             let key = format!("{repo}/{name}@{version}");
 
             // Load an action runner directly out of a repository without checking it out.
-            let Some(runner) = crate::github_action::load(&r, id, &work_dir, version)? else {
+            let Some(runner) = crate::action::load(&r, id, &work_dir, version)? else {
                 tracing::warn!("Could not load runner for {key}");
                 continue;
             };

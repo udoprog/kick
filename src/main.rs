@@ -326,6 +326,7 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
 
+mod action;
 mod actions;
 mod cargo;
 mod changes;
@@ -337,7 +338,6 @@ mod deb;
 mod edits;
 mod env;
 mod file;
-mod github_action;
 mod gitmodules;
 mod gix;
 mod glob;

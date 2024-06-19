@@ -12,25 +12,25 @@ use gix::{ObjectId, Repository};
 use relative_path::RelativePathBuf;
 use serde_yaml::Value;
 
-pub(crate) struct GithubAction {
-    pub(crate) kind: GithubActionKind,
+pub(crate) struct Action {
+    pub(crate) kind: ActionKind,
     pub(crate) defaults: BTreeMap<String, String>,
 }
 
 #[derive(Debug)]
-pub(crate) enum GithubActionKind {
+pub(crate) enum ActionKind {
     Node {
         main: Rc<Path>,
         post: Option<Rc<Path>>,
         node_version: u32,
     },
     Composite {
-        steps: Vec<GithubActionStep>,
+        steps: Vec<ActionStep>,
     },
 }
 
 #[derive(Debug)]
-pub(crate) struct GithubActionStep {
+pub(crate) struct ActionStep {
     pub(crate) run: Option<String>,
     pub(crate) shell: Option<String>,
     pub(crate) env: BTreeMap<String, String>,
@@ -42,7 +42,7 @@ pub(crate) fn load(
     id: ObjectId,
     work_dir: &Path,
     version: &str,
-) -> Result<Option<GithubAction>> {
+) -> Result<Option<Action>> {
     let mut cx = Cx::default();
 
     let mut paths = HashMap::new();
@@ -133,7 +133,7 @@ pub(crate) fn load(
                 None
             };
 
-            GithubActionKind::Node {
+            ActionKind::Node {
                 main: main_path,
                 post: post_path,
                 node_version,
@@ -183,11 +183,11 @@ pub(crate) fn load(
                 }
             }
 
-            GithubActionKind::Composite { steps: cx.steps }
+            ActionKind::Composite { steps: cx.steps }
         }
     };
 
-    Ok(Some(GithubAction {
+    Ok(Some(Action {
         kind,
         defaults: cx.defaults,
     }))
@@ -203,7 +203,7 @@ struct Cx {
     kind: Option<RunnerKind>,
     main: Option<RelativePathBuf>,
     post: Option<RelativePathBuf>,
-    steps: Vec<GithubActionStep>,
+    steps: Vec<ActionStep>,
     defaults: BTreeMap<String, String>,
     required: BTreeSet<String>,
 }
@@ -246,7 +246,7 @@ impl Cx {
                         }
                     }
 
-                    self.steps.push(GithubActionStep { run, shell, env });
+                    self.steps.push(ActionStep { run, shell, env });
                 }
             }
 
