@@ -513,7 +513,8 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
 
                             commands.push(
                                 Run::node(*node_version, main.clone())
-                                    .with_name(Some(uses.clone()))
+                                    .with_name(Some(uses))
+                                    .with_skipped(step.skipped.clone())
                                     .with_env(env.clone())
                                     .with_env_is_file(["GITHUB_ENV"])
                                     .with_skipped(step.skipped.clone())
@@ -523,7 +524,8 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
                             if let Some(post) = post {
                                 post_commands.push(
                                     Run::node(*node_version, post.clone())
-                                        .with_name(Some(uses.clone()))
+                                        .with_name(Some(format!("{} (post)", uses.as_raw())))
+                                        .with_skipped(step.skipped.clone())
                                         .with_env(env.clone())
                                         .with_skipped(step.skipped.clone())
                                         .with_env_file(Some(env_file.clone())),
@@ -542,8 +544,8 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
                             tree.insert_prefix("inputs", step.with.clone());
                             let eval = Eval::new().with_tree(&tree);
 
-                            for step in steps {
-                                let Some(run) = &step.run else {
+                            for (index, s) in steps.iter().enumerate() {
+                                let Some(run) = &s.run else {
                                     continue;
                                 };
 
@@ -551,7 +553,7 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
 
                                 let mut env = BTreeMap::new();
 
-                                for (k, v) in &step.env {
+                                for (k, v) in &s.env {
                                     env.insert(k.clone(), OsArg::from(eval.eval(v)?.into_owned()));
                                 }
 
@@ -565,10 +567,23 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
                                     OsArg::from(env_file.clone()),
                                 );
 
-                                let shell = to_shell(step.shell.as_deref())?;
+                                let shell = to_shell(s.shell.as_deref())?;
+
+                                let name = if steps.len() == 1 {
+                                    uses.clone()
+                                } else {
+                                    RString::from(format!(
+                                        "{} (step {} / {})",
+                                        uses.as_ref(),
+                                        index + 1,
+                                        steps.len()
+                                    ))
+                                };
 
                                 commands.push(
                                     Run::script(script, shell)
+                                        .with_name(Some(name))
+                                        .with_skipped(step.skipped.clone())
                                         .with_env(env)
                                         .with_env_is_file(["GITHUB_ACTION_PATH", "GITHUB_ENV"])
                                         .with_env_file(Some(env_file.clone())),
@@ -603,11 +618,16 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
                         RString::from("--no-self-update"),
                     ]);
 
-                    commands.push(Run::command("rustup", args).with_skipped(step.skipped.clone()));
+                    commands.push(
+                        Run::command("rustup", args)
+                            .with_name(Some("install toolchain"))
+                            .with_skipped(step.skipped.clone()),
+                    );
                 }
 
                 commands.push(
                     Run::command("rustup", [RStr::new("default"), rust_toolchain.version])
+                        .with_name(Some("set default rust version"))
                         .with_skipped(step.skipped.clone()),
                 );
             }
@@ -623,7 +643,7 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
 
                 commands.push(
                     Run::script(script, shell)
-                        .with_name(step.name.clone())
+                        .with_name(step.name.as_deref())
                         .with_env(env)
                         .with_skipped(step.skipped.clone())
                         .with_working_directory(step.working_directory.clone()),
@@ -729,8 +749,11 @@ impl Run {
 
     /// Modify the name of the run command.
     #[inline]
-    fn with_name(mut self, name: Option<RString>) -> Self {
-        self.name = name;
+    fn with_name<S>(mut self, name: Option<S>) -> Self
+    where
+        S: AsRef<RStr>,
+    {
+        self.name = name.map(|name| name.as_ref().to_owned());
         self
     }
 
@@ -1089,136 +1112,134 @@ fn sync_github_uses(
     let mut runners = ActionRunners::default();
 
     for ((repo, name), versions) in github_uses {
-        let project_dirs = cx
-            .paths
-            .project_dirs
-            .context("Kick does not have project directories")?;
-
-        let cache_dir = project_dirs.cache_dir();
-        let actions_dir = cache_dir.join("actions");
-
-        let repo_dir = actions_dir.join(repo).join(name);
-        let git_dir = repo_dir.join("git");
-
-        if !git_dir.is_dir() {
-            fs::create_dir_all(&git_dir).with_context(|| {
-                anyhow!("Failed to create repo directory: {}", git_dir.display())
-            })?;
-        }
-
-        let r = match gix::open(&git_dir) {
-            Ok(r) => r,
-            Err(gix::open::Error::NotARepository { .. }) => gix::init_bare(&git_dir)?,
-            Err(error) => {
-                return Err(error).context("Failed to open or initialize cache repository")
-            }
-        };
-
-        let mut refspecs = Vec::new();
-        let mut reverse = HashMap::new();
-
-        for version in versions {
-            for remote_name in [
-                BString::from(format!("refs/tags/{version}")),
-                BString::from(format!("refs/heads/{version}")),
-            ] {
-                refspecs.push(remote_name.clone());
-                reverse.insert(remote_name, version);
-            }
-        }
-
-        let url = format!("{GITHUB_BASE}/{repo}/{name}");
-
-        let mut out = Vec::new();
-
-        tracing::debug!(?git_dir, ?url, "Syncing");
-
-        match crate::gix::sync(&r, &url, &refspecs) {
-            Ok(remotes) => {
-                if remotes.is_empty() {
-                    tracing::warn!(?url, ?repo, ?name, ?refspecs, "No remotes found");
-                    continue;
-                }
-
-                tracing::debug!(?url, ?repo, ?name, ?remotes, "Found remotes");
-
-                for (remote_name, id) in remotes {
-                    let Some(version) = reverse.remove(&remote_name) else {
-                        continue;
-                    };
-
-                    let work_dir = repo_dir.join(WORKDIR).join(version);
-
-                    fs::create_dir_all(&work_dir).with_context(|| {
-                        anyhow!("Failed to create work directory: {}", work_dir.display())
-                    })?;
-
-                    let id_path = work_dir.join(GIT_OBJECT_ID_FILE);
-
-                    fs::write(&id_path, id.as_bytes()).with_context(|| {
-                        anyhow!("Failed to write object ID: {}", id_path.display())
-                    })?;
-
-                    out.push((work_dir, id, repo, name, version));
-                }
-            }
-            Err(error) => {
-                tracing::warn!(
-                    "Failed to sync remote `{repo}/{name}` with remote `{url}`: {error}"
-                );
-            }
-        }
-
-        // Try to read out remaining versions from the workdir cache.
-        for (_, version) in reverse {
-            let work_dir = repo_dir.join(WORKDIR).join(version);
-            let id_path = work_dir.join(GIT_OBJECT_ID_FILE);
-
-            let id = match fs::read(&id_path) {
-                Ok(id) => ObjectId::try_from(&id[..])
-                    .with_context(|| anyhow!("{}: Failed to parse object ID", id_path.display()))?,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    continue;
-                }
-                Err(e) => {
-                    return Err(e)
-                        .context(anyhow!("{}: Failed to read object ID", id_path.display()))
-                }
-            };
-
-            out.push((work_dir, id, repo, name, version));
-        }
-
-        for (work_dir, id, repo, name, version) in out {
-            let key = format!("{repo}/{name}@{version}");
-            tracing::debug!(?work_dir, "Exporting {key}");
-
-            // Load an action runner directly out of a repository without checking it out.
-            let Some(runner) = crate::action::load(&r, id, &work_dir, version)? else {
-                tracing::warn!("Could not load runner for {key}");
-                continue;
-            };
-
-            let envs_dir = cache_dir.join(ENVS);
-
-            fs::create_dir_all(&envs_dir).with_context(|| {
-                anyhow!("Failed to create envs directory: {}", envs_dir.display())
-            })?;
-
-            runners.runners.insert(
-                key,
-                ActionRunner {
-                    kind: runner.kind,
-                    action_path: work_dir.into(),
-                    defaults: runner.defaults,
-                    envs_dir: envs_dir.into(),
-                    id: id.to_string(),
-                },
-            );
-        }
+        sync_github_use(&mut runners.runners, cx, repo, name, versions)
+            .with_context(|| anyhow!("Failed to sync GitHub use {repo}/{name}@{versions:?}"))?;
     }
 
     Ok(runners)
+}
+
+fn sync_github_use(
+    runners: &mut HashMap<String, ActionRunner>,
+    cx: &Ctxt<'_>,
+    repo: &str,
+    name: &str,
+    versions: &BTreeSet<String>,
+) -> Result<()> {
+    let project_dirs = cx
+        .paths
+        .project_dirs
+        .context("Kick does not have project directories")?;
+
+    let cache_dir = project_dirs.cache_dir();
+    let actions_dir = cache_dir.join("actions");
+    let envs_dir = Rc::from(cache_dir.join(ENVS));
+    let repo_dir = actions_dir.join(repo).join(name);
+    let git_dir = repo_dir.join("git");
+
+    if !git_dir.is_dir() {
+        fs::create_dir_all(&git_dir)
+            .with_context(|| anyhow!("Failed to create repo directory: {}", git_dir.display()))?;
+    }
+
+    let r = match gix::open(&git_dir) {
+        Ok(r) => r,
+        Err(gix::open::Error::NotARepository { .. }) => gix::init_bare(&git_dir)?,
+        Err(error) => return Err(error).context("Failed to open or initialize cache repository"),
+    };
+
+    let mut refspecs = Vec::new();
+    let mut reverse = HashMap::new();
+
+    for version in versions {
+        for remote_name in [
+            BString::from(format!("refs/tags/{version}")),
+            BString::from(format!("refs/heads/{version}")),
+        ] {
+            refspecs.push(remote_name.clone());
+            reverse.insert(remote_name, version);
+        }
+    }
+
+    let url = format!("{GITHUB_BASE}/{repo}/{name}");
+
+    let mut out = Vec::new();
+
+    tracing::debug!(?git_dir, ?url, "Syncing");
+
+    match crate::gix::sync(&r, &url, &refspecs) {
+        Ok(remotes) => {
+            tracing::debug!(?url, ?repo, ?name, ?remotes, "Found remotes");
+
+            for (remote_name, id) in remotes {
+                let Some(version) = reverse.remove(&remote_name) else {
+                    continue;
+                };
+
+                let work_dir = repo_dir.join(WORKDIR).join(version);
+
+                fs::create_dir_all(&work_dir).with_context(|| {
+                    anyhow!("Failed to create work directory: {}", work_dir.display())
+                })?;
+
+                let id_path = work_dir.join(GIT_OBJECT_ID_FILE);
+
+                fs::write(&id_path, id.as_bytes())
+                    .with_context(|| anyhow!("Failed to write object ID: {}", id_path.display()))?;
+
+                out.push((work_dir, id, repo, name, version));
+            }
+        }
+        Err(error) => {
+            tracing::warn!("Failed to sync remote `{repo}/{name}` with remote `{url}`: {error}");
+        }
+    }
+
+    // Try to read out remaining versions from the workdir cache.
+    for (_, version) in reverse {
+        let work_dir = repo_dir.join(WORKDIR).join(version);
+        let id_path = work_dir.join(GIT_OBJECT_ID_FILE);
+
+        let id = match fs::read(&id_path) {
+            Ok(id) => ObjectId::try_from(&id[..])
+                .with_context(|| anyhow!("{}: Failed to parse object ID", id_path.display()))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                continue;
+            }
+            Err(e) => {
+                return Err(e).context(anyhow!("{}: Failed to read object ID", id_path.display()))
+            }
+        };
+
+        out.push((work_dir, id, repo, name, version));
+    }
+
+    for (work_dir, id, repo, name, version) in out {
+        let key = format!("{repo}/{name}@{version}");
+        tracing::debug!(?work_dir, "Exporting {key}");
+
+        // Load an action runner directly out of a repository without checking it out.
+        let Some(runner) = crate::action::load(&r, id, &work_dir, version)? else {
+            tracing::warn!("Could not load runner for {key}");
+            continue;
+        };
+
+        fs::create_dir_all(&envs_dir)
+            .with_context(|| anyhow!("Failed to create envs directory: {}", envs_dir.display()))?;
+
+        runners.insert(
+            key,
+            ActionRunner {
+                kind: runner.kind,
+                action_path: work_dir.into(),
+                defaults: runner.defaults,
+                envs_dir: envs_dir.clone(),
+                id: id.to_string(),
+            },
+        );
+    }
+
+    Ok(())
 }
 
 fn os_to_run_on(cx: &Ctxt<'_>, os: &Os) -> Result<RunOn> {
