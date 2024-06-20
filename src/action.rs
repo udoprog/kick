@@ -234,10 +234,6 @@ impl Cx {
                         bail!("Expected mapping in .runs.steps[{index}]");
                     };
 
-                    let Some(run) = value.get("run").and_then(|v| v.as_str()) else {
-                        bail!("Missing in .runs.steps[{index}].run");
-                    };
-
                     let id = value.get("id").and_then(|v| v.as_str());
                     let shell = value.get("shell").and_then(|v| v.as_str());
 
@@ -253,12 +249,20 @@ impl Cx {
                         }
                     }
 
-                    self.steps.push(ActionStep {
-                        id: id.map(str::to_owned),
-                        run: run.to_owned(),
-                        shell: shell.map(str::to_owned),
-                        env,
-                    });
+                    if let Some(run) = value.get("run").and_then(|v| v.as_str()) {
+                        self.steps.push(ActionStep {
+                            id: id.map(str::to_owned),
+                            run: run.to_owned(),
+                            shell: shell.map(str::to_owned),
+                            env,
+                        });
+                    }
+
+                    if let Some(uses) = value.get("uses").and_then(|v| v.as_str()) {
+                        tracing::warn!(
+                            "Use `{uses}` not supported yet at .runs.steps[{index}].uses"
+                        );
+                    }
                 }
             }
 
