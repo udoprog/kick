@@ -63,3 +63,6 @@ features = [
     "blocking-http-transport-reqwest-native-tls",
     "worktree-mutation",
 ]
+
+[patch.crates-io]
+gix = { git = "https://github.com/Byron/gitoxide" }

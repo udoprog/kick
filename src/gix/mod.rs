@@ -17,12 +17,17 @@ pub(crate) fn sync(
     repo: &Repository,
     url: &str,
     refspecs: &[BString],
+    open: bool,
 ) -> Result<Vec<(BString, ObjectId)>> {
-    let remote = repo
+    let mut remote = repo
         .find_fetch_remote(Some(BStr::new(url)))
-        .context("Failed to find or make fetch remote")?
-        .with_fetch_tags(gix::remote::fetch::Tags::None)
-        .with_refspecs(refspecs, gix::remote::Direction::Fetch)?;
+        .context("Failed to find or make fetch remote")?;
+
+    if open {
+        remote = remote.with_fetch_tags(gix::remote::fetch::Tags::None);
+    }
+
+    remote = remote.with_refspecs(refspecs, gix::remote::Direction::Fetch)?;
 
     let options = gix::remote::ref_map::Options::default();
 

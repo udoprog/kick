@@ -1691,9 +1691,9 @@ fn sync_github_use(
             .with_context(|| anyhow!("Failed to create repo directory: {}", git_dir.display()))?;
     }
 
-    let r = match gix::open(&git_dir) {
-        Ok(r) => r,
-        Err(gix::open::Error::NotARepository { .. }) => gix::init_bare(&git_dir)?,
+    let (r, open) = match gix::open(&git_dir) {
+        Ok(r) => (r, true),
+        Err(gix::open::Error::NotARepository { .. }) => (gix::init_bare(&git_dir)?, false),
         Err(error) => return Err(error).context("Failed to open or initialize cache repository"),
     };
 
@@ -1716,7 +1716,7 @@ fn sync_github_use(
 
     tracing::debug!(?git_dir, ?url, "Syncing");
 
-    match crate::gix::sync(&r, &url, &refspecs) {
+    match crate::gix::sync(&r, &url, &refspecs, open) {
         Ok(remotes) => {
             tracing::debug!(?url, ?repo, ?name, ?remotes, "Found remotes");
 

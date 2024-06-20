@@ -708,14 +708,14 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     }
 
     let templating = templates::Templating::new()?;
-    let repos = model::load_gitmodules(&root)?;
+    let gitmodules_repos = model::load_gitmodules(&root)?;
 
     let defaults = config::defaults();
 
     let config = config::load(
         paths,
         &templating,
-        repos.as_deref().unwrap_or_default(),
+        gitmodules_repos.as_deref().unwrap_or_default(),
         &defaults,
     )
     .context("Loading kick configuration")?;
@@ -744,9 +744,9 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         }
     }
 
-    let repos = match repos {
-        Some(repos) => repos,
-        None => model::load_from_git(&root, system.git.first())?,
+    let (repos, from_gitmodules) = match gitmodules_repos {
+        Some(repos) => (repos, true),
+        None => (model::load_from_git(&root, system.git.first())?, false),
     };
 
     tracing::trace!(
@@ -930,7 +930,11 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     }
 
     let outcome = cx.outcome();
-    sets.commit()?;
+
+    if from_gitmodules {
+        sets.commit()?;
+    }
+
     Ok(outcome)
 }
 
