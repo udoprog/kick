@@ -18,6 +18,7 @@ impl Generic {
     }
 
     /// Add a path to use.
+    #[cfg_attr(not(windows), allow(unused))]
     pub(crate) fn add_path(&mut self, path: PathBuf) {
         self.paths.push(path);
     }

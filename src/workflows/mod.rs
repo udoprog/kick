@@ -633,25 +633,28 @@ type CustomFunction = for<'m> fn(&Span<u32>, &[Expr<'m>]) -> Result<Expr<'m>, ev
 #[derive(Clone, Default)]
 struct Node {
     value: Option<RString>,
-    children: Option<BTreeMap<String, Node>>,
+    children: BTreeMap<String, Node>,
 }
 
 impl Node {
-    const EMPTY: Node = Node {
-        value: None,
-        children: None,
-    };
+    const fn new() -> Self {
+        Self {
+            value: None,
+            children: BTreeMap::new(),
+        }
+    }
 }
 
+/// A tree used for variable evaluation.
 #[derive(Clone, Default)]
 pub(crate) struct Tree {
     root: Node,
 }
 
 impl Tree {
-    /// Create a new tree.
+    /// Construct a new tree.
     pub(crate) const fn new() -> Self {
-        Tree { root: Node::EMPTY }
+        Tree { root: Node::new() }
     }
 
     /// Return a modified clone of the current tree with the given prefix set.
@@ -677,20 +680,16 @@ impl Tree {
         queue.push_back((&mut self.root, &other.root));
 
         while let Some((this, other)) = queue.pop_front() {
-            for (key, other) in other.children.iter().flatten() {
-                let node = this
-                    .children
-                    .get_or_insert_with(BTreeMap::new)
-                    .entry(key.clone())
-                    .or_default();
+            for (key, other) in other.children.iter() {
+                let node = this.children.entry(key.clone()).or_default();
 
                 if node.value.is_none() {
                     node.value.clone_from(&other.value);
                 }
             }
 
-            for (key, this) in this.children.iter_mut().flatten() {
-                if let Some(other) = other.children.as_ref().and_then(|tree| tree.get(key)) {
+            for (key, this) in this.children.iter_mut() {
+                if let Some(other) = other.children.get(key) {
                     queue.push_back((this, other));
                 }
             }
@@ -709,64 +708,54 @@ impl Tree {
         for key in key {
             let key = key.as_ref();
 
-            current = current
-                .children
-                .get_or_insert_with(BTreeMap::new)
-                .entry(key.to_owned())
-                .or_default();
+            current = current.children.entry(key.to_owned()).or_default();
         }
 
         for (key, value) in vars {
-            current
-                .children
-                .get_or_insert_with(BTreeMap::new)
-                .entry(key)
-                .or_default()
-                .value = Some(RString::from(value));
+            current.children.entry(key).or_default().value = Some(RString::from(value));
         }
     }
 
     /// Insert a value into the tree.
-    pub(crate) fn insert<I, V>(&mut self, keys: I, value: V)
-    where
-        I: IntoIterator<Item: AsRef<str>>,
-        V: AsRef<str>,
-    {
+    pub(crate) fn insert(
+        &mut self,
+        keys: impl IntoIterator<Item: AsRef<str>>,
+        value: impl AsRef<RStr>,
+    ) {
         let mut current = &mut self.root;
 
         for key in keys {
             let key = key.as_ref();
-            current = current
-                .children
-                .get_or_insert_with(BTreeMap::new)
-                .entry(key.to_owned())
-                .or_default();
+            current = current.children.entry(key.to_owned()).or_default();
         }
 
-        current.value = Some(value.as_ref().into());
+        current.value = Some(value.as_ref().to_owned());
     }
 
     /// Get a value from the tree.
-    pub(crate) fn get(&self, key: &[&str]) -> Vec<&RStr> {
+    pub(crate) fn get<K>(&self, key: K) -> Vec<&RStr>
+    where
+        K: IntoIterator<Item: AsRef<str>, IntoIter: Clone>,
+    {
+        let key = key.into_iter();
+
         let mut output = Vec::new();
 
         let mut queue = VecDeque::new();
         queue.push_back((&self.root, key));
 
-        while let Some((current, keys)) = queue.pop_front() {
-            let Some((head, tail)) = keys.split_first() else {
-                output.extend(current.value.as_deref());
+        while let Some((node, mut keys)) = queue.pop_front() {
+            let Some(head) = keys.next() else {
+                output.extend(node.value.as_deref());
                 continue;
             };
 
-            let Some(children) = &current.children else {
-                continue;
-            };
+            let head = head.as_ref();
 
-            if *head == "*" {
-                queue.extend(children.values().map(|n| (n, tail)));
+            if head == "*" {
+                queue.extend(node.children.values().map(|n| (n, keys.clone())));
             } else {
-                queue.extend(children.get(*head).map(|n| (n, tail)));
+                queue.extend(node.children.get(head).map(|n| (n, keys.clone())));
             }
         }
 
@@ -909,13 +898,11 @@ impl<'a> Eval<'a> {
     }
 
     /// Get a variable from the matrix.
-    fn lookup<I>(&self, keys: I) -> Vec<&'a RStr>
+    fn lookup<I>(&self, key: I) -> Vec<&'a RStr>
     where
-        I: IntoIterator<Item: AsRef<str>>,
+        I: IntoIterator<Item: AsRef<str>, IntoIter: Clone>,
     {
-        let key = keys.into_iter().collect::<Vec<_>>();
-        let key = key.iter().map(AsRef::as_ref).collect::<Vec<_>>();
-        self.tree.get(&key)
+        self.tree.get(key)
     }
 }
 

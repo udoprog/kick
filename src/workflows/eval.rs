@@ -36,10 +36,7 @@ impl EvalError {
         }
     }
 
-    pub(crate) fn custom<C>(span: Span<u32>, custom: C) -> Self
-    where
-        C: fmt::Display,
-    {
+    pub(crate) fn custom(span: Span<u32>, custom: impl fmt::Display) -> Self {
         let custom = custom.to_string();
 
         Self {

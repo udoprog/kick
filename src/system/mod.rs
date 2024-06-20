@@ -32,7 +32,6 @@ const TESTS: &[(&str, ProbeFn, Allow)] = &[
 ];
 
 #[cfg(windows)]
-#[cfg_attr(not(windows), allow(unused))]
 const MSYS_TESTS: &[(&str, ProbeFn, Allow)] = &[("bash", bash_msys64_probe, Allow::None)];
 
 /// Detect system commands.
@@ -227,6 +226,7 @@ fn bash_probe(s: &mut System, path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg_attr(not(windows), allow(unused))]
 fn bash_msys64_probe(s: &mut System, path: &Path) -> Result<()> {
     if probe(path, "--version")? {
         let mut generic = Generic::new(path.to_owned());

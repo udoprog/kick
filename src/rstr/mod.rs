@@ -190,6 +190,7 @@ impl RString {
     pub(crate) const fn new() -> Self {
         RString(String::new())
     }
+
     /// Construct a new empty redacted string with the given `capacity`.
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         RString(String::with_capacity(capacity))
