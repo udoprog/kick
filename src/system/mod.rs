@@ -32,6 +32,7 @@ const TESTS: &[(&str, ProbeFn, Allow)] = &[
 ];
 
 #[cfg(windows)]
+#[cfg_attr(not(windows), allow(unused))]
 const MSYS_TESTS: &[(&str, ProbeFn, Allow)] = &[("bash", bash_msys64_probe, Allow::None)];
 
 /// Detect system commands.

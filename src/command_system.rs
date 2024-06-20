@@ -10,6 +10,7 @@ use std::str;
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use bstr::BString;
 use clap::{Parser, ValueEnum};
+use gix::hash::Kind;
 use gix::ObjectId;
 use relative_path::RelativePath;
 use termcolor::{Color, ColorSpec, WriteColor};
@@ -1753,8 +1754,11 @@ fn sync_github_use(
                 })?;
 
                 let id_path = work_dir.join(GIT_OBJECT_ID_FILE);
+                let mut buf = [0u8; const { Kind::longest().len_in_hex() + 8 }];
+                let n = id.hex_to_buf(&mut buf[..]);
+                buf[n] = b'\n';
 
-                fs::write(&id_path, id.as_bytes())
+                fs::write(&id_path, &buf[..n + 1])
                     .with_context(|| anyhow!("Failed to write object ID: {}", id_path.display()))?;
 
                 out.push((work_dir, id, repo, name, version));
@@ -1767,12 +1771,20 @@ fn sync_github_use(
 
     // Try to read out remaining versions from the workdir cache.
     for (_, version) in reverse {
+        use bstr::ByteSlice;
+
         let work_dir = repo_dir.join(WORKDIR).join(version);
         let id_path = work_dir.join(GIT_OBJECT_ID_FILE);
 
         let id = match fs::read(&id_path) {
-            Ok(id) => ObjectId::try_from(&id[..])
-                .with_context(|| anyhow!("{}: Failed to parse object ID", id_path.display()))?,
+            Ok(id) => match ObjectId::from_hex(id.trim()) {
+                Ok(id) => id,
+                Err(e) => {
+                    _ = fs::remove_file(&id_path);
+                    return Err(e)
+                        .context(anyhow!("{}: Failed to parse object ID", id_path.display()));
+                }
+            },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 continue;
             }
