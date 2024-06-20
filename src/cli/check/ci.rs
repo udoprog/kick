@@ -512,8 +512,7 @@ fn ensure_feature_combo(cx: &Ctxt<'_>, w: &WorkflowManifest<'_, '_>, cargos: &[C
     false
 }
 
-fn identify_command(command: &RStr, features: &HashSet<String>) -> RunIdentity {
-    let command = command.to_exposed();
+fn identify_command(command: &str, features: &HashSet<String>) -> RunIdentity {
     let mut it = command.split(' ').peekable();
 
     if matches!(it.next(), Some("cargo")) {

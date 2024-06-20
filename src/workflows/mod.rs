@@ -58,6 +58,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fmt;
 use std::fs;
 use std::io;
+use std::rc::Rc;
 use std::str;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -192,34 +193,23 @@ fn build_job(
         if let Some(s) = value.get("steps").and_then(|steps| steps.as_sequence()) {
             let mut tree = eval.tree().clone();
             tree.insert_prefix(["env"], extract_env(&eval, &value)?);
-            let eval = eval.with_tree(&tree);
+            let tree = Rc::new(tree);
+            let eval = eval.with_tree(tree.as_ref());
 
             for (index, s) in s.iter().enumerate() {
                 let Some(value) = s.as_mapping() else {
                     continue;
                 };
 
-                let mut tree = eval.tree().clone();
-                tree.insert_prefix(["env"], extract_env(&eval, &value)?);
-                let eval = eval.with_tree(&tree);
+                let env = extract_raw_env(&value)?;
+                let working_directory = value.get("working-directory").and_then(|v| v.as_str());
 
-                let working_directory =
-                    match value.get("working-directory").and_then(|v| v.as_str()) {
-                        Some(dir) => Some(eval.eval(dir)?.into_owned()),
-                        None => None,
-                    };
-
-                let mut skipped = None;
                 let mut condition = None;
                 let mut condition_mapping = None;
 
                 if let Some((id, expr)) = value.get("if").and_then(|v| Some((v.id(), v.as_str()?)))
                 {
-                    if !eval.test(expr)? {
-                        skipped = Some(expr.to_owned());
-                    }
-
-                    condition = Some(expr.to_owned());
+                    condition = Some(expr);
                     condition_mapping = Some(id);
                 }
 
@@ -239,36 +229,25 @@ fn build_job(
                             continue;
                         };
 
-                        with.insert(key.to_owned(), eval.eval(value)?.into_owned());
+                        with.insert(key.to_owned(), value.to_owned());
                     }
                 }
 
-                let name = value
-                    .get("name")
-                    .and_then(|v| Some(eval.eval(v.as_str()?)))
-                    .transpose()?;
-
-                let run = value
-                    .get("run")
-                    .and_then(|v| Some(eval.eval(v.as_str()?)))
-                    .transpose()?;
-
-                let shell = value
-                    .get("shell")
-                    .and_then(|v| Some(eval.eval(v.as_str()?)))
-                    .transpose()?;
+                let name = value.get("name").and_then(|v| v.as_str());
+                let run = value.get("run").and_then(|v| v.as_str());
+                let shell = value.get("shell").and_then(|v| v.as_str());
 
                 steps.push(Step {
-                    index,
-                    env: eval.tree().get_prefix("env"),
-                    working_directory,
-                    skipped,
-                    condition,
                     uses,
+                    index,
+                    tree: tree.clone(),
+                    env,
+                    working_directory: working_directory.map(str::to_owned),
+                    condition: condition.map(str::to_owned),
                     with,
-                    name: name.map(Cow::into_owned),
-                    run: run.map(Cow::into_owned),
-                    shell: shell.map(Cow::into_owned),
+                    name: name.map(str::to_owned),
+                    run: run.map(str::to_owned),
+                    shell: shell.map(str::to_owned),
                 });
 
                 step_mappings.push(StepMapping {
@@ -436,6 +415,26 @@ fn extract_env(eval: &Eval<'_>, m: &yaml::Mapping<'_>) -> Result<BTreeMap<String
     Ok(env)
 }
 
+fn extract_raw_env(m: &yaml::Mapping<'_>) -> Result<BTreeMap<String, String>> {
+    let mut env = BTreeMap::new();
+
+    let Some(m) = m.get("env").and_then(|v| v.as_mapping()) else {
+        return Ok(env);
+    };
+
+    for (key, value) in m {
+        let key = str::from_utf8(key).context("Decoding key")?;
+
+        let Some(value) = value.as_str() else {
+            continue;
+        };
+
+        env.insert(key.to_owned(), value.to_owned());
+    }
+
+    Ok(env)
+}
+
 pub(crate) struct WorkflowManifest<'a, 'cx> {
     cx: &'a Ctxt<'cx>,
     pub(crate) id: String,
@@ -460,6 +459,8 @@ impl<'a> WorkflowManifest<'a, '_> {
 
         let functions = default_functions();
         let mut tree = Tree::new();
+
+        tree.insert(["runner", "os"], self.cx.os.as_tree_value());
 
         if let Some(auth) = self.cx.github_auth() {
             if let Some(owned) = RString::redacted(auth.as_secret()) {
@@ -518,36 +519,32 @@ pub(crate) struct StepMapping {
     pub(crate) uses: Option<yaml::Id>,
 }
 
+#[derive(Clone)]
 pub(crate) struct Step {
-    pub(crate) index: usize,
-    pub(crate) env: BTreeMap<String, RString>,
-    pub(crate) working_directory: Option<RString>,
-    pub(crate) skipped: Option<String>,
-    pub(crate) condition: Option<String>,
     pub(crate) uses: Option<RString>,
-    pub(crate) with: BTreeMap<String, RString>,
-    pub(crate) name: Option<RString>,
-    pub(crate) run: Option<RString>,
-    pub(crate) shell: Option<RString>,
+    pub(crate) index: usize,
+    pub(crate) tree: Rc<Tree>,
+    pub(crate) env: BTreeMap<String, String>,
+    pub(crate) working_directory: Option<String>,
+    pub(crate) condition: Option<String>,
+    pub(crate) with: BTreeMap<String, String>,
+    pub(crate) name: Option<String>,
+    pub(crate) run: Option<String>,
+    pub(crate) shell: Option<String>,
 }
 
 impl Step {
     /// Get the diagnostical name of the step.
     pub(crate) fn name(&self) -> Cow<'_, str> {
         if let Some(name) = &self.name {
-            return name.to_string_lossy();
+            return Cow::Borrowed(name);
         }
 
         if let Some(run) = &self.run {
-            return run.to_string_lossy();
+            return Cow::Borrowed(run);
         }
 
         Cow::Owned(format!("Step #{}", self.index + 1))
-    }
-
-    /// Construct an environment from a step.
-    pub(crate) fn env(&self) -> &BTreeMap<String, RString> {
-        &self.env
     }
 }
 
@@ -643,17 +640,12 @@ impl Tree {
         Tree { root: Node::EMPTY }
     }
 
-    /// Test if the tree is empty.
-    pub(crate) fn is_empty(&self) -> bool {
-        self.root.value.is_none() && self.root.children.is_none()
-    }
-
     /// Extend this tree with another tree.
     pub(crate) fn extend(&mut self, other: &Self) {
         let mut queue = VecDeque::new();
 
         if self.root.value.is_none() {
-            self.root.value = other.root.value.clone();
+            self.root.value.clone_from(&other.root.value);
         }
 
         queue.push_back((&mut self.root, &other.root));
@@ -667,7 +659,7 @@ impl Tree {
                     .or_default();
 
                 if node.value.is_none() {
-                    node.value = other.value.clone();
+                    node.value.clone_from(&other.value);
                 }
             }
 
@@ -709,7 +701,7 @@ impl Tree {
     }
 
     /// Get a prefix tree.
-    fn get_prefix(&self, prefix: &str) -> BTreeMap<String, RString> {
+    pub(crate) fn get_prefix(&self, prefix: &str) -> BTreeMap<String, RString> {
         let mut output = BTreeMap::new();
 
         let Some(children) = &self.root.children else {
@@ -730,7 +722,6 @@ impl Tree {
     }
 
     /// Insert a value into the tree.
-    #[cfg(test)]
     pub(crate) fn insert<I, V>(&mut self, keys: I, value: V)
     where
         I: IntoIterator<Item: AsRef<str>>,

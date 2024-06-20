@@ -20,8 +20,8 @@ pub(crate) struct Action {
 #[derive(Debug)]
 pub(crate) enum ActionKind {
     Node {
-        main: Rc<Path>,
-        post: Option<Rc<Path>>,
+        main_path: Rc<Path>,
+        post_path: Option<Rc<Path>>,
         node_version: u32,
     },
     Composite {
@@ -136,8 +136,8 @@ pub(crate) fn load(
             };
 
             ActionKind::Node {
-                main: main_path,
-                post: post_path,
+                main_path,
+                post_path,
                 node_version,
             }
         }

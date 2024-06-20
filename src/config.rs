@@ -327,6 +327,16 @@ impl Os {
             _ => Shell::Bash,
         }
     }
+
+    /// Get the corresponding tree value.
+    pub(crate) fn as_tree_value(&self) -> &str {
+        match self {
+            Self::Windows => "Windows",
+            Self::Linux => "Linux",
+            Self::Mac => "macOS",
+            Self::Other(other) => other,
+        }
+    }
 }
 
 impl fmt::Display for Os {

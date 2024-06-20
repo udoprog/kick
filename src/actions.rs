@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 
 use anyhow::Result;
@@ -84,9 +83,9 @@ impl ActionsCheck for ActionsRsToolchainActionsCheck {
         };
 
         let toolchain = if let Some(toolchain) = step.with.get("toolchain") {
-            toolchain.to_exposed()
+            toolchain
         } else {
-            Cow::Borrowed("stable")
+            "stable"
         };
 
         let toolchain = if !toolchain.starts_with("${{") {
@@ -103,7 +102,7 @@ impl ActionsCheck for ActionsRsToolchainActionsCheck {
                 )]),
             );
 
-            Cow::Borrowed("master")
+            "master"
         };
 
         edits.set(

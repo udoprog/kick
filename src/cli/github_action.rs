@@ -1,11 +1,13 @@
-use anyhow::Result;
+use std::collections::BTreeMap;
+
+use anyhow::{bail, Result};
 use clap::Parser;
 use termcolor::{ColorChoice, StandardStream};
 
 use crate::command_system::{ActionConfig, Actions, Batch, BatchConfig, BatchOptions};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
-use crate::rstr::RStr;
+use crate::rstr::{RStr, RString};
 use crate::shell::Shell;
 
 #[derive(Default, Debug, Parser)]
@@ -21,6 +23,9 @@ pub(crate) struct Opts {
     /// The workflow to run.
     #[arg(value_name = "id")]
     id: String,
+    /// Inputs to the action.
+    #[arg(value_name = "key=value")]
+    input: Vec<String>,
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
@@ -43,15 +48,27 @@ fn action(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Re
     let mut actions = Actions::default();
     actions.add_action(&opts.id)?;
 
+    let id = RStr::new(&opts.id);
+
     let runners = actions.synchronize(cx)?;
     let default_shell = opts.shell.unwrap_or_else(|| cx.os.shell());
 
-    let c = ActionConfig::default();
+    let mut inputs = BTreeMap::new();
 
-    let (mut main, post) = runners.build(RStr::new(opts.id.as_str()), &c)?;
+    for input in &opts.input {
+        let Some((key, value)) = input.split_once('=') else {
+            bail!("Inputs must be in the form of `<key>=<value>`")
+        };
+
+        inputs.insert(key.to_string(), RString::from(value));
+    }
+
+    let c = ActionConfig::default().with_inputs(inputs);
+
+    let (mut main, post) = runners.build(cx, id, &c)?;
     main.extend(post);
 
-    let batch = Batch::with_commands(main);
+    let batch = Batch::with_schedule(main);
 
     let mut c = BatchConfig::new(cx, &repo_path, default_shell);
     c.add_opts(&opts.batch_opts)?;
