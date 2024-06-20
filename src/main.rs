@@ -701,32 +701,6 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         }
     }
 
-    let system = system::detect()?;
-
-    if tracing::enabled!(tracing::Level::DEBUG) {
-        tracing::debug!("Found system tools:");
-
-        for git in &system.git {
-            tracing::debug!("git: {}", git.path.display());
-        }
-
-        for wsl in &system.wsl {
-            tracing::debug!("wsl: {}", wsl.path.display());
-        }
-
-        for powershell in &system.powershell {
-            tracing::debug!("powershell: {}", powershell.path.display());
-        }
-
-        for bash in &system.bash {
-            tracing::debug!("bash: {}", bash.path.display());
-        }
-
-        for node in &system.node {
-            tracing::debug!("node ({}): {}", node.version, node.path.display());
-        }
-    }
-
     let templating = templates::Templating::new()?;
     let repos = model::load_gitmodules(&root)?;
 
@@ -739,6 +713,30 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         &defaults,
     )
     .context("Loading kick configuration")?;
+
+    let os = match std::env::consts::OS {
+        "linux" => Os::Linux,
+        "windows" => Os::Windows,
+        "macos" => Os::Mac,
+        other => Os::Other(other.into()),
+    };
+
+    let system = system::detect()?;
+
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        let shell = os.shell();
+
+        for (name, path, extra) in system.tools() {
+            let path = path.to_string_lossy();
+            let path = shell.escape(path.as_ref());
+
+            if let Some(extra) = extra {
+                tracing::debug!("{name} ({extra}): {path}");
+            } else {
+                tracing::debug!("{name}: {path}");
+            }
+        }
+    }
 
     let repos = match repos {
         Some(repos) => repos,
@@ -755,13 +753,6 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     );
 
     let mut sets = repo_sets::RepoSets::new(root.join("sets"))?;
-
-    let os = match std::env::consts::OS {
-        "linux" => Os::Linux,
-        "windows" => Os::Windows,
-        "macos" => Os::Mac,
-        other => Os::Other(other.into()),
-    };
 
     if let Some(repo_opts) = repo_opts {
         let mut filters = Vec::new();

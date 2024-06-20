@@ -37,7 +37,7 @@ const MSYS_TESTS: &[(&str, ProbeFn, Allow)] = &[("bash", bash_probe, Allow::None
 /// Detect system commands.
 #[derive(Default)]
 pub(crate) struct System {
-    pub(crate) visited: HashSet<PathBuf>,
+    pub(crate) visited: HashSet<(PathBuf, &'static str)>,
     pub(crate) git: Vec<Git>,
     pub(crate) wsl: Vec<Wsl>,
     pub(crate) powershell: Vec<Generic>,
@@ -66,6 +66,26 @@ impl System {
         Ok(node)
     }
 
+    /// Enumerate all tools.
+    pub(crate) fn tools<'a>(
+        &'a self,
+    ) -> impl Iterator<Item = (&'static str, &'a Path, Option<String>)> + 'a {
+        let it = self.git.iter().map(|c| ("git", c.path.as_path(), None));
+        let it = it.chain(self.wsl.iter().map(|c| ("wsl", c.path.as_path(), None)));
+        let it = it.chain(
+            self.powershell
+                .iter()
+                .map(|c| ("powershell", c.path.as_path(), None)),
+        );
+        let it = it.chain(self.bash.iter().map(|c| ("bash", c.path.as_path(), None)));
+        let it = it.chain(
+            self.node
+                .iter()
+                .map(|c| ("node", c.path.as_path(), Some(c.version.to_string()))),
+        );
+        it
+    }
+
     #[cfg(windows)]
     fn windows(&mut self) -> Result<()> {
         let msys = Path::new("C:\\msys64");
@@ -85,16 +105,42 @@ impl System {
         Ok(())
     }
 
-    fn walk_paths(&mut self, path: &mut PathBuf, tests: &[(&str, ProbeFn, Allow)]) -> Result<()> {
-        for &(name, test, allow) in tests {
-            path.push(name);
-            path.set_extension(EXE_EXTENSION);
+    /// Visit a full path with the given symbolic name.
+    fn visit_path(&mut self, path: &Path, name: &'static str) -> bool {
+        let Some(parent) = path.parent() else {
+            return false;
+        };
 
-            if self.visited.insert(path.clone()) {
+        let Ok(parent) = parent.canonicalize() else {
+            return false;
+        };
+
+        self.visit_dir(parent, name)
+    }
+
+    /// Visit a directory.
+    fn visit_dir(&mut self, path: PathBuf, name: &'static str) -> bool {
+        self.visited.insert((path, name))
+    }
+
+    fn walk_paths(
+        &mut self,
+        path: &mut PathBuf,
+        tests: &[(&'static str, ProbeFn, Allow)],
+    ) -> Result<()> {
+        let Ok(canonical) = path.canonicalize() else {
+            return Ok(());
+        };
+
+        for &(name, test, allow) in tests {
+            if self.visit_dir(canonical.clone(), name) {
+                path.push(name);
+                path.set_extension(EXE_EXTENSION);
+
                 let mut ignored = false;
 
                 if cfg!(windows) {
-                    if let Some(reason) = test_windows_ignored(path, allow) {
+                    if let Some(reason) = test_windows_ignored(&path, allow) {
                         // Non-existant files will be I/O ignored, avoid
                         // spamming log entries for it.
                         if reason != IgnoreReason::Io {
@@ -109,9 +155,9 @@ impl System {
                     tracing::trace!(path = ?path.display(), "testing");
                     test(self, path).with_context(|| anyhow!("Testing {}", path.display()))?;
                 }
-            }
 
-            path.pop();
+                path.pop();
+            }
         }
 
         Ok(())
@@ -125,19 +171,15 @@ pub(crate) fn detect() -> Result<System> {
     system.windows()?;
 
     if let Some(path) = env::var_os("GIT_PATH") {
-        if let Ok(path) = PathBuf::from(path).canonicalize() {
-            if system.visited.insert(path.clone()) && probe(&path, "--version")? {
-                system.git.push(Git::new(path));
-            }
+        let path = PathBuf::from(path);
+
+        if system.visit_path(&path, "git") && probe(&path, "--version")? {
+            system.git.push(Git::new(path));
         }
     }
 
     if let Some(path) = env::var_os("PATH") {
-        for path in env::split_paths(&path) {
-            let Ok(mut path) = path.canonicalize() else {
-                continue;
-            };
-
+        for mut path in env::split_paths(&path) {
             system.walk_paths(&mut path, TESTS)?;
         }
     }
