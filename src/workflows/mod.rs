@@ -183,7 +183,7 @@ fn build_job(
 
     for matrix in build_matrices(&value, ignore, eval)? {
         let mut tree = eval.tree().clone();
-        tree.insert_prefix("matrix", matrix.matrix.clone());
+        tree.insert_prefix(["matrix"], matrix.matrix.clone());
         let eval = eval.with_tree(&tree);
 
         let mut steps = Vec::new();
@@ -191,7 +191,7 @@ fn build_job(
 
         if let Some(s) = value.get("steps").and_then(|steps| steps.as_sequence()) {
             let mut tree = eval.tree().clone();
-            tree.insert_prefix("env", extract_env(&eval, &value)?);
+            tree.insert_prefix(["env"], extract_env(&eval, &value)?);
             let eval = eval.with_tree(&tree);
 
             for (index, s) in s.iter().enumerate() {
@@ -200,7 +200,7 @@ fn build_job(
                 };
 
                 let mut tree = eval.tree().clone();
-                tree.insert_prefix("env", extract_env(&eval, &value)?);
+                tree.insert_prefix(["env"], extract_env(&eval, &value)?);
                 let eval = eval.with_tree(&tree);
 
                 let working_directory =
@@ -463,12 +463,12 @@ impl<'a> WorkflowManifest<'a, '_> {
 
         if let Some(auth) = self.cx.github_auth() {
             if let Some(owned) = RString::redacted(auth.as_secret()) {
-                tree.insert_prefix("secrets", vec![("GITHUB_TOKEN".to_owned(), owned)]);
+                tree.insert_prefix(["secrets"], vec![("GITHUB_TOKEN".to_owned(), owned)]);
             }
         }
 
         let eval = Eval::new().with_functions(&functions);
-        tree.insert_prefix("env", extract_env(&eval, &mapping)?);
+        tree.insert_prefix(["env"], extract_env(&eval, &mapping)?);
         let eval = eval.with_tree(&tree);
 
         let jobs = mapping
@@ -643,25 +643,68 @@ impl Tree {
         Tree { root: Node::EMPTY }
     }
 
+    /// Test if the tree is empty.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.root.value.is_none() && self.root.children.is_none()
+    }
+
+    /// Extend this tree with another tree.
+    pub(crate) fn extend(&mut self, other: &Self) {
+        let mut queue = VecDeque::new();
+
+        if self.root.value.is_none() {
+            self.root.value = other.root.value.clone();
+        }
+
+        queue.push_back((&mut self.root, &other.root));
+
+        while let Some((this, other)) = queue.pop_front() {
+            for (key, other) in other.children.iter().flatten() {
+                let node = this
+                    .children
+                    .get_or_insert_with(BTreeMap::new)
+                    .entry(key.clone())
+                    .or_default();
+
+                if node.value.is_none() {
+                    node.value = other.value.clone();
+                }
+            }
+
+            for (key, this) in this.children.iter_mut().flatten() {
+                if let Some(other) = other.children.as_ref().and_then(|tree| tree.get(key)) {
+                    queue.push_back((this, other));
+                }
+            }
+        }
+    }
+
     /// Insert a prefix into the current tree.
-    pub(crate) fn insert_prefix<V>(&mut self, prefix: &str, vars: V)
+    pub(crate) fn insert_prefix<I, V, U>(&mut self, keys: I, vars: V)
     where
-        V: IntoIterator<Item = (String, RString)>,
+        I: IntoIterator<Item: AsRef<str>>,
+        V: IntoIterator<Item = (String, U)>,
+        RString: From<U>,
     {
-        let child = self
-            .root
-            .children
-            .get_or_insert_with(BTreeMap::new)
-            .entry(prefix.to_owned())
-            .or_default();
+        let mut current = &mut self.root;
+
+        for key in keys {
+            let key = key.as_ref();
+
+            current = current
+                .children
+                .get_or_insert_with(BTreeMap::new)
+                .entry(key.to_owned())
+                .or_default();
+        }
 
         for (key, value) in vars {
-            child
+            current
                 .children
                 .get_or_insert_with(BTreeMap::new)
                 .entry(key)
                 .or_default()
-                .value = Some(value);
+                .value = Some(RString::from(value));
         }
     }
 

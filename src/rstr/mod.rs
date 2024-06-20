@@ -9,6 +9,7 @@ use core::fmt;
 use core::ops::Deref;
 use std::borrow::{Borrow, Cow};
 use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 
 /// The redaction string.
 const REDACTION: &str = "***";
@@ -36,6 +37,17 @@ impl RStr {
     {
         // This is safe because `Redacted` is a transparent wrapper around `str`.
         unsafe { &*(s.as_ref() as *const str as *const RStr) }
+    }
+
+    /// Construct a reference counted container for an RStr.
+    pub(crate) fn as_rc(&self) -> Rc<Self> {
+        Self::from_rc(Rc::from(&self.0))
+    }
+
+    /// Construct a new redacted string wrapping the given string.
+    pub(crate) fn from_rc(value: Rc<str>) -> Rc<Self> {
+        // SAFETY: RStr is a transparent wrapper around str.
+        unsafe { Rc::from_raw(Rc::into_raw(value) as *mut RStr) }
     }
 
     /// Get the string as a lossy string.

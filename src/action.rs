@@ -29,9 +29,10 @@ pub(crate) enum ActionKind {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct ActionStep {
-    pub(crate) run: Option<String>,
+    pub(crate) id: Option<String>,
+    pub(crate) run: String,
     pub(crate) shell: Option<String>,
     pub(crate) env: BTreeMap<String, String>,
 }
@@ -228,17 +229,17 @@ impl Cx {
             }
 
             if let Some(values) = runs.get("steps").and_then(|v| v.as_sequence()) {
-                for value in values {
+                for (index, value) in values.iter().enumerate() {
                     let Some(value) = value.as_mapping() else {
-                        continue;
+                        bail!("Expected mapping in .runs.steps[{index}]");
                     };
 
-                    let run = value.get("run").and_then(|v| v.as_str()).map(str::to_owned);
+                    let Some(run) = value.get("run").and_then(|v| v.as_str()) else {
+                        bail!("Missing in .runs.steps[{index}].run");
+                    };
 
-                    let shell = value
-                        .get("shell")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_owned);
+                    let id = value.get("id").and_then(|v| v.as_str());
+                    let shell = value.get("shell").and_then(|v| v.as_str());
 
                     let mut env = BTreeMap::new();
 
@@ -252,7 +253,12 @@ impl Cx {
                         }
                     }
 
-                    self.steps.push(ActionStep { run, shell, env });
+                    self.steps.push(ActionStep {
+                        id: id.map(str::to_owned),
+                        run: run.to_owned(),
+                        shell: shell.map(str::to_owned),
+                        env,
+                    });
                 }
             }
 
