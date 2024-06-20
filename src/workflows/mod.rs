@@ -111,13 +111,13 @@ impl std::error::Error for ExprError {
     }
 }
 
-pub struct Workflows<'a, 'cx> {
+pub struct WorkflowManifests<'a, 'cx> {
     cx: &'a Ctxt<'cx>,
     path: RelativePathBuf,
     ids: BTreeSet<String>,
 }
 
-impl<'a, 'cx> Workflows<'a, 'cx> {
+impl<'a, 'cx> WorkflowManifests<'a, 'cx> {
     /// Open the workflows directory in the specified repo.
     pub(crate) fn new(cx: &'a Ctxt<'cx>, repo: &Repo) -> Result<Self> {
         let path = repo.path().join(".github").join("workflows");
@@ -126,7 +126,7 @@ impl<'a, 'cx> Workflows<'a, 'cx> {
     }
 
     /// Get ids of existing workflows.
-    pub(crate) fn workflows(&self) -> impl Iterator<Item = Result<Workflow<'a, 'cx>>> + '_ {
+    pub(crate) fn workflows(&self) -> impl Iterator<Item = Result<WorkflowManifest<'a, 'cx>>> + '_ {
         self.ids
             .iter()
             .flat_map(|s| self.open(s.as_str()).transpose())
@@ -141,7 +141,7 @@ impl<'a, 'cx> Workflows<'a, 'cx> {
     }
 
     /// Open a workflow by id.
-    fn open(&self, id: &str) -> Result<Option<Workflow<'a, 'cx>>> {
+    fn open(&self, id: &str) -> Result<Option<WorkflowManifest<'a, 'cx>>> {
         let path = self.path(id);
         let p = self.cx.to_path(&path);
 
@@ -154,7 +154,7 @@ impl<'a, 'cx> Workflows<'a, 'cx> {
         let doc = yaml::from_slice(bytes)
             .with_context(|| anyhow!("{}: Reading YAML file", p.display()))?;
 
-        Ok(Some(Workflow {
+        Ok(Some(WorkflowManifest {
             cx: self.cx,
             id: id.to_owned(),
             path,
@@ -436,14 +436,14 @@ fn extract_env(eval: &Eval<'_>, m: &yaml::Mapping<'_>) -> Result<BTreeMap<String
     Ok(env)
 }
 
-pub(crate) struct Workflow<'a, 'cx> {
+pub(crate) struct WorkflowManifest<'a, 'cx> {
     cx: &'a Ctxt<'cx>,
     pub(crate) id: String,
     pub(crate) path: RelativePathBuf,
     pub(crate) doc: yaml::Document,
 }
 
-impl<'a> Workflow<'a, '_> {
+impl<'a> WorkflowManifest<'a, '_> {
     /// Get the identifier of the workflow.
     pub(crate) fn id(&self) -> &str {
         &self.id

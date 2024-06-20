@@ -46,6 +46,7 @@ pub(crate) mod check;
 pub(crate) mod compress;
 pub(crate) mod deb;
 pub(crate) mod define;
+pub(crate) mod github_action;
 pub(crate) mod github_release;
 pub(crate) mod msi;
 pub(crate) mod msrv;

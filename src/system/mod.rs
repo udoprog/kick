@@ -67,9 +67,7 @@ impl System {
     }
 
     /// Enumerate all tools.
-    pub(crate) fn tools<'a>(
-        &'a self,
-    ) -> impl Iterator<Item = (&'static str, &'a Path, Option<String>)> + 'a {
+    pub(crate) fn tools(&self) -> impl Iterator<Item = (&'static str, &Path, Option<String>)> + '_ {
         let it = self.git.iter().map(|c| ("git", c.path.as_path(), None));
         let it = it.chain(self.wsl.iter().map(|c| ("wsl", c.path.as_path(), None)));
         let it = it.chain(
@@ -140,7 +138,7 @@ impl System {
                 let mut ignored = false;
 
                 if cfg!(windows) {
-                    if let Some(reason) = test_windows_ignored(&path, allow) {
+                    if let Some(reason) = test_windows_ignored(path, allow) {
                         // Non-existant files will be I/O ignored, avoid
                         // spamming log entries for it.
                         if reason != IgnoreReason::Io {

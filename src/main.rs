@@ -245,7 +245,7 @@
 //!
 //! ### The `msi` action
 //!
-//! The `msi` action builds an MSI package for each repo.
+//! The `msi` action builds an MSI package.
 //!
 //! It is configured by a single `wix/<main>.wsx` file in the repo. For an
 //! example, [see the `jpv` project].
@@ -384,6 +384,7 @@ static USER_AGENT: reqwest::header::HeaderValue =
     reqwest::header::HeaderValue::from_static("kick/0.0");
 
 #[derive(Subcommand)]
+#[allow(clippy::enum_variant_names)]
 enum Action {
     /// Checks each repo (default action).
     Check(SharedAction<cli::check::Opts>),
@@ -393,11 +394,11 @@ enum Action {
     Define(SharedAction<cli::define::Opts>),
     /// Manage sets.
     Set(SharedAction<cli::set::Opts>),
-    /// Run a custom command for each repo.
+    /// Run a custom command.
     Run(SharedAction<cli::run::Opts>),
-    /// Fetch github actions build status for each repo.
+    /// Fetch github actions build status.
     Status(SharedAction<cli::status::Opts>),
-    /// Find the minimum supported rust version for each repo.
+    /// Find the minimum supported rust version.
     Msrv(SharedAction<cli::msrv::Opts>),
     /// Update package version.
     Version(SharedAction<cli::version::Opts>),
@@ -417,6 +418,8 @@ enum Action {
     Gzip(SharedAction<cli::compress::Opts>),
     /// Build a github release.
     GithubRelease(SharedAction<cli::github_release::Opts>),
+    /// Run a github action.
+    GithubAction(SharedAction<cli::github_action::Opts>),
 }
 
 impl Action {
@@ -442,6 +445,7 @@ impl Action {
             Action::Zip(action) => &action.shared,
             Action::Gzip(action) => &action.shared,
             Action::GithubRelease(action) => &action.shared,
+            Action::GithubAction(action) => &action.shared,
         }
     }
 
@@ -463,6 +467,7 @@ impl Action {
             Action::Zip(action) => Some(&action.repo),
             Action::Gzip(action) => Some(&action.repo),
             Action::GithubRelease(action) => Some(&action.repo),
+            Action::GithubAction(action) => Some(&action.repo),
         }
     }
 }
@@ -893,6 +898,9 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         }
         Action::GithubRelease(opts) => {
             cli::github_release::entry(&mut cx, &opts.action).await?;
+        }
+        Action::GithubAction(opts) => {
+            cli::github_action::entry(&mut cx, &opts.action)?;
         }
         _ => {
             bail!("Unsupported action at this stage")
