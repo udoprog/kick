@@ -169,12 +169,19 @@ impl From<&RString> for OsArg {
     }
 }
 
+impl From<OsString> for OsArg {
+    #[inline]
+    fn from(s: OsString) -> Self {
+        Self {
+            kind: OsArgKind::OsString(s),
+        }
+    }
+}
+
 impl From<&OsStr> for OsArg {
     #[inline]
     fn from(s: &OsStr) -> Self {
-        Self {
-            kind: OsArgKind::OsString(OsString::from(s)),
-        }
+        Self::from(OsString::from(s))
     }
 }
 

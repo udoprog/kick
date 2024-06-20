@@ -32,7 +32,7 @@ const TESTS: &[(&str, ProbeFn, Allow)] = &[
 ];
 
 #[cfg(windows)]
-const MSYS_TESTS: &[(&str, ProbeFn, Allow)] = &[("bash", bash_probe, Allow::None)];
+const MSYS_TESTS: &[(&str, ProbeFn, Allow)] = &[("bash", bash_msys64_probe, Allow::None)];
 
 /// Detect system commands.
 #[derive(Default)]
@@ -221,6 +221,20 @@ fn node_probe(s: &mut System, path: &Path) -> Result<()> {
 fn bash_probe(s: &mut System, path: &Path) -> Result<()> {
     if probe(path, "--version")? {
         s.bash.push(Generic::new(path.to_owned()));
+    }
+
+    Ok(())
+}
+
+fn bash_msys64_probe(s: &mut System, path: &Path) -> Result<()> {
+    if probe(path, "--version")? {
+        let mut generic = Generic::new(path.to_owned());
+
+        if let Some(path) = path.parent() {
+            generic.add_path(path.to_owned());
+        }
+
+        s.bash.push(generic);
     }
 
     Ok(())

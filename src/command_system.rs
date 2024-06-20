@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::env;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::str;
 
@@ -25,7 +26,7 @@ use crate::workflows::{Eval, Job, Matrix, Step, Steps, Tree, WorkflowManifest, W
 const GITHUB_BASE: &str = "https://github.com";
 const GIT_OBJECT_ID_FILE: &str = ".git-object-id";
 const WORKDIR: &str = "workdir";
-const ENVS: &str = "envs";
+const STATE: &str = "state";
 
 const WINDOWS_BASH_MESSAGE: &str = r#"Bash is not installed by default on Windows!
 
@@ -477,6 +478,13 @@ impl Batch {
                     runner.command.env(key, value);
                 }
 
+                if !runner.paths.is_empty() {
+                    let current_path = env::var_os("PATH").unwrap_or_default();
+                    let paths = env::split_paths(&current_path);
+                    let paths = env::join_paths(runner.paths.iter().cloned().chain(paths))?;
+                    runner.command.env("PATH", paths);
+                }
+
                 write!(o, "# ")?;
 
                 o.set_color(&c.colors.title)?;
@@ -574,21 +582,12 @@ impl Batch {
                 writeln!(o)?;
 
                 if run.skipped.is_none() && !c.dry_run {
-                    if let Some(env_file) = &run.env_file {
-                        let file = File::create(env_file).with_context(|| {
-                            anyhow!(
-                                "Failed to create temporary environment file: {}",
-                                env_file.display()
-                            )
-                        })?;
-
-                        file.set_len(0).with_context(|| {
-                            anyhow!(
-                                "Failed to truncate temporary environment file: {}",
-                                env_file.display()
-                            )
-                        })?;
-                    }
+                    truncate(
+                        run.env_file
+                            .as_slice()
+                            .iter()
+                            .chain(run.output_file.as_slice()),
+                    )?;
 
                     let status = runner.command.status()?;
                     ensure!(status.success(), status);
@@ -615,6 +614,32 @@ impl Batch {
     }
 }
 
+/// Truncate the given collection of files and ensure they exist.
+fn truncate<I>(paths: I) -> Result<()>
+where
+    I: IntoIterator<Item: AsRef<Path>>,
+{
+    for path in paths {
+        let path = path.as_ref();
+
+        let file = File::create(path).with_context(|| {
+            anyhow!(
+                "Failed to create temporary environment file: {}",
+                path.display()
+            )
+        })?;
+
+        file.set_len(0).with_context(|| {
+            anyhow!(
+                "Failed to truncate temporary environment file: {}",
+                path.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
 enum RunKind {
     Shell {
         script: Box<RStr>,
@@ -635,11 +660,13 @@ pub(crate) struct Run {
     run: RunKind,
     name: Option<RString>,
     env: BTreeMap<String, OsArg>,
-    env_is_file: HashSet<String>,
     skipped: Option<String>,
     working_directory: Option<RString>,
     // If an environment file is supported, this is the path to the file to set up.
     env_file: Option<Rc<Path>>,
+    // If an output file is supported, this is the path to the file to set up.
+    output_file: Option<Rc<Path>>,
+    env_is_file: HashSet<String>,
 }
 
 impl Run {
@@ -679,6 +706,7 @@ impl Run {
             skipped: None,
             working_directory: None,
             env_file: None,
+            output_file: None,
             env_is_file: HashSet::new(),
         }
     }
@@ -700,19 +728,6 @@ impl Run {
         self
     }
 
-    /// Mark environment variables which are files.
-    #[inline]
-    fn with_env_is_file<I>(mut self, env_is_file: I) -> Self
-    where
-        I: IntoIterator<Item: AsRef<str>>,
-    {
-        self.env_is_file = env_is_file
-            .into_iter()
-            .map(|s| s.as_ref().to_owned())
-            .collect();
-        self
-    }
-
     /// Modify the skipped status of the run command.
     #[inline]
     fn with_skipped(mut self, skipped: Option<String>) -> Self {
@@ -731,6 +746,26 @@ impl Run {
     #[inline]
     fn with_env_file(mut self, env_file: Option<Rc<Path>>) -> Self {
         self.env_file = env_file;
+        self
+    }
+
+    /// Modify the output file of the run command.
+    #[inline]
+    fn with_output_file(mut self, output_file: Option<Rc<Path>>) -> Self {
+        self.output_file = output_file;
+        self
+    }
+
+    /// Mark environment variables which are files.
+    #[inline]
+    fn with_env_is_file<I>(mut self, env_is_file: I) -> Self
+    where
+        I: IntoIterator<Item: AsRef<str>>,
+    {
+        self.env_is_file = env_is_file
+            .into_iter()
+            .map(|s| s.as_ref().to_owned())
+            .collect();
         self
     }
 }
@@ -776,6 +811,7 @@ impl RunOn {
 struct Runner {
     command: Command,
     extra_env: BTreeMap<&'static str, OsArg>,
+    paths: Vec<PathBuf>,
 }
 
 impl Runner {
@@ -783,6 +819,7 @@ impl Runner {
         Self {
             command,
             extra_env: BTreeMap::new(),
+            paths: Vec::new(),
         }
     }
 }
@@ -895,7 +932,14 @@ fn setup_same(c: &BatchConfig<'_, '_>, path: &Path, run: &Run) -> Result<Runner>
                 let mut c = bash.command(path);
                 c.args(["-i", "-c"]);
                 c.arg(script);
-                Ok(Runner::new(c))
+
+                let mut r = Runner::new(c);
+
+                if !bash.paths.is_empty() {
+                    r.paths = bash.paths.clone();
+                }
+
+                Ok(r)
             }
         },
         RunKind::Command { command, args } => {
@@ -1052,7 +1096,7 @@ struct ActionRunner {
     kind: ActionKind,
     action_path: Rc<Path>,
     defaults: BTreeMap<String, String>,
-    envs_dir: Rc<Path>,
+    state_dir: Rc<Path>,
     id: String,
 }
 
@@ -1073,7 +1117,8 @@ impl ActionRunners {
         let mut main_commands = Vec::new();
         let mut post_commands = Vec::new();
 
-        let env_file = Rc::<Path>::from(runner.envs_dir.join(format!("env-{}", runner.id)));
+        let env_file = Rc::<Path>::from(runner.state_dir.join(format!("env-{}", runner.id)));
+        let output_file = Rc::<Path>::from(runner.state_dir.join(format!("output-{}", runner.id)));
 
         match &runner.kind {
             ActionKind::Node {
@@ -1096,14 +1141,19 @@ impl ActionRunners {
                 }
 
                 env.insert(String::from("GITHUB_ENV"), OsArg::from(env_file.clone()));
+                env.insert(
+                    String::from("GITHUB_OUTPUT"),
+                    OsArg::from(output_file.clone()),
+                );
 
                 main_commands.push(
                     Run::node(*node_version, main.clone())
                         .with_name(Some(uses))
                         .with_skipped(c.skipped.clone())
                         .with_env(env.clone())
-                        .with_env_is_file(["GITHUB_ENV"])
-                        .with_env_file(Some(env_file.clone())),
+                        .with_env_is_file(["GITHUB_ENV", "GITHUB_OUTPUT"])
+                        .with_env_file(Some(env_file.clone()))
+                        .with_output_file(Some(output_file.clone())),
                 );
 
                 if let Some(post) = post {
@@ -1112,7 +1162,8 @@ impl ActionRunners {
                             .with_name(Some(format!("{} (post)", uses.as_raw())))
                             .with_skipped(c.skipped.clone())
                             .with_env(env.clone())
-                            .with_env_file(Some(env_file.clone())),
+                            .with_env_file(Some(env_file.clone()))
+                            .with_output_file(Some(output_file.clone())),
                     );
                 }
             }
@@ -1191,7 +1242,7 @@ fn sync_github_use(
 
     let cache_dir = project_dirs.cache_dir();
     let actions_dir = cache_dir.join("actions");
-    let envs_dir = Rc::from(cache_dir.join(ENVS));
+    let state_dir = Rc::from(cache_dir.join(STATE));
     let repo_dir = actions_dir.join(repo).join(name);
     let git_dir = repo_dir.join("git");
 
@@ -1282,8 +1333,8 @@ fn sync_github_use(
             continue;
         };
 
-        fs::create_dir_all(&envs_dir)
-            .with_context(|| anyhow!("Failed to create envs directory: {}", envs_dir.display()))?;
+        fs::create_dir_all(&state_dir)
+            .with_context(|| anyhow!("Failed to create envs directory: {}", state_dir.display()))?;
 
         runners.insert(
             key,
@@ -1291,7 +1342,7 @@ fn sync_github_use(
                 kind: runner.kind,
                 action_path: work_dir.into(),
                 defaults: runner.defaults,
-                envs_dir: envs_dir.clone(),
+                state_dir: state_dir.clone(),
                 id: id.to_string(),
             },
         );
