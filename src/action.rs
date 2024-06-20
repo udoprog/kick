@@ -33,6 +33,7 @@ pub(crate) enum ActionKind {
 
 /// Checkout the given object id.
 pub(crate) fn load(
+    eval: &Eval<'_>,
     repo: &Repository,
     id: ObjectId,
     work_dir: &Path,
@@ -65,7 +66,7 @@ pub(crate) fn load(
                         let action_yml =
                             yaml::from_slice(&object.data).context("Opening action.yml")?;
 
-                        cx.process_actions_yml(&action_yml)
+                        cx.process_actions_yml(&action_yml, eval)
                             .context("Processing action.yml")?;
                     }
 
@@ -205,7 +206,7 @@ struct Cx {
 }
 
 impl Cx {
-    fn process_actions_yml(&mut self, action_yml: &yaml::Document) -> Result<()> {
+    fn process_actions_yml(&mut self, action_yml: &yaml::Document, eval: &Eval<'_>) -> Result<()> {
         let Some(action_yml) = action_yml.as_ref().as_mapping() else {
             bail!("Expected mapping in action.yml");
         };
@@ -226,8 +227,7 @@ impl Cx {
                 bail!("Unsupported .runs.using: {using}");
             }
 
-            let eval = Eval::empty();
-            let (steps, _) = workflows::load_steps(&runs, &eval)?;
+            let (steps, _, _) = workflows::load_steps(&runs, eval)?;
             self.steps = steps;
 
             if let Some(s) = runs.get("main").and_then(|v| v.as_str()) {

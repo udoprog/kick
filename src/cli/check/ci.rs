@@ -122,6 +122,7 @@ pub(crate) fn build(cx: &Ctxt<'_>, package: &Package, repo: &Repo, crates: &Crat
 /// Validate the current model.
 fn validate_workflow(
     cx: &Ctxt<'_>,
+
     ci: &mut Ci<'_>,
     w: &WorkflowManifest<'_, '_>,
     config: &WorkflowConfig,
@@ -160,6 +161,7 @@ fn validate_workflow(
 /// Validate that jobs are modern.
 fn validate_jobs(
     cx: &Ctxt<'_>,
+
     ci: &mut Ci<'_>,
     w: &WorkflowManifest<'_, '_>,
     config: &WorkflowConfig,

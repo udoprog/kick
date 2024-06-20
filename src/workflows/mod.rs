@@ -175,10 +175,7 @@ fn build_job(
         .and_then(|value| value.as_str())
         .context("Missing runs-on")?;
 
-    let name = value
-        .get("name")
-        .and_then(|value| Some(eval.eval(value.as_str()?)))
-        .transpose()?;
+    let name = value.get("name").and_then(|v| v.as_str());
 
     let mut matrices = Vec::new();
 
@@ -186,10 +183,15 @@ fn build_job(
         let tree = eval.tree().with_prefix(["matrix"], matrix.matrix.clone());
         let eval = eval.with_tree(&tree);
 
-        let (steps, step_mappings) = load_steps(&value, &eval)?;
+        let (steps, step_mappings, tree) = load_steps(&value, &eval)?;
+        let eval = eval.with_tree(&tree);
 
         let steps = Steps {
             runs_on: eval.eval(runs_on)?.into_owned(),
+            name: name
+                .map(|name| eval.eval(name))
+                .transpose()?
+                .map(Cow::into_owned),
             steps,
             step_mappings,
         };
@@ -199,7 +201,7 @@ fn build_job(
 
     Ok(Job {
         id: id.to_owned(),
-        name: name.map(Cow::into_owned),
+        name: name.map(str::to_owned),
         matrices,
     })
 }
@@ -208,12 +210,12 @@ fn build_job(
 pub(crate) fn load_steps(
     mapping: &yaml::Mapping<'_>,
     eval: &Eval<'_>,
-) -> Result<(Vec<Step>, Vec<StepMapping>)> {
+) -> Result<(Vec<Step>, Vec<StepMapping>, Rc<Tree>)> {
     let mut steps = Vec::new();
     let mut step_mappings = Vec::new();
 
     let Some(s) = mapping.get("steps").and_then(|steps| steps.as_sequence()) else {
-        return Ok((steps, step_mappings));
+        return Ok((steps, step_mappings, Rc::new(eval.tree().clone())));
     };
 
     let tree = eval
@@ -284,7 +286,7 @@ pub(crate) fn load_steps(
         });
     }
 
-    Ok((steps, step_mappings))
+    Ok((steps, step_mappings, tree))
 }
 
 /// Iterate over all matrices.
@@ -470,8 +472,7 @@ impl<'a> WorkflowManifest<'a, '_> {
             );
         };
 
-        let functions = default_functions();
-        let mut tree = Tree::new();
+        let mut tree = self.cx.eval.tree().clone();
 
         tree.insert(["runner", "os"], self.cx.os.as_tree_value());
 
@@ -481,9 +482,8 @@ impl<'a> WorkflowManifest<'a, '_> {
             }
         }
 
-        let eval = Eval::empty().with_functions(&functions);
-        tree.insert_prefix(["env"], extract_env(&eval, &mapping)?);
-        let eval = eval.with_tree(&tree);
+        tree.insert_prefix(["env"], extract_env(&self.cx.eval, &mapping)?);
+        let eval = self.cx.eval.with_tree(&tree);
 
         let jobs = mapping
             .get("jobs")
@@ -516,12 +516,14 @@ impl<'a> WorkflowManifest<'a, '_> {
 
 pub(crate) struct Job {
     pub(crate) id: String,
-    pub(crate) name: Option<RString>,
+    #[allow(unused)]
+    pub(crate) name: Option<String>,
     pub(crate) matrices: Vec<(Matrix, Steps)>,
 }
 
 pub(crate) struct Steps {
     pub(crate) runs_on: RString,
+    pub(crate) name: Option<RString>,
     pub(crate) steps: Vec<Step>,
     pub(crate) step_mappings: Vec<StepMapping>,
 }

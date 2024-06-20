@@ -108,10 +108,20 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
                 writeln!(o, "Workflow: {}", workflow.id())?;
 
                 for job in jobs {
-                    if let Some(name) = &job.name {
-                        writeln!(o, "  Job: {} ({})", job.id, name)?;
-                    } else {
-                        writeln!(o, "  Job: {}", job.id)?;
+                    for (matrix, steps) in &job.matrices {
+                        write!(o, "  Job: {}", job.id)?;
+
+                        if let Some(name) = &steps.name {
+                            if name.as_raw() != job.id {
+                                write!(o, " ({})", name)?;
+                            }
+                        }
+
+                        if matrix.is_empty() {
+                            writeln!(o)?;
+                        } else {
+                            writeln!(o, " {}", matrix.display())?;
+                        }
                     }
                 }
             }

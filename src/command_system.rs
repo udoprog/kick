@@ -1779,7 +1779,7 @@ fn sync_github_use(
         tracing::debug!(?work_dir, "Exporting {key}");
 
         // Load an action runner directly out of a repository without checking it out.
-        let Some(runner) = crate::action::load(&r, id, &work_dir, version)? else {
+        let Some(runner) = crate::action::load(&cx.eval, &r, id, &work_dir, version)? else {
             tracing::warn!("Could not load runner for {key}");
             continue;
         };
