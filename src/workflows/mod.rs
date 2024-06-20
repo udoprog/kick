@@ -233,11 +233,13 @@ fn build_job(
                     }
                 }
 
+                let id = value.get("id").and_then(|v| v.as_str());
                 let name = value.get("name").and_then(|v| v.as_str());
                 let run = value.get("run").and_then(|v| v.as_str());
                 let shell = value.get("shell").and_then(|v| v.as_str());
 
                 steps.push(Step {
+                    id: id.map(str::to_owned),
                     uses,
                     index,
                     tree: tree.clone(),
@@ -521,6 +523,7 @@ pub(crate) struct StepMapping {
 
 #[derive(Clone)]
 pub(crate) struct Step {
+    pub(crate) id: Option<String>,
     pub(crate) uses: Option<RString>,
     pub(crate) index: usize,
     pub(crate) tree: Rc<Tree>,
@@ -698,27 +701,6 @@ impl Tree {
                 .or_default()
                 .value = Some(RString::from(value));
         }
-    }
-
-    /// Get a prefix tree.
-    pub(crate) fn get_prefix(&self, prefix: &str) -> BTreeMap<String, RString> {
-        let mut output = BTreeMap::new();
-
-        let Some(children) = &self.root.children else {
-            return output;
-        };
-
-        let Some(children) = children.get(prefix).and_then(|n| n.children.as_ref()) else {
-            return output;
-        };
-
-        for (key, node) in children {
-            if let Some(value) = &node.value {
-                output.insert(key.clone(), value.clone());
-            }
-        }
-
-        output
     }
 
     /// Insert a value into the tree.
