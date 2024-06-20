@@ -183,82 +183,10 @@ fn build_job(
     let mut matrices = Vec::new();
 
     for matrix in build_matrices(&value, ignore, eval)? {
-        let mut tree = eval.tree().clone();
-        tree.insert_prefix(["matrix"], matrix.matrix.clone());
+        let tree = eval.tree().with_prefix(["matrix"], matrix.matrix.clone());
         let eval = eval.with_tree(&tree);
 
-        let mut steps = Vec::new();
-        let mut step_mappings = Vec::new();
-
-        if let Some(s) = value.get("steps").and_then(|steps| steps.as_sequence()) {
-            let mut tree = eval.tree().clone();
-            tree.insert_prefix(["env"], extract_env(&eval, &value)?);
-            let tree = Rc::new(tree);
-            let eval = eval.with_tree(tree.as_ref());
-
-            for (index, s) in s.iter().enumerate() {
-                let Some(value) = s.as_mapping() else {
-                    continue;
-                };
-
-                let env = extract_raw_env(&value)?;
-                let working_directory = value.get("working-directory").and_then(|v| v.as_str());
-
-                let mut condition = None;
-                let mut condition_mapping = None;
-
-                if let Some((id, expr)) = value.get("if").and_then(|v| Some((v.id(), v.as_str()?)))
-                {
-                    condition = Some(expr);
-                    condition_mapping = Some(id);
-                }
-
-                let mut uses = None;
-                let mut uses_mapping = None;
-
-                if let Some((id, s)) = value.get("uses").and_then(|v| Some((v.id(), v.as_str()?))) {
-                    uses = Some(eval.eval(s)?.into_owned());
-                    uses_mapping = Some(id);
-                }
-
-                let mut with = BTreeMap::new();
-
-                if let Some(mapping) = value.get("with").and_then(|v| v.as_mapping()) {
-                    for (key, value) in mapping {
-                        let (Ok(key), Some(value)) = (str::from_utf8(key), value.as_str()) else {
-                            continue;
-                        };
-
-                        with.insert(key.to_owned(), value.to_owned());
-                    }
-                }
-
-                let id = value.get("id").and_then(|v| v.as_str());
-                let name = value.get("name").and_then(|v| v.as_str());
-                let run = value.get("run").and_then(|v| v.as_str());
-                let shell = value.get("shell").and_then(|v| v.as_str());
-
-                steps.push(Step {
-                    id: id.map(str::to_owned),
-                    uses,
-                    index,
-                    tree: tree.clone(),
-                    env,
-                    working_directory: working_directory.map(str::to_owned),
-                    condition: condition.map(str::to_owned),
-                    with,
-                    name: name.map(str::to_owned),
-                    run: run.map(str::to_owned),
-                    shell: shell.map(str::to_owned),
-                });
-
-                step_mappings.push(StepMapping {
-                    id: value.id(),
-                    condition: condition_mapping,
-                    uses: uses_mapping,
-                });
-            }
-        };
+        let (steps, step_mappings) = load_steps(&value, &eval)?;
 
         let steps = Steps {
             runs_on: eval.eval(runs_on)?.into_owned(),
@@ -274,6 +202,89 @@ fn build_job(
         name: name.map(Cow::into_owned),
         matrices,
     })
+}
+
+/// Load steps from the given YAML value.
+pub(crate) fn load_steps(
+    mapping: &yaml::Mapping<'_>,
+    eval: &Eval<'_>,
+) -> Result<(Vec<Step>, Vec<StepMapping>)> {
+    let mut steps = Vec::new();
+    let mut step_mappings = Vec::new();
+
+    let Some(s) = mapping.get("steps").and_then(|steps| steps.as_sequence()) else {
+        return Ok((steps, step_mappings));
+    };
+
+    let tree = eval
+        .tree()
+        .with_prefix(["env"], extract_env(&eval, &mapping)?);
+    let tree = Rc::new(tree);
+    let eval = eval.with_tree(tree.as_ref());
+
+    for (index, s) in s.iter().enumerate() {
+        let Some(value) = s.as_mapping() else {
+            continue;
+        };
+
+        let env = extract_raw_env(&value)?;
+        let working_directory = value.get("working-directory").and_then(|v| v.as_str());
+
+        let mut condition = None;
+        let mut condition_mapping = None;
+
+        if let Some((id, expr)) = value.get("if").and_then(|v| Some((v.id(), v.as_str()?))) {
+            condition = Some(expr);
+            condition_mapping = Some(id);
+        }
+
+        let mut uses = None;
+        let mut uses_mapping = None;
+
+        if let Some((id, s)) = value.get("uses").and_then(|v| Some((v.id(), v.as_str()?))) {
+            uses = Some(eval.eval(s)?.into_owned());
+            uses_mapping = Some(id);
+        }
+
+        let mut with = BTreeMap::new();
+
+        if let Some(mapping) = value.get("with").and_then(|v| v.as_mapping()) {
+            for (key, value) in mapping {
+                let (Ok(key), Some(value)) = (str::from_utf8(key), value.as_str()) else {
+                    continue;
+                };
+
+                with.insert(key.to_owned(), value.to_owned());
+            }
+        }
+
+        let id = value.get("id").and_then(|v| v.as_str());
+        let name = value.get("name").and_then(|v| v.as_str());
+        let run = value.get("run").and_then(|v| v.as_str());
+        let shell = value.get("shell").and_then(|v| v.as_str());
+
+        steps.push(Step {
+            id: id.map(str::to_owned),
+            uses,
+            index,
+            tree: tree.clone(),
+            env,
+            working_directory: working_directory.map(str::to_owned),
+            condition: condition.map(str::to_owned),
+            with,
+            name: name.map(str::to_owned),
+            run: run.map(str::to_owned),
+            shell: shell.map(str::to_owned),
+        });
+
+        step_mappings.push(StepMapping {
+            id: value.id(),
+            condition: condition_mapping,
+            uses: uses_mapping,
+        });
+    }
+
+    Ok((steps, step_mappings))
 }
 
 /// Iterate over all matrices.
@@ -470,7 +481,7 @@ impl<'a> WorkflowManifest<'a, '_> {
             }
         }
 
-        let eval = Eval::new().with_functions(&functions);
+        let eval = Eval::empty().with_functions(&functions);
         tree.insert_prefix(["env"], extract_env(&eval, &mapping)?);
         let eval = eval.with_tree(&tree);
 
@@ -643,6 +654,18 @@ impl Tree {
         Tree { root: Node::EMPTY }
     }
 
+    /// Return a modified clone of the current tree with the given prefix set.
+    pub(crate) fn with_prefix<I, V, U>(&self, key: I, vars: V) -> Self
+    where
+        I: IntoIterator<Item: AsRef<str>>,
+        V: IntoIterator<Item = (String, U)>,
+        RString: From<U>,
+    {
+        let mut tree = self.clone();
+        tree.insert_prefix(key, vars);
+        tree
+    }
+
     /// Extend this tree with another tree.
     pub(crate) fn extend(&mut self, other: &Self) {
         let mut queue = VecDeque::new();
@@ -675,7 +698,7 @@ impl Tree {
     }
 
     /// Insert a prefix into the current tree.
-    pub(crate) fn insert_prefix<I, V, U>(&mut self, keys: I, vars: V)
+    pub(crate) fn insert_prefix<I, V, U>(&mut self, key: I, vars: V)
     where
         I: IntoIterator<Item: AsRef<str>>,
         V: IntoIterator<Item = (String, U)>,
@@ -683,7 +706,7 @@ impl Tree {
     {
         let mut current = &mut self.root;
 
-        for key in keys {
+        for key in key {
             let key = key.as_ref();
 
             current = current
@@ -753,14 +776,23 @@ impl Tree {
 
 #[derive(Clone, Copy)]
 pub(crate) struct Eval<'a> {
-    tree: Option<&'a Tree>,
+    tree: &'a Tree,
     functions: Option<&'a BTreeMap<&'static str, CustomFunction>>,
 }
 
 impl<'a> Eval<'a> {
-    pub(crate) const fn new() -> Eval<'a> {
+    pub(crate) fn empty() -> Self {
+        static EMPTY_TREE: Tree = Tree::new();
+
         Self {
-            tree: None,
+            tree: &EMPTY_TREE,
+            functions: None,
+        }
+    }
+
+    pub(crate) const fn new(tree: &'a Tree) -> Self {
+        Self {
+            tree,
             functions: None,
         }
     }
@@ -783,22 +815,13 @@ impl<'a> Eval<'a> {
 
     /// Modify the environment with a matrix.
     pub(crate) fn with_tree(self, tree: &'a Tree) -> Self {
-        Self {
-            tree: Some(tree),
-            ..self
-        }
+        Self { tree, ..self }
     }
 
     /// Clone the current tree so that it can be modified.
     #[inline]
     pub(crate) fn tree(&self) -> &Tree {
-        static EMPTY: Tree = Tree::new();
-
-        let Some(tree) = self.tree else {
-            return &EMPTY;
-        };
-
-        tree
+        self.tree
     }
 
     /// Evaluate a string with matrix variables.
@@ -883,13 +906,9 @@ impl<'a> Eval<'a> {
     where
         I: IntoIterator<Item: AsRef<str>>,
     {
-        let Some(tree) = self.tree else {
-            return Vec::new();
-        };
-
         let key = keys.into_iter().collect::<Vec<_>>();
         let key = key.iter().map(AsRef::as_ref).collect::<Vec<_>>();
-        tree.get(&key)
+        self.tree.get(&key)
     }
 }
 

@@ -838,10 +838,10 @@ impl ScheduleActionStep {
             tree.extend(parent);
         }
 
-        let eval = Eval::new().with_tree(&tree);
+        let eval = Eval::new(&tree);
         let (env, tree_env) = self.env.build(Some((&eval, &self.step.env)))?;
         tree.insert_prefix(["env"], tree_env);
-        let eval = Eval::new().with_tree(&tree);
+        let eval = Eval::new(&tree);
 
         let script = eval.eval(&self.step.run)?.into_owned();
 
@@ -887,10 +887,10 @@ impl ScheduleUse {
             tree.extend(parent);
         }
 
-        let eval = Eval::new().with_tree(&tree);
+        let eval = Eval::new(&tree);
         let (_, tree_env) = self.env.build(Some((&eval, &self.step.env)))?;
         tree.insert_prefix(["env"], tree_env);
-        let eval = Eval::new().with_tree(&tree);
+        let eval = Eval::new(&tree);
 
         let id = self.step.id.as_ref().map(|v| eval.eval(v)).transpose()?;
 
@@ -1043,11 +1043,11 @@ impl ScheduleRun {
             tree.extend(parent);
         }
 
-        let eval = Eval::new().with_tree(&tree);
+        let eval = Eval::new(&tree);
         let (env, tree_env) = self.env.build(Some((&eval, &self.step.env)))?;
 
         tree.insert_prefix(["env"], tree_env);
-        let eval = Eval::new().with_tree(&tree);
+        let eval = Eval::new(&tree);
 
         let mut skipped = None;
 

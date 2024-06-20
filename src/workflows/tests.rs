@@ -6,7 +6,7 @@ fn matrix_test() {
     tree.insert(["matrix", "a"], "1");
     tree.insert(["matrix", "b"], "2");
 
-    let eval = Eval::new().with_tree(&tree);
+    let eval = Eval::new(&tree);
 
     assert_eq!(eval.test("matrix.a == '1'"), Ok(true));
     assert_eq!(eval.test("matrix.a != '2'"), Ok(true));
@@ -22,7 +22,7 @@ fn matrix_test() {
 fn or_test() {
     let mut tree = Tree::new();
     tree.insert(["matrix", "bar"], "right");
-    let eval = Eval::new().with_tree(&tree);
+    let eval = Eval::new(&tree);
 
     assert_eq!(
         eval.expr("matrix.foo || matrix.bar"),
@@ -36,7 +36,7 @@ fn and_test() {
     tree.insert(["matrix", "foo"], "wrong");
     tree.insert(["matrix", "bar"], "right");
 
-    let eval = Eval::new().with_tree(&tree);
+    let eval = Eval::new(&tree);
 
     assert_eq!(
         eval.expr("matrix.foo && matrix.bar"),
@@ -52,7 +52,7 @@ fn group() {
     tree.insert(["matrix", "foo"], "wrong");
     tree.insert(["matrix", "bar"], "right");
 
-    let eval = Eval::new().with_tree(&tree);
+    let eval = Eval::new(&tree);
 
     assert_eq!(
         eval.expr("${{ matrix.foo }} && matrix.bar"),
@@ -68,7 +68,7 @@ fn not() {
     tree.insert(["matrix", "foo"], "");
     tree.insert(["matrix", "bar"], "right");
 
-    let eval = Eval::new().with_tree(&tree);
+    let eval = Eval::new(&tree);
 
     assert_eq!(eval.expr("!matrix.foo"), Ok(Expr::Bool(true)));
     assert_eq!(eval.expr("!matrix.bar"), Ok(Expr::Bool(false)));
@@ -80,7 +80,7 @@ fn lazy_expansion() {
     let mut tree = Tree::new();
     tree.insert(["matrix", "ref"], "refs/heads/main");
     tree.insert(["matrix", "ref2"], "refs/heads/feature");
-    let eval = Eval::new().with_tree(&tree);
+    let eval = Eval::new(&tree);
 
     assert_eq!(
         eval.expr(
@@ -109,7 +109,7 @@ fn lazy_expansion() {
 
 #[test]
 fn comparisons() {
-    let eval = Eval::new();
+    let eval = Eval::empty();
     assert_eq!(eval.expr("100"), Ok(Expr::Float(100.0)));
     assert!(eval.expr("nan").unwrap().as_f64().is_nan());
     assert!(eval.expr("'foo'").unwrap().as_f64().is_nan());
@@ -144,7 +144,7 @@ fn lookup_star() {
     let mut tree = Tree::new();
     tree.insert(["matrix", "a"], "first");
     tree.insert(["matrix", "b"], "second");
-    let eval = Eval::new().with_tree(&tree);
+    let eval = Eval::new(&tree);
 
     let expected = Expr::Array(["first".into(), "second".into()].into());
     assert_eq!(eval.expr("matrix.*"), Ok(expected));
@@ -157,7 +157,7 @@ fn function() {
     tree.insert(["matrix", "b"], "false");
     tree.insert(["matrix", "c"], "[1, 2, 3, 4]");
     let functions = default_functions();
-    let eval = Eval::new().with_tree(&tree).with_functions(&functions);
+    let eval = Eval::new(&tree).with_functions(&functions);
     assert_eq!(eval.expr("fromJSON(matrix.a)"), Ok(Expr::Bool(true)));
     assert_eq!(eval.expr("fromJSON(matrix.b)"), Ok(Expr::Bool(false)));
     assert_eq!(
