@@ -9,8 +9,10 @@ use std::str::{self, FromStr};
 use anyhow::{anyhow, bail, Context, Result};
 use gix::objs::Kind;
 use gix::{ObjectId, Repository};
+use nondestructive::yaml;
 use relative_path::RelativePathBuf;
-use serde_yaml::Value;
+
+use crate::workflows::{self, Eval, Step};
 
 pub(crate) struct Action {
     pub(crate) kind: ActionKind,
@@ -25,16 +27,8 @@ pub(crate) enum ActionKind {
         node_version: u32,
     },
     Composite {
-        steps: Vec<ActionStep>,
+        steps: Vec<Step>,
     },
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ActionStep {
-    pub(crate) id: Option<String>,
-    pub(crate) run: String,
-    pub(crate) shell: Option<String>,
-    pub(crate) env: BTreeMap<String, String>,
 }
 
 /// Checkout the given object id.
@@ -68,8 +62,8 @@ pub(crate) fn load(
                     if path == "action.yml" {
                         let object = id.object()?;
 
-                        let action_yml = serde_yaml::from_slice::<serde_yaml::Value>(&object.data)
-                            .context("Opening action.yml")?;
+                        let action_yml =
+                            yaml::from_slice(&object.data).context("Opening action.yml")?;
 
                         cx.process_actions_yml(&action_yml)
                             .context("Processing action.yml")?;
@@ -205,73 +199,43 @@ struct Cx {
     kind: Option<RunnerKind>,
     main: Option<RelativePathBuf>,
     post: Option<RelativePathBuf>,
-    steps: Vec<ActionStep>,
+    steps: Vec<Step>,
     defaults: BTreeMap<String, String>,
     required: BTreeSet<String>,
 }
 
 impl Cx {
-    fn process_actions_yml(&mut self, action_yml: &Value) -> Result<()> {
-        let runs = action_yml.get("runs").and_then(|value| value.as_mapping());
+    fn process_actions_yml(&mut self, action_yml: &yaml::Document) -> Result<()> {
+        let Some(action_yml) = action_yml.as_ref().as_mapping() else {
+            bail!("Expected mapping in action.yml");
+        };
+
+        let runs = action_yml.get("runs").and_then(|v| v.as_mapping());
 
         if let Some(runs) = runs {
             let using = runs
                 .get("using")
                 .and_then(|v| v.as_str())
-                .context("Missing runs.using")?;
+                .context("Missing .runs.using")?;
 
             if let Some(version) = using.strip_prefix("node") {
-                self.kind = Some(RunnerKind::Node(version.into()));
+                self.kind = Some(RunnerKind::Node(version.trim().into()));
             } else if using == "composite" {
                 self.kind = Some(RunnerKind::Composite);
             } else {
                 bail!("Unsupported .runs.using: {using}");
             }
 
-            if let Some(values) = runs.get("steps").and_then(|v| v.as_sequence()) {
-                for (index, value) in values.iter().enumerate() {
-                    let Some(value) = value.as_mapping() else {
-                        bail!("Expected mapping in .runs.steps[{index}]");
-                    };
-
-                    let id = value.get("id").and_then(|v| v.as_str());
-                    let shell = value.get("shell").and_then(|v| v.as_str());
-
-                    let mut env = BTreeMap::new();
-
-                    if let Some(e) = value.get("env").and_then(|v| v.as_mapping()) {
-                        for (key, value) in e.iter() {
-                            let (Some(key), Some(value)) = (key.as_str(), value.as_str()) else {
-                                continue;
-                            };
-
-                            env.insert(key.to_owned(), value.to_owned());
-                        }
-                    }
-
-                    if let Some(run) = value.get("run").and_then(|v| v.as_str()) {
-                        self.steps.push(ActionStep {
-                            id: id.map(str::to_owned),
-                            run: run.to_owned(),
-                            shell: shell.map(str::to_owned),
-                            env,
-                        });
-                    }
-
-                    if let Some(uses) = value.get("uses").and_then(|v| v.as_str()) {
-                        tracing::warn!(
-                            "Use `{uses}` not supported yet at .runs.steps[{index}].uses"
-                        );
-                    }
-                }
-            }
+            let eval = Eval::empty();
+            let (steps, _) = workflows::load_steps(&runs, &eval)?;
+            self.steps = steps;
 
             if let Some(s) = runs.get("main").and_then(|v| v.as_str()) {
-                self.main = Some(RelativePathBuf::from(s.to_owned()));
+                self.main = Some(RelativePathBuf::from(s.trim().to_owned()));
             }
 
             if let Some(s) = runs.get("post").and_then(|v| v.as_str()) {
-                self.post = Some(RelativePathBuf::from(s.to_owned()));
+                self.post = Some(RelativePathBuf::from(s.trim().to_owned()));
             }
         }
 
@@ -281,12 +245,13 @@ impl Cx {
 
         if let Some(data) = data {
             for (key, value) in data.iter() {
-                let (Some(key), Some(value)) = (key.as_str(), value.as_mapping()) else {
+                let (Ok(key), Some(value)) = (str::from_utf8(key), value.as_mapping()) else {
                     continue;
                 };
 
                 if let Some(default) = value.get("default").and_then(|v| v.as_str()) {
-                    self.defaults.insert(key.to_owned(), default.to_owned());
+                    self.defaults
+                        .insert(key.to_owned(), default.trim().to_owned());
                 }
 
                 if let Some(true) = value.get("required").and_then(|v| v.as_bool()) {

@@ -15,7 +15,7 @@ use gix::ObjectId;
 use relative_path::RelativePath;
 use termcolor::{Color, ColorSpec, WriteColor};
 
-use crate::action::{ActionKind, ActionStep};
+use crate::action::ActionKind;
 use crate::config::Os;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
@@ -188,56 +188,7 @@ impl<'a, 'cx> Workflows<'a, 'cx> {
             os_to_run_on(cx, &os)?
         };
 
-        let cache_dir = cx
-            .paths
-            .project_dirs
-            .context("Missing project dirs for Kick")?
-            .cache_dir();
-
-        let state_dir = cache_dir.join("state");
-        let env_file = Rc::<Path>::from(state_dir.join("env"));
-        let output_file = Rc::<Path>::from(state_dir.join("output"));
-
-        let mut file_env = BTreeMap::new();
-
-        file_env.insert(String::from("GITHUB_ENV"), env_file.clone());
-        file_env.insert(String::from("GITHUB_OUTPUT"), output_file.clone());
-
-        let file_env = Rc::new(file_env);
-        let env = Rc::new(BTreeMap::new());
-
-        let mut commands = Vec::new();
-
-        for step in &steps.steps {
-            if let Some(run) = &step.run {
-                commands.push(Schedule::Run(ScheduleRun {
-                    run: run.clone(),
-                    step: step.clone(),
-                    tree: step.tree.clone(),
-                    env: FullEnv {
-                        env: env.clone(),
-                        file_env: file_env.clone(),
-                        env_file: env_file.clone(),
-                        output_file: output_file.clone(),
-                    },
-                }));
-            }
-
-            if let Some(uses) = &step.uses {
-                commands.push(Schedule::Use(ScheduleUse {
-                    uses: uses.clone(),
-                    step: step.clone(),
-                    runners: self.runners.clone(),
-                    tree: step.tree.clone(),
-                    env: FullEnv {
-                        env: env.clone(),
-                        file_env: file_env.clone(),
-                        env_file: env_file.clone(),
-                        output_file: output_file.clone(),
-                    },
-                }));
-            }
-        }
+        let commands = build_steps(cx, &self.runners, &steps.steps, None, None)?;
 
         Ok(Batch {
             commands,
@@ -249,6 +200,147 @@ impl<'a, 'cx> Workflows<'a, 'cx> {
             },
         })
     }
+}
+
+struct BuiltEnv {
+    env: BTreeMap<String, RString>,
+    file_env: BTreeMap<String, Rc<Path>>,
+    env_file: Rc<Path>,
+    output_file: Rc<Path>,
+    tree: Tree,
+}
+
+fn build_env(
+    cx: &Ctxt<'_>,
+    runner: Option<&ActionRunner>,
+    c: Option<&ActionConfig>,
+) -> Result<BuiltEnv> {
+    let cache_dir = cx
+        .paths
+        .project_dirs
+        .context("Missing project dirs for Kick")?
+        .cache_dir();
+
+    let state_dir = cache_dir.join("state");
+    let env_file;
+    let output_file;
+
+    let mut file_env = BTreeMap::new();
+
+    if let Some(runner) = runner {
+        env_file = Rc::<Path>::from(runner.state_dir.join(format!("env-{}", runner.id)));
+        output_file = Rc::<Path>::from(runner.state_dir.join(format!("output-{}", runner.id)));
+        file_env.insert(
+            String::from("GITHUB_ACTION_PATH"),
+            runner.action_path.clone(),
+        );
+    } else {
+        env_file = Rc::<Path>::from(state_dir.join("env"));
+        output_file = Rc::<Path>::from(state_dir.join("output"));
+    }
+
+    file_env.insert(String::from("GITHUB_ENV"), env_file.clone());
+    file_env.insert(String::from("GITHUB_OUTPUT"), output_file.clone());
+
+    let mut env = BTreeMap::new();
+    let mut tree = Tree::new();
+
+    if let Some(c) = c {
+        let mut inputs = BTreeMap::new();
+
+        if let Some(runner) = runner {
+            for (k, v) in &runner.defaults {
+                inputs.insert(k.clone(), RString::from(v));
+            }
+        }
+
+        inputs.extend(c.inputs.clone());
+
+        if !inputs.is_empty() {
+            for (key, value) in &inputs {
+                let key = key.to_uppercase();
+                env.insert(format!("INPUT_{key}"), value.clone());
+            }
+
+            tree.insert_prefix(["inputs"], inputs.clone());
+        }
+    }
+
+    tree.insert(["runner", "os"], cx.os.as_tree_value());
+    tree.insert_prefix(["env"], env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    tree.insert_prefix(
+        ["env"],
+        file_env
+            .iter()
+            .map(|(k, v)| (k.clone(), v.to_string_lossy().into_owned())),
+    );
+
+    Ok(BuiltEnv {
+        env,
+        file_env,
+        env_file,
+        output_file,
+        tree,
+    })
+}
+
+/// Add jobs from a workflows, matrix, and associated steps.
+fn build_steps(
+    cx: &Ctxt<'_>,
+    runners: &Rc<ActionRunners>,
+    steps: &[Step],
+    runner: Option<&ActionRunner>,
+    c: Option<&ActionConfig>,
+) -> Result<Vec<Schedule>> {
+    let BuiltEnv {
+        env,
+        file_env,
+        env_file,
+        output_file,
+        tree,
+    } = build_env(cx, runner, c)?;
+
+    let env = Rc::new(env);
+    let file_env = Rc::new(file_env);
+
+    let mut commands = Vec::new();
+
+    for step in steps {
+        let mut tree = tree.clone();
+        tree.extend(&step.tree);
+        let tree = Rc::new(tree);
+
+        if let Some(run) = &step.run {
+            commands.push(Schedule::Run(ScheduleRun {
+                run: run.clone(),
+                step: step.clone(),
+                tree: tree.clone(),
+                env: FullEnv {
+                    env: env.clone(),
+                    file_env: file_env.clone(),
+                    env_file: env_file.clone(),
+                    output_file: output_file.clone(),
+                },
+            }));
+        }
+
+        if let Some(uses) = &step.uses {
+            commands.push(Schedule::Use(ScheduleUse {
+                uses: uses.clone(),
+                step: step.clone(),
+                runners: runners.clone(),
+                tree: tree.clone(),
+                env: FullEnv {
+                    env: env.clone(),
+                    file_env: file_env.clone(),
+                    env_file: env_file.clone(),
+                    output_file: output_file.clone(),
+                },
+            }));
+        }
+    }
+
+    Ok(commands)
 }
 
 #[derive(Default, Debug, Parser)]
@@ -741,10 +833,6 @@ impl Scheduler {
                     let run = node.build()?;
                     return Ok(Some(run));
                 }
-                Schedule::ActionStep(step) => {
-                    let run = step.build(self.tree())?;
-                    return Ok(Some(run));
-                }
                 Schedule::Run(run) => {
                     let run = run.build(self.tree())?;
                     return Ok(Some(run));
@@ -812,59 +900,6 @@ impl ScheduleNodeAction {
             .with_name(Some(self.uses))
             .with_skipped(self.skipped)
             .with_env(env);
-
-        Ok(self.env.decorate(run))
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct ScheduleActionStep {
-    #[allow(unused)]
-    id: Option<Rc<RStr>>,
-    uses: Rc<RStr>,
-    index: usize,
-    len: usize,
-    step: Rc<ActionStep>,
-    tree: Rc<Tree>,
-    env: FullEnv,
-    skipped: Option<String>,
-}
-
-impl ScheduleActionStep {
-    fn build(self, parent: Option<&Tree>) -> Result<Run> {
-        let mut tree = self.tree.as_ref().clone();
-
-        if let Some(parent) = parent {
-            tree.extend(parent);
-        }
-
-        let eval = Eval::new(&tree);
-        let (env, tree_env) = self.env.build(Some((&eval, &self.step.env)))?;
-        tree.insert_prefix(["env"], tree_env);
-        let eval = Eval::new(&tree);
-
-        let script = eval.eval(&self.step.run)?.into_owned();
-
-        let id = self.step.id.as_ref().map(|v| eval.eval(v)).transpose()?;
-        let shell = self.step.shell.as_ref().map(|v| eval.eval(v)).transpose()?;
-        let shell = to_shell(shell.as_deref())?;
-
-        let name = if self.len == 1 {
-            self.uses.as_ref().to_owned()
-        } else {
-            RString::from(format!(
-                "{} (step {} / {})",
-                self.uses,
-                self.index + 1,
-                self.len
-            ))
-        };
-
-        let run = Run::script(script, shell)
-            .with_id(id.map(Cow::into_owned))
-            .with_name(Some(name))
-            .with_env(env)
-            .with_skipped(self.skipped.clone());
 
         Ok(self.env.decorate(run))
     }
@@ -964,7 +999,8 @@ impl ScheduleUse {
                 .with_skipped(skipped.as_ref())
                 .with_inputs(with);
 
-            let (runner_main, runner_post) = self.runners.build(cx, &self.uses, &c)?;
+            let (runner_main, runner_post) =
+                ActionRunners::build(&self.runners, cx, &self.uses, &c)?;
 
             main.push(Schedule::Push);
             main.extend(runner_main);
@@ -1090,7 +1126,6 @@ pub(crate) enum Schedule {
     BasicCommand(ScheduleBasicCommand),
     StaticSetup(ScheduleStaticSetup),
     NodeAction(ScheduleNodeAction),
-    ActionStep(ScheduleActionStep),
     Run(ScheduleRun),
     Use(ScheduleUse),
 }
@@ -1556,72 +1591,19 @@ pub(crate) struct ActionRunners {
 impl ActionRunners {
     /// Build the run configurations of an action.
     pub(crate) fn build(
-        &self,
+        this: &Rc<Self>,
         cx: &Ctxt<'_>,
         uses: &RStr,
         c: &ActionConfig,
     ) -> Result<(Vec<Schedule>, Vec<Schedule>)> {
         let exposed = uses.to_exposed();
 
-        let Some(runner) = self.runners.get(exposed.as_ref()) else {
+        let Some(runner) = this.runners.get(exposed.as_ref()) else {
             bail!("Could not find action runner for {uses}");
         };
 
-        let id = c.id.as_deref().map(RStr::as_rc);
-
         let mut main = Vec::new();
         let mut post = Vec::new();
-
-        let env_file = Rc::<Path>::from(runner.state_dir.join(format!("env-{}", runner.id)));
-        let output_file = Rc::<Path>::from(runner.state_dir.join(format!("output-{}", runner.id)));
-
-        let it = runner
-            .defaults
-            .iter()
-            .map(|(k, v)| (k.clone(), RString::from(v.clone())));
-
-        let inputs = it
-            .chain(c.inputs.iter().map(|(k, v)| (k.clone(), v.clone())))
-            .collect::<BTreeMap<_, _>>();
-
-        let mut file_env = BTreeMap::new();
-
-        file_env.insert(String::from("GITHUB_ENV"), env_file.clone());
-        file_env.insert(String::from("GITHUB_OUTPUT"), output_file.clone());
-        file_env.insert(
-            String::from("GITHUB_ACTION_PATH"),
-            runner.action_path.clone(),
-        );
-
-        let mut env = BTreeMap::new();
-
-        for (key, value) in &inputs {
-            let key = key.to_uppercase();
-            env.insert(format!("INPUT_{key}"), value.clone());
-        }
-
-        let env = Rc::new(env);
-        let file_env = Rc::new(file_env);
-
-        let mut tree = Tree::new();
-
-        tree.insert(["runner", "os"], cx.os.as_tree_value());
-
-        tree.insert_prefix(
-            ["env"],
-            env.as_ref().iter().map(|(k, v)| (k.clone(), v.clone())),
-        );
-
-        tree.insert_prefix(
-            ["env"],
-            file_env
-                .iter()
-                .map(|(k, v)| (k.clone(), v.to_string_lossy().into_owned())),
-        );
-
-        tree.insert_prefix(["inputs"], inputs);
-
-        let tree = Rc::new(tree);
 
         match &runner.kind {
             ActionKind::Node {
@@ -1629,6 +1611,19 @@ impl ActionRunners {
                 post_path,
                 node_version,
             } => {
+                let id = c.id.as_deref().map(RStr::as_rc);
+
+                let BuiltEnv {
+                    env,
+                    file_env,
+                    env_file,
+                    output_file,
+                    ..
+                } = build_env(cx, Some(runner), Some(c))?;
+
+                let file_env = Rc::new(file_env);
+                let env = Rc::new(env);
+
                 if let Some(path) = post_path {
                     post.push(Schedule::Push);
                     post.push(Schedule::NodeAction(ScheduleNodeAction {
@@ -1664,25 +1659,8 @@ impl ActionRunners {
                 main.push(Schedule::Pop);
             }
             ActionKind::Composite { steps } => {
-                let uses = uses.as_rc();
-
-                for (index, s) in steps.iter().enumerate() {
-                    main.push(Schedule::ActionStep(ScheduleActionStep {
-                        id: id.clone(),
-                        uses: uses.clone(),
-                        index,
-                        len: steps.len(),
-                        step: Rc::new(s.clone()),
-                        tree: tree.clone(),
-                        env: FullEnv {
-                            env: env.clone(),
-                            file_env: file_env.clone(),
-                            env_file: env_file.clone(),
-                            output_file: output_file.clone(),
-                        },
-                        skipped: c.skipped.clone(),
-                    }));
-                }
+                let commands = build_steps(cx, this, steps, Some(runner), Some(c))?;
+                main.extend(commands);
             }
         }
 

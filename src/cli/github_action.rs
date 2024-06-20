@@ -1,10 +1,13 @@
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use anyhow::{bail, Result};
 use clap::Parser;
 use termcolor::{ColorChoice, StandardStream};
 
-use crate::command_system::{ActionConfig, Actions, Batch, BatchConfig, BatchOptions};
+use crate::command_system::{
+    ActionConfig, ActionRunners, Actions, Batch, BatchConfig, BatchOptions,
+};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::rstr::{RStr, RString};
@@ -50,7 +53,7 @@ fn action(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Re
 
     let id = RStr::new(&opts.id);
 
-    let runners = actions.synchronize(cx)?;
+    let runners = Rc::new(actions.synchronize(cx)?);
     let default_shell = opts.shell.unwrap_or_else(|| cx.os.shell());
 
     let mut inputs = BTreeMap::new();
@@ -65,7 +68,7 @@ fn action(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Re
 
     let c = ActionConfig::default().with_inputs(inputs);
 
-    let (mut main, post) = runners.build(cx, id, &c)?;
+    let (mut main, post) = ActionRunners::build(&runners, cx, id, &c)?;
     main.extend(post);
 
     let batch = Batch::with_schedule(main);

@@ -218,7 +218,7 @@ pub(crate) fn load_steps(
 
     let tree = eval
         .tree()
-        .with_prefix(["env"], extract_env(&eval, &mapping)?);
+        .with_prefix(["env"], extract_env(eval, mapping)?);
     let tree = Rc::new(tree);
     let eval = eval.with_tree(tree.as_ref());
 
@@ -532,7 +532,7 @@ pub(crate) struct StepMapping {
     pub(crate) uses: Option<yaml::Id>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct Step {
     pub(crate) id: Option<String>,
     pub(crate) uses: Option<RString>,
@@ -771,6 +771,13 @@ impl Tree {
         }
 
         output
+    }
+}
+
+impl fmt::Debug for Tree {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Tree").finish_non_exhaustive()
     }
 }
 
