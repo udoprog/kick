@@ -5,7 +5,7 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use termcolor::{ColorChoice, StandardStream};
 
-use crate::command_system::{Batch, BatchConfig, BatchOptions, CommandSystem};
+use crate::commands::{Batch, BatchConfig, BatchOptions, Prepare, WorkflowLoader};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::shell::Shell;
@@ -75,7 +75,7 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
     let repo_path = cx.to_path(repo.path());
 
     let mut batches = Vec::new();
-    let mut system = CommandSystem::new(cx);
+    let mut system = WorkflowLoader::new(cx);
 
     for i in &opts.ignore_matrix {
         system.ignore_matrix_variable(i);
@@ -99,12 +99,13 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
         all_jobs = false;
     }
 
+    let mut prepare = Prepare::default();
+
     if opts.workflow.is_some() || opts.job.is_some() || opts.list_jobs {
-        let mut workflows = system.load_repo_workflows(repo)?;
-        workflows.synchronize(cx)?;
+        let w = system.load_repo_workflows(repo, &mut prepare)?;
 
         if opts.list_jobs {
-            for (workflow, jobs) in workflows.iter() {
+            for (workflow, jobs) in w.iter() {
                 writeln!(o, "Workflow: {}", workflow.id())?;
 
                 for job in jobs {
@@ -128,7 +129,7 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
         }
 
         if opts.workflow.is_some() || opts.job.is_some() {
-            for (workflow, jobs) in workflows.iter() {
+            for (workflow, jobs) in w.iter() {
                 if !all_workflows && !filter_workflows.contains(&workflow.id) {
                     continue;
                 }
@@ -139,7 +140,7 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
                     }
 
                     for (matrix, steps) in &job.matrices {
-                        match workflows.build_batch_from_step(cx, matrix, steps, opts.same_os) {
+                        match w.build_batch(cx, matrix, steps, opts.same_os) {
                             Ok(batch) => {
                                 batches.push(batch);
                             }
@@ -179,8 +180,16 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
         }
     }
 
+    for batch in &batches {
+        batch.prepare(&c, &mut prepare)?;
+    }
+
+    if !prepare.prepare(o, &c)? {
+        bail!("Failed to prepare commands");
+    }
+
     for batch in batches {
-        batch.commit(o, &c)?;
+        batch.commit(o, &c, prepare.runners())?;
     }
 
     Ok(())

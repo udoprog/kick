@@ -1,3 +1,5 @@
+//! Helper system for setting up and running batches of commands.
+
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
@@ -16,7 +18,7 @@ use relative_path::RelativePath;
 use termcolor::{Color, ColorSpec, WriteColor};
 
 use crate::action::ActionKind;
-use crate::config::Os;
+use crate::config::{Distribution, Os};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::process::{Command, OsArg};
@@ -39,13 +41,92 @@ To install it, consider:
 If you install it in a non-standard location (other than C:\\msys64),
 make sure that its usr/bin directory is in the system PATH."#;
 
+/// Preparations that need to be done before running a batch.
+#[derive(Default)]
+pub(crate) struct Prepare {
+    /// WSL distributions that need to be available.
+    wsl: BTreeSet<Distribution>,
+    /// Actions that need to be synchronized.
+    actions: Option<Actions>,
+    /// Runners associated with actions.
+    runners: Option<ActionRunners>,
+}
+
+impl Prepare {
+    /// Access actions to prepare.
+    pub(crate) fn actions_mut(&mut self) -> &mut Actions {
+        self.actions.get_or_insert_with(Actions::default)
+    }
+
+    /// Run all preparations.
+    pub(crate) fn prepare<O>(&mut self, o: &mut O, c: &BatchConfig<'_, '_>) -> Result<bool>
+    where
+        O: ?Sized + WriteColor,
+    {
+        let mut all_ok = true;
+
+        if !self.wsl.is_empty() {
+            let Some(wsl) = c.cx.system.wsl.first() else {
+                bail!("WSL not available");
+            };
+
+            let available = wsl.list()?;
+
+            let available = available
+                .into_iter()
+                .map(Distribution::from_string_ignore_case)
+                .collect::<BTreeSet<_>>();
+
+            for &dist in &self.wsl {
+                if dist != Distribution::Other && !available.contains(&dist) {
+                    o.set_color(&c.colors.warn)?;
+                    writeln!(o, "WSL distro {dist} is missing")?;
+                    o.reset()?;
+
+                    writeln!(o, "  run: {} --install {dist}", wsl.path.display())?;
+                    all_ok = false;
+                    continue;
+                }
+
+                let mut command = wsl.shell(c.repo_path, dist);
+                let status = command.args(["rustup", "--version"]).status()?;
+
+                if !status.success() {
+                    o.set_color(&c.colors.warn)?;
+                    writeln!(o, "WSL distro {dist} is missing rustup")?;
+                    o.reset()?;
+
+                    writeln!(
+                        o,
+                        r#"  run: {} -d {dist} bash -i -c "curl https://sh.rustup.rs | sh""#,
+                        wsl.path.display()
+                    )?;
+
+                    all_ok = false;
+                }
+            }
+        }
+
+        if let Some(actions) = self.actions.take() {
+            self.runners = Some(actions.synchronize(c.cx)?);
+        }
+
+        Ok(all_ok)
+    }
+
+    /// Access prepared runners, if they are available.
+    pub(crate) fn runners(&self) -> Option<&ActionRunners> {
+        self.runners.as_ref()
+    }
+}
+
 /// A system of commands to be run.
-pub struct CommandSystem<'a, 'cx> {
+pub(crate) struct WorkflowLoader<'a, 'cx> {
     cx: &'a Ctxt<'cx>,
     matrix_ignore: HashSet<String>,
 }
 
-impl<'a, 'cx> CommandSystem<'a, 'cx> {
+impl<'a, 'cx> WorkflowLoader<'a, 'cx> {
     /// Create a new command system.
     pub(crate) fn new(cx: &'a Ctxt<'cx>) -> Self {
         Self {
@@ -63,9 +144,11 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
     }
 
     /// Load workflows from a repository.
-    pub(crate) fn load_repo_workflows(&self, repo: &Repo) -> Result<Workflows<'a, 'cx>> {
-        let mut actions = Actions::default();
-
+    pub(crate) fn load_repo_workflows(
+        &self,
+        repo: &Repo,
+        prepare: &mut Prepare,
+    ) -> Result<Workflows<'a, 'cx>> {
         let mut workflows = Vec::new();
         let wfs = WorkflowManifests::new(self.cx, repo)?;
 
@@ -78,7 +161,9 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
                 for (_, steps) in &job.matrices {
                     for step in &steps.steps {
                         if let Some(name) = &step.uses {
-                            actions.add_action(name).with_context(|| {
+                            let actions = prepare.actions.get_or_insert_with(Actions::default);
+
+                            actions.insert_action(name).with_context(|| {
                                 anyhow!(
                                     "Uses statement in job `{}` and step `{}`",
                                     job.id,
@@ -95,11 +180,7 @@ impl<'a, 'cx> CommandSystem<'a, 'cx> {
             workflows.push((workflow, jobs));
         }
 
-        Ok(Workflows {
-            workflows,
-            actions,
-            runners: Rc::new(ActionRunners::default()),
-        })
+        Ok(Workflows { workflows })
     }
 }
 
@@ -111,7 +192,7 @@ pub(crate) struct Actions {
 
 impl Actions {
     /// Add an action by id.
-    pub(crate) fn add_action<S>(&mut self, id: S) -> Result<()>
+    pub(crate) fn insert_action<S>(&mut self, id: S) -> Result<()>
     where
         S: AsRef<RStr>,
     {
@@ -132,7 +213,7 @@ impl Actions {
     }
 
     /// Synchronize github uses.
-    pub(crate) fn synchronize(&mut self, cx: &Ctxt<'_>) -> Result<ActionRunners> {
+    pub(crate) fn synchronize(&self, cx: &Ctxt<'_>) -> Result<ActionRunners> {
         let mut runners = ActionRunners::default();
 
         for ((repo, name), versions) in &self.actions {
@@ -147,8 +228,6 @@ impl Actions {
 /// Loaded workflows.
 pub(crate) struct Workflows<'a, 'cx> {
     workflows: Vec<(WorkflowManifest<'a, 'cx>, Vec<Job>)>,
-    actions: Actions,
-    runners: Rc<ActionRunners>,
 }
 
 impl<'a, 'cx> Workflows<'a, 'cx> {
@@ -159,14 +238,8 @@ impl<'a, 'cx> Workflows<'a, 'cx> {
         self.workflows.iter()
     }
 
-    /// Synchronize github uses.
-    pub(crate) fn synchronize(&mut self, cx: &Ctxt<'cx>) -> Result<()> {
-        self.runners = Rc::new(self.actions.synchronize(cx)?);
-        Ok(())
-    }
-
     /// Add jobs from a workflows, matrix, and associated steps.
-    pub(crate) fn build_batch_from_step(
+    pub(crate) fn build_batch(
         &self,
         cx: &Ctxt<'_>,
         matrix: &Matrix,
@@ -175,20 +248,20 @@ impl<'a, 'cx> Workflows<'a, 'cx> {
     ) -> Result<Batch> {
         let runs_on = steps.runs_on.to_exposed();
 
-        let os = match runs_on.split_once('-').map(|(os, _)| os) {
-            Some("ubuntu") => Os::Linux,
-            Some("windows") => Os::Windows,
-            Some("macos") => Os::Mac,
+        let (os, dist) = match runs_on.split_once('-').map(|(os, _)| os) {
+            Some("ubuntu") => (Os::Linux, Distribution::Ubuntu),
+            Some("windows") => (Os::Windows, Distribution::Other),
+            Some("macos") => (Os::Mac, Distribution::Other),
             _ => bail!("Unsupported runs-on directive: {}", steps.runs_on),
         };
 
         let run_on = if same_os {
             RunOn::Same
         } else {
-            os_to_run_on(cx, &os)?
+            os_to_run_on(cx, &os, dist)?
         };
 
-        let commands = build_steps(cx, &self.runners, &steps.steps, None, None)?;
+        let commands = build_steps(cx, &steps.steps, None, None)?;
 
         Ok(Batch {
             commands,
@@ -202,19 +275,11 @@ impl<'a, 'cx> Workflows<'a, 'cx> {
     }
 }
 
-struct BuiltEnv {
-    env: BTreeMap<String, RString>,
-    file_env: BTreeMap<String, Rc<Path>>,
-    env_file: Rc<Path>,
-    output_file: Rc<Path>,
-    tree: Tree,
-}
-
-fn build_env(
+fn new_env(
     cx: &Ctxt<'_>,
     runner: Option<&ActionRunner>,
     c: Option<&ActionConfig>,
-) -> Result<BuiltEnv> {
+) -> Result<(Env, Tree)> {
     let cache_dir = cx
         .paths
         .project_dirs
@@ -275,33 +340,24 @@ fn build_env(
             .map(|(k, v)| (k.clone(), v.to_string_lossy().into_owned())),
     );
 
-    Ok(BuiltEnv {
-        env,
-        file_env,
+    let env = Env {
+        env: Rc::new(env),
+        file_env: Rc::new(file_env),
         env_file,
         output_file,
-        tree,
-    })
+    };
+
+    Ok((env, tree))
 }
 
 /// Add jobs from a workflows, matrix, and associated steps.
 fn build_steps(
     cx: &Ctxt<'_>,
-    runners: &Rc<ActionRunners>,
     steps: &[Step],
     runner: Option<&ActionRunner>,
     c: Option<&ActionConfig>,
 ) -> Result<Vec<Schedule>> {
-    let BuiltEnv {
-        env,
-        file_env,
-        env_file,
-        output_file,
-        tree,
-    } = build_env(cx, runner, c)?;
-
-    let env = Rc::new(env);
-    let file_env = Rc::new(file_env);
+    let (env, tree) = new_env(cx, runner, c)?;
 
     let mut commands = Vec::new();
 
@@ -315,12 +371,7 @@ fn build_steps(
                 run: run.clone(),
                 step: step.clone(),
                 tree: tree.clone(),
-                env: FullEnv {
-                    env: env.clone(),
-                    file_env: file_env.clone(),
-                    env_file: env_file.clone(),
-                    output_file: output_file.clone(),
-                },
+                env: env.clone(),
             }));
         }
 
@@ -328,14 +379,8 @@ fn build_steps(
             commands.push(Schedule::Use(ScheduleUse {
                 uses: uses.clone(),
                 step: step.clone(),
-                runners: runners.clone(),
                 tree: tree.clone(),
-                env: FullEnv {
-                    env: env.clone(),
-                    file_env: file_env.clone(),
-                    env_file: env_file.clone(),
-                    output_file: output_file.clone(),
-                },
+                env: env.clone(),
             }));
         }
     }
@@ -347,7 +392,7 @@ fn build_steps(
 pub(crate) struct BatchOptions {
     /// Run the command using the specified execution methods.
     #[arg(long, value_name = "run-on")]
-    run_on: Vec<RunOn>,
+    run_on: Vec<RunOnOption>,
     /// Environment variables to pass to the command to run. Only specifying
     /// `<key>` means that the specified environment variable should be passed
     /// through.
@@ -403,7 +448,7 @@ impl<'a, 'cx> BatchConfig<'a, 'cx> {
     /// Add options from [`BatchOptions`].
     pub(crate) fn add_opts(&mut self, opts: &BatchOptions) -> Result<()> {
         for &run_on in &opts.run_on {
-            self.add_run_on(run_on)?;
+            self.add_run_on(run_on.to_run_on())?;
         }
 
         if opts.exposed {
@@ -438,13 +483,14 @@ impl<'a, 'cx> BatchConfig<'a, 'cx> {
 
     /// Add an operating system.
     pub(crate) fn add_os(&mut self, os: &Os) -> Result<()> {
-        self.run_on.push(os_to_run_on(self.cx, os)?);
+        self.run_on
+            .push(os_to_run_on(self.cx, os, Distribution::Ubuntu)?);
         Ok(())
     }
 
     /// Add a run on.
     pub(crate) fn add_run_on(&mut self, run_on: RunOn) -> Result<()> {
-        if let RunOn::Wsl = run_on {
+        if let RunOn::Wsl(..) = run_on {
             if self.cx.system.wsl.is_empty() {
                 bail!("WSL is not available");
             }
@@ -464,12 +510,19 @@ pub(crate) struct Batch {
 
 impl Batch {
     /// Construct a batch with multiple commands.
-    pub(crate) fn with_schedule(commands: Vec<Schedule>) -> Self {
-        Self {
-            commands,
+    pub(crate) fn with_use(cx: &Ctxt<'_>, id: impl AsRef<RStr>, c: &ActionConfig) -> Result<Self> {
+        let (env, tree) = new_env(cx, None, Some(c))?;
+
+        Ok(Self {
+            commands: vec![Schedule::Use(ScheduleUse {
+                uses: id.as_ref().to_owned(),
+                step: Step::default(),
+                tree: Rc::new(tree),
+                env,
+            })],
             run_on: RunOn::Same,
             matrix: None,
-        }
+        })
     }
 
     /// Construct a batch with a single command.
@@ -488,8 +541,24 @@ impl Batch {
         }
     }
 
+    /// Prepare running a batch.
+    pub(crate) fn prepare(&self, c: &BatchConfig<'_, '_>, prepare: &mut Prepare) -> Result<()> {
+        for run_on in self.runners(&c.run_on) {
+            if let RunOn::Wsl(dist) = run_on {
+                prepare.wsl.insert(dist);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Commit a batch.
-    pub(crate) fn commit<O>(self, o: &mut O, c: &BatchConfig<'_, '_>) -> Result<()>
+    pub(crate) fn commit<O>(
+        self,
+        o: &mut O,
+        c: &BatchConfig<'_, '_>,
+        runners: Option<&ActionRunners>,
+    ) -> Result<()>
     where
         O: ?Sized + WriteColor,
     {
@@ -528,7 +597,7 @@ impl Batch {
 
             let mut step = 0usize;
 
-            while let Some(run) = scheduler.advance(c)? {
+            while let Some(run) = scheduler.advance(c, runners)? {
                 let modified;
 
                 let path = match &run.working_directory {
@@ -800,7 +869,11 @@ impl Scheduler {
         self.stack.last_mut()
     }
 
-    fn advance(&mut self, c: &BatchConfig<'_, '_>) -> Result<Option<Run>> {
+    fn advance(
+        &mut self,
+        c: &BatchConfig<'_, '_>,
+        runners: Option<&ActionRunners>,
+    ) -> Result<Option<Run>> {
         loop {
             let command = 'next: {
                 if let Some(item) = self.main.pop_front() {
@@ -838,7 +911,7 @@ impl Scheduler {
                     return Ok(Some(run));
                 }
                 Schedule::Use(u) => {
-                    let group = u.build(c.cx, self.tree())?;
+                    let group = u.build(c.cx, self.tree(), runners)?;
 
                     for run in group.main.into_iter().rev() {
                         self.main.push_front(run);
@@ -888,7 +961,7 @@ pub(crate) struct ScheduleNodeAction {
     path: Rc<Path>,
     node_version: u32,
     skipped: Option<String>,
-    env: FullEnv,
+    env: Env,
 }
 
 impl ScheduleNodeAction {
@@ -909,13 +982,17 @@ impl ScheduleNodeAction {
 pub(crate) struct ScheduleUse {
     uses: RString,
     step: Step,
-    runners: Rc<ActionRunners>,
     tree: Rc<Tree>,
-    env: FullEnv,
+    env: Env,
 }
 
 impl ScheduleUse {
-    fn build(self, cx: &Ctxt<'_>, parent: Option<&Tree>) -> Result<RunGroup> {
+    fn build(
+        self,
+        cx: &Ctxt<'_>,
+        parent: Option<&Tree>,
+        runners: Option<&ActionRunners>,
+    ) -> Result<RunGroup> {
         let mut tree = self.tree.as_ref().clone();
 
         if let Some(parent) = parent {
@@ -999,8 +1076,11 @@ impl ScheduleUse {
                 .with_skipped(skipped.as_ref())
                 .with_inputs(with);
 
-            let (runner_main, runner_post) =
-                ActionRunners::build(&self.runners, cx, &self.uses, &c)?;
+            let Some(runners) = runners else {
+                bail!("No runners available for use");
+            };
+
+            let (runner_main, runner_post) = runners.build(cx, &c, &self.uses)?;
 
             main.push(Schedule::Push);
             main.extend(runner_main);
@@ -1016,14 +1096,14 @@ impl ScheduleUse {
 }
 
 #[derive(Clone)]
-struct FullEnv {
+struct Env {
     env: Rc<BTreeMap<String, RString>>,
     file_env: Rc<BTreeMap<String, Rc<Path>>>,
     env_file: Rc<Path>,
     output_file: Rc<Path>,
 }
 
-impl FullEnv {
+impl Env {
     fn build(
         &self,
         extra: Option<(&Eval<'_>, &BTreeMap<String, String>)>,
@@ -1068,7 +1148,7 @@ pub(crate) struct ScheduleRun {
     run: String,
     step: Step,
     tree: Rc<Tree>,
-    env: FullEnv,
+    env: Env,
 }
 
 impl ScheduleRun {
@@ -1254,13 +1334,32 @@ impl Run {
 }
 
 /// A run on configuration.
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum RunOnOption {
+    /// Run on the same system (default).
+    Same,
+    /// Run over WSL with the specified distribution.
+    Wsl,
+}
+
+impl RunOnOption {
+    /// Coerce into a [`RunOn`].
+    fn to_run_on(self) -> RunOn {
+        match self {
+            Self::Same => RunOn::Same,
+            Self::Wsl => RunOn::Wsl(Distribution::Ubuntu),
+        }
+    }
+}
+
+/// A run on configuration.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum RunOn {
     /// Run on the same system (default).
     #[default]
     Same,
-    /// Run over WSL.
-    Wsl,
+    /// Run over WSL with the specified distribution.
+    Wsl(Distribution),
 }
 
 impl RunOn {
@@ -1273,12 +1372,12 @@ impl RunOn {
     ) -> Result<Runner> {
         match *self {
             Self::Same => setup_same(c, path, run),
-            Self::Wsl => {
+            Self::Wsl(dist) => {
                 let Some(wsl) = c.cx.system.wsl.first() else {
                     bail!("WSL not available");
                 };
 
-                Ok(setup_wsl(c, path, wsl, run, current_env))
+                Ok(setup_wsl(c, dist, path, wsl, run, current_env))
             }
         }
     }
@@ -1286,7 +1385,7 @@ impl RunOn {
     fn name(&self) -> Option<&str> {
         match *self {
             Self::Same => None,
-            Self::Wsl => Some("WSL"),
+            Self::Wsl(..) => Some("WSL"),
         }
     }
 }
@@ -1444,12 +1543,13 @@ fn setup_same(c: &BatchConfig<'_, '_>, path: &Path, run: &Run) -> Result<Runner>
 
 fn setup_wsl(
     c: &BatchConfig<'_, '_>,
+    dist: Distribution,
     path: &Path,
     wsl: &Wsl,
     run: &Run,
     current_env: &BTreeMap<String, String>,
 ) -> Runner {
-    let mut cmd = wsl.shell(path);
+    let mut cmd = wsl.shell(path, dist);
 
     let mut seen = HashSet::new();
     let mut wslenv = String::new();
@@ -1591,14 +1691,14 @@ pub(crate) struct ActionRunners {
 impl ActionRunners {
     /// Build the run configurations of an action.
     pub(crate) fn build(
-        this: &Rc<Self>,
+        &self,
         cx: &Ctxt<'_>,
-        uses: &RStr,
         c: &ActionConfig,
+        uses: &RStr,
     ) -> Result<(Vec<Schedule>, Vec<Schedule>)> {
         let exposed = uses.to_exposed();
 
-        let Some(runner) = this.runners.get(exposed.as_ref()) else {
+        let Some(runner) = self.runners.get(exposed.as_ref()) else {
             bail!("Could not find action runner for {uses}");
         };
 
@@ -1612,17 +1712,7 @@ impl ActionRunners {
                 node_version,
             } => {
                 let id = c.id.as_deref().map(RStr::as_rc);
-
-                let BuiltEnv {
-                    env,
-                    file_env,
-                    env_file,
-                    output_file,
-                    ..
-                } = build_env(cx, Some(runner), Some(c))?;
-
-                let file_env = Rc::new(file_env);
-                let env = Rc::new(env);
+                let (env, _) = new_env(cx, Some(runner), Some(c))?;
 
                 if let Some(path) = post_path {
                     post.push(Schedule::Push);
@@ -1632,12 +1722,7 @@ impl ActionRunners {
                         path: path.clone(),
                         node_version: *node_version,
                         skipped: c.skipped.clone(),
-                        env: FullEnv {
-                            env: env.clone(),
-                            file_env: file_env.clone(),
-                            env_file: env_file.clone(),
-                            output_file: output_file.clone(),
-                        },
+                        env: env.clone(),
                     }));
                     post.push(Schedule::Pop);
                 }
@@ -1649,17 +1734,12 @@ impl ActionRunners {
                     path: main_path.clone(),
                     node_version: *node_version,
                     skipped: c.skipped.clone(),
-                    env: FullEnv {
-                        env,
-                        file_env,
-                        env_file,
-                        output_file,
-                    },
+                    env,
                 }));
                 main.push(Schedule::Pop);
             }
             ActionKind::Composite { steps } => {
-                let commands = build_steps(cx, this, steps, Some(runner), Some(c))?;
+                let commands = build_steps(cx, steps, Some(runner), Some(c))?;
                 main.extend(commands);
             }
         }
@@ -1802,13 +1882,13 @@ fn sync_github_use(
     Ok(())
 }
 
-fn os_to_run_on(cx: &Ctxt<'_>, os: &Os) -> Result<RunOn> {
+fn os_to_run_on(cx: &Ctxt<'_>, os: &Os, dist: Distribution) -> Result<RunOn> {
     if cx.os == *os {
         return Ok(RunOn::Same);
     }
 
     if cx.os == Os::Windows && *os == Os::Linux && cx.system.wsl.first().is_some() {
-        return Ok(RunOn::Wsl);
+        return Ok(RunOn::Wsl(dist));
     }
 
     bail!("No support for {os:?} on current system {:?}", cx.os);

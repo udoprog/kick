@@ -1,13 +1,10 @@
 use std::collections::BTreeMap;
-use std::rc::Rc;
 
 use anyhow::{bail, Result};
 use clap::Parser;
 use termcolor::{ColorChoice, StandardStream};
 
-use crate::command_system::{
-    ActionConfig, ActionRunners, Actions, Batch, BatchConfig, BatchOptions,
-};
+use crate::commands::{ActionConfig, Batch, BatchConfig, BatchOptions, Prepare};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::rstr::{RStr, RString};
@@ -48,12 +45,11 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 fn action(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     let repo_path = cx.to_path(repo.path());
 
-    let mut actions = Actions::default();
-    actions.add_action(&opts.id)?;
+    let mut prepare = Prepare::default();
+    prepare.actions_mut().insert_action(&opts.id)?;
 
     let id = RStr::new(&opts.id);
 
-    let runners = Rc::new(actions.synchronize(cx)?);
     let default_shell = opts.shell.unwrap_or_else(|| cx.os.shell());
 
     let mut inputs = BTreeMap::new();
@@ -66,16 +62,15 @@ fn action(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Re
         inputs.insert(key.to_string(), RString::from(value));
     }
 
-    let c = ActionConfig::default().with_inputs(inputs);
-
-    let (mut main, post) = ActionRunners::build(&runners, cx, id, &c)?;
-    main.extend(post);
-
-    let batch = Batch::with_schedule(main);
-
     let mut c = BatchConfig::new(cx, &repo_path, default_shell);
     c.add_opts(&opts.batch_opts)?;
 
-    batch.commit(o, &c)?;
+    let action = ActionConfig::default().with_inputs(inputs);
+
+    let batch = Batch::with_use(cx, id, &action)?;
+    batch.prepare(&c, &mut prepare)?;
+
+    prepare.prepare(o, &c)?;
+    batch.commit(o, &c, prepare.runners())?;
     Ok(())
 }

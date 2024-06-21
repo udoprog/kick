@@ -534,7 +534,7 @@ pub(crate) struct StepMapping {
     pub(crate) uses: Option<yaml::Id>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub(crate) struct Step {
     pub(crate) id: Option<String>,
     pub(crate) uses: Option<RString>,
@@ -632,7 +632,7 @@ fn starts_with<'m>(span: &Span<u32>, args: &[Expr<'m>]) -> Result<Expr<'m>, eval
 
 type CustomFunction = for<'m> fn(&Span<u32>, &[Expr<'m>]) -> Result<Expr<'m>, eval::EvalError>;
 
-#[derive(Clone, Default)]
+#[derive(Default, Clone)]
 struct Node {
     value: Option<RString>,
     children: BTreeMap<String, Node>,
@@ -648,7 +648,7 @@ impl Node {
 }
 
 /// A tree used for variable evaluation.
-#[derive(Clone, Default)]
+#[derive(Default, Clone)]
 pub(crate) struct Tree {
     root: Node,
 }

@@ -352,7 +352,7 @@ impl fmt::Display for Os {
 }
 
 /// Which distribution we are on.
-#[derive(Default, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Distribution {
     #[default]
     Other,
@@ -361,6 +361,21 @@ pub(crate) enum Distribution {
 }
 
 impl Distribution {
+    /// Get the distribution from a string.
+    pub(crate) fn from_string_ignore_case(string: impl AsRef<str>) -> Self {
+        let string = string.as_ref();
+
+        if string.eq_ignore_ascii_case("ubuntu") {
+            return Distribution::Ubuntu;
+        }
+
+        if string.eq_ignore_ascii_case("fedora") {
+            return Distribution::Fedora;
+        }
+
+        Distribution::Other
+    }
+
     /// Get the linux distribution we are currently on.
     pub(crate) fn linux_distribution() -> Option<Self> {
         let Ok(f) = File::open("/etc/os-release") else {
@@ -383,13 +398,7 @@ impl Distribution {
             };
 
             if key.trim().eq_ignore_ascii_case("id") {
-                if value.trim().eq_ignore_ascii_case("ubuntu") {
-                    return Some(Distribution::Ubuntu);
-                }
-
-                if value.trim().eq_ignore_ascii_case("fedora") {
-                    return Some(Distribution::Fedora);
-                }
+                return Some(Distribution::from_string_ignore_case(value.trim()));
             }
         }
 
