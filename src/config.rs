@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
-use std::fs;
+use std::fs::{self, File};
 use std::hash::Hash;
-use std::io::{self, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::iter;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
+use std::str::{self, FromStr};
 
 use anyhow::{anyhow, bail, Context, Error, Result};
 use musli::{Decode, Encode};
@@ -311,6 +311,7 @@ impl Replacement {
     }
 }
 
+/// Which operating system we are on.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Os {
     Windows,
@@ -346,6 +347,62 @@ impl fmt::Display for Os {
             Os::Linux => write!(f, "Linux"),
             Os::Mac => write!(f, "Mac"),
             Os::Other(other) => other.fmt(f),
+        }
+    }
+}
+
+/// Which distribution we are on.
+#[derive(Default, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum Distribution {
+    #[default]
+    Other,
+    Ubuntu,
+    Fedora,
+}
+
+impl Distribution {
+    /// Get the linux distribution we are currently on.
+    pub(crate) fn linux_distribution() -> Option<Self> {
+        let Ok(f) = File::open("/etc/os-release") else {
+            tracing::trace!("No such file: /etc/os-release");
+            return None;
+        };
+
+        let mut f = BufReader::new(f);
+        let mut line = String::new();
+
+        loop {
+            line.clear();
+
+            if f.read_line(&mut line).ok()? == 0 {
+                break;
+            }
+
+            let Some((key, value)) = line.trim().split_once('=') else {
+                continue;
+            };
+
+            if key.trim().eq_ignore_ascii_case("id") {
+                if value.trim().eq_ignore_ascii_case("ubuntu") {
+                    return Some(Distribution::Ubuntu);
+                }
+
+                if value.trim().eq_ignore_ascii_case("fedora") {
+                    return Some(Distribution::Fedora);
+                }
+            }
+        }
+
+        None
+    }
+}
+
+impl fmt::Display for Distribution {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Distribution::Other => write!(f, "Other"),
+            Distribution::Ubuntu => write!(f, "Ubuntu"),
+            Distribution::Fedora => write!(f, "Fedora"),
         }
     }
 }

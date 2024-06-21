@@ -10,7 +10,7 @@ use relative_path::RelativePath;
 use super::system::{Git, System};
 use crate::cargo::{self, Package, RustVersion};
 use crate::changes::{Change, Warning};
-use crate::config::{Config, Os};
+use crate::config::{Config, Distribution, Os};
 use crate::env::{Env, SecretString};
 use crate::model::{RenderRustVersions, Repo, RepoParams, RepoRef, State};
 use crate::process::Command;
@@ -71,6 +71,8 @@ pub(crate) struct Ctxt<'a> {
     pub(crate) system: &'a System,
     pub(crate) git_credentials: &'a Option<system::git::Credentials>,
     pub(crate) os: Os,
+    #[allow(unused)]
+    pub(crate) dist: Distribution,
     pub(crate) paths: Paths<'a>,
     pub(crate) config: &'a Config<'a>,
     pub(crate) repos: &'a [Repo],

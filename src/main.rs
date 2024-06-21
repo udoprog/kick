@@ -366,7 +366,7 @@ use std::process::ExitCode;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, FromArgMatches, Parser, Subcommand};
 
-use config::{Config, Os};
+use config::{Config, Distribution, Os};
 use directories::ProjectDirs;
 use env::SecretString;
 use relative_path::{RelativePath, RelativePathBuf};
@@ -504,6 +504,9 @@ struct SharedOptions {
     /// project.
     #[arg(long, value_name = "token")]
     github_token: Option<SecretString>,
+    /// List all found system tools.
+    #[arg(long)]
+    list_tools: bool,
 }
 
 impl SharedOptions {
@@ -727,9 +730,16 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         other => Os::Other(other.into()),
     };
 
+    let dist = match &os {
+        Os::Linux => Distribution::linux_distribution().unwrap_or_default(),
+        _ => Distribution::Other,
+    };
+
     let system = system::detect()?;
 
-    if tracing::enabled!(tracing::Level::DEBUG) {
+    if shared.list_tools {
+        println!("Os: {os}, Dist: {dist}");
+
         let shell = os.shell();
 
         for (name, path, extra) in system.tools() {
@@ -737,11 +747,13 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             let path = shell.escape(path.as_ref());
 
             if let Some(extra) = extra {
-                tracing::debug!("{name} ({extra}): {path}");
+                println!("{name} ({extra}): {path}");
             } else {
-                tracing::debug!("{name}: {path}");
+                println!("{name}: {path}");
             }
         }
+    } else {
+        tracing::debug!("Os: {os}, Dist: {dist}");
     }
 
     let (repos, from_gitmodules) = match gitmodules_repos {
@@ -832,7 +844,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
                 Some(credentials)
             }
             Err(e) => {
-                tracing::warn!("Failed to get git credentials: {e}");
+                tracing::trace!("Failed to get git credentials: {e}");
                 None
             }
         },
@@ -846,6 +858,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         system: &system,
         git_credentials: &git_credentials,
         os,
+        dist,
         paths,
         config: &config,
         repos: &repos,

@@ -29,6 +29,7 @@ const TESTS: &[(&str, ProbeFn, Allow)] = &[
     ("powershell", powershell_probe, Allow::None),
     ("bash", bash_probe, Allow::None),
     ("node", node_probe, Allow::None),
+    ("podman", podman_probe, Allow::None),
 ];
 
 #[cfg(windows)]
@@ -43,6 +44,7 @@ pub(crate) struct System {
     pub(crate) powershell: Vec<Generic>,
     pub(crate) bash: Vec<Generic>,
     pub(crate) node: Vec<Node>,
+    pub(crate) podman: Vec<Generic>,
 }
 
 impl System {
@@ -76,6 +78,11 @@ impl System {
                 .map(|c| ("powershell", c.path.as_path(), None)),
         );
         let it = it.chain(self.bash.iter().map(|c| ("bash", c.path.as_path(), None)));
+        let it = it.chain(
+            self.podman
+                .iter()
+                .map(|c| ("podman", c.path.as_path(), None)),
+        );
         let it = it.chain(
             self.node
                 .iter()
@@ -221,6 +228,14 @@ fn node_probe(s: &mut System, path: &Path) -> Result<()> {
 fn bash_probe(s: &mut System, path: &Path) -> Result<()> {
     if probe(path, "--version")? {
         s.bash.push(Generic::new(path.to_owned()));
+    }
+
+    Ok(())
+}
+
+fn podman_probe(s: &mut System, path: &Path) -> Result<()> {
+    if probe(path, "--version")? {
+        s.podman.push(Generic::new(path.to_owned()));
     }
 
     Ok(())
