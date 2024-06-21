@@ -170,7 +170,11 @@ impl Prepare {
 
                 let has_rustup = if has_wsl {
                     let mut command = wsl.shell(c.repo_path, dist);
-                    let status = command.args(["rustup", "--version"]).status()?;
+                    let status = command
+                        .args(["rustup", "--version"])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status()?;
                     status.success()
                 } else {
                     false
@@ -194,14 +198,13 @@ impl Prepare {
                         }
 
                         if has_wsl {
-                            let mut command = wsl.shell(c.repo_path, dist);
-
-                            let output = command
+                            let output = wsl
+                                .shell(c.repo_path, dist)
                                 .args([
                                     "dpkg-query",
                                     "-W",
                                     "-f",
-                                    "${db:Status-Status} ${Package}\n",
+                                    "\\${db:Status-Status} \\${Package}\n",
                                 ])
                                 .stdout(Stdio::piped())
                                 .output()?;
