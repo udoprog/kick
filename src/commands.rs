@@ -33,8 +33,10 @@ const GITHUB_BASE: &str = "https://github.com";
 const GIT_OBJECT_ID_FILE: &str = ".git-object-id";
 const WORKDIR: &str = "workdir";
 const STATE: &str = "state";
+const NODE_VERSION: u32 = 22;
+const CURL: &str = "curl --proto '=https' --tlsv1.2 -sSf";
 
-const DEBIAN_WANTED: &[&str] = &["gcc"];
+const DEBIAN_WANTED: &[&str] = &["gcc", "nodejs"];
 
 const WINDOWS_BASH_MESSAGE: &str = r#"Bash is not installed by default on Windows!
 
@@ -182,9 +184,9 @@ impl Prepare {
 
                 if !has_rustup {
                     let mut command = wsl.shell(c.repo_path, dist);
-                    command.args(["bash", "-i", "-c"]).arg(
-                        "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
-                    );
+                    command
+                        .args(["bash", "-i", "-c"])
+                        .arg(format!("{CURL} https://sh.rustup.rs | sh -s -- -y"));
                     suggestions
                         .command(format_args!("WSL distro {dist} is missing rustup"), command);
                 }
@@ -226,6 +228,8 @@ impl Prepare {
                             }
                         }
 
+                        let wants_node_js = wanted.remove("nodejs");
+
                         if !wanted.is_empty() {
                             let packages = wanted.into_iter().collect::<Vec<_>>();
                             let packages = packages.join(" ");
@@ -236,6 +240,17 @@ impl Prepare {
                             ));
                             suggestions.command(
                                 format_args!("Some packages in {dist} are missing"),
+                                command,
+                            );
+                        }
+
+                        if wants_node_js {
+                            let mut command = wsl.shell(c.repo_path, dist);
+                            command.args(["bash", "-i", "-c"]).arg(format!(
+                                "{CURL} https://deb.nodesource.com/setup_{NODE_VERSION}.x | sudo -E bash - && sudo apt-get install -y nodejs"
+                            ));
+                            suggestions.command(
+                                format_args!("Missing a modern nodejs version in {dist}"),
                                 command,
                             );
                         }
