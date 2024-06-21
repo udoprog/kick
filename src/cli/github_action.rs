@@ -70,7 +70,17 @@ fn action(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Re
     let batch = Batch::with_use(cx, id, &action)?;
     batch.prepare(&c, &mut prepare)?;
 
-    prepare.prepare(o, &c)?;
+    let remediations = prepare.prepare(&c)?;
+
+    if !remediations.is_empty() {
+        if !opts.batch_opts.fix {
+            remediations.print(o, &c)?;
+            bail!("Failed to prepare commands, use `--fix` to try and fix the system");
+        }
+
+        remediations.apply(o, &c)?;
+    }
+
     batch.commit(o, &c, prepare.runners())?;
     Ok(())
 }

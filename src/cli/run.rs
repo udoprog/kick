@@ -184,8 +184,15 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
         batch.prepare(&c, &mut prepare)?;
     }
 
-    if !prepare.prepare(o, &c)? {
-        bail!("Failed to prepare commands");
+    let remediations = prepare.prepare(&c)?;
+
+    if !remediations.is_empty() {
+        if !opts.batch_opts.fix {
+            remediations.print(o, &c)?;
+            bail!("Failed to prepare commands, use `--fix` to try and fix the system");
+        }
+
+        remediations.apply(o, &c)?;
     }
 
     for batch in batches {

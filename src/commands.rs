@@ -3,9 +3,11 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
+use std::fmt;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::rc::Rc;
 use std::str;
 
@@ -32,6 +34,8 @@ const GIT_OBJECT_ID_FILE: &str = ".git-object-id";
 const WORKDIR: &str = "workdir";
 const STATE: &str = "state";
 
+const DEBIAN_WANTED: &[&str] = &["gcc"];
+
 const WINDOWS_BASH_MESSAGE: &str = r#"Bash is not installed by default on Windows!
 
 To install it, consider:
@@ -40,6 +44,70 @@ To install it, consider:
 
 If you install it in a non-standard location (other than C:\\msys64),
 make sure that its usr/bin directory is in the system PATH."#;
+
+enum Remediation {
+    Command { title: String, command: Command },
+}
+
+/// Suggestions that might arise from a preparation.
+#[derive(Default)]
+pub(crate) struct Remediations {
+    remediations: Vec<Remediation>,
+}
+
+impl Remediations {
+    /// Test if suggestions are empty.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.remediations.is_empty()
+    }
+
+    fn command(&mut self, title: impl fmt::Display, command: Command) {
+        self.remediations.push(Remediation::Command {
+            title: title.to_string(),
+            command,
+        });
+    }
+
+    /// Apply remediations.
+    pub(crate) fn apply<O>(self, o: &mut O, c: &BatchConfig<'_, '_>) -> Result<()>
+    where
+        O: ?Sized + WriteColor,
+    {
+        for remediation in self.remediations {
+            match remediation {
+                Remediation::Command { mut command, .. } => {
+                    o.set_color(&c.colors.title)?;
+                    writeln!(o, "Running: {}", command.display_with(c.shell))?;
+                    o.reset()?;
+                    let status = command.status()?;
+                    ensure!(status.success(), status);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Print suggestions.
+    pub(crate) fn print<O>(&self, o: &mut O, c: &BatchConfig<'_, '_>) -> Result<()>
+    where
+        O: ?Sized + WriteColor,
+    {
+        for remediation in &self.remediations {
+            match remediation {
+                Remediation::Command { title, command } => {
+                    o.set_color(&c.colors.warn)?;
+                    writeln!(o, "{title}")?;
+                    o.reset()?;
+
+                    writeln!(o, "  run: {}", command.display_with(c.shell))?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
 
 /// Preparations that need to be done before running a batch.
 #[derive(Default)]
@@ -59,11 +127,8 @@ impl Prepare {
     }
 
     /// Run all preparations.
-    pub(crate) fn prepare<O>(&mut self, o: &mut O, c: &BatchConfig<'_, '_>) -> Result<bool>
-    where
-        O: ?Sized + WriteColor,
-    {
-        let mut all_ok = true;
+    pub(crate) fn prepare(&mut self, c: &BatchConfig<'_, '_>) -> Result<Remediations> {
+        let mut suggestions = Remediations::default();
 
         if !self.wsl.is_empty() {
             let Some(wsl) = c.cx.system.wsl.first() else {
@@ -78,31 +143,101 @@ impl Prepare {
                 .collect::<BTreeSet<_>>();
 
             for &dist in &self.wsl {
-                if dist != Distribution::Other && !available.contains(&dist) {
-                    o.set_color(&c.colors.warn)?;
-                    writeln!(o, "WSL distro {dist} is missing")?;
-                    o.reset()?;
+                let mut has_wsl = true;
 
-                    writeln!(o, "  run: {} --install {dist}", wsl.path.display())?;
-                    all_ok = false;
-                    continue;
+                if dist != Distribution::Other && !available.contains(&dist) {
+                    let mut command = Command::new(&wsl.path);
+                    command
+                        .arg("--install")
+                        .arg(dist.to_string())
+                        .arg("--no-launch");
+                    suggestions.command(format_args!("WSL distro {dist} is missing"), command);
+
+                    match dist {
+                        Distribution::Ubuntu | Distribution::Debian => {
+                            let mut command = Command::new("ubuntu");
+                            command.arg("install");
+                            suggestions.command(
+                                format_args!("WSL distro {dist} needs to be configured"),
+                                command,
+                            );
+                        }
+                        _ => {}
+                    }
+
+                    has_wsl = false;
                 }
 
-                let mut command = wsl.shell(c.repo_path, dist);
-                let status = command.args(["rustup", "--version"]).status()?;
+                let has_rustup = if has_wsl {
+                    let mut command = wsl.shell(c.repo_path, dist);
+                    let status = command.args(["rustup", "--version"]).status()?;
+                    status.success()
+                } else {
+                    false
+                };
 
-                if !status.success() {
-                    o.set_color(&c.colors.warn)?;
-                    writeln!(o, "WSL distro {dist} is missing rustup")?;
-                    o.reset()?;
+                if !has_rustup {
+                    let mut command = wsl.shell(c.repo_path, dist);
+                    command.args(["bash", "-i", "-c"]).arg(
+                        "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
+                    );
+                    suggestions
+                        .command(format_args!("WSL distro {dist} is missing rustup"), command);
+                }
 
-                    writeln!(
-                        o,
-                        r#"  run: {} -d {dist} bash -i -c "curl https://sh.rustup.rs | sh""#,
-                        wsl.path.display()
-                    )?;
+                match dist {
+                    Distribution::Ubuntu | Distribution::Debian => {
+                        let mut wanted = BTreeSet::new();
 
-                    all_ok = false;
+                        for &package in DEBIAN_WANTED {
+                            wanted.insert(package);
+                        }
+
+                        if has_wsl {
+                            let mut command = wsl.shell(c.repo_path, dist);
+
+                            let output = command
+                                .args([
+                                    "dpkg-query",
+                                    "-W",
+                                    "-f",
+                                    "${db:Status-Status} ${Package}\n",
+                                ])
+                                .stdout(Stdio::piped())
+                                .output()?;
+
+                            ensure!(
+                                output.status.success(),
+                                "Failed to query installed packages: {}",
+                                output.status
+                            );
+
+                            for line in output.stdout.split(|&b| b == b'\n') {
+                                let Ok(line) = str::from_utf8(line) else {
+                                    continue;
+                                };
+
+                                if let Some(("installed", package)) = line.split_once(' ') {
+                                    wanted.remove(package);
+                                }
+                            }
+                        }
+
+                        if !wanted.is_empty() {
+                            let packages = wanted.into_iter().collect::<Vec<_>>();
+                            let packages = packages.join(" ");
+
+                            let mut command = wsl.shell(c.repo_path, dist);
+                            command.args(["bash", "-i", "-c"]).arg(format!(
+                                "sudo apt update && sudo apt install --yes {packages}"
+                            ));
+                            suggestions.command(
+                                format_args!("Some packages in {dist} are missing"),
+                                command,
+                            );
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -111,7 +246,7 @@ impl Prepare {
             self.runners = Some(actions.synchronize(c.cx)?);
         }
 
-        Ok(all_ok)
+        Ok(suggestions)
     }
 
     /// Access prepared runners, if they are available.
@@ -412,6 +547,10 @@ pub(crate) struct BatchOptions {
     /// Don't actually run any commands, just print what would be done.
     #[arg(long)]
     dry_run: bool,
+    /// If there are any system remediations that have to be performed before
+    /// running commands, apply them automatically.
+    #[arg(long)]
+    pub(crate) fix: bool,
 }
 
 /// A batch runner configuration.
@@ -1883,7 +2022,7 @@ fn sync_github_use(
 }
 
 fn os_to_run_on(cx: &Ctxt<'_>, os: &Os, dist: Distribution) -> Result<RunOn> {
-    if cx.os == *os {
+    if cx.os == *os && cx.dist.matches(dist) {
         return Ok(RunOn::Same);
     }
 

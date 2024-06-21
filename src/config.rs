@@ -357,16 +357,33 @@ pub(crate) enum Distribution {
     #[default]
     Other,
     Ubuntu,
+    Debian,
     Fedora,
 }
 
 impl Distribution {
+    /// Test if this distribution is basically compatible with another.
+    pub(crate) fn matches(&self, other: Self) -> bool {
+        match (self, other) {
+            (Distribution::Other, Distribution::Other) => false,
+            (
+                Distribution::Ubuntu | Distribution::Debian,
+                Distribution::Ubuntu | Distribution::Debian,
+            ) => true,
+            _ => *self == other,
+        }
+    }
+
     /// Get the distribution from a string.
     pub(crate) fn from_string_ignore_case(string: impl AsRef<str>) -> Self {
         let string = string.as_ref();
 
         if string.eq_ignore_ascii_case("ubuntu") {
             return Distribution::Ubuntu;
+        }
+
+        if string.eq_ignore_ascii_case("debian") {
+            return Distribution::Debian;
         }
 
         if string.eq_ignore_ascii_case("fedora") {
@@ -411,6 +428,7 @@ impl fmt::Display for Distribution {
         match self {
             Distribution::Other => write!(f, "Other"),
             Distribution::Ubuntu => write!(f, "Ubuntu"),
+            Distribution::Debian => write!(f, "Debian"),
             Distribution::Fedora => write!(f, "Fedora"),
         }
     }
