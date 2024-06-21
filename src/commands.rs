@@ -553,9 +553,12 @@ pub(crate) struct BatchOptions {
     /// what environments are passed in.
     #[arg(long, short = 'E', value_name = "key[=value]")]
     env: Vec<String>,
-    /// Print verbose information about the command being run.
-    #[arg(long)]
-    verbose: bool,
+    /// Print verbose information.
+    ///
+    /// One level `-V` prints the environment of the command invoked. Two levels
+    /// `-VV` prints the full command as run from the host operating system.
+    #[arg(long, short = 'V', action = clap::ArgAction::Count)]
+    verbose: u8,
     /// When printing diagnostics output, exposed secrets.
     ///
     /// If this is not specified, secrets will be printed as `***`.
@@ -579,7 +582,7 @@ pub(crate) struct BatchConfig<'a, 'cx> {
     env: BTreeMap<String, String>,
     env_passthrough: BTreeSet<String>,
     run_on: Vec<RunOn>,
-    verbose: bool,
+    verbose: u8,
     dry_run: bool,
     exposed: bool,
 }
@@ -595,7 +598,7 @@ impl<'a, 'cx> BatchConfig<'a, 'cx> {
             env: BTreeMap::new(),
             env_passthrough: BTreeSet::new(),
             run_on: Vec::new(),
-            verbose: false,
+            verbose: 0,
             dry_run: false,
             exposed: false,
         }
@@ -611,9 +614,7 @@ impl<'a, 'cx> BatchConfig<'a, 'cx> {
             self.exposed = true;
         }
 
-        if opts.verbose {
-            self.verbose = true;
-        }
+        self.verbose = opts.verbose;
 
         if opts.dry_run {
             self.dry_run = true;
@@ -766,9 +767,10 @@ impl Batch {
                     None => c.repo_path,
                 };
 
-                let mut display_command = None;
                 let mut command;
                 let mut paths = &[][..];
+                let mut display_command = None;
+                let mut script_source = None;
 
                 let env_keys = c.env_passthrough.iter();
                 let env_keys = env_keys.chain(c.env.keys());
@@ -797,7 +799,7 @@ impl Batch {
                             bail!("WSL not available");
                         };
 
-                        let (inner, wslenv, kick_script_file) =
+                        let (mut inner, wslenv, kick_script_file, inner_script_source) =
                             setup_wsl(&run, env_keys.map(String::as_str));
 
                         command = wsl.shell(path, dist);
@@ -805,7 +807,8 @@ impl Batch {
                         command.args(&inner.args);
 
                         for (key, value) in env {
-                            command.env(key, value);
+                            command.env(key.clone(), value.clone());
+                            inner.env(key, value);
                         }
 
                         if !wslenv.is_empty() {
@@ -817,6 +820,7 @@ impl Batch {
                         }
 
                         display_command = Some(inner);
+                        script_source = inner_script_source;
                     }
                 };
 
@@ -828,6 +832,29 @@ impl Batch {
                 }
 
                 step += 1;
+
+                let display_impl;
+
+                let (display, shell, display_env): (&dyn fmt::Display, _, _) = 'display: {
+                    if c.verbose == 2 {
+                        display_impl = command.display_with(c.shell).with_exposed(c.exposed);
+                        break 'display (&display_impl, c.shell, &command.env);
+                    }
+
+                    let display_env = &display_command.as_ref().unwrap_or(&command).env;
+
+                    if let Some(script_source) = &script_source {
+                        break 'display (script_source, Shell::Bash, display_env);
+                    }
+
+                    display_impl = display_command
+                        .as_ref()
+                        .unwrap_or(&command)
+                        .display_with(Shell::Bash)
+                        .with_exposed(c.exposed);
+
+                    (&display_impl, Shell::Bash, display_env)
+                };
 
                 write!(o, "# ")?;
 
@@ -848,8 +875,8 @@ impl Batch {
                     o.reset()?;
                 }
 
-                if !c.verbose && !command.env.is_empty() {
-                    let plural = if command.env.len() == 1 {
+                if c.verbose == 0 && !display_env.is_empty() {
+                    let plural = if display_env.len() == 1 {
                         "variable"
                     } else {
                         "variables"
@@ -858,26 +885,16 @@ impl Batch {
                     write!(o, " ")?;
 
                     o.set_color(&c.colors.warn)?;
-                    write!(
-                        o,
-                        "(see {} env {plural} with `--verbose`)",
-                        command.env.len()
-                    )?;
+                    write!(o, "(see {} env {plural} with `-V`)", display_env.len())?;
                     o.reset()?;
                 }
 
                 writeln!(o)?;
 
-                let display = if c.verbose {
-                    &command
-                } else {
-                    display_command.as_ref().unwrap_or(&command)
-                };
-
-                match &c.shell {
+                match shell {
                     Shell::Bash => {
-                        if c.verbose {
-                            for (key, value) in &command.env {
+                        if c.verbose > 0 {
+                            for (key, value) in display_env {
                                 let key = key.to_string_lossy();
 
                                 let value = if c.exposed {
@@ -886,22 +903,18 @@ impl Batch {
                                     value.to_string_lossy()
                                 };
 
-                                let value = c.shell.escape(value.as_ref());
+                                let value = shell.escape(value.as_ref());
                                 write!(o, "{key}={value} ")?;
                             }
                         }
 
-                        write!(
-                            o,
-                            "{}",
-                            display.display_with(c.shell).with_exposed(c.exposed)
-                        )?;
+                        write!(o, "{display}")?;
                     }
                     Shell::Powershell => {
-                        if c.verbose && !command.env.is_empty() {
+                        if c.verbose > 0 && !display_env.is_empty() {
                             writeln!(o, "powershell -Command {{")?;
 
-                            for (key, value) in &command.env {
+                            for (key, value) in display_env {
                                 let key = key.to_string_lossy();
 
                                 let value = if c.exposed {
@@ -910,22 +923,14 @@ impl Batch {
                                     value.to_string_lossy()
                                 };
 
-                                let value = c.shell.escape_string(value.as_ref());
+                                let value = shell.escape_string(value.as_ref());
                                 writeln!(o, r#"  $Env:{key}={value};"#)?;
                             }
 
-                            writeln!(
-                                o,
-                                "  {}",
-                                command.display_with(c.shell).with_exposed(c.exposed)
-                            )?;
+                            writeln!(o, "  {display}")?;
                             write!(o, "}}")?;
                         } else {
-                            write!(
-                                o,
-                                "{}",
-                                display.display_with(c.shell).with_exposed(c.exposed)
-                            )?;
+                            write!(o, "{display}")?;
                         }
                     }
                 }
@@ -1695,10 +1700,11 @@ fn setup_same<'a>(
 fn setup_wsl<'a>(
     run: &Run,
     env: impl IntoIterator<Item = &'a str>,
-) -> (Command, String, Option<Rc<Path>>) {
+) -> (Command, String, Option<Rc<Path>>, Option<RString>) {
     let mut seen = HashSet::new();
     let mut wslenv = String::new();
     let mut kick_script_file = None;
+    let mut script_source = None;
 
     let mut c;
 
@@ -1708,11 +1714,15 @@ fn setup_wsl<'a>(
                 c = Command::new("powershell");
                 c.args(["-Command"]);
                 c.arg(script);
+
+                script_source = Some(script.as_ref().to_owned());
             }
             Shell::Bash => {
                 c = Command::new("bash");
                 c.args(["-i", "-c"]);
                 c.arg(script);
+
+                script_source = Some(script.as_ref().to_owned());
             }
         },
         RunKind::Command { command, args } => {
@@ -1724,6 +1734,7 @@ fn setup_wsl<'a>(
             c.args(["-i", "-c", "node $KICK_SCRIPT_FILE"]);
             wslenv.push_str("KICK_SCRIPT_FILE/p");
             kick_script_file = Some(script_file.clone());
+            script_source = Some(format!("node {}", script_file.display()).into());
         }
     }
 
@@ -1751,7 +1762,7 @@ fn setup_wsl<'a>(
         wslenv.push_str("KICK_SCRIPT_FILE/p");
     }
 
-    (c, wslenv, kick_script_file)
+    (c, wslenv, kick_script_file, script_source)
 }
 
 /// System colors.
