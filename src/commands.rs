@@ -1939,8 +1939,8 @@ fn sync_github_use(
 
     for version in versions {
         for remote_name in [
-            BString::from(format!("refs/tags/{version}")),
             BString::from(format!("refs/heads/{version}")),
+            BString::from(format!("refs/tags/{version}")),
         ] {
             refspecs.push(remote_name.clone());
             reverse.insert(remote_name, version);
@@ -1953,6 +1953,8 @@ fn sync_github_use(
 
     tracing::debug!(?git_dir, ?url, "Syncing");
 
+    let mut found = HashSet::new();
+
     match crate::gix::sync(&r, &url, &refspecs, open) {
         Ok(remotes) => {
             tracing::debug!(?url, ?repo, ?name, ?remotes, "Found remotes");
@@ -1962,6 +1964,22 @@ fn sync_github_use(
                     continue;
                 };
 
+                if found.contains(version) {
+                    continue;
+                }
+
+                let (kind, action) = match crate::action::load(&r, &cx.eval, id) {
+                    Ok(found) => found,
+                    Err(error) => {
+                        tracing::debug!(?remote_name, ?version, ?id, ?error, "Not an action");
+                        continue;
+                    }
+                };
+
+                found.insert(version);
+
+                tracing::debug!(?remote_name, ?version, ?id, ?kind, "Found action");
+
                 let work_dir = repo_dir.join(WORKDIR).join(version);
 
                 fs::create_dir_all(&work_dir).with_context(|| {
@@ -1969,14 +1987,15 @@ fn sync_github_use(
                 })?;
 
                 let id_path = work_dir.join(GIT_OBJECT_ID_FILE);
-                let mut buf = [0u8; const { Kind::longest().len_in_hex() + 8 }];
-                let n = id.hex_to_buf(&mut buf[..]);
-                buf[n] = b'\n';
+                let existing = load_id(&id_path)?;
 
-                fs::write(&id_path, &buf[..n + 1])
-                    .with_context(|| anyhow!("Failed to write object ID: {}", id_path.display()))?;
+                let export = existing != Some(id);
 
-                out.push((work_dir, id, repo, name, version));
+                if export {
+                    write_id(&id_path, id)?;
+                }
+
+                out.push((kind, action, work_dir, id, repo, name, version, export));
             }
         }
         Err(error) => {
@@ -1985,41 +2004,28 @@ fn sync_github_use(
     }
 
     // Try to read out remaining versions from the workdir cache.
-    for (_, version) in reverse {
-        use bstr::ByteSlice;
+    for version in versions {
+        if !found.insert(version) {
+            continue;
+        }
 
         let work_dir = repo_dir.join(WORKDIR).join(version);
         let id_path = work_dir.join(GIT_OBJECT_ID_FILE);
 
-        let id = match fs::read(&id_path) {
-            Ok(id) => match ObjectId::from_hex(id.trim()) {
-                Ok(id) => id,
-                Err(e) => {
-                    _ = fs::remove_file(&id_path);
-                    return Err(e)
-                        .context(anyhow!("{}: Failed to parse object ID", id_path.display()));
-                }
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                continue;
-            }
-            Err(e) => {
-                return Err(e).context(anyhow!("{}: Failed to read object ID", id_path.display()))
-            }
-        };
-
-        out.push((work_dir, id, repo, name, version));
-    }
-
-    for (work_dir, id, repo, name, version) in out {
-        let key = format!("{repo}/{name}@{version}");
-        tracing::debug!(?work_dir, "Exporting {key}");
-
-        // Load an action runner directly out of a repository without checking it out.
-        let Some(runner) = crate::action::load(&cx.eval, &r, id, &work_dir, version)? else {
-            tracing::warn!("Could not load runner for {key}");
+        let Some(id) = load_id(&id_path)? else {
             continue;
         };
+
+        // Load an action runner directly out of a repository without checking it out.
+        let (kind, action) = crate::action::load(&r, &cx.eval, id)?;
+        out.push((kind, action, work_dir, id, repo, name, version, false));
+    }
+
+    for (kind, action, work_dir, id, repo, name, version, export) in out {
+        let key = format!("{repo}/{name}@{version}");
+        tracing::debug!(?work_dir, key, export, "Loading runner");
+
+        let runner = action.load(kind, &work_dir, version, export)?;
 
         fs::create_dir_all(&state_dir)
             .with_context(|| anyhow!("Failed to create envs directory: {}", state_dir.display()))?;
@@ -2035,6 +2041,33 @@ fn sync_github_use(
             },
         );
     }
+
+    Ok(())
+}
+
+fn load_id(path: &Path) -> Result<Option<ObjectId>> {
+    use bstr::ByteSlice;
+
+    match fs::read(path) {
+        Ok(id) => match ObjectId::from_hex(id.trim()) {
+            Ok(id) => Ok(Some(id)),
+            Err(e) => {
+                _ = fs::remove_file(path);
+                Err(e).context(anyhow!("{}: Failed to parse Object ID", path.display()))
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).context(anyhow!("{}: Failed to read Object ID", path.display())),
+    }
+}
+
+fn write_id(path: &Path, id: ObjectId) -> Result<()> {
+    let mut buf = [0u8; const { Kind::longest().len_in_hex() + 8 }];
+    let n = id.hex_to_buf(&mut buf[..]);
+    buf[n] = b'\n';
+
+    fs::write(path, &buf[..n + 1])
+        .with_context(|| anyhow!("Failed to write Object ID: {}", path.display()))?;
 
     Ok(())
 }

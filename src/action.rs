@@ -7,8 +7,9 @@ use std::rc::Rc;
 use std::str::{self, FromStr};
 
 use anyhow::{anyhow, bail, Context, Result};
+use gix::objs::tree::EntryMode;
 use gix::objs::Kind;
-use gix::{ObjectId, Repository};
+use gix::{Id, ObjectId, Repository};
 use nondestructive::yaml;
 use relative_path::RelativePathBuf;
 
@@ -31,18 +32,13 @@ pub(crate) enum ActionKind {
     },
 }
 
-/// Checkout the given object id.
-pub(crate) fn load(
+/// Load action context from the given repository.
+pub(crate) fn load<'repo>(
+    repo: &'repo Repository,
     eval: &Eval<'_>,
-    repo: &Repository,
     id: ObjectId,
-    work_dir: &Path,
-    version: &str,
-) -> Result<Option<Action>> {
-    let mut cx = Cx::default();
-
-    let mut paths = HashMap::new();
-    let mut dirs = Vec::new();
+) -> Result<(ActionRunnerKind, ActionContext<'repo>)> {
+    let mut cx = ActionContext::default();
 
     let mut queue = VecDeque::new();
 
@@ -60,6 +56,8 @@ pub(crate) fn load(
 
             match header.kind() {
                 Kind::Blob => {
+                    tracing::trace!(?path, "blob");
+
                     if path == "action.yml" {
                         let object = id.object()?;
 
@@ -70,10 +68,12 @@ pub(crate) fn load(
                             .context("Processing action.yml")?;
                     }
 
-                    paths.insert(path.clone(), (id, entry.mode()));
+                    cx.paths.insert(path.clone(), (id, entry.mode()));
                 }
                 Kind::Tree => {
-                    dirs.push((path.clone(), entry.mode()));
+                    tracing::trace!(?path, "tree");
+
+                    cx.dirs.push((path.clone(), entry.mode()));
                     let object = id.object()?;
                     queue.push_back((object.peel_to_tree()?, path.clone()));
                 }
@@ -86,126 +86,162 @@ pub(crate) fn load(
         }
     }
 
-    let Some(kind) = cx.kind else {
-        return Ok(None);
-    };
-
-    let kind = match kind {
-        RunnerKind::Node(node_version) => {
-            let Ok(node_version) = u32::from_str(node_version.as_ref()) else {
-                return Err(anyhow!("Invalid node runner version `{node_version}`"));
-            };
-
-            let Some((main, _)) = cx.main.and_then(|p| paths.remove(&p)) else {
-                return Ok(None);
-            };
-
-            let main = main.object()?;
-
-            let post = 'post: {
-                let Some((post, _)) = cx.post.and_then(|p| paths.remove(&p)) else {
-                    break 'post None;
-                };
-
-                Some(post.object()?.data.clone())
-            };
-
-            let main_path = work_dir.join(format!("main-{node_version}-{version}.js"));
-
-            fs::write(&main_path, main).with_context(|| {
-                anyhow!("Failed to write main script to: {}", main_path.display())
-            })?;
-
-            let main_path = Rc::from(main_path);
-
-            let post_path = if let Some(post) = post {
-                let post_path = work_dir.join(format!("post-{node_version}-{version}.js"));
-
-                fs::write(&post_path, post).with_context(|| {
-                    anyhow!("Failed to write post script to: {}", post_path.display())
-                })?;
-
-                Some(Rc::from(post_path))
-            } else {
-                None
-            };
-
-            ActionKind::Node {
-                main_path,
-                post_path,
-                node_version,
-            }
-        }
-        RunnerKind::Composite => {
-            for (dir, _) in dirs {
-                let path = dir.to_path(work_dir);
-
-                match fs::create_dir(&path) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                    Err(e) => {
-                        return Err(e).with_context(|| {
-                            anyhow!("Failed to create directory: {}", path.display())
-                        });
-                    }
-                }
-            }
-
-            for (path, (id, mode)) in paths {
-                let path = path.to_path(work_dir);
-                let object = id.object()?;
-
-                let mut f = File::create(&path)
-                    .with_context(|| anyhow!("Failed to create file: {}", path.display()))?;
-
-                f.write_all(&object.data[..])
-                    .with_context(|| anyhow!("Failed to write file: {}", path.display()))?;
-
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-
-                    let meta = f.metadata()?;
-                    let mut perm = meta.permissions();
-                    perm.set_mode(mode.0 as u32);
-
-                    f.set_permissions(perm).with_context(|| {
-                        anyhow!("Failed to set permissions on file: {}", path.display())
-                    })?;
-                }
-
-                #[cfg(not(unix))]
-                {
-                    _ = mode;
-                }
-            }
-
-            ActionKind::Composite { steps: cx.steps }
-        }
-    };
-
-    Ok(Some(Action {
-        kind,
-        defaults: cx.defaults,
-    }))
+    let kind = cx.kind.take().context("Could not determine runner kind")?;
+    Ok((kind, cx))
 }
 
-enum RunnerKind {
+/// A determined action runner kind.
+#[derive(Debug)]
+pub(crate) enum ActionRunnerKind {
     Node(Box<str>),
     Composite,
 }
 
+/// The context of an action loaded from a repo.
 #[derive(Default)]
-struct Cx {
-    kind: Option<RunnerKind>,
+pub(crate) struct ActionContext<'repo> {
+    kind: Option<ActionRunnerKind>,
     main: Option<RelativePathBuf>,
     post: Option<RelativePathBuf>,
     steps: Vec<Step>,
     defaults: BTreeMap<String, String>,
     required: BTreeSet<String>,
+    paths: HashMap<RelativePathBuf, (Id<'repo>, EntryMode)>,
+    dirs: Vec<(RelativePathBuf, EntryMode)>,
 }
 
-impl Cx {
+impl<'repo> ActionContext<'repo> {
+    /// Checkout the given object id.
+    pub(crate) fn load(
+        self,
+        kind: ActionRunnerKind,
+        work_dir: &Path,
+        version: &str,
+        export: bool,
+    ) -> Result<Action> {
+        let kind = match kind {
+            ActionRunnerKind::Node(node_version) => {
+                let Ok(node_version) = u32::from_str(node_version.as_ref()) else {
+                    return Err(anyhow!("Invalid node runner version `{node_version}`"));
+                };
+
+                let post = 'post: {
+                    let Some(post) = self.post else {
+                        break 'post None;
+                    };
+
+                    let (post, _) = self
+                        .paths
+                        .get(&post)
+                        .with_context(|| anyhow!("Missing post script in repo: {post}"))?;
+
+                    Some(post)
+                };
+
+                let main_path = work_dir.join(format!("main-{node_version}-{version}.js"));
+
+                if export {
+                    let main = self.main.with_context(|| anyhow!("Missing main script"))?;
+
+                    let (main, _) = self
+                        .paths
+                        .get(&main)
+                        .with_context(|| anyhow!("Missing main script in repo: {main}"))?;
+
+                    let main = main.object()?;
+
+                    tracing::debug!(?main_path, "Writing main");
+
+                    fs::write(&main_path, &main.data[..]).with_context(|| {
+                        anyhow!("Failed to write main script to: {}", main_path.display())
+                    })?;
+                }
+
+                let main_path = Rc::from(main_path);
+
+                let post_path = if let Some(post) = post {
+                    let post_path = work_dir.join(format!("post-{node_version}-{version}.js"));
+
+                    if export {
+                        let post = post.object()?;
+
+                        tracing::debug!(?post_path, "Writing post");
+
+                        fs::write(&post_path, &post.data[..]).with_context(|| {
+                            anyhow!("Failed to write post script to: {}", post_path.display())
+                        })?;
+                    }
+
+                    Some(Rc::from(post_path))
+                } else {
+                    None
+                };
+
+                ActionKind::Node {
+                    main_path,
+                    post_path,
+                    node_version,
+                }
+            }
+            ActionRunnerKind::Composite => {
+                if export {
+                    tracing::debug!(?work_dir, "Exporting composite action");
+
+                    for (dir, _) in self.dirs {
+                        let path = dir.to_path(work_dir);
+
+                        match fs::create_dir(&path) {
+                            Ok(()) => {}
+                            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                            Err(e) => {
+                                return Err(e).with_context(|| {
+                                    anyhow!("Failed to create directory: {}", path.display())
+                                });
+                            }
+                        }
+                    }
+
+                    for (path, (id, mode)) in self.paths {
+                        let path = path.to_path(work_dir);
+                        let object = id.object()?;
+
+                        let mut f = File::create(&path).with_context(|| {
+                            anyhow!("Failed to create file: {}", path.display())
+                        })?;
+
+                        f.write_all(&object.data[..])
+                            .with_context(|| anyhow!("Failed to write file: {}", path.display()))?;
+
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+
+                            let meta = f.metadata()?;
+                            let mut perm = meta.permissions();
+                            perm.set_mode(mode.0 as u32);
+
+                            f.set_permissions(perm).with_context(|| {
+                                anyhow!("Failed to set permissions on file: {}", path.display())
+                            })?;
+                        }
+
+                        #[cfg(not(unix))]
+                        {
+                            _ = mode;
+                        }
+                    }
+                }
+
+                ActionKind::Composite { steps: self.steps }
+            }
+        };
+
+        Ok(Action {
+            kind,
+            defaults: self.defaults,
+        })
+    }
+
     fn process_actions_yml(&mut self, action_yml: &yaml::Document, eval: &Eval<'_>) -> Result<()> {
         let Some(action_yml) = action_yml.as_ref().as_mapping() else {
             bail!("Expected mapping in action.yml");
@@ -220,9 +256,9 @@ impl Cx {
                 .context("Missing .runs.using")?;
 
             if let Some(version) = using.strip_prefix("node") {
-                self.kind = Some(RunnerKind::Node(version.trim().into()));
+                self.kind = Some(ActionRunnerKind::Node(version.trim().into()));
             } else if using == "composite" {
-                self.kind = Some(RunnerKind::Composite);
+                self.kind = Some(ActionRunnerKind::Composite);
             } else {
                 bail!("Unsupported .runs.using: {using}");
             }
