@@ -193,8 +193,8 @@ impl From<&OsString> for OsArg {
 }
 
 pub(crate) struct Command {
-    command: OsArg,
-    args: Vec<OsArg>,
+    pub(crate) command: OsArg,
+    pub(crate) args: Vec<OsArg>,
     current_dir: Option<PathBuf>,
     stdin: Option<Stdio>,
     stdout: Option<Stdio>,

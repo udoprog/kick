@@ -26,7 +26,6 @@ use crate::model::Repo;
 use crate::process::{Command, OsArg};
 use crate::rstr::{RStr, RString};
 use crate::shell::Shell;
-use crate::system::Wsl;
 use crate::workflows::{Eval, Job, Matrix, Step, Steps, Tree, WorkflowManifest, WorkflowManifests};
 
 const GITHUB_BASE: &str = "https://github.com";
@@ -730,11 +729,11 @@ impl Batch {
             write!(o, "{}", c.repo_path.display())?;
             o.reset()?;
 
-            if let Some(name) = run_on.name() {
-                write!(o, " using ")?;
+            if let RunOn::Wsl(dist) = run_on {
+                write!(o, " on ")?;
 
                 o.set_color(&c.colors.title)?;
-                write!(o, "{name}")?;
+                write!(o, "{dist} (WSL)")?;
                 o.reset()?;
             }
 
@@ -767,29 +766,65 @@ impl Batch {
                     None => c.repo_path,
                 };
 
-                let mut runner = run_on.build_runner(c, path, &run, scheduler.env())?;
+                let mut display_command = None;
+                let mut command;
+                let mut paths = &[][..];
 
-                for (key, value) in &c.env {
-                    runner.command.env(key, value);
-                }
+                let env_keys = c.env_passthrough.iter();
+                let env_keys = env_keys.chain(c.env.keys());
+                let env_keys = env_keys.chain(run.env.keys());
+                let env_keys = env_keys.chain(scheduler.env().keys());
 
-                for (key, value) in scheduler.env() {
-                    runner.command.env(key, value);
-                }
+                let env = c.env.iter().map(|(k, v)| (k.clone(), OsArg::from(v)));
+                let env = env.chain(run.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+                let env = env.chain(
+                    scheduler
+                        .env()
+                        .iter()
+                        .map(|(k, v)| (k.clone(), OsArg::from(v))),
+                );
 
-                for (key, value) in &run.env {
-                    runner.command.env(key, value);
-                }
+                match run_on {
+                    RunOn::Same => {
+                        (command, paths) = setup_same(c, path, &run)?;
 
-                for (key, value) in &runner.extra_env {
-                    runner.command.env(key, value);
-                }
+                        for (key, value) in env {
+                            command.env(key, value);
+                        }
+                    }
+                    RunOn::Wsl(dist) => {
+                        let Some(wsl) = c.cx.system.wsl.first() else {
+                            bail!("WSL not available");
+                        };
 
-                if !runner.paths.is_empty() {
+                        let (inner, wslenv, kick_script_file) =
+                            setup_wsl(&run, env_keys.map(String::as_str));
+
+                        command = wsl.shell(path, dist);
+                        command.arg(&inner.command);
+                        command.args(&inner.args);
+
+                        for (key, value) in env {
+                            command.env(key, value);
+                        }
+
+                        if !wslenv.is_empty() {
+                            command.env("WSLENV", wslenv);
+                        }
+
+                        if let Some(kick_script_file) = kick_script_file {
+                            command.env("KICK_SCRIPT_FILE", kick_script_file);
+                        }
+
+                        display_command = Some(inner);
+                    }
+                };
+
+                if !paths.is_empty() {
                     let current_path = env::var_os("PATH").unwrap_or_default();
-                    let paths = env::split_paths(&current_path);
-                    let paths = env::join_paths(runner.paths.iter().cloned().chain(paths))?;
-                    runner.command.env("PATH", paths);
+                    let current_path = env::split_paths(&current_path);
+                    let paths = env::join_paths(paths.iter().cloned().chain(current_path))?;
+                    command.env("PATH", paths);
                 }
 
                 step += 1;
@@ -813,8 +848,8 @@ impl Batch {
                     o.reset()?;
                 }
 
-                if !c.verbose && !runner.command.env.is_empty() {
-                    let plural = if runner.command.env.len() == 1 {
+                if !c.verbose && !command.env.is_empty() {
+                    let plural = if command.env.len() == 1 {
                         "variable"
                     } else {
                         "variables"
@@ -826,17 +861,23 @@ impl Batch {
                     write!(
                         o,
                         "(see {} env {plural} with `--verbose`)",
-                        runner.command.env.len()
+                        command.env.len()
                     )?;
                     o.reset()?;
                 }
 
                 writeln!(o)?;
 
+                let display = if c.verbose {
+                    &command
+                } else {
+                    display_command.as_ref().unwrap_or(&command)
+                };
+
                 match &c.shell {
                     Shell::Bash => {
                         if c.verbose {
-                            for (key, value) in &runner.command.env {
+                            for (key, value) in &command.env {
                                 let key = key.to_string_lossy();
 
                                 let value = if c.exposed {
@@ -853,14 +894,14 @@ impl Batch {
                         write!(
                             o,
                             "{}",
-                            runner.command.display_with(c.shell).with_exposed(c.exposed)
+                            display.display_with(c.shell).with_exposed(c.exposed)
                         )?;
                     }
                     Shell::Powershell => {
-                        if c.verbose && !runner.command.env.is_empty() {
+                        if c.verbose && !command.env.is_empty() {
                             writeln!(o, "powershell -Command {{")?;
 
-                            for (key, value) in &runner.command.env {
+                            for (key, value) in &command.env {
                                 let key = key.to_string_lossy();
 
                                 let value = if c.exposed {
@@ -876,14 +917,14 @@ impl Batch {
                             writeln!(
                                 o,
                                 "  {}",
-                                runner.command.display_with(c.shell).with_exposed(c.exposed)
+                                command.display_with(c.shell).with_exposed(c.exposed)
                             )?;
                             write!(o, "}}")?;
                         } else {
                             write!(
                                 o,
                                 "{}",
-                                runner.command.display_with(c.shell).with_exposed(c.exposed)
+                                display.display_with(c.shell).with_exposed(c.exposed)
                             )?;
                         }
                     }
@@ -899,7 +940,7 @@ impl Batch {
                             .chain(run.output_file.as_slice()),
                     )?;
 
-                    let status = runner.command.status()?;
+                    let status = command.status()?;
                     ensure!(status.success(), status);
 
                     if let Some(env_file) = &run.env_file {
@@ -1519,50 +1560,6 @@ pub(crate) enum RunOn {
     Wsl(Distribution),
 }
 
-impl RunOn {
-    fn build_runner(
-        &self,
-        c: &BatchConfig<'_, '_>,
-        path: &Path,
-        run: &Run,
-        current_env: &BTreeMap<String, String>,
-    ) -> Result<Runner> {
-        match *self {
-            Self::Same => setup_same(c, path, run),
-            Self::Wsl(dist) => {
-                let Some(wsl) = c.cx.system.wsl.first() else {
-                    bail!("WSL not available");
-                };
-
-                Ok(setup_wsl(c, dist, path, wsl, run, current_env))
-            }
-        }
-    }
-
-    fn name(&self) -> Option<&str> {
-        match *self {
-            Self::Same => None,
-            Self::Wsl(..) => Some("WSL"),
-        }
-    }
-}
-
-struct Runner {
-    command: Command,
-    extra_env: BTreeMap<&'static str, OsArg>,
-    paths: Vec<PathBuf>,
-}
-
-impl Runner {
-    fn new(command: Command) -> Self {
-        Self {
-            command,
-            extra_env: BTreeMap::new(),
-            paths: Vec::new(),
-        }
-    }
-}
-
 fn parse_output(contents: &[u8]) -> Result<Vec<(String, String)>> {
     use bstr::ByteSlice;
 
@@ -1644,7 +1641,11 @@ fn rust_toolchain<'a>(
     }))
 }
 
-fn setup_same(c: &BatchConfig<'_, '_>, path: &Path, run: &Run) -> Result<Runner> {
+fn setup_same<'a>(
+    c: &BatchConfig<'_, 'a>,
+    path: &Path,
+    run: &Run,
+) -> Result<(Command, &'a [PathBuf])> {
     match &run.run {
         RunKind::Shell { script, shell } => match shell {
             Shell::Powershell => {
@@ -1655,7 +1656,7 @@ fn setup_same(c: &BatchConfig<'_, '_>, path: &Path, run: &Run) -> Result<Runner>
                 let mut c = powershell.command(path);
                 c.arg("-Command");
                 c.arg(script);
-                Ok(Runner::new(c))
+                Ok((c, &[]))
             }
             Shell::Bash => {
                 let Some(bash) = c.cx.system.bash.first() else {
@@ -1669,21 +1670,14 @@ fn setup_same(c: &BatchConfig<'_, '_>, path: &Path, run: &Run) -> Result<Runner>
                 let mut c = bash.command(path);
                 c.args(["-i", "-c"]);
                 c.arg(script);
-
-                let mut r = Runner::new(c);
-
-                if !bash.paths.is_empty() {
-                    r.paths.clone_from(&bash.paths);
-                }
-
-                Ok(r)
+                Ok((c, &bash.paths))
             }
         },
         RunKind::Command { command, args } => {
             let mut c = Command::new(command);
             c.args(args.as_ref());
             c.current_dir(path);
-            Ok(Runner::new(c))
+            Ok((c, &[]))
         }
         RunKind::Node {
             node_version,
@@ -1693,54 +1687,47 @@ fn setup_same(c: &BatchConfig<'_, '_>, path: &Path, run: &Run) -> Result<Runner>
             let mut c = Command::new(&node.path);
             c.arg(script_file);
             c.current_dir(path);
-            Ok(Runner::new(c))
+            Ok((c, &[]))
         }
     }
 }
 
-fn setup_wsl(
-    c: &BatchConfig<'_, '_>,
-    dist: Distribution,
-    path: &Path,
-    wsl: &Wsl,
+fn setup_wsl<'a>(
     run: &Run,
-    current_env: &BTreeMap<String, String>,
-) -> Runner {
-    let mut cmd = wsl.shell(path, dist);
-
+    env: impl IntoIterator<Item = &'a str>,
+) -> (Command, String, Option<Rc<Path>>) {
     let mut seen = HashSet::new();
     let mut wslenv = String::new();
-    let mut extra_env = BTreeMap::new();
+    let mut kick_script_file = None;
+
+    let mut c;
 
     match &run.run {
         RunKind::Shell { script, shell } => match shell {
             Shell::Powershell => {
-                cmd.args(["powershell", "-Command"]);
-                cmd.arg(script);
+                c = Command::new("powershell");
+                c.args(["-Command"]);
+                c.arg(script);
             }
             Shell::Bash => {
-                cmd.args(["bash", "-i", "-c"]);
-                cmd.arg(script);
+                c = Command::new("bash");
+                c.args(["-i", "-c"]);
+                c.arg(script);
             }
         },
         RunKind::Command { command, args } => {
-            cmd.arg(command);
-            cmd.args(args.as_ref());
+            c = Command::new(command);
+            c.args(args.as_ref());
         }
         RunKind::Node { script_file, .. } => {
-            cmd.args(["bash", "-i", "-c", "node $KICK_SCRIPT_FILE"]);
+            c = Command::new("bash");
+            c.args(["-i", "-c", "node $KICK_SCRIPT_FILE"]);
             wslenv.push_str("KICK_SCRIPT_FILE/p");
-            extra_env.insert("KICK_SCRIPT_FILE", OsArg::from(script_file));
+            kick_script_file = Some(script_file.clone());
         }
     }
 
-    for e in c
-        .env_passthrough
-        .iter()
-        .chain(c.env.keys())
-        .chain(run.env.keys())
-        .chain(current_env.keys())
-    {
+    for e in env {
         if !wslenv.is_empty() {
             wslenv.push(':');
         }
@@ -1756,11 +1743,15 @@ fn setup_wsl(
         }
     }
 
-    extra_env.insert("WSLENV", OsArg::from(wslenv));
+    if kick_script_file.is_some() {
+        if !wslenv.is_empty() {
+            wslenv.push(':');
+        }
 
-    let mut runner = Runner::new(cmd);
-    runner.extra_env = extra_env;
-    runner
+        wslenv.push_str("KICK_SCRIPT_FILE/p");
+    }
+
+    (c, wslenv, kick_script_file)
 }
 
 /// System colors.
