@@ -1,14 +1,13 @@
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
-use std::io;
-use std::io::Write;
+use std::io::{self, Write};
 use std::ops::Range;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use musli::storage::Encoding;
 use musli::{Decode, Encode};
 use nondestructive::yaml;
@@ -37,7 +36,7 @@ pub(crate) fn load_changes(path: &Path) -> Result<Option<Vec<Change>>> {
     let f = match fs::File::open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e.into()),
+        Err(e) => return Err(e).context(path.display().to_string()),
     };
 
     let mut encoder = GzDecoder::new(f);
@@ -178,7 +177,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
             if save {
                 if let Some(parent) = path.parent() {
                     if !parent.is_dir() {
-                        std::fs::create_dir_all(parent)?;
+                        fs::create_dir_all(parent)?;
                     }
                 }
 
@@ -191,7 +190,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                     return Ok(());
                 };
 
-                std::fs::write(path, string)?;
+                fs::write(path, string)?;
             }
         }
         Change::BadWorkflow {
@@ -260,7 +259,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
 
                 if edited {
                     println!("{}: Fixing", path.display());
-                    std::fs::write(&path, doc.to_string())?;
+                    fs::write(&path, doc.to_string())?;
                 }
             }
 
@@ -280,7 +279,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
 
             if save {
                 println!("{}: Fixing", path.display());
-                std::fs::write(path, new_file.as_str())?;
+                fs::write(path, new_file.as_str())?;
             } else {
                 println!("{}: Needs update", path.display());
             }
@@ -293,7 +292,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
 
             if save {
                 println!("{}: Fixing", path.display());
-                std::fs::write(path, new_file.as_str())?;
+                fs::write(path, new_file.as_str())?;
             } else {
                 println!("{}: Needs update", path.display());
             }

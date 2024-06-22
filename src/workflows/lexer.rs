@@ -1,4 +1,4 @@
-use core::array;
+use std::array;
 
 use super::Syntax;
 

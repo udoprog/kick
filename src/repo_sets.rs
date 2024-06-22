@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::fmt;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
@@ -39,10 +39,10 @@ impl RepoSets {
             updates: Vec::default(),
         };
 
-        let dir = match std::fs::read_dir(path) {
+        let dir = match fs::read_dir(path) {
             Ok(dir) => dir,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(sets),
-            Err(e) => return Err(e).context(anyhow!("{}", path.display())),
+            Err(e) => return Err(e).context(path.display().to_string()),
         };
 
         for e in dir {
@@ -96,14 +96,14 @@ impl RepoSets {
         let file = match File::open(&path) {
             Ok(file) => file,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e).context(anyhow!("{}", path.display())),
+            Err(e) => return Err(e).context(path.display().to_string()),
         };
 
         let mut set = RepoSet::default();
         let reader = BufReader::new(file);
 
         for (n, line) in reader.lines().enumerate() {
-            let line = line.with_context(|| anyhow!("{}", path.display()))?;
+            let line = line.with_context(|| path.display().to_string())?;
             set.raw.push(line.clone());
 
             if line.trim().starts_with('#') {
@@ -164,7 +164,7 @@ impl RepoSets {
 
             for path in paths {
                 if !self.path.is_dir() {
-                    std::fs::create_dir_all(&self.path)
+                    fs::create_dir_all(&self.path)
                         .with_context(|| anyhow!("{}", self.path.display()))?;
                 }
 
@@ -186,7 +186,7 @@ impl RepoSets {
 
                 let path = self.path.join(format!("{id}-{}", date.format(DATE_FORMAT)));
                 tracing::trace!(path = path.display().to_string(), "Removing old set");
-                let _ = std::fs::remove_file(&path);
+                let _ = fs::remove_file(&path);
             }
         }
 

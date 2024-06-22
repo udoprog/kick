@@ -1,5 +1,6 @@
 use std::cell::{Ref, RefCell};
 use std::fs;
+use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::process::{ExitCode, Stdio};
 
@@ -60,7 +61,7 @@ impl Paths<'_> {
 
         match fs::read_to_string(&path) {
             Ok(input) => Ok(Some(input)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(anyhow::Error::from(e).context(format!("Reading {}", path.display()))),
         }
     }

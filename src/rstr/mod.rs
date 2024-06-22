@@ -4,11 +4,11 @@ pub(crate) use self::chunks::Chunks;
 #[cfg(test)]
 mod tests;
 
-use core::cmp::Ordering;
-use core::fmt;
-use core::ops::Deref;
 use std::borrow::{Borrow, Cow};
+use std::cmp::Ordering;
+use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::ops::Deref;
 use std::rc::Rc;
 
 /// The redaction string.

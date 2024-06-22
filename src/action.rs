@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::fs;
-use std::fs::File;
+use std::fs::{self, File};
+use std::io;
 use std::io::Write;
 use std::path::Path;
 use std::rc::Rc;
@@ -192,7 +192,7 @@ impl<'repo> ActionContext<'repo> {
 
                         match fs::create_dir(&path) {
                             Ok(()) => {}
-                            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
                             Err(e) => {
                                 return Err(e).with_context(|| {
                                     anyhow!("Failed to create directory: {}", path.display())

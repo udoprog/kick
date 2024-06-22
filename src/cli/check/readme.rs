@@ -1,3 +1,4 @@
+use std::io;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -135,10 +136,12 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
 
     let readme_from_lib_rs = readme_from_lib_rs(cx, rm, &comments, &readme_badges)?;
 
-    let readme = match File::read(cx.to_path(rm.readme_path)) {
+    let path = cx.to_path(rm.readme_path);
+
+    let readme = match File::read(&path) {
         Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => File::new(),
-        Err(e) => return Err(e.into()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => File::new(),
+        Err(e) => return Err(e).context(path.display().to_string()),
     };
 
     if rm.do_readme && readme != readme_from_lib_rs {

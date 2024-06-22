@@ -1,4 +1,4 @@
-use core::fmt;
+use std::fmt;
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Local, TimeZone};

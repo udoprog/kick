@@ -3,11 +3,11 @@ pub(crate) mod git;
 mod node;
 mod wsl;
 
-use core::fmt;
 use std::collections::HashSet;
 use std::env;
 use std::env::consts::EXE_EXTENSION;
 use std::ffi::OsStr;
+use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};

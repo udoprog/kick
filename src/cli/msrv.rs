@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -276,10 +277,10 @@ fn move_paths(from: &Path, to: &Path) -> Result<()> {
     tracing::trace!("moving {} -> {}", from.display(), to.display());
 
     if to.exists() {
-        let _ = std::fs::remove_file(to).with_context(|| anyhow!("{}", to.display()));
+        let _ = fs::remove_file(to).with_context(|| anyhow!("{}", to.display()));
     }
 
-    std::fs::rename(from, to).with_context(|| anyhow!("{} -> {}", from.display(), to.display()))?;
+    fs::rename(from, to).with_context(|| anyhow!("{} -> {}", from.display(), to.display()))?;
     Ok(())
 }
 

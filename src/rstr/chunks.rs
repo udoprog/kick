@@ -1,4 +1,4 @@
-use core::mem::take;
+use std::mem::take;
 
 use super::{START, TAG_END, TAG_START};
 

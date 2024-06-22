@@ -2,7 +2,7 @@ use std::convert::Infallible;
 use std::env;
 use std::fmt;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{self, BufRead, BufReader};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -89,8 +89,8 @@ where
 
     let f = match fs::File::open(path) {
         Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(anyhow::Error::from(e)).with_context(|| path.display().to_string()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).context(path.display().to_string()),
     };
 
     let mut line = String::new();

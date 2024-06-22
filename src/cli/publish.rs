@@ -1,6 +1,6 @@
-use core::fmt;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
+use std::fmt;
 
 use anyhow::{bail, Result};
 use clap::Parser;

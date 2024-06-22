@@ -1,11 +1,13 @@
-use core::fmt;
 use std::cell::{Cell, Ref, RefCell};
 use std::env;
+use std::fmt;
+use std::fs;
+use std::io;
 use std::ops::Deref;
 use std::path::Path;
 use std::rc::Rc;
 
-use anyhow::{anyhow, bail, Context, Error, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use musli::{Decode, Encode};
 use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Deserialize, Serialize, Serializer};
@@ -312,14 +314,14 @@ impl Deref for Repo {
 
 /// Load git modules.
 pub(crate) fn load_gitmodules(root: &Path) -> Result<Option<Vec<Repo>>> {
-    let gitmodules_path = root.join(".gitmodules");
+    let path = root.join(".gitmodules");
 
-    match std::fs::read(&gitmodules_path) {
+    match fs::read(&path) {
         Ok(buf) => Ok(Some(
-            parse_git_modules(&buf).with_context(|| gitmodules_path.display().to_string())?,
+            parse_git_modules(&buf).with_context(|| path.display().to_string())?,
         )),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => return Err(Error::from(e)).context(gitmodules_path.display().to_string()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).context(path.display().to_string()),
     }
 }
 

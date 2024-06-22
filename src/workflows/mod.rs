@@ -149,7 +149,7 @@ impl<'a, 'cx> WorkflowManifests<'a, 'cx> {
         let bytes = match fs::read(&p) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e).with_context(|| anyhow!("{}", p.display())),
+            Err(e) => return Err(e).context(p.display().to_string()),
         };
 
         let doc = yaml::from_slice(bytes)

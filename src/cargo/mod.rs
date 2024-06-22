@@ -20,6 +20,7 @@ pub(crate) use self::rust_version::RustVersion;
 pub(crate) mod rust_version;
 
 use std::collections::HashSet;
+use std::fs;
 use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
@@ -243,7 +244,7 @@ impl Manifest {
         P: AsRef<Path>,
     {
         let string = self.doc.to_string();
-        std::fs::write(path, string.as_bytes())?;
+        fs::write(path, string.as_bytes())?;
         Ok(())
     }
 

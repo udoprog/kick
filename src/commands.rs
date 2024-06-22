@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::rc::Rc;
@@ -2058,8 +2058,8 @@ fn load_id(path: &Path) -> Result<Option<ObjectId>> {
                 Err(e).context(anyhow!("{}: Failed to parse Object ID", path.display()))
             }
         },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).context(anyhow!("{}: Failed to read Object ID", path.display())),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).context(path.display().to_string()),
     }
 }
 

@@ -1,4 +1,4 @@
-use core::fmt;
+use std::fmt;
 
 use anyhow::Result;
 use musli::{Decode, Encode};
