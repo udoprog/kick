@@ -26,8 +26,7 @@ impl Schedule {
     pub(super) fn prepare(&self, prepare: &mut Prepare) -> Result<()> {
         match self {
             Schedule::Use(u) => {
-                let changed = prepare.actions_mut().insert_action(u.uses())?;
-                prepare.changed_actions |= changed;
+                prepare.actions_mut().insert_action(u.uses())?;
                 Ok(())
             }
             _ => Ok(()),

@@ -1,11 +1,11 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use std::fs::{self};
 use std::io::{self};
 use std::path::Path;
 use std::rc::Rc;
 use std::str;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use bstr::BString;
 use gix::hash::Kind;
 use gix::ObjectId;
@@ -23,12 +23,13 @@ const STATE: &str = "state";
 /// Loaded uses.
 #[derive(Default)]
 pub(crate) struct Actions {
-    actions: BTreeMap<(String, String), BTreeSet<String>>,
+    actions: BTreeSet<(String, String, String)>,
+    changed: Vec<(String, String, String)>,
 }
 
 impl Actions {
     /// Add an action by id.
-    pub(super) fn insert_action<S>(&mut self, id: S) -> Result<bool>
+    pub(super) fn insert_action<S>(&mut self, id: S) -> Result<()>
     where
         S: AsRef<RStr>,
     {
@@ -39,54 +40,50 @@ impl Actions {
             Use::Github(repo, name, version) => {
                 let inserted = self
                     .actions
-                    .entry((repo.clone(), name.clone()))
-                    .or_default()
-                    .insert(version.clone());
+                    .insert((repo.clone(), name.clone(), version.clone()));
 
-                Ok(inserted)
+                if inserted {
+                    self.changed.push((repo, name, version));
+                }
+
+                Ok(())
             }
         }
     }
 
     /// Synchronize github uses.
-    pub(super) fn synchronize(&self, runners: &mut ActionRunners, cx: &Ctxt<'_>) -> Result<()> {
-        for ((repo, name), versions) in &self.actions {
-            sync_github_use(runners, cx, repo, name, versions)
-                .with_context(|| anyhow!("Failed to sync GitHub use {repo}/{name}@{versions:?}"))?;
+    pub(super) fn synchronize(&mut self, runners: &mut ActionRunners, cx: &Ctxt<'_>) -> Result<()> {
+        for (repo, name, version) in self.changed.drain(..) {
+            sync_action(runners, cx, &repo, &name, &version)
+                .with_context(|| anyhow!("Failed to sync GitHub action {repo}/{name}@{version}"))?;
         }
 
         Ok(())
     }
 }
 
-fn sync_github_use(
+fn sync_action(
     runners: &mut ActionRunners,
     cx: &Ctxt<'_>,
     repo: &str,
     name: &str,
-    versions: &BTreeSet<String>,
+    version: &str,
 ) -> Result<()> {
     let mut refspecs = Vec::new();
-    let mut reverse = HashMap::new();
+    let key = format!("{repo}/{name}@{version}");
 
-    for version in versions {
-        let key = format!("{repo}/{name}@{version}");
-
-        if runners.contains(&key) {
-            continue;
-        }
-
-        for remote_name in [
-            BString::from(format!("refs/heads/{version}")),
-            BString::from(format!("refs/tags/{version}")),
-        ] {
-            refspecs.push(remote_name.clone());
-            reverse.insert(remote_name, version);
-        }
+    if runners.contains(&key) {
+        return Ok(());
     }
 
-    if refspecs.is_empty() {
-        return Ok(());
+    let mut expected = HashSet::new();
+
+    for remote_name in [
+        BString::from(format!("refs/heads/{version}")),
+        BString::from(format!("refs/tags/{version}")),
+    ] {
+        refspecs.push(remote_name.clone());
+        expected.insert(remote_name);
     }
 
     let project_dirs = cx
@@ -99,6 +96,8 @@ fn sync_github_use(
     let state_dir = Rc::from(cache_dir.join(STATE));
     let repo_dir = actions_dir.join(repo).join(name);
     let git_dir = repo_dir.join("git");
+    let work_dir = repo_dir.join(WORKDIR).join(version);
+    let id_path = work_dir.join(GIT_OBJECT_ID_FILE);
 
     if !git_dir.is_dir() {
         fs::create_dir_all(&git_dir)
@@ -113,24 +112,18 @@ fn sync_github_use(
 
     let url = format!("{GITHUB_BASE}/{repo}/{name}");
 
-    let mut out = Vec::new();
+    let mut found = None;
 
     tracing::debug!(?git_dir, ?url, "Syncing");
-
-    let mut found = HashSet::new();
 
     match crate::gix::sync(&r, &url, &refspecs, open) {
         Ok(remotes) => {
             tracing::debug!(?url, ?repo, ?name, ?remotes, "Found remotes");
 
             for (remote_name, id) in remotes {
-                let Some(version) = reverse.remove(&remote_name) else {
+                if !expected.remove(&remote_name) || found.is_some() {
                     continue;
                 };
-
-                if found.contains(version) {
-                    continue;
-                }
 
                 let (kind, action) = match crate::action::load(&r, &cx.eval, id) {
                     Ok(found) => found,
@@ -140,17 +133,12 @@ fn sync_github_use(
                     }
                 };
 
-                found.insert(version);
-
                 tracing::debug!(?remote_name, ?version, ?id, ?kind, "Found action");
-
-                let work_dir = repo_dir.join(WORKDIR).join(version);
 
                 fs::create_dir_all(&work_dir).with_context(|| {
                     anyhow!("Failed to create work directory: {}", work_dir.display())
                 })?;
 
-                let id_path = work_dir.join(GIT_OBJECT_ID_FILE);
                 let existing = load_id(&id_path)?;
 
                 let export = existing != Some(id);
@@ -159,7 +147,7 @@ fn sync_github_use(
                     write_id(&id_path, id)?;
                 }
 
-                out.push((kind, action, work_dir, id, repo, name, version, export));
+                found = Some((kind, action, id, export));
             }
         }
         Err(error) => {
@@ -168,43 +156,35 @@ fn sync_github_use(
     }
 
     // Try to read out remaining versions from the workdir cache.
-    for version in versions {
-        if !found.insert(version) {
-            continue;
-        }
-
-        let work_dir = repo_dir.join(WORKDIR).join(version);
-        let id_path = work_dir.join(GIT_OBJECT_ID_FILE);
-
+    if found.is_none() {
         let Some(id) = load_id(&id_path)? else {
-            continue;
+            bail!("Could not find Object ID: {}", id_path.display());
         };
 
         // Load an action runner directly out of a repository without checking it out.
         let (kind, action) = crate::action::load(&r, &cx.eval, id)?;
-        out.push((kind, action, work_dir, id, repo, name, version, false));
+        found = Some((kind, action, id, false));
     }
 
-    for (kind, action, work_dir, id, repo, name, version, export) in out {
-        let key = format!("{repo}/{name}@{version}");
-        tracing::debug!(?work_dir, key, export, "Loading runner");
+    let (kind, action, id, export) = found.context("No action found")?;
 
-        let action = action.load(kind, &work_dir, version, export)?;
+    let key = format!("{repo}/{name}@{version}");
+    tracing::debug!(?work_dir, key, export, "Loading runner");
 
-        fs::create_dir_all(&state_dir)
-            .with_context(|| anyhow!("Failed to create envs directory: {}", state_dir.display()))?;
+    let action = action.load(kind, &work_dir, version, export)?;
 
-        let runner = ActionRunner::new(
-            id.to_string(),
-            action.kind,
-            action.defaults,
-            work_dir.into(),
-            state_dir.clone(),
-        );
+    fs::create_dir_all(&state_dir)
+        .with_context(|| anyhow!("Failed to create envs directory: {}", state_dir.display()))?;
 
-        runners.insert(key, runner);
-    }
+    let runner = ActionRunner::new(
+        id.to_string(),
+        action.kind,
+        action.defaults,
+        work_dir.into(),
+        state_dir.clone(),
+    );
 
+    runners.insert(key, runner);
     Ok(())
 }
 
