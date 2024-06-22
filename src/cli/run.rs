@@ -75,10 +75,10 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
     let repo_path = cx.to_path(repo.path());
 
     let mut batches = Vec::new();
-    let mut system = WorkflowLoader::new(cx);
+    let mut loader = WorkflowLoader::new(cx);
 
     for i in &opts.ignore_matrix {
-        system.ignore_matrix_variable(i);
+        loader.ignore_matrix_variable(i);
     }
 
     let mut all_workflows = false;
@@ -102,26 +102,26 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
     let mut prepare = Prepare::default();
 
     if opts.workflow.is_some() || opts.job.is_some() || opts.list_jobs {
-        let w = system.load_repo_workflows(repo, &mut prepare)?;
+        let w = loader.load_github_workflows(repo, &mut prepare)?;
 
         if opts.list_jobs {
-            for (workflow, jobs) in w.iter() {
+            for workflow in w.iter() {
                 writeln!(o, "Workflow: {}", workflow.id())?;
 
-                for job in jobs {
-                    for (matrix, steps) in &job.matrices {
-                        write!(o, "  Job: {}", job.id)?;
+                for job in workflow.jobs() {
+                    for matrix in job.matrices() {
+                        write!(o, "  Job: {}", job.id())?;
 
-                        if let Some(name) = &steps.name {
-                            if name.as_raw() != job.id {
+                        if let Some(name) = matrix.name() {
+                            if name.to_exposed().as_ref() != job.id() {
                                 write!(o, " ({})", name)?;
                             }
                         }
 
-                        if matrix.is_empty() {
+                        if matrix.matrix().is_empty() {
                             writeln!(o)?;
                         } else {
-                            writeln!(o, " {}", matrix.display())?;
+                            writeln!(o, " {}", matrix.matrix().display())?;
                         }
                     }
                 }
@@ -129,26 +129,26 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
         }
 
         if opts.workflow.is_some() || opts.job.is_some() {
-            for (workflow, jobs) in w.iter() {
-                if !all_workflows && !filter_workflows.contains(&workflow.id) {
+            for workflow in w.iter() {
+                if !all_workflows && !filter_workflows.contains(workflow.id()) {
                     continue;
                 }
 
-                for job in jobs {
-                    if !all_jobs && !filter_jobs.contains(&job.id) {
+                for job in workflow.jobs() {
+                    if !all_jobs && !filter_jobs.contains(job.id()) {
                         continue;
                     }
 
-                    for (matrix, steps) in &job.matrices {
-                        match w.build_batch(cx, matrix, steps, opts.same_os) {
+                    for matrix in job.matrices() {
+                        match matrix.build(opts.same_os) {
                             Ok(batch) => {
                                 batches.push(batch);
                             }
                             Err(error) => {
                                 tracing::warn!(
-                                    ?workflow.id,
-                                    ?job.id,
-                                    ?matrix,
+                                    workflow.id = workflow.id(),
+                                    job.id = job.id(),
+                                    matrix = ?matrix.matrix(),
                                     ?error,
                                     "Failed to build job",
                                 );
