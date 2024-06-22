@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::mem::take;
 
@@ -174,7 +174,7 @@ fn validate_jobs(
         validate_on(cx, ci, w, config, value);
     }
 
-    for job in w.jobs(&HashSet::new())? {
+    for job in w.jobs(&HashSet::new(), &HashMap::new())? {
         check_strategy_rust_version(ci, &job);
         check_actions(ci, &job)?;
 

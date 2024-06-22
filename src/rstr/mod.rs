@@ -58,7 +58,7 @@ impl RStr {
             return Cow::Borrowed("");
         };
 
-        if chunk.redacted().is_none() {
+        if chunk.redacted().is_empty() {
             return Cow::Borrowed(chunk.public());
         };
 
@@ -70,7 +70,7 @@ impl RStr {
         for chunk in chunks {
             out.push_str(chunk.public());
 
-            if chunk.redacted().is_some() {
+            if !chunk.redacted().is_empty() {
                 out.push_str(REDACTION);
             }
         }
@@ -87,7 +87,9 @@ impl RStr {
             return Cow::Borrowed("");
         };
 
-        let Some(redacted) = chunk.redacted() else {
+        let redacted = chunk.redacted();
+
+        if redacted.is_empty() {
             return Cow::Borrowed(chunk.public());
         };
 
@@ -98,10 +100,7 @@ impl RStr {
 
         for chunk in chunks {
             out.push_str(chunk.public());
-
-            while let Some(redacted) = chunk.redacted() {
-                out.extend(redacted);
-            }
+            out.extend(chunk.redacted());
         }
 
         Cow::Owned(out)
@@ -130,6 +129,12 @@ impl RStr {
     pub(crate) fn as_raw(&self) -> &str {
         &self.0
     }
+
+    /// Iterate over all exposed characters.
+    fn exposed_chars(&self) -> impl Iterator<Item = char> + '_ {
+        self.chunks()
+            .flat_map(|chunk| chunk.public().chars().chain(chunk.redacted()))
+    }
 }
 
 impl AsRef<RStr> for RStr {
@@ -144,7 +149,7 @@ impl fmt::Display for RStr {
         for chunk in self.chunks() {
             f.write_str(chunk.public())?;
 
-            if chunk.redacted().is_some() {
+            if !chunk.redacted().is_empty() {
                 f.write_str(REDACTION)?;
             }
         }
@@ -160,7 +165,7 @@ impl fmt::Debug for RStr {
         for chunk in self.chunks() {
             f.write_str(chunk.public())?;
 
-            if chunk.redacted().is_some() {
+            if !chunk.redacted().is_empty() {
                 f.write_str(REDACTION)?;
             }
         }
@@ -359,34 +364,6 @@ macro_rules! cmp {
             }
         }
 
-        impl PartialEq<str> for $ty {
-            #[inline]
-            fn eq(&self, other: &str) -> bool {
-                self.0 == *other
-            }
-        }
-
-        impl PartialEq<$ty> for str {
-            #[inline]
-            fn eq(&self, other: &$ty) -> bool {
-                *self == other.0
-            }
-        }
-
-        impl PartialEq<&str> for $ty {
-            #[inline]
-            fn eq(&self, other: &&str) -> bool {
-                self.0 == **other
-            }
-        }
-
-        impl PartialEq<$ty> for &str {
-            #[inline]
-            fn eq(&self, other: &$ty) -> bool {
-                **self == other.0
-            }
-        }
-
         impl Eq for $ty {}
 
         impl PartialOrd for $ty {
@@ -405,8 +382,43 @@ macro_rules! cmp {
     };
 }
 
+macro_rules! cmp_str {
+    ($ty:ty) => {
+        impl PartialEq<str> for $ty {
+            #[inline]
+            fn eq(&self, other: &str) -> bool {
+                (*self).exposed_chars().eq(other.chars())
+            }
+        }
+
+        impl PartialEq<$ty> for str {
+            #[inline]
+            fn eq(&self, other: &$ty) -> bool {
+                self.chars().eq((*other).exposed_chars())
+            }
+        }
+
+        impl PartialEq<&str> for $ty {
+            #[inline]
+            fn eq(&self, other: &&str) -> bool {
+                self.exposed_chars().eq((**other).chars())
+            }
+        }
+
+        impl PartialEq<$ty> for &str {
+            #[inline]
+            fn eq(&self, other: &$ty) -> bool {
+                (**self).chars().eq((*other).exposed_chars())
+            }
+        }
+    };
+}
+
 cmp!(RStr);
 cmp!(RString);
+
+cmp_str!(RStr);
+cmp_str!(RString);
 
 impl From<RString> for Box<RStr> {
     #[inline]

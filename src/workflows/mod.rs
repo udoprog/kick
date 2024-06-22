@@ -6,6 +6,26 @@ mod grammar;
 mod lexer;
 mod parsing;
 
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::fmt;
+use std::fs;
+use std::io;
+use std::rc::Rc;
+use std::str;
+
+use anyhow::{anyhow, bail, Context, Result};
+use nondestructive::yaml;
+use relative_path::{RelativePath, RelativePathBuf};
+use syntree::Span;
+
+use crate::ctxt::Ctxt;
+use crate::model::Repo;
+use crate::rstr::{RStr, RString};
+use crate::shell::Shell;
+
+use self::eval::Expr;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
 pub(crate) enum Syntax {
@@ -52,26 +72,6 @@ pub(crate) enum Syntax {
     // An error.
     Error,
 }
-
-use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
-use std::fmt;
-use std::fs;
-use std::io;
-use std::rc::Rc;
-use std::str;
-
-use anyhow::{anyhow, bail, Context, Result};
-use nondestructive::yaml;
-use relative_path::{RelativePath, RelativePathBuf};
-use syntree::Span;
-
-use crate::ctxt::Ctxt;
-use crate::model::Repo;
-use crate::rstr::{RStr, RString};
-use crate::shell::Shell;
-
-use self::eval::Expr;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ExprError {
@@ -168,6 +168,7 @@ fn build_job(
     id: &str,
     value: yaml::Mapping<'_>,
     ignore: &HashSet<String>,
+    filter: &HashMap<String, String>,
     eval: &Eval<'_>,
 ) -> Result<Job> {
     let runs_on = value
@@ -179,7 +180,7 @@ fn build_job(
 
     let mut matrices = Vec::new();
 
-    for matrix in build_matrices(&value, ignore, eval)? {
+    for matrix in build_matrices(&value, ignore, filter, eval)? {
         let tree = eval.tree().with_prefix(["matrix"], matrix.matrix.clone());
         let eval = eval.with_tree(&tree);
 
@@ -292,6 +293,7 @@ pub(crate) fn load_steps(
 pub(crate) fn build_matrices(
     value: &yaml::Mapping<'_>,
     ignore: &HashSet<String>,
+    filter: &HashMap<String, String>,
     eval: &Eval<'_>,
 ) -> Result<Vec<Matrix>> {
     let mut matrices = Vec::new();
@@ -343,6 +345,8 @@ pub(crate) fn build_matrices(
                 continue;
             }
 
+            let filter = filter.get(key).map(|s| s.as_str());
+
             let mut values = Vec::new();
 
             match value.into_any() {
@@ -351,7 +355,11 @@ pub(crate) fn build_matrices(
                         let id = value.id();
 
                         if let Some(value) = value.as_str() {
-                            values.push((eval.eval(value)?.into_owned(), id));
+                            let value = eval.eval(value)?.into_owned();
+
+                            if filter.map(|f| value.as_rstr() == f).unwrap_or(true) {
+                                values.push((value, id));
+                            }
                         }
                     }
                 }
@@ -359,7 +367,11 @@ pub(crate) fn build_matrices(
                     let id = value.id();
 
                     if let Some(value) = value.as_str() {
-                        values.push((eval.eval(value)?.into_owned(), id));
+                        let value = eval.eval(value)?.into_owned();
+
+                        if filter.map(|f| value.as_rstr() == f).unwrap_or(true) {
+                            values.push((value, id));
+                        }
                     }
                 }
                 _ => {}
@@ -463,7 +475,11 @@ impl<'a> WorkflowManifest<'a, '_> {
     }
 
     /// Iterate over all jobs.
-    pub(crate) fn jobs(&self, ignore: &HashSet<String>) -> Result<Vec<Job>> {
+    pub(crate) fn jobs(
+        &self,
+        ignore: &HashSet<String>,
+        filter: &HashMap<String, String>,
+    ) -> Result<Vec<Job>> {
         let Some(mapping) = self.doc.as_ref().as_mapping() else {
             bail!(
                 "{}: Root is not a mapping",
@@ -501,12 +517,14 @@ impl<'a> WorkflowManifest<'a, '_> {
                 )
             })?;
 
-            outputs.push(build_job(name, job, ignore, &eval).with_context(|| {
-                anyhow!(
-                    "{}: Building job `{name}`",
-                    self.cx.to_path(&self.path).display()
-                )
-            })?);
+            outputs.push(
+                build_job(name, job, ignore, filter, &eval).with_context(|| {
+                    anyhow!(
+                        "{}: Building job `{name}`",
+                        self.cx.to_path(&self.path).display()
+                    )
+                })?,
+            );
         }
 
         Ok(outputs)

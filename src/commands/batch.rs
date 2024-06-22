@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::str;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
-use relative_path::RelativePath;
+use relative_path::{Component, RelativePath};
 use termcolor::WriteColor;
 
 use crate::config::Os;
@@ -343,6 +343,12 @@ impl Batch {
                     if let Some(path_file) = &run.path_file {
                         if let Ok(contents) = fs::read(path_file) {
                             new_paths = parse_lines(&contents)?;
+
+                            if batch.cx.os == Os::Windows && matches!(run_on, RunOn::Wsl(..)) {
+                                for path in &mut new_paths {
+                                    *path = translate_path_to_windows(path)?;
+                                }
+                            }
                         }
                     }
 
@@ -583,4 +589,29 @@ fn setup_wsl<'a>(
     }
 
     (c, wslenv, kick_script_file, script_source)
+}
+
+fn translate_path_to_windows(path: &str) -> Result<String> {
+    let mut it = RelativePath::new(path)
+        .components()
+        .filter(|c| !c.as_str().is_empty());
+
+    if !matches!(it.next(), Some(Component::Normal("mnt"))) {
+        bail!("Path does not start with `mnt`");
+    }
+
+    let drive = it.next().context("Missing drive letter")?;
+
+    let mut out = String::with_capacity(path.len());
+
+    for c in drive.as_str().chars() {
+        out.extend(c.to_uppercase());
+    }
+
+    for c in it {
+        out.push('\\');
+        out.push_str(c.as_str());
+    }
+
+    Ok(out)
 }

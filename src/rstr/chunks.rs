@@ -58,20 +58,24 @@ impl<'a> Chunk<'a> {
     }
 
     /// Get the redacted part of the chunk.
-    pub(crate) fn redacted(&self) -> Option<Redacted<'a>> {
-        if self.redacted.is_empty() {
-            return None;
-        }
-
-        Some(Redacted {
+    #[inline]
+    pub(crate) fn redacted(&self) -> Redacted<'a> {
+        Redacted {
             string: self.redacted,
-        })
+        }
     }
 }
 
 /// A redacted string.
 pub(crate) struct Redacted<'a> {
     string: &'a str,
+}
+
+impl<'a> Redacted<'a> {
+    /// Test if the redacted component is empty.
+    pub fn is_empty(&self) -> bool {
+        self.string.is_empty()
+    }
 }
 
 impl Iterator for Redacted<'_> {
