@@ -47,11 +47,11 @@ impl Batch {
         }
     }
 
-    /// Construct a batch with multiple commands.
-    pub(crate) fn with_use(
+    /// Construct a batch from a single use.
+    pub(super) fn with_use(
         batch: &BatchConfig<'_, '_>,
-        id: impl AsRef<RStr>,
         c: &ActionConfig,
+        id: impl AsRef<RStr>,
     ) -> Result<Self> {
         let (env, tree) = new_env(batch, None, Some(c))?;
 
@@ -87,6 +87,15 @@ impl Batch {
         for run_on in self.runners(&c.run_on) {
             if let RunOn::Wsl(dist) = run_on {
                 prepare.wsl.insert(dist);
+            }
+        }
+
+        for schedule in &self.commands {
+            match schedule {
+                Schedule::Use(u) => {
+                    prepare.actions_mut().insert_action(u.uses())?;
+                }
+                _ => {}
             }
         }
 

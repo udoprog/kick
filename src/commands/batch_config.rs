@@ -10,7 +10,7 @@ use crate::model::Repo;
 use crate::shell::Shell;
 use crate::workflows::WorkflowManifests;
 
-use super::{Actions, Colors, LoadedWorkflows, Prepare, RunOn};
+use super::{Colors, LoadedWorkflows, Prepare, RunOn};
 
 /// A batch runner configuration.
 pub(crate) struct BatchConfig<'a, 'cx> {
@@ -93,9 +93,7 @@ impl<'a, 'cx> BatchConfig<'a, 'cx> {
                 for (_, steps) in &job.matrices {
                     for step in &steps.steps {
                         if let Some(name) = &step.uses {
-                            let actions = prepare.actions.get_or_insert_with(Actions::default);
-
-                            actions.insert_action(name).with_context(|| {
+                            prepare.actions_mut().insert_action(name).with_context(|| {
                                 anyhow!(
                                     "Uses statement in job `{}` and step `{}`",
                                     job.id,

@@ -1,6 +1,10 @@
 use std::collections::BTreeMap;
 
+use anyhow::Result;
+
 use crate::rstr::{RStr, RString};
+
+use super::{Batch, BatchConfig};
 
 /// An actions configuration.
 #[derive(Default)]
@@ -48,5 +52,14 @@ impl ActionConfig {
     pub(crate) fn with_inputs(mut self, inputs: BTreeMap<String, RString>) -> Self {
         self.inputs = inputs;
         self
+    }
+
+    /// Construct a new use batch.
+    pub(crate) fn new_use_batch(
+        &self,
+        batch: &BatchConfig<'_, '_>,
+        id: impl AsRef<RStr>,
+    ) -> Result<Batch> {
+        Batch::with_use(batch, self, id)
     }
 }

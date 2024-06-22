@@ -82,8 +82,20 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
         all_jobs = false;
     }
 
+    if opts.first_os || opts.each_os {
+        if opts.first_os && opts.each_os {
+            bail!("Cannot specify both --first-os and --each-os");
+        }
+
+        let limit = if opts.first_os { 1 } else { usize::MAX };
+
+        for os in cx.config.os(repo).into_iter().take(limit) {
+            c.add_os(os)?;
+        }
+    }
+
     let mut batches = Vec::new();
-    let mut prepare = Prepare::default();
+    let mut prepare = Prepare::new(&c);
 
     if opts.workflow.is_some() || opts.job.is_some() || opts.list_jobs {
         let w = c.load_github_workflows(repo, &mut prepare)?;
@@ -148,23 +160,11 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
         batches.push(Batch::command(command, args));
     }
 
-    if opts.first_os || opts.each_os {
-        if opts.first_os && opts.each_os {
-            bail!("Cannot specify both --first-os and --each-os");
-        }
-
-        let limit = if opts.first_os { 1 } else { usize::MAX };
-
-        for os in cx.config.os(repo).into_iter().take(limit) {
-            c.add_os(os)?;
-        }
-    }
-
     for batch in &batches {
         batch.prepare(&c, &mut prepare)?;
     }
 
-    let remediations = prepare.prepare(&c)?;
+    let remediations = prepare.prepare()?;
 
     if !remediations.is_empty() {
         if !opts.batch_opts.fix {

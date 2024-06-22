@@ -14,8 +14,8 @@ const DEBIAN_WANTED: &[&str] = &["gcc", "nodejs"];
 const NODE_VERSION: u32 = 22;
 
 /// Preparations that need to be done before running a batch.
-#[derive(Default)]
-pub(crate) struct Prepare {
+pub(crate) struct Prepare<'a, 'cx> {
+    config: &'a BatchConfig<'a, 'cx>,
     /// WSL distributions that need to be available.
     pub(super) wsl: BTreeSet<Distribution>,
     /// Actions that need to be synchronized.
@@ -24,18 +24,28 @@ pub(crate) struct Prepare {
     runners: Option<ActionRunners>,
 }
 
-impl Prepare {
+impl<'a, 'cx> Prepare<'a, 'cx> {
+    /// Construct a new preparation.
+    pub(crate) fn new(config: &'a BatchConfig<'a, 'cx>) -> Self {
+        Self {
+            config,
+            wsl: BTreeSet::new(),
+            actions: None,
+            runners: None,
+        }
+    }
+
     /// Access actions to prepare.
-    pub(crate) fn actions_mut(&mut self) -> &mut Actions {
+    pub(super) fn actions_mut(&mut self) -> &mut Actions {
         self.actions.get_or_insert_with(Actions::default)
     }
 
     /// Run all preparations.
-    pub(crate) fn prepare(&mut self, c: &BatchConfig<'_, '_>) -> Result<Remediations> {
+    pub(crate) fn prepare(&mut self) -> Result<Remediations> {
         let mut suggestions = Remediations::default();
 
         if !self.wsl.is_empty() {
-            let Some(wsl) = c.cx.system.wsl.first() else {
+            let Some(wsl) = self.config.cx.system.wsl.first() else {
                 bail!("WSL not available");
             };
 
@@ -73,7 +83,7 @@ impl Prepare {
                 }
 
                 let has_rustup = if has_wsl {
-                    let mut command = wsl.shell(&c.path, dist);
+                    let mut command = wsl.shell(&self.config.path, dist);
                     let status = command
                         .args(["rustup", "--version"])
                         .stdout(Stdio::null())
@@ -85,7 +95,7 @@ impl Prepare {
                 };
 
                 if !has_rustup {
-                    let mut command = wsl.shell(&c.path, dist);
+                    let mut command = wsl.shell(&self.config.path, dist);
                     command
                         .args(["bash", "-i", "-c"])
                         .arg(format!("{CURL} https://sh.rustup.rs | sh -s -- -y"));
@@ -103,7 +113,7 @@ impl Prepare {
 
                         if has_wsl {
                             let output = wsl
-                                .shell(&c.path, dist)
+                                .shell(&self.config.path, dist)
                                 .args([
                                     "dpkg-query",
                                     "-W",
@@ -136,7 +146,7 @@ impl Prepare {
                             let packages = wanted.into_iter().collect::<Vec<_>>();
                             let packages = packages.join(" ");
 
-                            let mut command = wsl.shell(&c.path, dist);
+                            let mut command = wsl.shell(&self.config.path, dist);
                             command.args(["bash", "-i", "-c"]).arg(format!(
                                 "sudo apt update && sudo apt install --yes {packages}"
                             ));
@@ -147,7 +157,7 @@ impl Prepare {
                         }
 
                         if wants_node_js {
-                            let mut command = wsl.shell(&c.path, dist);
+                            let mut command = wsl.shell(&self.config.path, dist);
                             command.args(["bash", "-i", "-c"]).arg(format!(
                                 "{CURL} https://deb.nodesource.com/setup_{NODE_VERSION}.x | sudo -E bash - && sudo apt-get install -y nodejs"
                             ));
@@ -163,7 +173,10 @@ impl Prepare {
         }
 
         if let Some(actions) = self.actions.take() {
-            self.runners = Some(actions.synchronize(c.cx)?);
+            if !actions.is_empty() {
+                let runners = self.runners.get_or_insert_with(ActionRunners::default);
+                actions.synchronize(runners, self.config.cx)?;
+            }
         }
 
         Ok(suggestions)

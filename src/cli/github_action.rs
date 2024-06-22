@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use termcolor::{ColorChoice, StandardStream};
 
-use crate::commands::{ActionConfig, Batch, BatchOptions, Prepare};
+use crate::commands::{ActionConfig, BatchOptions, Prepare};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::rstr::{RStr, RString};
@@ -36,12 +36,11 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 
 #[tracing::instrument(skip_all)]
 fn action(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
+    let id = RStr::new(&opts.id);
+
     let c = opts.batch_opts.build(cx, repo)?;
 
-    let mut prepare = Prepare::default();
-    prepare.actions_mut().insert_action(&opts.id)?;
-
-    let id = RStr::new(&opts.id);
+    let mut prepare = Prepare::new(&c);
 
     let mut inputs = BTreeMap::new();
 
@@ -55,10 +54,10 @@ fn action(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Re
 
     let action = ActionConfig::default().with_inputs(inputs);
 
-    let batch = Batch::with_use(&c, id, &action)?;
+    let batch = action.new_use_batch(&c, id)?;
     batch.prepare(&c, &mut prepare)?;
 
-    let remediations = prepare.prepare(&c)?;
+    let remediations = prepare.prepare()?;
 
     if !remediations.is_empty() {
         if !opts.batch_opts.fix {

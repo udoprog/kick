@@ -41,6 +41,11 @@ impl ScheduleUse {
         }
     }
 
+    /// Get what this scheduled use is using.
+    pub(super) fn uses(&self) -> &RStr {
+        &self.uses
+    }
+
     pub(super) fn build(
         self,
         batch: &BatchConfig<'_, '_>,

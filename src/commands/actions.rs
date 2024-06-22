@@ -27,8 +27,13 @@ pub(crate) struct Actions {
 }
 
 impl Actions {
+    /// Check if actions is empty.
+    pub(super) fn is_empty(&self) -> bool {
+        self.actions.is_empty()
+    }
+
     /// Add an action by id.
-    pub(crate) fn insert_action<S>(&mut self, id: S) -> Result<()>
+    pub(super) fn insert_action<S>(&mut self, id: S) -> Result<()>
     where
         S: AsRef<RStr>,
     {
@@ -49,15 +54,13 @@ impl Actions {
     }
 
     /// Synchronize github uses.
-    pub(crate) fn synchronize(&self, cx: &Ctxt<'_>) -> Result<ActionRunners> {
-        let mut runners = ActionRunners::default();
-
+    pub(super) fn synchronize(&self, runners: &mut ActionRunners, cx: &Ctxt<'_>) -> Result<()> {
         for ((repo, name), versions) in &self.actions {
-            sync_github_use(&mut runners, cx, repo, name, versions)
+            sync_github_use(runners, cx, repo, name, versions)
                 .with_context(|| anyhow!("Failed to sync GitHub use {repo}/{name}@{versions:?}"))?;
         }
 
-        Ok(runners)
+        Ok(())
     }
 }
 
@@ -68,6 +71,29 @@ fn sync_github_use(
     name: &str,
     versions: &BTreeSet<String>,
 ) -> Result<()> {
+    let mut refspecs = Vec::new();
+    let mut reverse = HashMap::new();
+
+    for version in versions {
+        let key = format!("{repo}/{name}@{version}");
+
+        if runners.contains(&key) {
+            continue;
+        }
+
+        for remote_name in [
+            BString::from(format!("refs/heads/{version}")),
+            BString::from(format!("refs/tags/{version}")),
+        ] {
+            refspecs.push(remote_name.clone());
+            reverse.insert(remote_name, version);
+        }
+    }
+
+    if refspecs.is_empty() {
+        return Ok(());
+    }
+
     let project_dirs = cx
         .paths
         .project_dirs
@@ -89,19 +115,6 @@ fn sync_github_use(
         Err(gix::open::Error::NotARepository { .. }) => (gix::init_bare(&git_dir)?, false),
         Err(error) => return Err(error).context("Failed to open or initialize cache repository"),
     };
-
-    let mut refspecs = Vec::new();
-    let mut reverse = HashMap::new();
-
-    for version in versions {
-        for remote_name in [
-            BString::from(format!("refs/heads/{version}")),
-            BString::from(format!("refs/tags/{version}")),
-        ] {
-            refspecs.push(remote_name.clone());
-            reverse.insert(remote_name, version);
-        }
-    }
 
     let url = format!("{GITHUB_BASE}/{repo}/{name}");
 

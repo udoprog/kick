@@ -63,6 +63,11 @@ pub(crate) struct ActionRunners {
 }
 
 impl ActionRunners {
+    /// Test if we contain the given runner.
+    pub(super) fn contains(&self, key: &str) -> bool {
+        self.runners.contains_key(key)
+    }
+
     /// Insert an action runner.
     pub(super) fn insert(&mut self, key: String, runner: ActionRunner) {
         self.runners.insert(key, runner);
