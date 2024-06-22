@@ -214,7 +214,7 @@ pub(crate) fn load_steps(
     let mut steps = Vec::new();
     let mut step_mappings = Vec::new();
 
-    let Some(s) = mapping.get("steps").and_then(|steps| steps.as_sequence()) else {
+    let Some(seq) = mapping.get("steps").and_then(|steps| steps.as_sequence()) else {
         return Ok((steps, step_mappings, Rc::new(eval.tree().clone())));
     };
 
@@ -224,8 +224,8 @@ pub(crate) fn load_steps(
     let tree = Rc::new(tree);
     let eval = eval.with_tree(tree.as_ref());
 
-    for (index, s) in s.iter().enumerate() {
-        let Some(value) = s.as_mapping() else {
+    for value in seq {
+        let Some(value) = value.as_mapping() else {
             continue;
         };
 
@@ -268,7 +268,6 @@ pub(crate) fn load_steps(
         steps.push(Step {
             id: id.map(str::to_owned),
             uses,
-            index,
             tree: tree.clone(),
             env,
             working_directory: working_directory.map(str::to_owned),
@@ -538,7 +537,6 @@ pub(crate) struct StepMapping {
 pub(crate) struct Step {
     pub(crate) id: Option<String>,
     pub(crate) uses: Option<RString>,
-    pub(crate) index: usize,
     pub(crate) tree: Rc<Tree>,
     pub(crate) env: BTreeMap<String, String>,
     pub(crate) working_directory: Option<String>,
@@ -547,21 +545,6 @@ pub(crate) struct Step {
     pub(crate) name: Option<String>,
     pub(crate) run: Option<String>,
     pub(crate) shell: Option<String>,
-}
-
-impl Step {
-    /// Get the diagnostical name of the step.
-    pub(crate) fn name(&self) -> Cow<'_, str> {
-        if let Some(name) = &self.name {
-            return Cow::Borrowed(name);
-        }
-
-        if let Some(run) = &self.run {
-            return Cow::Borrowed(run);
-        }
-
-        Cow::Owned(format!("Step #{}", self.index + 1))
-    }
 }
 
 pub fn default_functions() -> BTreeMap<&'static str, CustomFunction> {

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::str;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 
 use crate::rstr::{RStr, RString};
 use crate::workflows::{Eval, Step, Tree};
@@ -50,7 +50,7 @@ impl ScheduleUse {
         self,
         batch: &BatchConfig<'_, '_>,
         parent: Option<&Tree>,
-        runners: Option<&ActionRunners>,
+        runners: &ActionRunners,
     ) -> Result<RunGroup> {
         let mut tree = self.tree.as_ref().clone();
 
@@ -134,10 +134,6 @@ impl ScheduleUse {
                 .with_id(id.map(Cow::into_owned))
                 .with_skipped(skipped.as_ref())
                 .with_inputs(with);
-
-            let Some(runners) = runners else {
-                bail!("No runners available for use");
-            };
 
             let (runner_main, runner_post) = runners.build(batch, &c, &self.uses)?;
 

@@ -95,10 +95,9 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
     }
 
     let mut batches = Vec::new();
-    let mut prepare = Prepare::new(&c);
 
     if opts.workflow.is_some() || opts.job.is_some() || opts.list_jobs {
-        let w = c.load_github_workflows(repo, &mut prepare)?;
+        let w = c.load_github_workflows(repo)?;
 
         if opts.list_jobs {
             for workflow in w.iter() {
@@ -160,23 +159,10 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
         batches.push(Batch::command(command, args));
     }
 
-    for batch in &batches {
-        batch.prepare(&c, &mut prepare)?;
-    }
-
-    let remediations = prepare.prepare()?;
-
-    if !remediations.is_empty() {
-        if !opts.batch_opts.fix {
-            remediations.print(o, &c)?;
-            bail!("Failed to prepare commands, use `--fix` to try and fix the system");
-        }
-
-        remediations.apply(o, &c)?;
-    }
+    let mut prepare = Prepare::new();
 
     for batch in batches {
-        batch.commit(o, &c, prepare.runners())?;
+        batch.commit(o, &c, &mut prepare)?;
     }
 
     Ok(())

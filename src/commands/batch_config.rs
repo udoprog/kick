@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::str;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Result};
 
 use crate::config::{Distribution, Os};
 use crate::ctxt::Ctxt;
@@ -10,7 +10,7 @@ use crate::model::Repo;
 use crate::shell::Shell;
 use crate::workflows::WorkflowManifests;
 
-use super::{Colors, LoadedWorkflows, Prepare, RunOn};
+use super::{Colors, LoadedWorkflows, RunOn};
 
 /// A batch runner configuration.
 pub(crate) struct BatchConfig<'a, 'cx> {
@@ -25,6 +25,7 @@ pub(crate) struct BatchConfig<'a, 'cx> {
     pub(super) dry_run: bool,
     pub(super) exposed: bool,
     pub(super) matrix_ignore: HashSet<String>,
+    pub(super) fix: bool,
 }
 
 impl<'a, 'cx> BatchConfig<'a, 'cx> {
@@ -42,6 +43,7 @@ impl<'a, 'cx> BatchConfig<'a, 'cx> {
             dry_run: false,
             exposed: false,
             matrix_ignore: HashSet::new(),
+            fix: false,
         }
     }
 
@@ -76,11 +78,7 @@ impl<'a, 'cx> BatchConfig<'a, 'cx> {
     }
 
     /// Load workflows from a repository.
-    pub(crate) fn load_github_workflows(
-        &self,
-        repo: &Repo,
-        prepare: &mut Prepare,
-    ) -> Result<LoadedWorkflows<'_, 'cx>> {
+    pub(crate) fn load_github_workflows(&self, repo: &Repo) -> Result<LoadedWorkflows<'_, 'cx>> {
         let mut workflows = Vec::new();
         let wfs = WorkflowManifests::new(self.cx, repo)?;
 
@@ -90,20 +88,6 @@ impl<'a, 'cx> BatchConfig<'a, 'cx> {
             let mut jobs = Vec::new();
 
             for job in workflow.jobs(&self.matrix_ignore)? {
-                for (_, steps) in &job.matrices {
-                    for step in &steps.steps {
-                        if let Some(name) = &step.uses {
-                            prepare.actions_mut().insert_action(name).with_context(|| {
-                                anyhow!(
-                                    "Uses statement in job `{}` and step `{}`",
-                                    job.id,
-                                    step.name()
-                                )
-                            })?;
-                        }
-                    }
-                }
-
                 jobs.push(job);
             }
 

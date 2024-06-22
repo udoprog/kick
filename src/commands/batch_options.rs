@@ -38,7 +38,7 @@ pub(crate) struct BatchOptions {
     /// If there are any system remediations that have to be performed before
     /// running commands, apply them automatically.
     #[arg(long)]
-    pub(crate) fix: bool,
+    pub(super) fix: bool,
     /// The default shell to use when printing command invocations.
     ///
     /// By default this is `bash` for unix-like environments and `powershell`
@@ -83,6 +83,10 @@ impl BatchOptions {
 
         for variable in &self.ignore_matrix {
             c.matrix_ignore.insert(variable.clone());
+        }
+
+        if self.fix {
+            c.fix = true;
         }
 
         Ok(c)

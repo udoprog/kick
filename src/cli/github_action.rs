@@ -40,8 +40,6 @@ fn action(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Re
 
     let c = opts.batch_opts.build(cx, repo)?;
 
-    let mut prepare = Prepare::new(&c);
-
     let mut inputs = BTreeMap::new();
 
     for input in &opts.input {
@@ -55,19 +53,8 @@ fn action(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Re
     let action = ActionConfig::default().with_inputs(inputs);
 
     let batch = action.new_use_batch(&c, id)?;
-    batch.prepare(&c, &mut prepare)?;
 
-    let remediations = prepare.prepare()?;
-
-    if !remediations.is_empty() {
-        if !opts.batch_opts.fix {
-            remediations.print(o, &c)?;
-            bail!("Failed to prepare commands, use `--fix` to try and fix the system");
-        }
-
-        remediations.apply(o, &c)?;
-    }
-
-    batch.commit(o, &c, prepare.runners())?;
+    let mut prepare = Prepare::new();
+    batch.commit(o, &c, &mut prepare)?;
     Ok(())
 }

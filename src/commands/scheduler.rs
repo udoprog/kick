@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, VecDeque};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
+use termcolor::WriteColor;
 
 use crate::workflows::Tree;
 
-use super::{ActionRunners, BatchConfig, Run, Schedule};
+use super::{BatchConfig, Prepare, Run, Schedule};
 
 pub(super) struct Scheduler {
     stack: Vec<Tree>,
@@ -28,14 +29,6 @@ impl Scheduler {
         self.main.push_back(schedule);
     }
 
-    pub(super) fn push(&mut self) {
-        self.stack.push(Tree::new());
-    }
-
-    pub(super) fn pop(&mut self) {
-        self.stack.pop();
-    }
-
     pub(super) fn env(&self) -> &BTreeMap<String, String> {
         &self.env
     }
@@ -52,30 +45,49 @@ impl Scheduler {
         self.stack.last_mut()
     }
 
-    pub(super) fn advance(
+    fn next_schedule(&mut self) -> Option<Schedule> {
+        if let Some(item) = self.main.pop_front() {
+            return Some(item);
+        }
+
+        if let Some(item) = self.post.pop_front() {
+            return Some(item);
+        };
+
+        None
+    }
+
+    pub(super) fn advance<O>(
         &mut self,
+        o: &mut O,
         batch: &BatchConfig<'_, '_>,
-        runners: Option<&ActionRunners>,
-    ) -> Result<Option<Run>> {
-        loop {
-            let command = 'next: {
-                if let Some(item) = self.main.pop_front() {
-                    break 'next item;
+        prepare: &mut Prepare,
+    ) -> Result<Option<Run>>
+    where
+        O: ?Sized + WriteColor,
+    {
+        while let Some(schedule) = self.next_schedule() {
+            schedule.prepare(prepare)?;
+
+            // This will take care to synchronize any actions which are needed
+            // to advance the scheduler.
+            let remediations = prepare.prepare(batch)?;
+
+            if !remediations.is_empty() {
+                if !batch.fix {
+                    remediations.print(o, batch)?;
+                    bail!("Failed to prepare commands, use `--fix` to try and fix the system");
                 }
 
-                if let Some(item) = self.post.pop_front() {
-                    break 'next item;
-                };
+                remediations.apply(o, batch)?;
+            }
 
-                return Ok(None);
-            };
-
-            match command {
+            match schedule {
                 Schedule::Push => {
-                    self.push();
+                    self.stack.push(Tree::new());
                 }
                 Schedule::Pop => {
-                    self.pop();
+                    self.stack.pop();
                 }
                 Schedule::BasicCommand(command) => {
                     let run = command.build();
@@ -94,7 +106,7 @@ impl Scheduler {
                     return Ok(Some(run));
                 }
                 Schedule::Use(u) => {
-                    let group = u.build(batch, self.tree(), runners)?;
+                    let group = u.build(batch, self.tree(), prepare.runners())?;
 
                     for run in group.main.into_iter().rev() {
                         self.main.push_front(run);
@@ -106,5 +118,7 @@ impl Scheduler {
                 }
             }
         }
+
+        Ok(None)
     }
 }

@@ -18,7 +18,7 @@ use crate::shell::Shell;
 use crate::workflows::{Matrix, Step};
 
 use super::{
-    new_env, ActionConfig, ActionRunners, BatchConfig, Prepare, Run, RunKind, RunOn, Schedule,
+    new_env, ActionConfig, BatchConfig, Prepare, Run, RunKind, RunOn, Schedule,
     ScheduleBasicCommand, ScheduleUse, Scheduler,
 };
 
@@ -82,51 +82,33 @@ impl Batch {
         }
     }
 
-    /// Prepare running a batch.
-    pub(crate) fn prepare(&self, c: &BatchConfig<'_, '_>, prepare: &mut Prepare) -> Result<()> {
-        for run_on in self.runners(&c.run_on) {
-            if let RunOn::Wsl(dist) = run_on {
-                prepare.wsl.insert(dist);
-            }
-        }
-
-        for schedule in &self.commands {
-            match schedule {
-                Schedule::Use(u) => {
-                    prepare.actions_mut().insert_action(u.uses())?;
-                }
-                _ => {}
-            }
-        }
-
-        Ok(())
-    }
-
     /// Commit a batch.
     pub(crate) fn commit<O>(
         self,
         o: &mut O,
-        c: &BatchConfig<'_, '_>,
-        runners: Option<&ActionRunners>,
+        batch: &BatchConfig<'_, '_>,
+        prepare: &mut Prepare,
     ) -> Result<()>
     where
         O: ?Sized + WriteColor,
     {
         let mut scheduler = Scheduler::new();
 
-        for run_on in self.runners(&c.run_on) {
-            scheduler.push();
+        for run_on in self.runners(&batch.run_on) {
+            if let RunOn::Wsl(dist) = run_on {
+                prepare.dists.insert(dist);
+            }
 
             write!(o, "# In ")?;
 
-            o.set_color(&c.colors.title)?;
-            write!(o, "{}", c.path.display())?;
+            o.set_color(&batch.colors.title)?;
+            write!(o, "{}", batch.path.display())?;
             o.reset()?;
 
             if let RunOn::Wsl(dist) = run_on {
                 write!(o, " on ")?;
 
-                o.set_color(&c.colors.title)?;
+                o.set_color(&batch.colors.title)?;
                 write!(o, "{dist} (WSL)")?;
                 o.reset()?;
             }
@@ -134,7 +116,7 @@ impl Batch {
             if let Some(matrix) = &self.matrix {
                 write!(o, " ")?;
 
-                o.set_color(&c.colors.matrix)?;
+                o.set_color(&batch.colors.matrix)?;
                 write!(o, "{}", matrix.display())?;
                 o.reset()?;
             }
@@ -147,17 +129,17 @@ impl Batch {
 
             let mut step = 0usize;
 
-            while let Some(run) = scheduler.advance(c, runners)? {
+            while let Some(run) = scheduler.advance(o, batch, prepare)? {
                 let modified;
 
                 let path = match &run.working_directory {
                     Some(working_directory) => {
                         let working_directory = working_directory.to_exposed();
                         let working_directory = RelativePath::new(working_directory.as_ref());
-                        modified = working_directory.to_logical_path(&c.path);
+                        modified = working_directory.to_logical_path(&batch.path);
                         &modified
                     }
-                    None => &c.path,
+                    None => &batch.path,
                 };
 
                 let mut command;
@@ -165,12 +147,12 @@ impl Batch {
                 let mut display_command = None;
                 let mut script_source = None;
 
-                let env_keys = c.env_passthrough.iter();
-                let env_keys = env_keys.chain(c.env.keys());
+                let env_keys = batch.env_passthrough.iter();
+                let env_keys = env_keys.chain(batch.env.keys());
                 let env_keys = env_keys.chain(run.env.keys());
                 let env_keys = env_keys.chain(scheduler.env().keys());
 
-                let env = c.env.iter().map(|(k, v)| (k.clone(), OsArg::from(v)));
+                let env = batch.env.iter().map(|(k, v)| (k.clone(), OsArg::from(v)));
                 let env = env.chain(run.env.iter().map(|(k, v)| (k.clone(), v.clone())));
                 let env = env.chain(
                     scheduler
@@ -181,14 +163,14 @@ impl Batch {
 
                 match run_on {
                     RunOn::Same => {
-                        (command, paths) = setup_same(c, path, &run)?;
+                        (command, paths) = setup_same(batch, path, &run)?;
 
                         for (key, value) in env {
                             command.env(key, value);
                         }
                     }
                     RunOn::Wsl(dist) => {
-                        let Some(wsl) = c.cx.system.wsl.first() else {
+                        let Some(wsl) = batch.cx.system.wsl.first() else {
                             bail!("WSL not available");
                         };
 
@@ -229,9 +211,11 @@ impl Batch {
                 let display_impl;
 
                 let (display, shell, display_env): (&dyn fmt::Display, _, _) = 'display: {
-                    if c.verbose == 2 {
-                        display_impl = command.display_with(c.shell).with_exposed(c.exposed);
-                        break 'display (&display_impl, c.shell, &command.env);
+                    if batch.verbose == 2 {
+                        display_impl = command
+                            .display_with(batch.shell)
+                            .with_exposed(batch.exposed);
+                        break 'display (&display_impl, batch.shell, &command.env);
                     }
 
                     let display_env = &display_command.as_ref().unwrap_or(&command).env;
@@ -244,14 +228,14 @@ impl Batch {
                         .as_ref()
                         .unwrap_or(&command)
                         .display_with(Shell::Bash)
-                        .with_exposed(c.exposed);
+                        .with_exposed(batch.exposed);
 
                     (&display_impl, Shell::Bash, display_env)
                 };
 
                 write!(o, "# ")?;
 
-                o.set_color(&c.colors.title)?;
+                o.set_color(&batch.colors.title)?;
 
                 if let Some(name) = &run.name {
                     write!(o, "{name}")?;
@@ -263,12 +247,12 @@ impl Batch {
 
                 if let Some(skipped) = &run.skipped {
                     write!(o, " ")?;
-                    o.set_color(&c.colors.skip_cond)?;
+                    o.set_color(&batch.colors.skip_cond)?;
                     write!(o, "(skipped: {skipped})")?;
                     o.reset()?;
                 }
 
-                if c.verbose == 0 && !display_env.is_empty() {
+                if batch.verbose == 0 && !display_env.is_empty() {
                     let plural = if display_env.len() == 1 {
                         "variable"
                     } else {
@@ -277,7 +261,7 @@ impl Batch {
 
                     write!(o, " ")?;
 
-                    o.set_color(&c.colors.warn)?;
+                    o.set_color(&batch.colors.warn)?;
                     write!(o, "(see {} env {plural} with `-V`)", display_env.len())?;
                     o.reset()?;
                 }
@@ -286,11 +270,11 @@ impl Batch {
 
                 match shell {
                     Shell::Bash => {
-                        if c.verbose > 0 {
+                        if batch.verbose > 0 {
                             for (key, value) in display_env {
                                 let key = key.to_string_lossy();
 
-                                let value = if c.exposed {
+                                let value = if batch.exposed {
                                     value.to_exposed_lossy()
                                 } else {
                                     value.to_string_lossy()
@@ -304,13 +288,13 @@ impl Batch {
                         write!(o, "{display}")?;
                     }
                     Shell::Powershell => {
-                        if c.verbose > 0 && !display_env.is_empty() {
+                        if batch.verbose > 0 && !display_env.is_empty() {
                             writeln!(o, "powershell -Command {{")?;
 
                             for (key, value) in display_env {
                                 let key = key.to_string_lossy();
 
-                                let value = if c.exposed {
+                                let value = if batch.exposed {
                                     value.to_exposed_lossy()
                                 } else {
                                     value.to_string_lossy()
@@ -330,7 +314,7 @@ impl Batch {
 
                 writeln!(o)?;
 
-                if run.skipped.is_none() && !c.dry_run {
+                if run.skipped.is_none() && !batch.dry_run {
                     truncate(
                         run.env_file
                             .as_slice()
@@ -363,8 +347,6 @@ impl Batch {
                     }
                 }
             }
-
-            scheduler.pop();
         }
 
         Ok(())

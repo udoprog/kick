@@ -27,30 +27,25 @@ pub(crate) struct Actions {
 }
 
 impl Actions {
-    /// Check if actions is empty.
-    pub(super) fn is_empty(&self) -> bool {
-        self.actions.is_empty()
-    }
-
     /// Add an action by id.
-    pub(super) fn insert_action<S>(&mut self, id: S) -> Result<()>
+    pub(super) fn insert_action<S>(&mut self, id: S) -> Result<bool>
     where
         S: AsRef<RStr>,
     {
         let id = id.as_ref().to_exposed();
-
         let u = Use::parse(id.as_ref()).with_context(|| anyhow!("Bad action `{id}`"))?;
 
         match u {
             Use::Github(repo, name, version) => {
-                self.actions
-                    .entry((repo.to_owned(), name.to_owned()))
+                let inserted = self
+                    .actions
+                    .entry((repo.clone(), name.clone()))
                     .or_default()
-                    .insert(version.to_owned());
+                    .insert(version.clone());
+
+                Ok(inserted)
             }
         }
-
-        Ok(())
     }
 
     /// Synchronize github uses.

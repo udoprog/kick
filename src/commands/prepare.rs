@@ -14,38 +14,42 @@ const DEBIAN_WANTED: &[&str] = &["gcc", "nodejs"];
 const NODE_VERSION: u32 = 22;
 
 /// Preparations that need to be done before running a batch.
-pub(crate) struct Prepare<'a, 'cx> {
-    config: &'a BatchConfig<'a, 'cx>,
+pub(crate) struct Prepare {
     /// WSL distributions that need to be available.
-    pub(super) wsl: BTreeSet<Distribution>,
+    pub(super) dists: BTreeSet<Distribution>,
+    /// Loaded distributions.
+    pub(super) prepared_dists: BTreeSet<Distribution>,
     /// Actions that need to be synchronized.
-    pub(super) actions: Option<Actions>,
+    pub(super) actions: Actions,
     /// Runners associated with actions.
-    runners: Option<ActionRunners>,
+    runners: ActionRunners,
+    /// If the preparation has changed.
+    pub(super) changed_actions: bool,
 }
 
-impl<'a, 'cx> Prepare<'a, 'cx> {
+impl Prepare {
     /// Construct a new preparation.
-    pub(crate) fn new(config: &'a BatchConfig<'a, 'cx>) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            config,
-            wsl: BTreeSet::new(),
-            actions: None,
-            runners: None,
+            dists: BTreeSet::new(),
+            prepared_dists: BTreeSet::new(),
+            actions: Actions::default(),
+            runners: ActionRunners::default(),
+            changed_actions: false,
         }
     }
 
     /// Access actions to prepare.
     pub(super) fn actions_mut(&mut self) -> &mut Actions {
-        self.actions.get_or_insert_with(Actions::default)
+        &mut self.actions
     }
 
     /// Run all preparations.
-    pub(crate) fn prepare(&mut self) -> Result<Remediations> {
+    pub(super) fn prepare(&mut self, config: &BatchConfig<'_, '_>) -> Result<Remediations> {
         let mut suggestions = Remediations::default();
 
-        if !self.wsl.is_empty() {
-            let Some(wsl) = self.config.cx.system.wsl.first() else {
+        if !self.dists.is_empty() {
+            let Some(wsl) = config.cx.system.wsl.first() else {
                 bail!("WSL not available");
             };
 
@@ -56,15 +60,21 @@ impl<'a, 'cx> Prepare<'a, 'cx> {
                 .map(Distribution::from_string_ignore_case)
                 .collect::<BTreeSet<_>>();
 
-            for &dist in &self.wsl {
+            for &dist in &self.dists {
+                if !self.prepared_dists.insert(dist) {
+                    continue;
+                }
+
                 let mut has_wsl = true;
 
                 if dist != Distribution::Other && !available.contains(&dist) {
                     let mut command = Command::new(&wsl.path);
+
                     command
                         .arg("--install")
                         .arg(dist.to_string())
                         .arg("--no-launch");
+
                     suggestions.command(format_args!("WSL distro {dist} is missing"), command);
 
                     match dist {
@@ -83,7 +93,7 @@ impl<'a, 'cx> Prepare<'a, 'cx> {
                 }
 
                 let has_rustup = if has_wsl {
-                    let mut command = wsl.shell(&self.config.path, dist);
+                    let mut command = wsl.shell(&config.path, dist);
                     let status = command
                         .args(["rustup", "--version"])
                         .stdout(Stdio::null())
@@ -95,7 +105,7 @@ impl<'a, 'cx> Prepare<'a, 'cx> {
                 };
 
                 if !has_rustup {
-                    let mut command = wsl.shell(&self.config.path, dist);
+                    let mut command = wsl.shell(&config.path, dist);
                     command
                         .args(["bash", "-i", "-c"])
                         .arg(format!("{CURL} https://sh.rustup.rs | sh -s -- -y"));
@@ -113,7 +123,7 @@ impl<'a, 'cx> Prepare<'a, 'cx> {
 
                         if has_wsl {
                             let output = wsl
-                                .shell(&self.config.path, dist)
+                                .shell(&config.path, dist)
                                 .args([
                                     "dpkg-query",
                                     "-W",
@@ -146,7 +156,7 @@ impl<'a, 'cx> Prepare<'a, 'cx> {
                             let packages = wanted.into_iter().collect::<Vec<_>>();
                             let packages = packages.join(" ");
 
-                            let mut command = wsl.shell(&self.config.path, dist);
+                            let mut command = wsl.shell(&config.path, dist);
                             command.args(["bash", "-i", "-c"]).arg(format!(
                                 "sudo apt update && sudo apt install --yes {packages}"
                             ));
@@ -157,7 +167,7 @@ impl<'a, 'cx> Prepare<'a, 'cx> {
                         }
 
                         if wants_node_js {
-                            let mut command = wsl.shell(&self.config.path, dist);
+                            let mut command = wsl.shell(&config.path, dist);
                             command.args(["bash", "-i", "-c"]).arg(format!(
                                 "{CURL} https://deb.nodesource.com/setup_{NODE_VERSION}.x | sudo -E bash - && sudo apt-get install -y nodejs"
                             ));
@@ -172,18 +182,16 @@ impl<'a, 'cx> Prepare<'a, 'cx> {
             }
         }
 
-        if let Some(actions) = self.actions.take() {
-            if !actions.is_empty() {
-                let runners = self.runners.get_or_insert_with(ActionRunners::default);
-                actions.synchronize(runners, self.config.cx)?;
-            }
+        if self.changed_actions {
+            self.actions.synchronize(&mut self.runners, config.cx)?;
+            self.changed_actions = false;
         }
 
         Ok(suggestions)
     }
 
     /// Access prepared runners, if they are available.
-    pub(crate) fn runners(&self) -> Option<&ActionRunners> {
-        self.runners.as_ref()
+    pub(crate) fn runners(&self) -> &ActionRunners {
+        &self.runners
     }
 }
