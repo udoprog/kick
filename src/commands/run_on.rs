@@ -29,6 +29,10 @@ impl RunOn {
             return Ok(RunOn::Wsl(dist));
         }
 
-        bail!("No support for {os:?} on current system {:?}", batch.cx.os);
+        bail!(
+            "No support for {os}/{dist} on current system {}/{}",
+            batch.cx.os,
+            batch.cx.dist
+        );
     }
 }

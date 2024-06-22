@@ -23,8 +23,6 @@ pub(crate) struct Prepare {
     pub(super) actions: Actions,
     /// Runners associated with actions.
     runners: ActionRunners,
-    /// If the preparation has changed.
-    pub(super) changed_actions: bool,
 }
 
 impl Prepare {
@@ -35,7 +33,6 @@ impl Prepare {
             prepared_dists: BTreeSet::new(),
             actions: Actions::default(),
             runners: ActionRunners::default(),
-            changed_actions: false,
         }
     }
 
@@ -182,11 +179,7 @@ impl Prepare {
             }
         }
 
-        if self.changed_actions {
-            self.actions.synchronize(&mut self.runners, config.cx)?;
-            self.changed_actions = false;
-        }
-
+        self.actions.synchronize(&mut self.runners, config.cx)?;
         Ok(suggestions)
     }
 

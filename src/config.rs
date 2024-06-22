@@ -365,7 +365,6 @@ impl Distribution {
     /// Test if this distribution is basically compatible with another.
     pub(crate) fn matches(&self, other: Self) -> bool {
         match (self, other) {
-            (Distribution::Other, Distribution::Other) => false,
             (
                 Distribution::Ubuntu | Distribution::Debian,
                 Distribution::Ubuntu | Distribution::Debian,

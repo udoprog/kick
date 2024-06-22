@@ -72,7 +72,6 @@ pub(crate) struct Ctxt<'a> {
     pub(crate) system: &'a System,
     pub(crate) git_credentials: &'a Option<system::git::Credentials>,
     pub(crate) os: Os,
-    #[allow(unused)]
     pub(crate) dist: Distribution,
     pub(crate) paths: Paths<'a>,
     pub(crate) config: &'a Config<'a>,
