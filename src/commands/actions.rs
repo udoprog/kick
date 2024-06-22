@@ -9,6 +9,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use bstr::BString;
 use gix::hash::Kind;
 use gix::ObjectId;
+use tracing::Level;
 
 use crate::ctxt::Ctxt;
 use crate::rstr::RStr;
@@ -19,6 +20,7 @@ const GITHUB_BASE: &str = "https://github.com";
 const GIT_OBJECT_ID_FILE: &str = ".git-object-id";
 const WORKDIR: &str = "workdir";
 const STATE: &str = "state";
+const GIT: &str = "git";
 
 /// Loaded uses.
 #[derive(Default)]
@@ -91,13 +93,16 @@ fn sync_action(
         .project_dirs
         .context("Kick does not have project directories")?;
 
-    let cache_dir = project_dirs.cache_dir();
-    let actions_dir = cache_dir.join("actions");
-    let state_dir = Rc::from(cache_dir.join(STATE));
+    let actions_dir = project_dirs.cache_dir().join("actions");
     let repo_dir = actions_dir.join(repo).join(name);
-    let git_dir = repo_dir.join("git");
+
+    let state_dir = repo_dir.join(STATE);
+    let git_dir = repo_dir.join(GIT);
     let work_dir = repo_dir.join(WORKDIR).join(version);
     let id_path = work_dir.join(GIT_OBJECT_ID_FILE);
+
+    let span = tracing::span!(Level::DEBUG, "sync_action", ?key, ?repo_dir);
+    let _enter = span.enter();
 
     if !git_dir.is_dir() {
         fs::create_dir_all(&git_dir)
@@ -118,7 +123,7 @@ fn sync_action(
 
     match crate::gix::sync(&r, &url, &refspecs, open) {
         Ok(remotes) => {
-            tracing::debug!(?url, ?repo, ?name, ?remotes, "Found remotes");
+            tracing::debug!(?url, ?remotes, "Found remotes");
 
             for (remote_name, id) in remotes {
                 if !expected.remove(&remote_name) || found.is_some() {
@@ -128,12 +133,12 @@ fn sync_action(
                 let (kind, action) = match crate::action::load(&r, &cx.eval, id) {
                     Ok(found) => found,
                     Err(error) => {
-                        tracing::debug!(?remote_name, ?version, ?id, ?error, "Not an action");
+                        tracing::debug!(?remote_name, ?id, ?error, "Not an action");
                         continue;
                     }
                 };
 
-                tracing::debug!(?remote_name, ?version, ?id, ?kind, "Found action");
+                tracing::debug!(?remote_name, ?id, ?kind, "Found action");
 
                 fs::create_dir_all(&work_dir).with_context(|| {
                     anyhow!("Failed to create work directory: {}", work_dir.display())
@@ -151,7 +156,7 @@ fn sync_action(
             }
         }
         Err(error) => {
-            tracing::warn!("Failed to sync remote `{repo}/{name}` with remote `{url}`: {error}");
+            tracing::warn!(?error, "Failed to sync remote");
         }
     }
 
@@ -168,8 +173,7 @@ fn sync_action(
 
     let (kind, action, id, export) = found.context("No action found")?;
 
-    let key = format!("{repo}/{name}@{version}");
-    tracing::debug!(?work_dir, key, export, "Loading runner");
+    tracing::debug!(export, "Loading runner");
 
     let action = action.load(kind, &work_dir, version, export)?;
 
@@ -180,8 +184,8 @@ fn sync_action(
         id.to_string(),
         action.kind,
         action.defaults,
-        work_dir.into(),
-        state_dir.clone(),
+        Rc::from(work_dir),
+        Rc::from(state_dir),
     );
 
     runners.insert(key, runner);

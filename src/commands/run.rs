@@ -32,8 +32,12 @@ pub(crate) struct Run {
     pub(super) working_directory: Option<RString>,
     // If an environment file is supported, this is the path to the file to set up.
     pub(super) env_file: Option<Rc<Path>>,
+    // If an environment file is supported, this is the path to the file to set up.
+    pub(super) path_file: Option<Rc<Path>>,
     // If an output file is supported, this is the path to the file to set up.
     pub(super) output_file: Option<Rc<Path>>,
+    // The directory where to store tools, if possible.
+    pub(super) tools_path: Option<Rc<Path>>,
     pub(super) env_is_file: HashSet<String>,
 }
 
@@ -75,7 +79,9 @@ impl Run {
             skipped: None,
             working_directory: None,
             env_file: None,
+            path_file: None,
             output_file: None,
+            tools_path: None,
             env_is_file: HashSet::new(),
         }
     }
@@ -124,10 +130,24 @@ impl Run {
         self
     }
 
+    /// Modify the path file of the run command.
+    #[inline]
+    pub(super) fn with_path_file(mut self, path_file: Option<Rc<Path>>) -> Self {
+        self.path_file = path_file;
+        self
+    }
+
     /// Modify the output file of the run command.
     #[inline]
     pub(super) fn with_output_file(mut self, output_file: Option<Rc<Path>>) -> Self {
         self.output_file = output_file;
+        self
+    }
+
+    /// Modify the tools path.
+    #[inline]
+    pub(super) fn with_tools_path(mut self, tools_path: Option<Rc<Path>>) -> Self {
+        self.tools_path = tools_path;
         self
     }
 
@@ -142,5 +162,21 @@ impl Run {
             .map(|s| s.as_ref().to_owned())
             .collect();
         self
+    }
+
+    /// Iterate over all files associated with this run that should be cleaned
+    /// up between each run.
+    pub(super) fn files(&self) -> impl Iterator<Item = &Path> {
+        self.env_file
+            .as_slice()
+            .iter()
+            .chain(self.path_file.as_slice())
+            .chain(self.output_file.as_slice())
+            .map(Rc::as_ref)
+    }
+
+    /// Iterate over all directories that should exist.
+    pub(super) fn dirs(&self) -> impl Iterator<Item = &Path> {
+        self.tools_path.as_slice().iter().map(Rc::as_ref)
     }
 }

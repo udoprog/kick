@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, VecDeque};
+use std::ffi::OsString;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use termcolor::WriteColor;
 
+use crate::rstr::RStr;
 use crate::workflows::Tree;
 
 use super::{BatchConfig, Prepare, Run, Schedule};
@@ -12,6 +14,7 @@ pub(super) struct Scheduler {
     env: BTreeMap<String, String>,
     main: VecDeque<Schedule>,
     post: VecDeque<Schedule>,
+    paths: Vec<OsString>,
 }
 
 impl Scheduler {
@@ -21,6 +24,7 @@ impl Scheduler {
             env: BTreeMap::new(),
             main: VecDeque::new(),
             post: VecDeque::new(),
+            paths: Vec::new(),
         }
     }
 
@@ -33,12 +37,20 @@ impl Scheduler {
         &self.env
     }
 
+    pub(super) fn paths(&self) -> &[OsString] {
+        &self.paths
+    }
+
     pub(super) fn tree(&self) -> Option<&Tree> {
         self.stack.last()
     }
 
     pub(super) fn env_mut(&mut self) -> &mut BTreeMap<String, String> {
         &mut self.env
+    }
+
+    pub(super) fn paths_mut(&mut self) -> &mut Vec<OsString> {
+        &mut self.paths
     }
 
     pub(super) fn tree_mut(&mut self) -> Option<&mut Tree> {
@@ -120,5 +132,21 @@ impl Scheduler {
         }
 
         Ok(None)
+    }
+
+    /// Insert new outputs with an associated id.
+    pub(super) fn insert_new_outputs<'a>(
+        &mut self,
+        id: Option<&RStr>,
+        values: impl IntoIterator<Item = &'a (String, String)>,
+    ) -> Result<()> {
+        let id = id.context("Missing step id for run")?;
+        let id = id.to_exposed();
+        let tree = self.tree_mut().context("Missing scheduler tree")?;
+        tree.insert_prefix(
+            ["steps", id.as_ref(), "outputs"],
+            values.into_iter().cloned(),
+        );
+        Ok(())
     }
 }

@@ -15,7 +15,9 @@ pub(super) struct Env {
     env: Rc<BTreeMap<String, RString>>,
     file_env: Rc<BTreeMap<String, Rc<Path>>>,
     env_file: Rc<Path>,
+    path_file: Rc<Path>,
     output_file: Rc<Path>,
+    tools_path: Option<Rc<Path>>,
 }
 
 impl Env {
@@ -23,13 +25,17 @@ impl Env {
         env: Rc<BTreeMap<String, RString>>,
         file_env: Rc<BTreeMap<String, Rc<Path>>>,
         env_file: Rc<Path>,
+        path_file: Rc<Path>,
         output_file: Rc<Path>,
+        tools_path: Option<Rc<Path>>,
     ) -> Self {
         Self {
             env,
             file_env,
             env_file,
+            path_file,
             output_file,
+            tools_path,
         }
     }
 
@@ -68,7 +74,9 @@ impl Env {
     pub(super) fn decorate(&self, run: Run) -> Run {
         run.with_env_is_file(self.file_env.keys().cloned())
             .with_env_file(Some(self.env_file.clone()))
+            .with_path_file(Some(self.path_file.clone()))
             .with_output_file(Some(self.output_file.clone()))
+            .with_tools_path(self.tools_path.clone())
     }
 }
 
@@ -86,14 +94,22 @@ pub(super) fn new_env(
         .cache_dir();
 
     let state_dir = cache_dir.join("state");
+
     let env_file;
+    let path_file;
     let output_file;
+    let tools_path;
 
     let mut file_env = BTreeMap::new();
 
     if let Some(runner) = runner {
         env_file = Rc::<Path>::from(runner.state_dir().join(format!("env-{}", runner.id())));
         output_file = Rc::<Path>::from(runner.state_dir().join(format!("output-{}", runner.id())));
+        path_file = Rc::<Path>::from(runner.state_dir().join(format!("path-{}", runner.id())));
+        tools_path = Some(Rc::<Path>::from(
+            runner.state_dir().join(format!("tools-{}", runner.id())),
+        ));
+
         file_env.insert(
             String::from("GITHUB_ACTION_PATH"),
             Rc::<Path>::from(runner.action_path()),
@@ -101,10 +117,17 @@ pub(super) fn new_env(
     } else {
         env_file = Rc::<Path>::from(state_dir.join("env"));
         output_file = Rc::<Path>::from(state_dir.join("output"));
+        path_file = Rc::<Path>::from(state_dir.join("path"));
+        tools_path = None;
     }
 
     file_env.insert(String::from("GITHUB_ENV"), env_file.clone());
+    file_env.insert(String::from("GITHUB_PATH"), path_file.clone());
     file_env.insert(String::from("GITHUB_OUTPUT"), output_file.clone());
+
+    if let Some(tools_path) = &tools_path {
+        file_env.insert(String::from("RUNNER_TOOL_CACHE"), tools_path.clone());
+    }
 
     let mut env = BTreeMap::new();
     let mut tree = Tree::new();
@@ -134,16 +157,16 @@ pub(super) fn new_env(
     }
 
     tree.insert(["runner", "os"], batch.cx.os.as_tree_value());
-    tree.insert_prefix(["env"], env.iter().map(|(k, v)| (k.clone(), v.clone())));
-    tree.insert_prefix(
-        ["env"],
-        file_env
-            .iter()
-            .map(|(k, v)| (k.clone(), v.to_string_lossy().into_owned())),
-    );
+
+    let tree_env = file_env
+        .iter()
+        .map(|(k, v)| (k.clone(), RString::from(v.to_string_lossy().as_ref())))
+        .chain(env.iter().map(|(k, v)| (k.clone(), v.clone())));
+
+    tree.insert_prefix(["env"], tree_env);
 
     let env = Rc::new(env);
     let file_env = Rc::new(file_env);
-    let env = Env::new(env, file_env, env_file, output_file);
+    let env = Env::new(env, file_env, env_file, path_file, output_file, tools_path);
     Ok((env, tree))
 }

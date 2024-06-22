@@ -1,5 +1,6 @@
 use std::collections::{BTreeSet, HashSet};
 use std::env;
+use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
@@ -199,10 +200,18 @@ impl Batch {
                     }
                 };
 
-                if !paths.is_empty() {
+                if !paths.is_empty() || !scheduler.paths().is_empty() {
                     let current_path = env::var_os("PATH").unwrap_or_default();
                     let current_path = env::split_paths(&current_path);
-                    let paths = env::join_paths(paths.iter().cloned().chain(current_path))?;
+
+                    let paths = env::join_paths(
+                        paths
+                            .iter()
+                            .cloned()
+                            .chain(scheduler.paths().iter().cloned().map(PathBuf::from))
+                            .chain(current_path),
+                    )?;
+
                     command.env("PATH", paths);
                 }
 
@@ -315,35 +324,48 @@ impl Batch {
                 writeln!(o)?;
 
                 if run.skipped.is_none() && !batch.dry_run {
-                    truncate(
-                        run.env_file
-                            .as_slice()
-                            .iter()
-                            .chain(run.output_file.as_slice()),
-                    )?;
+                    truncate(run.files())?;
+                    make_dirs(run.dirs())?;
 
                     let status = command.status()?;
                     ensure!(status.success(), status);
 
+                    let mut new_env = Vec::new();
+                    let mut new_paths = Vec::new();
+                    let mut new_outputs = Vec::new();
+
                     if let Some(env_file) = &run.env_file {
                         if let Ok(contents) = fs::read(env_file) {
-                            let env = scheduler.env_mut();
-
-                            for (key, value) in parse_output(&contents)? {
-                                env.insert(key, value);
-                            }
+                            new_env = parse_key_values(&contents)?;
                         }
                     }
 
-                    if let (Some(output_file), Some(id), Some(tree)) =
-                        (&run.output_file, &run.id, scheduler.tree_mut())
-                    {
-                        let id = id.to_exposed();
-
-                        if let Ok(contents) = fs::read(output_file) {
-                            let values = parse_output(&contents)?;
-                            tree.insert_prefix(["steps", id.as_ref(), "outputs"], values);
+                    if let Some(path_file) = &run.path_file {
+                        if let Ok(contents) = fs::read(path_file) {
+                            new_paths = parse_lines(&contents)?;
                         }
+                    }
+
+                    if let Some(output_file) = &run.output_file {
+                        if let Ok(contents) = fs::read(output_file) {
+                            new_outputs = parse_key_values(&contents)?;
+                        }
+                    }
+
+                    tracing::debug!(id = ?run.id, ?new_env, ?new_paths, ?new_outputs);
+
+                    for (key, value) in new_env {
+                        scheduler.env_mut().insert(key, value);
+                    }
+
+                    for line in new_paths {
+                        scheduler.paths_mut().push(OsString::from(line));
+                    }
+
+                    if !new_outputs.is_empty() {
+                        scheduler
+                            .insert_new_outputs(run.id.as_deref(), &new_outputs)
+                            .with_context(|| anyhow!("New outputs {new_outputs:?}"))?;
                     }
                 }
             }
@@ -368,31 +390,61 @@ where
     for path in paths {
         let path = path.as_ref();
 
-        let file = File::create(path).with_context(|| {
-            anyhow!(
-                "Failed to create temporary environment file: {}",
-                path.display()
-            )
-        })?;
-
-        file.set_len(0).with_context(|| {
-            anyhow!(
-                "Failed to truncate temporary environment file: {}",
-                path.display()
-            )
-        })?;
+        File::create(path)
+            .with_context(|| anyhow!("Failed to truncate temporary file: {}", path.display()))?;
     }
 
     Ok(())
 }
 
-fn parse_output(contents: &[u8]) -> Result<Vec<(String, String)>> {
-    use bstr::ByteSlice;
+/// Create the given collection of directories.
+fn make_dirs<I>(paths: I) -> Result<()>
+where
+    I: IntoIterator<Item: AsRef<Path>>,
+{
+    for path in paths {
+        let path = path.as_ref();
 
+        fs::create_dir_all(path)
+            .with_context(|| anyhow!("Failed to create temporary directory: {}", path.display()))?;
+    }
+
+    Ok(())
+}
+
+fn parse_key_values(contents: &[u8]) -> Result<Vec<(String, String)>> {
+    process_lines(contents, |line| {
+        let (key, value) = line.split_once("=")?;
+
+        let key = key.trim();
+        let value = value.trim();
+
+        if key.is_empty() || value.is_empty() {
+            return None;
+        }
+
+        Some((key.to_owned(), value.to_owned()))
+    })
+}
+
+fn parse_lines(contents: &[u8]) -> Result<Vec<String>> {
+    process_lines(contents, |line| {
+        let line = line.trim();
+
+        if line.is_empty() {
+            return None;
+        }
+
+        Some(line.to_owned())
+    })
+}
+
+fn process_lines<F, O>(contents: &[u8], mut f: F) -> Result<Vec<O>>
+where
+    F: FnMut(&str) -> Option<O>,
+{
     let mut out = Vec::new();
-
     let mut reader = BufReader::new(contents);
-
     let mut line = Vec::new();
 
     loop {
@@ -402,14 +454,12 @@ fn parse_output(contents: &[u8]) -> Result<Vec<(String, String)>> {
             break;
         }
 
-        let line = line.trim_end();
+        let Ok(line) = str::from_utf8(&line) else {
+            continue;
+        };
 
-        if let Some((key, value)) = line.split_once_str("=") {
-            let (Ok(key), Ok(value)) = (str::from_utf8(key), str::from_utf8(value)) else {
-                continue;
-            };
-
-            out.push((key.to_owned(), value.to_owned()));
+        if let Some(o) = f(line) {
+            out.push(o);
         }
     }
 
