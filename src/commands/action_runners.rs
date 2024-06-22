@@ -6,11 +6,9 @@ use std::str;
 use anyhow::{bail, Result};
 
 use crate::action::ActionKind;
-use crate::ctxt::Ctxt;
 use crate::rstr::RStr;
 
-use super::{build_steps, new_env};
-use super::{ActionConfig, Schedule, ScheduleNodeAction};
+use super::{build_steps, new_env, ActionConfig, BatchConfig, Schedule, ScheduleNodeAction};
 
 #[derive(Debug)]
 pub(super) struct ActionRunner {
@@ -73,7 +71,7 @@ impl ActionRunners {
     /// Build the run configurations of an action.
     pub(super) fn build(
         &self,
-        cx: &Ctxt<'_>,
+        batch: &BatchConfig<'_, '_>,
         c: &ActionConfig,
         uses: &RStr,
     ) -> Result<(Vec<Schedule>, Vec<Schedule>)> {
@@ -93,7 +91,7 @@ impl ActionRunners {
                 node_version,
             } => {
                 let id = c.id().map(RStr::as_rc);
-                let (env, _) = new_env(cx, Some(runner), Some(c))?;
+                let (env, _) = new_env(batch, Some(runner), Some(c))?;
 
                 if let Some(path) = post_path {
                     post.push(Schedule::Push);
@@ -120,7 +118,7 @@ impl ActionRunners {
                 main.push(Schedule::Pop);
             }
             ActionKind::Composite { steps } => {
-                let commands = build_steps(cx, steps, Some(runner), Some(c))?;
+                let commands = build_steps(batch, steps, Some(runner), Some(c))?;
                 main.extend(commands);
             }
         }

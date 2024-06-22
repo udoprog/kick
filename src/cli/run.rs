@@ -5,10 +5,9 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use termcolor::{ColorChoice, StandardStream};
 
-use crate::commands::{Batch, BatchConfig, BatchOptions, Prepare, WorkflowLoader};
+use crate::commands::{Batch, BatchOptions, Prepare};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
-use crate::shell::Shell;
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -33,21 +32,12 @@ pub(crate) struct Opts {
     /// List all jobs associated with a Github workflows.
     #[arg(long)]
     list_jobs: bool,
-    /// Matrix values to ignore when running a Github workflows job.
-    #[arg(long, value_name = "value")]
-    ignore_matrix: Vec<String>,
     /// Only runs command on the current OS.
     ///
     /// When loading workflows, this causes the `runs-on` directive to be
     /// effectively ignored.
     #[arg(long)]
     same_os: bool,
-    /// The default shell to use when printing command invocations.
-    ///
-    /// By default this is `bash` for unix-like environments and `powershell`
-    /// for windows.
-    #[arg(long, value_name = "shell")]
-    shell: Option<Shell>,
     /// Arguments to pass to the command to run.
     #[arg(
         trailing_var_arg = true,
@@ -72,14 +62,7 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 
 #[tracing::instrument(skip_all)]
 fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
-    let repo_path = cx.to_path(repo.path());
-
-    let mut batches = Vec::new();
-    let mut loader = WorkflowLoader::new(cx);
-
-    for i in &opts.ignore_matrix {
-        loader.ignore_matrix_variable(i);
-    }
+    let mut c = opts.batch_opts.build(cx, repo)?;
 
     let mut all_workflows = false;
     let mut filter_workflows = HashSet::new();
@@ -99,10 +82,11 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
         all_jobs = false;
     }
 
+    let mut batches = Vec::new();
     let mut prepare = Prepare::default();
 
     if opts.workflow.is_some() || opts.job.is_some() || opts.list_jobs {
-        let w = loader.load_github_workflows(repo, &mut prepare)?;
+        let w = c.load_github_workflows(repo, &mut prepare)?;
 
         if opts.list_jobs {
             for workflow in w.iter() {
@@ -163,10 +147,6 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
     if let [command, args @ ..] = &opts.command[..] {
         batches.push(Batch::command(command, args));
     }
-
-    let default_shell = opts.shell.unwrap_or_else(|| cx.os.shell());
-    let mut c = BatchConfig::new(cx, &repo_path, default_shell);
-    c.add_opts(&opts.batch_opts)?;
 
     if opts.first_os || opts.each_os {
         if opts.first_os && opts.each_os {

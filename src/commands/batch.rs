@@ -12,15 +12,13 @@ use relative_path::RelativePath;
 use termcolor::WriteColor;
 
 use crate::config::Os;
-use crate::ctxt::Ctxt;
 use crate::process::{Command, OsArg};
 use crate::rstr::{RStr, RString};
 use crate::shell::Shell;
 use crate::workflows::{Matrix, Step};
 
-use super::new_env;
 use super::{
-    ActionConfig, ActionRunners, BatchConfig, Prepare, Run, RunKind, RunOn, Schedule,
+    new_env, ActionConfig, ActionRunners, BatchConfig, Prepare, Run, RunKind, RunOn, Schedule,
     ScheduleBasicCommand, ScheduleUse, Scheduler,
 };
 
@@ -50,8 +48,12 @@ impl Batch {
     }
 
     /// Construct a batch with multiple commands.
-    pub(crate) fn with_use(cx: &Ctxt<'_>, id: impl AsRef<RStr>, c: &ActionConfig) -> Result<Self> {
-        let (env, tree) = new_env(cx, None, Some(c))?;
+    pub(crate) fn with_use(
+        batch: &BatchConfig<'_, '_>,
+        id: impl AsRef<RStr>,
+        c: &ActionConfig,
+    ) -> Result<Self> {
+        let (env, tree) = new_env(batch, None, Some(c))?;
 
         Ok(Self {
             commands: vec![Schedule::Use(ScheduleUse::new(
@@ -109,7 +111,7 @@ impl Batch {
             write!(o, "# In ")?;
 
             o.set_color(&c.colors.title)?;
-            write!(o, "{}", c.repo_path.display())?;
+            write!(o, "{}", c.path.display())?;
             o.reset()?;
 
             if let RunOn::Wsl(dist) = run_on {
@@ -143,10 +145,10 @@ impl Batch {
                     Some(working_directory) => {
                         let working_directory = working_directory.to_exposed();
                         let working_directory = RelativePath::new(working_directory.as_ref());
-                        modified = working_directory.to_logical_path(c.repo_path);
+                        modified = working_directory.to_logical_path(&c.path);
                         &modified
                     }
-                    None => c.repo_path,
+                    None => &c.path,
                 };
 
                 let mut command;

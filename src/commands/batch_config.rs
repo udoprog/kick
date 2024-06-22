@@ -1,19 +1,21 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::path::PathBuf;
 use std::str;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
 use crate::config::{Distribution, Os};
 use crate::ctxt::Ctxt;
+use crate::model::Repo;
 use crate::shell::Shell;
+use crate::workflows::WorkflowManifests;
 
-use super::{BatchOptions, Colors, RunOn};
+use super::{Actions, Colors, LoadedWorkflows, Prepare, RunOn};
 
 /// A batch runner configuration.
 pub(crate) struct BatchConfig<'a, 'cx> {
     pub(super) cx: &'a Ctxt<'cx>,
-    pub(super) repo_path: &'a Path,
+    pub(super) path: PathBuf,
     pub(super) shell: Shell,
     pub(super) colors: Colors,
     pub(super) env: BTreeMap<String, String>,
@@ -22,14 +24,15 @@ pub(crate) struct BatchConfig<'a, 'cx> {
     pub(super) verbose: u8,
     pub(super) dry_run: bool,
     pub(super) exposed: bool,
+    pub(super) matrix_ignore: HashSet<String>,
 }
 
 impl<'a, 'cx> BatchConfig<'a, 'cx> {
     /// Construct a new batch configuration.
-    pub(crate) fn new(cx: &'a Ctxt<'cx>, repo_path: &'a Path, shell: Shell) -> Self {
+    pub(crate) fn new(cx: &'a Ctxt<'cx>, repo_path: PathBuf, shell: Shell) -> Self {
         Self {
             cx,
-            repo_path,
+            path: repo_path,
             shell,
             colors: Colors::new(),
             env: BTreeMap::new(),
@@ -38,30 +41,8 @@ impl<'a, 'cx> BatchConfig<'a, 'cx> {
             verbose: 0,
             dry_run: false,
             exposed: false,
+            matrix_ignore: HashSet::new(),
         }
-    }
-
-    /// Add options from [`BatchOptions`].
-    pub(crate) fn add_opts(&mut self, opts: &BatchOptions) -> Result<()> {
-        for &run_on in &opts.run_on {
-            self.add_run_on(run_on.to_run_on())?;
-        }
-
-        if opts.exposed {
-            self.exposed = true;
-        }
-
-        self.verbose = opts.verbose;
-
-        if opts.dry_run {
-            self.dry_run = true;
-        }
-
-        for env in &opts.env {
-            self.parse_env(env)?;
-        }
-
-        Ok(())
     }
 
     /// Parse an environment.
@@ -77,8 +58,8 @@ impl<'a, 'cx> BatchConfig<'a, 'cx> {
 
     /// Add an operating system.
     pub(crate) fn add_os(&mut self, os: &Os) -> Result<()> {
-        self.run_on
-            .push(RunOn::from_os(self.cx, os, Distribution::Ubuntu)?);
+        let run_on = RunOn::from_os(self, os, Distribution::Ubuntu)?;
+        self.run_on.push(run_on);
         Ok(())
     }
 
@@ -92,5 +73,45 @@ impl<'a, 'cx> BatchConfig<'a, 'cx> {
 
         self.run_on.push(run_on);
         Ok(())
+    }
+
+    /// Load workflows from a repository.
+    pub(crate) fn load_github_workflows(
+        &self,
+        repo: &Repo,
+        prepare: &mut Prepare,
+    ) -> Result<LoadedWorkflows<'_, 'cx>> {
+        let mut workflows = Vec::new();
+        let wfs = WorkflowManifests::new(self.cx, repo)?;
+
+        for workflow in wfs.workflows() {
+            let workflow = workflow?;
+
+            let mut jobs = Vec::new();
+
+            for job in workflow.jobs(&self.matrix_ignore)? {
+                for (_, steps) in &job.matrices {
+                    for step in &steps.steps {
+                        if let Some(name) = &step.uses {
+                            let actions = prepare.actions.get_or_insert_with(Actions::default);
+
+                            actions.insert_action(name).with_context(|| {
+                                anyhow!(
+                                    "Uses statement in job `{}` and step `{}`",
+                                    job.id,
+                                    step.name()
+                                )
+                            })?;
+                        }
+                    }
+                }
+
+                jobs.push(job);
+            }
+
+            workflows.push((workflow, jobs));
+        }
+
+        Ok(LoadedWorkflows::new(self, workflows))
     }
 }

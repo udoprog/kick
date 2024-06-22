@@ -1,7 +1,8 @@
 use crate::config::{Distribution, Os};
-use crate::ctxt::Ctxt;
 
 use anyhow::{bail, Result};
+
+use super::BatchConfig;
 
 /// A run on configuration.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -15,15 +16,19 @@ pub(crate) enum RunOn {
 
 impl RunOn {
     /// Construct a [`RunOn`] from the specified system.
-    pub(super) fn from_os(cx: &Ctxt<'_>, os: &Os, dist: Distribution) -> Result<RunOn> {
-        if cx.os == *os && cx.dist.matches(dist) {
+    pub(super) fn from_os(
+        batch: &BatchConfig<'_, '_>,
+        os: &Os,
+        dist: Distribution,
+    ) -> Result<RunOn> {
+        if batch.cx.os == *os && batch.cx.dist.matches(dist) {
             return Ok(RunOn::Same);
         }
 
-        if cx.os == Os::Windows && *os == Os::Linux && cx.system.wsl.first().is_some() {
+        if batch.cx.os == Os::Windows && *os == Os::Linux && batch.cx.system.wsl.first().is_some() {
             return Ok(RunOn::Wsl(dist));
         }
 
-        bail!("No support for {os:?} on current system {:?}", cx.os);
+        bail!("No support for {os:?} on current system {:?}", batch.cx.os);
     }
 }

@@ -2,13 +2,11 @@ use std::rc::Rc;
 
 use anyhow::Result;
 
-use crate::ctxt::Ctxt;
 use crate::workflows::Step;
 
-use super::new_env;
 use super::{
-    ActionConfig, ActionRunner, ScheduleBasicCommand, ScheduleNodeAction, ScheduleRun,
-    ScheduleStaticSetup, ScheduleUse,
+    new_env, ActionConfig, ActionRunner, BatchConfig, ScheduleBasicCommand, ScheduleNodeAction,
+    ScheduleRun, ScheduleStaticSetup, ScheduleUse,
 };
 
 /// A scheduled action.
@@ -25,12 +23,12 @@ pub(super) enum Schedule {
 
 /// Add jobs from a workflows, matrix, and associated steps.
 pub(super) fn build_steps(
-    cx: &Ctxt<'_>,
+    batch: &BatchConfig<'_, '_>,
     steps: &[Step],
     runner: Option<&ActionRunner>,
     c: Option<&ActionConfig>,
 ) -> Result<Vec<Schedule>> {
-    let (env, tree) = new_env(cx, runner, c)?;
+    let (env, tree) = new_env(batch, runner, c)?;
 
     let mut commands = Vec::new();
 

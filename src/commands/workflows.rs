@@ -3,12 +3,10 @@ use std::str;
 use anyhow::{bail, Result};
 
 use crate::config::{Distribution, Os};
-use crate::ctxt::Ctxt;
 use crate::rstr::RStr;
 use crate::workflows::{Job, Matrix, Steps, WorkflowManifest};
 
-use super::build_steps;
-use super::{Batch, RunOn};
+use super::{build_steps, Batch, BatchConfig, RunOn};
 
 /// A collection of loaded workflows.
 pub(crate) struct LoadedWorkflow<'a, 'cx> {
@@ -83,17 +81,17 @@ impl<'a, 'cx> LoadedJobMatrix<'a, 'cx> {
 
 /// Loaded workflows.
 pub(crate) struct LoadedWorkflows<'a, 'cx> {
-    cx: &'a Ctxt<'cx>,
+    batch: &'a BatchConfig<'a, 'cx>,
     workflows: Vec<(WorkflowManifest<'a, 'cx>, Vec<Job>)>,
 }
 
 impl<'a, 'cx> LoadedWorkflows<'a, 'cx> {
     /// Construct a new collection of loaded workflows.
     pub(super) fn new(
-        cx: &'a Ctxt<'cx>,
+        batch: &'a BatchConfig<'a, 'cx>,
         workflows: Vec<(WorkflowManifest<'a, 'cx>, Vec<Job>)>,
     ) -> Self {
-        Self { cx, workflows }
+        Self { batch, workflows }
     }
 
     /// Iterate over workflows.
@@ -126,10 +124,10 @@ impl<'a, 'cx> LoadedWorkflows<'a, 'cx> {
         let run_on = if same_os {
             RunOn::Same
         } else {
-            RunOn::from_os(self.cx, &os, dist)?
+            RunOn::from_os(self.batch, &os, dist)?
         };
 
-        let commands = build_steps(self.cx, &steps.steps, None, None)?;
+        let commands = build_steps(self.batch, &steps.steps, None, None)?;
 
         Ok(Batch::new(
             commands,

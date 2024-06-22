@@ -54,7 +54,7 @@ impl Scheduler {
 
     pub(super) fn advance(
         &mut self,
-        c: &BatchConfig<'_, '_>,
+        batch: &BatchConfig<'_, '_>,
         runners: Option<&ActionRunners>,
     ) -> Result<Option<Run>> {
         loop {
@@ -94,7 +94,7 @@ impl Scheduler {
                     return Ok(Some(run));
                 }
                 Schedule::Use(u) => {
-                    let group = u.build(c.cx, self.tree(), runners)?;
+                    let group = u.build(batch, self.tree(), runners)?;
 
                     for run in group.main.into_iter().rev() {
                         self.main.push_front(run);

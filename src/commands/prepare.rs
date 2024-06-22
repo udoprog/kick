@@ -73,7 +73,7 @@ impl Prepare {
                 }
 
                 let has_rustup = if has_wsl {
-                    let mut command = wsl.shell(c.repo_path, dist);
+                    let mut command = wsl.shell(&c.path, dist);
                     let status = command
                         .args(["rustup", "--version"])
                         .stdout(Stdio::null())
@@ -85,7 +85,7 @@ impl Prepare {
                 };
 
                 if !has_rustup {
-                    let mut command = wsl.shell(c.repo_path, dist);
+                    let mut command = wsl.shell(&c.path, dist);
                     command
                         .args(["bash", "-i", "-c"])
                         .arg(format!("{CURL} https://sh.rustup.rs | sh -s -- -y"));
@@ -103,7 +103,7 @@ impl Prepare {
 
                         if has_wsl {
                             let output = wsl
-                                .shell(c.repo_path, dist)
+                                .shell(&c.path, dist)
                                 .args([
                                     "dpkg-query",
                                     "-W",
@@ -136,7 +136,7 @@ impl Prepare {
                             let packages = wanted.into_iter().collect::<Vec<_>>();
                             let packages = packages.join(" ");
 
-                            let mut command = wsl.shell(c.repo_path, dist);
+                            let mut command = wsl.shell(&c.path, dist);
                             command.args(["bash", "-i", "-c"]).arg(format!(
                                 "sudo apt update && sudo apt install --yes {packages}"
                             ));
@@ -147,7 +147,7 @@ impl Prepare {
                         }
 
                         if wants_node_js {
-                            let mut command = wsl.shell(c.repo_path, dist);
+                            let mut command = wsl.shell(&c.path, dist);
                             command.args(["bash", "-i", "-c"]).arg(format!(
                                 "{CURL} https://deb.nodesource.com/setup_{NODE_VERSION}.x | sudo -E bash - && sudo apt-get install -y nodejs"
                             ));

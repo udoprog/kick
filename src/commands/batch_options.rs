@@ -1,8 +1,12 @@
+use anyhow::Result;
 use clap::{Parser, ValueEnum};
 
 use crate::config::Distribution;
+use crate::ctxt::Ctxt;
+use crate::model::Repo;
+use crate::shell::Shell;
 
-use super::RunOn;
+use super::{BatchConfig, RunOn};
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct BatchOptions {
@@ -35,6 +39,54 @@ pub(crate) struct BatchOptions {
     /// running commands, apply them automatically.
     #[arg(long)]
     pub(crate) fix: bool,
+    /// The default shell to use when printing command invocations.
+    ///
+    /// By default this is `bash` for unix-like environments and `powershell`
+    /// for windows.
+    #[arg(long, value_name = "shell")]
+    pub(super) shell: Option<Shell>,
+    /// Matrix values to ignore when running a Github workflows job.
+    #[arg(long, value_name = "value")]
+    pub(super) ignore_matrix: Vec<String>,
+}
+
+impl BatchOptions {
+    /// Build a batch configuration from a set of commandline options.
+    pub(crate) fn build<'a, 'cx>(
+        &self,
+        cx: &'a Ctxt<'cx>,
+        repo: &'a Repo,
+    ) -> Result<BatchConfig<'a, 'cx>> {
+        let repo_path = cx.to_path(repo.path());
+
+        let shell = self.shell.unwrap_or_else(|| cx.os.shell());
+
+        let mut c = BatchConfig::new(cx, repo_path, shell);
+
+        for &run_on in &self.run_on {
+            c.add_run_on(run_on.to_run_on())?;
+        }
+
+        if self.exposed {
+            c.exposed = true;
+        }
+
+        c.verbose = self.verbose;
+
+        if self.dry_run {
+            c.dry_run = true;
+        }
+
+        for env in &self.env {
+            c.parse_env(env)?;
+        }
+
+        for variable in &self.ignore_matrix {
+            c.matrix_ignore.insert(variable.clone());
+        }
+
+        Ok(c)
+    }
 }
 
 /// A run on configuration.

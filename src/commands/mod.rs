@@ -60,6 +60,3 @@ use self::scheduler::Scheduler;
 
 mod workflows;
 use self::workflows::LoadedWorkflows;
-
-mod workflow_loader;
-pub(crate) use self::workflow_loader::WorkflowLoader;

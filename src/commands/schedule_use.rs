@@ -5,11 +5,10 @@ use std::str;
 
 use anyhow::{bail, Result};
 
-use crate::ctxt::Ctxt;
 use crate::rstr::{RStr, RString};
 use crate::workflows::{Eval, Step, Tree};
 
-use super::{ActionConfig, ActionRunners, Env, Schedule, ScheduleStaticSetup};
+use super::{ActionConfig, ActionRunners, BatchConfig, Env, Schedule, ScheduleStaticSetup};
 
 /// Check if a use should be skipped.
 fn should_skip_use(uses: &str) -> bool {
@@ -44,7 +43,7 @@ impl ScheduleUse {
 
     pub(super) fn build(
         self,
-        cx: &Ctxt<'_>,
+        batch: &BatchConfig<'_, '_>,
         parent: Option<&Tree>,
         runners: Option<&ActionRunners>,
     ) -> Result<RunGroup> {
@@ -135,7 +134,7 @@ impl ScheduleUse {
                 bail!("No runners available for use");
             };
 
-            let (runner_main, runner_post) = runners.build(cx, &c, &self.uses)?;
+            let (runner_main, runner_post) = runners.build(batch, &c, &self.uses)?;
 
             main.push(Schedule::Push);
             main.extend(runner_main);

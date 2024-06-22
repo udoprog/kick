@@ -4,12 +4,11 @@ use std::rc::Rc;
 
 use anyhow::{Context, Result};
 
-use crate::ctxt::Ctxt;
 use crate::process::OsArg;
 use crate::rstr::RString;
 use crate::workflows::{Eval, Tree};
 
-use super::{ActionConfig, ActionRunner, Run};
+use super::{ActionConfig, ActionRunner, BatchConfig, Run};
 
 #[derive(Clone)]
 pub(super) struct Env {
@@ -75,11 +74,12 @@ impl Env {
 
 /// Construct a new environment from a specialized set of options.
 pub(super) fn new_env(
-    cx: &Ctxt<'_>,
+    batch: &BatchConfig<'_, '_>,
     runner: Option<&ActionRunner>,
     c: Option<&ActionConfig>,
 ) -> Result<(Env, Tree)> {
-    let cache_dir = cx
+    let cache_dir = batch
+        .cx
         .paths
         .project_dirs
         .context("Missing project dirs for Kick")?
@@ -133,7 +133,7 @@ pub(super) fn new_env(
         }
     }
 
-    tree.insert(["runner", "os"], cx.os.as_tree_value());
+    tree.insert(["runner", "os"], batch.cx.os.as_tree_value());
     tree.insert_prefix(["env"], env.iter().map(|(k, v)| (k.clone(), v.clone())));
     tree.insert_prefix(
         ["env"],
