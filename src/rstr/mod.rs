@@ -7,6 +7,7 @@ mod tests;
 use std::borrow::{Borrow, Cow};
 use std::cmp::Ordering;
 use std::fmt;
+#[cfg(test)]
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::rc::Rc;
@@ -120,6 +121,37 @@ impl RStr {
     pub(crate) fn split_once(&self, c: char) -> Option<(&RStr, &RStr)> {
         let (a, b) = self.0.split_once(c)?;
         Some((RStr::new(a), RStr::new(b)))
+    }
+
+    /// Test if the exposed content of this string equals the exposed other
+    /// string.
+    pub(crate) fn exposed_eq(&self, other: &Self) -> bool {
+        self.exposed_chars().eq(other.exposed_chars())
+    }
+
+    /// Test if the exposed content of this string equals the exposed other
+    /// string.
+    pub(crate) fn exposed_cmp(&self, other: &Self) -> Ordering {
+        self.exposed_chars().cmp(other.exposed_chars())
+    }
+
+    /// Test if the exposed portion of this string equals the other string.
+    pub(crate) fn str_eq(&self, other: impl AsRef<str>) -> bool {
+        let other = other.as_ref();
+        let mut it = self.chunks();
+
+        let Some(first) = it.next() else {
+            return other.is_empty();
+        };
+
+        let Some(rest) = other.strip_prefix(first.public()) else {
+            return false;
+        };
+
+        first
+            .redacted()
+            .chain(it.as_rstr().exposed_chars())
+            .eq(rest.chars())
     }
 
     /// Get the raw underlying string.
@@ -348,95 +380,44 @@ impl AsRef<RStr> for String {
 
 macro_rules! cmp {
     ($ty:ty) => {
+        #[cfg(test)]
         impl Hash for $ty {
             fn hash<H>(&self, state: &mut H)
             where
                 H: Hasher,
             {
-                self.0.hash(state);
+                0xffu32.hash(state);
+
+                for c in self.exposed_chars() {
+                    c.hash(state);
+                }
             }
         }
 
+        #[cfg(test)]
         impl PartialEq for $ty {
             #[inline]
             fn eq(&self, other: &Self) -> bool {
-                self.0 == other.0
+                self.exposed_eq(&other)
             }
         }
 
+        #[cfg(test)]
         impl Eq for $ty {}
 
+        #[cfg(test)]
         impl PartialOrd for $ty {
             #[inline]
             fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-                Some(self.0.cmp(&other.0))
+                Some(self.cmp(other))
             }
         }
 
+        #[cfg(test)]
         impl Ord for $ty {
             #[inline]
             fn cmp(&self, other: &Self) -> Ordering {
-                self.0.cmp(&other.0)
-            }
-        }
-    };
-}
-
-macro_rules! cmp_str {
-    ($ty:ty) => {
-        impl PartialEq<str> for $ty {
-            #[inline]
-            fn eq(&self, other: &str) -> bool {
-                (*self).exposed_chars().eq(other.chars())
-            }
-        }
-
-        impl PartialEq<$ty> for str {
-            #[inline]
-            fn eq(&self, other: &$ty) -> bool {
-                self.chars().eq((*other).exposed_chars())
-            }
-        }
-
-        impl PartialEq<&str> for $ty {
-            #[inline]
-            fn eq(&self, other: &&str) -> bool {
-                self.exposed_chars().eq((**other).chars())
-            }
-        }
-
-        impl PartialEq<$ty> for &str {
-            #[inline]
-            fn eq(&self, other: &$ty) -> bool {
-                (**self).chars().eq((*other).exposed_chars())
-            }
-        }
-
-        impl PartialEq<String> for $ty {
-            #[inline]
-            fn eq(&self, other: &String) -> bool {
-                (*self).exposed_chars().eq(other.chars())
-            }
-        }
-
-        impl PartialEq<$ty> for String {
-            #[inline]
-            fn eq(&self, other: &$ty) -> bool {
-                self.chars().eq((*other).exposed_chars())
-            }
-        }
-
-        impl PartialEq<&String> for $ty {
-            #[inline]
-            fn eq(&self, other: &&String) -> bool {
-                self.exposed_chars().eq((**other).chars())
-            }
-        }
-
-        impl PartialEq<$ty> for &String {
-            #[inline]
-            fn eq(&self, other: &$ty) -> bool {
-                (**self).chars().eq((*other).exposed_chars())
+                self.exposed_cmp(other)
             }
         }
     };
@@ -444,30 +425,6 @@ macro_rules! cmp_str {
 
 cmp!(RStr);
 cmp!(RString);
-
-cmp_str!(RStr);
-cmp_str!(RString);
-
-impl From<String> for Box<RStr> {
-    #[inline]
-    fn from(value: String) -> Self {
-        Box::from(RString::from(value))
-    }
-}
-
-impl From<RString> for Box<RStr> {
-    #[inline]
-    fn from(value: RString) -> Self {
-        Box::from(Box::<str>::from(value.0))
-    }
-}
-
-impl From<&RString> for Box<RStr> {
-    #[inline]
-    fn from(value: &RString) -> Self {
-        Box::from(value.as_rstr())
-    }
-}
 
 impl From<Box<str>> for Box<RStr> {
     #[inline]
@@ -479,14 +436,42 @@ impl From<Box<str>> for Box<RStr> {
 impl From<&str> for Box<RStr> {
     #[inline]
     fn from(value: &str) -> Self {
-        Box::from(Box::<str>::from(value))
+        Self::from(Box::<str>::from(value))
     }
 }
 
 impl From<&RStr> for Box<RStr> {
     #[inline]
     fn from(value: &RStr) -> Self {
-        Box::from(&value.0)
+        Self::from(&value.0)
+    }
+}
+
+impl From<&String> for Box<RStr> {
+    #[inline]
+    fn from(value: &String) -> Self {
+        Self::from(value.as_str())
+    }
+}
+
+impl From<String> for Box<RStr> {
+    #[inline]
+    fn from(value: String) -> Self {
+        Self::from(Box::<str>::from(value))
+    }
+}
+
+impl From<RString> for Box<RStr> {
+    #[inline]
+    fn from(value: RString) -> Self {
+        Self::from(value.0)
+    }
+}
+
+impl From<&RString> for Box<RStr> {
+    #[inline]
+    fn from(value: &RString) -> Self {
+        Self::from(value.as_rstr())
     }
 }
 

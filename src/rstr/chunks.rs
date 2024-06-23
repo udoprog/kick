@@ -1,6 +1,6 @@
 use std::mem::take;
 
-use super::{START, TAG_END, TAG_START};
+use super::{RStr, START, TAG_END, TAG_START};
 
 /// An iterator over the chunks of a redacted string.
 ///
@@ -12,6 +12,11 @@ pub(crate) struct Chunks<'a> {
 impl<'a> Chunks<'a> {
     pub(crate) fn new(string: &'a str) -> Self {
         Self { string }
+    }
+
+    /// Get the remaining redacted string.
+    pub(crate) fn as_rstr(&self) -> &'a RStr {
+        RStr::new(self.string)
     }
 }
 
@@ -73,7 +78,7 @@ pub(crate) struct Redacted<'a> {
 
 impl<'a> Redacted<'a> {
     /// Test if the redacted component is empty.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.string.is_empty()
     }
 }

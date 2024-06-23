@@ -174,7 +174,7 @@ fn rust_toolchain<'a>(
         return Ok(None);
     };
 
-    if what != "rust-toolchain" {
+    if what.str_eq("rust-toolchain") {
         return Ok(None);
     }
 

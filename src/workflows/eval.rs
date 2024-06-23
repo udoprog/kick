@@ -79,7 +79,8 @@ pub(crate) enum EvalErrorKind {
 use EvalErrorKind::*;
 
 /// The outcome of evaluating an expression.
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub(crate) enum Expr<'m> {
     /// An array of values.
     Array(Box<[Expr<'m>]>),
@@ -317,7 +318,7 @@ fn op_not<'a>(_: &Span<u32>, expr: Expr<'a>) -> Result<Expr<'a>, EvalError> {
 
 fn op_cmp<'a>(_: &Span<u32>, lhs: Expr<'a>, rhs: Expr<'a>) -> Result<Option<Ordering>, EvalError> {
     match (lhs, rhs) {
-        (Expr::String(lhs), Expr::String(rhs)) => Ok(lhs.partial_cmp(&rhs)),
+        (Expr::String(lhs), Expr::String(rhs)) => Ok(Some(lhs.exposed_cmp(&rhs))),
         (Expr::Float(lhs), Expr::Float(rhs)) => Ok(lhs.partial_cmp(&rhs)),
         (Expr::Bool(lhs), Expr::Bool(rhs)) => Ok(lhs.partial_cmp(&rhs)),
         (Expr::Null, Expr::Null) => Ok(Some(Ordering::Equal)),

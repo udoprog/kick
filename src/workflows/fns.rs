@@ -55,10 +55,9 @@ fn contains<'m>(span: &Span<u32>, args: &[Expr<'m>]) -> Result<Expr<'m>, EvalErr
         ));
     };
 
-    let needle = needle.to_exposed();
-
     match lhs {
         Expr::String(string) => {
+            let needle = needle.to_exposed();
             let string = string.to_exposed();
             Ok(Expr::Bool(string.contains(needle.as_ref())))
         }
@@ -66,7 +65,7 @@ fn contains<'m>(span: &Span<u32>, args: &[Expr<'m>]) -> Result<Expr<'m>, EvalErr
             let found = array
                 .iter()
                 .flat_map(|v| v.as_str())
-                .any(|s| s.to_exposed().as_ref() == needle.as_ref());
+                .any(|s| s.exposed_eq(needle.as_ref()));
 
             Ok(Expr::Bool(found))
         }

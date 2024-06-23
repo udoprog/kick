@@ -356,7 +356,7 @@ pub(crate) fn build_matrices(
                         continue;
                     }
 
-                    if value != v {
+                    if !value.str_eq(v) {
                         return false;
                     }
                 }
