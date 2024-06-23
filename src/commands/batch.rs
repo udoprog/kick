@@ -295,15 +295,11 @@ impl Batch {
                     (&display_impl, Shell::Bash, display_env)
                 };
 
-                write!(o, "# ")?;
-
-                o.set_color(&batch.colors.title)?;
-
                 if let Some(name) = &run.name {
-                    write!(o, "{name}")?;
+                    o.set_color(&batch.colors.title)?;
+                    write!(o, "# {name}")?;
+                    o.reset()?;
                 }
-
-                o.reset()?;
 
                 if let Some(skipped) = &run.skipped {
                     write!(o, " ")?;
