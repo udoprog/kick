@@ -1,6 +1,9 @@
 #[cfg(test)]
 mod tests;
 
+mod fns;
+pub(crate) use self::fns::lookup_function;
+
 mod eval;
 mod grammar;
 mod lexer;
@@ -24,7 +27,9 @@ use crate::model::Repo;
 use crate::rstr::{RStr, RString};
 use crate::shell::Shell;
 
-use self::eval::Expr;
+use self::eval::{EvalError, Expr};
+
+type CustomFunction = for<'m> fn(&Span<u32>, &[Expr<'m>]) -> Result<Expr<'m>, eval::EvalError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
@@ -577,74 +582,6 @@ pub(crate) struct Step {
     pub(crate) shell: Option<String>,
 }
 
-pub fn default_functions() -> BTreeMap<&'static str, CustomFunction> {
-    let mut functions = BTreeMap::new();
-    functions.insert("fromJSON", from_json as CustomFunction);
-    functions.insert("startsWith", starts_with as CustomFunction);
-    functions
-}
-
-fn value_to_expr(
-    span: &Span<u32>,
-    value: serde_json::Value,
-) -> Result<Expr<'static>, eval::EvalError> {
-    let expr = match value {
-        serde_json::Value::Null => Expr::Null,
-        serde_json::Value::Bool(b) => Expr::Bool(b),
-        serde_json::Value::Number(n) => {
-            let Some(v) = n.as_f64() else {
-                return Err(eval::EvalError::custom(
-                    *span,
-                    "Failed to convert JSON number",
-                ));
-            };
-
-            Expr::Float(v)
-        }
-        serde_json::Value::String(string) => Expr::String(Cow::Owned(RString::from(string))),
-        serde_json::Value::Array(array) => {
-            let mut values = Vec::with_capacity(array.len());
-
-            for value in array {
-                values.push(value_to_expr(span, value)?);
-            }
-
-            Expr::Array(values.into())
-        }
-        serde_json::Value::Object(_) => {
-            return Err(eval::EvalError::custom(*span, "Objects are not supported"));
-        }
-    };
-
-    Ok(expr)
-}
-
-fn from_json<'m>(span: &Span<u32>, args: &[Expr<'m>]) -> Result<Expr<'m>, eval::EvalError> {
-    let Some(s) = args.first().and_then(|s| s.as_str()) else {
-        return Ok(Expr::Null);
-    };
-
-    // NB: Figure out if we want to carry redaction into the decoded expression.
-    let string = s.to_exposed();
-
-    match serde_json::from_str(string.as_ref()) {
-        Ok(value) => value_to_expr(span, value),
-        Err(error) => Err(eval::EvalError::custom(*span, format_args!("{error}"))),
-    }
-}
-
-fn starts_with<'m>(span: &Span<u32>, args: &[Expr<'m>]) -> Result<Expr<'m>, eval::EvalError> {
-    let [Expr::String(what), Expr::String(expect)] = args else {
-        return Err(eval::EvalError::custom(*span, "Expected two arguments"));
-    };
-
-    let what = what.to_exposed();
-    let expect = expect.to_exposed();
-    Ok(Expr::Bool(what.starts_with(expect.as_ref())))
-}
-
-type CustomFunction = for<'m> fn(&Span<u32>, &[Expr<'m>]) -> Result<Expr<'m>, eval::EvalError>;
-
 #[derive(Default, Clone)]
 struct Node {
     value: Option<RString>,
@@ -788,40 +725,25 @@ impl fmt::Debug for Tree {
 #[derive(Clone, Copy)]
 pub(crate) struct Eval<'a> {
     tree: &'a Tree,
-    functions: Option<&'a BTreeMap<&'static str, CustomFunction>>,
+    functions: fn(&str) -> Option<CustomFunction>,
 }
 
 impl<'a> Eval<'a> {
-    pub(crate) fn empty() -> Self {
-        static EMPTY_TREE: Tree = Tree::new();
-
-        Self {
-            tree: &EMPTY_TREE,
-            functions: None,
-        }
-    }
-
     pub(crate) const fn new(tree: &'a Tree) -> Self {
         Self {
             tree,
-            functions: None,
+            functions: lookup_function,
         }
     }
 
-    /// Associate function with the current environment.
-    pub(crate) fn with_functions(
-        self,
-        functions: &'a BTreeMap<&'static str, CustomFunction>,
-    ) -> Self {
-        Self {
-            functions: Some(functions),
-            ..self
-        }
+    pub(crate) fn empty() -> Self {
+        static EMPTY_TREE: Tree = Tree::new();
+        Self::new(&EMPTY_TREE)
     }
 
     /// Get a function by name.
     pub(crate) fn function(&self, name: &str) -> Option<CustomFunction> {
-        self.functions?.get(name).copied()
+        (self.functions)(name)
     }
 
     /// Modify the environment with a matrix.

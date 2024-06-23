@@ -156,8 +156,7 @@ fn function() {
     tree.insert(["matrix", "a"], "true");
     tree.insert(["matrix", "b"], "false");
     tree.insert(["matrix", "c"], "[1, 2, 3, 4]");
-    let functions = default_functions();
-    let eval = Eval::new(&tree).with_functions(&functions);
+    let eval = Eval::new(&tree);
     assert_eq!(eval.expr("fromJSON(matrix.a)"), Ok(Expr::Bool(true)));
     assert_eq!(eval.expr("fromJSON(matrix.b)"), Ok(Expr::Bool(false)));
     assert_eq!(
@@ -170,5 +169,46 @@ fn function() {
         Ok(Expr::Array(
             [1.0f64.into(), 2.0f64.into(), 3.0f64.into(), 4.0f64.into()].into()
         ))
+    );
+}
+
+#[test]
+fn function_contains() {
+    let mut tree = Tree::new();
+    tree.insert(["matrix", "a"], "foo-bar");
+    tree.insert(["matrix", "b"], "bar-baz");
+    tree.insert(["matrix", "c"], "[1, 2, 3, 4]");
+
+    let eval = Eval::new(&tree);
+
+    assert_eq!(eval.expr("contains(matrix.a, 'foo')"), Ok(Expr::Bool(true)));
+    assert_eq!(
+        eval.expr("contains(matrix.a, 'baz')"),
+        Ok(Expr::Bool(false))
+    );
+}
+
+#[test]
+fn function_contains_array() {
+    let mut tree = Tree::new();
+    tree.insert(["matrix", "a"], "foo-bar");
+    tree.insert(["matrix", "b"], "bar-baz");
+    tree.insert(["matrix", "c"], "[1, 2, 3, 4]");
+    tree.insert(["github", "event_name"], "pull_request");
+
+    let eval = Eval::new(&tree);
+
+    assert_eq!(
+        eval.expr("contains(matrix.*, 'foo-bar')"),
+        Ok(Expr::Bool(true))
+    );
+    assert_eq!(
+        eval.expr("contains(matrix.*, 'baz')"),
+        Ok(Expr::Bool(false))
+    );
+
+    assert_eq!(
+        eval.expr("contains(fromJSON('[\"push\", \"pull_request\"]'), github.event_name)"),
+        Ok(Expr::Bool(true))
     );
 }
