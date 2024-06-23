@@ -34,16 +34,23 @@ make sure that its usr/bin directory is in the system PATH."#;
 
 /// A constructed workflow batch.
 pub(crate) struct Batch {
-    commands: Vec<Schedule>,
     run_on: RunOn,
+    os: Os,
+    commands: Vec<Schedule>,
     matrix: Option<Matrix>,
 }
 
 impl Batch {
-    pub(super) fn new(commands: Vec<Schedule>, run_on: RunOn, matrix: Option<Matrix>) -> Self {
+    pub(super) fn new(
+        run_on: RunOn,
+        os: Os,
+        commands: Vec<Schedule>,
+        matrix: Option<Matrix>,
+    ) -> Self {
         Self {
-            commands,
             run_on,
+            os,
+            commands,
             matrix,
         }
     }
@@ -51,7 +58,7 @@ impl Batch {
     /// Construct a batch from a single use.
     pub(super) fn with_use(
         batch: &BatchConfig<'_, '_>,
-        c: &ActionConfig,
+        c: &ActionConfig<'_>,
         id: impl AsRef<RStr>,
     ) -> Result<Self> {
         let (env, tree) = new_env(batch, None, Some(c))?;
@@ -64,23 +71,25 @@ impl Batch {
         ));
 
         Ok(Self {
-            commands: vec![u],
             run_on: RunOn::Same,
+            os: batch.cx.current_os.clone(),
+            commands: vec![u],
             matrix: None,
         })
     }
 
     /// Construct a batch with a single command.
-    pub(crate) fn command<C, A>(command: C, args: A) -> Self
+    pub(crate) fn command<C, A>(os: Os, command: C, args: A) -> Self
     where
         C: Into<OsArg>,
         A: IntoIterator<Item: Into<OsArg>>,
     {
         Batch {
+            run_on: RunOn::Same,
+            os,
             commands: vec![Schedule::BasicCommand(ScheduleBasicCommand::new(
                 command, args,
             ))],
-            run_on: RunOn::Same,
             matrix: None,
         }
     }
@@ -97,7 +106,7 @@ impl Batch {
     {
         let mut scheduler = Scheduler::new();
 
-        for run_on in self.runners(&batch.run_on) {
+        for (run_on, os) in self.runners(&batch.run_on) {
             if let RunOn::Wsl(dist) = run_on {
                 session.dists.insert(dist);
             }
@@ -130,7 +139,7 @@ impl Batch {
                 scheduler.push_back(run.clone());
             }
 
-            while let Some(run) = scheduler.advance(o, batch, session)? {
+            while let Some(run) = scheduler.advance(o, batch, session, &os)? {
                 let modified;
 
                 let path = match &run.working_directory {
@@ -357,7 +366,12 @@ impl Batch {
                                 };
 
                                 let value = shell.escape_string(value.as_ref());
-                                writeln!(o, r#"  $Env:{key}={value};"#)?;
+
+                                if shell.is_env_literal(key.as_ref()) {
+                                    writeln!(o, r#"  $Env:{key}={value};"#)?;
+                                } else {
+                                    writeln!(o, r#"  ${{Env:{key}={value}}};"#)?;
+                                }
                             }
 
                             writeln!(o, "  {display}")?;
@@ -392,7 +406,9 @@ impl Batch {
                         if let Ok(contents) = fs::read(path_file) {
                             new_paths = parse_lines(&contents)?;
 
-                            if batch.cx.os == Os::Windows && matches!(run_on, RunOn::Wsl(..)) {
+                            if batch.cx.current_os == Os::Windows
+                                && matches!(run_on, RunOn::Wsl(..))
+                            {
                                 for path in &mut new_paths {
                                     *path = translate_path_to_windows(path)?;
                                 }
@@ -428,10 +444,10 @@ impl Batch {
         Ok(())
     }
 
-    fn runners(&self, opts: &[RunOn]) -> BTreeSet<RunOn> {
+    fn runners(&self, opts: &[(RunOn, Os)]) -> BTreeSet<(RunOn, Os)> {
         let mut set = BTreeSet::new();
-        set.extend(opts.iter().copied());
-        set.insert(self.run_on);
+        set.extend(opts.iter().cloned());
+        set.insert((self.run_on, self.os.clone()));
         set
     }
 }
@@ -580,7 +596,7 @@ fn setup_same<'a>(
             }
             Shell::Bash => {
                 let Some(bash) = c.cx.system.bash.first() else {
-                    if let Os::Windows = &c.cx.os {
+                    if let Os::Windows = &c.cx.current_os {
                         tracing::warn!("{WINDOWS_BASH_MESSAGE}");
                     };
 

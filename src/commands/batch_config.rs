@@ -21,13 +21,14 @@ pub(crate) struct BatchConfig<'a, 'cx> {
     pub(super) colors: Colors,
     pub(super) env: BTreeMap<String, String>,
     pub(super) env_passthrough: BTreeSet<String>,
-    pub(super) run_on: Vec<RunOn>,
+    pub(super) run_on: Vec<(RunOn, Os)>,
     pub(super) verbose: u8,
     pub(super) dry_run: bool,
     pub(super) exposed: bool,
     pub(super) matrix_ignore: HashSet<String>,
     pub(super) matrix_filter: Vec<(String, String)>,
     pub(super) fix: bool,
+    pub(super) keep: bool,
 }
 
 impl<'a, 'cx> BatchConfig<'a, 'cx> {
@@ -48,6 +49,7 @@ impl<'a, 'cx> BatchConfig<'a, 'cx> {
             matrix_ignore: HashSet::new(),
             matrix_filter: Vec::new(),
             fix: false,
+            keep: false,
         }
     }
 
@@ -65,19 +67,19 @@ impl<'a, 'cx> BatchConfig<'a, 'cx> {
     /// Add an operating system.
     pub(crate) fn add_os(&mut self, os: &Os) -> Result<()> {
         let run_on = RunOn::from_os(self, os, Distribution::Ubuntu)?;
-        self.run_on.push(run_on);
+        self.run_on.push((run_on, os.clone()));
         Ok(())
     }
 
     /// Add a run on.
-    pub(crate) fn add_run_on(&mut self, run_on: RunOn) -> Result<()> {
+    pub(crate) fn add_run_on(&mut self, run_on: RunOn, os: Os) -> Result<()> {
         if let RunOn::Wsl(..) = run_on {
             if self.cx.system.wsl.is_empty() {
                 bail!("WSL is not available");
             }
         }
 
-        self.run_on.push(run_on);
+        self.run_on.push((run_on, os));
         Ok(())
     }
 

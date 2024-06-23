@@ -99,6 +99,7 @@ pub(super) fn new_env(
     let path_file;
     let output_file;
     let tools_path;
+    let runner_os;
 
     let mut file_env = BTreeMap::new();
 
@@ -155,9 +156,11 @@ pub(super) fn new_env(
 
             tree.insert_prefix(["inputs"], inputs.clone());
         }
-    }
 
-    tree.insert(["runner", "os"], batch.cx.os.as_tree_value());
+        runner_os = c.os();
+    } else {
+        runner_os = &batch.cx.current_os;
+    }
 
     let tree_env = file_env
         .iter()
@@ -165,6 +168,7 @@ pub(super) fn new_env(
         .chain(env.iter().map(|(k, v)| (k.clone(), v.clone())));
 
     tree.insert_prefix(["env"], tree_env);
+    tree.insert(["runner", "os"], runner_os.as_tree_value());
 
     let env = Rc::new(env);
     let file_env = Rc::new(file_env);

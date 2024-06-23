@@ -49,6 +49,18 @@ impl Shell {
         self.inner_escape_string(source, 0)
     }
 
+    /// Test if the environment literal needs to be escaped.
+    pub(crate) fn is_env_literal(&self, s: &str) -> bool {
+        match *self {
+            Shell::Bash => s
+                .chars()
+                .all(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-')),
+            Shell::Powershell => s
+                .chars()
+                .all(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_')),
+        }
+    }
+
     fn inner_escape_string(&self, source: &str, i: usize) -> String {
         let e = self.escapes();
 

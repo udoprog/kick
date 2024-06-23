@@ -5,6 +5,7 @@ use std::str;
 
 use anyhow::Result;
 
+use crate::config::Os;
 use crate::rstr::{RStr, RString};
 use crate::workflows::{Eval, Step, Tree};
 
@@ -51,6 +52,7 @@ impl ScheduleUse {
         batch: &BatchConfig<'_, '_>,
         parent: Option<&Tree>,
         runners: &ActionRunners,
+        os: &Os,
     ) -> Result<RunGroup> {
         let mut tree = self.tree.as_ref().clone();
 
@@ -90,8 +92,9 @@ impl ScheduleUse {
         let uses_exposed = self.uses.to_exposed();
 
         if !should_skip_use(uses_exposed.as_ref()) {
-            let c = ActionConfig::default()
+            let c = ActionConfig::new(os)
                 .with_id(id.map(Cow::into_owned))
+                .with_action_name(self.uses.as_ref())
                 .with_skipped(skipped.as_ref())
                 .with_inputs(with);
 

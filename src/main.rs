@@ -855,7 +855,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         eval: Eval::empty(),
         system: &system,
         git_credentials: &git_credentials,
-        os,
+        current_os: os,
         dist,
         paths,
         config: &config,

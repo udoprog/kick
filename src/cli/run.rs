@@ -135,7 +135,7 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
                     }
 
                     for matrix in job.matrices() {
-                        match matrix.build(opts.same_os) {
+                        match matrix.build(opts.same_os, &cx.current_os) {
                             Ok(batch) => {
                                 batches.push(batch);
                             }
@@ -156,10 +156,10 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
     }
 
     if let [command, args @ ..] = &opts.command[..] {
-        batches.push(Batch::command(command, args));
+        batches.push(Batch::command(cx.current_os.clone(), command, args));
     }
 
-    let mut session = Session::new();
+    let mut session = Session::new(&c);
 
     for batch in batches {
         batch.commit(o, &c, &mut session)?;

@@ -2,6 +2,7 @@ use std::rc::Rc;
 
 use anyhow::Result;
 
+use crate::rstr::RStr;
 use crate::workflows::Step;
 
 use super::{
@@ -37,6 +38,7 @@ impl Schedule {
 /// Add jobs from a workflows, matrix, and associated steps.
 pub(super) fn build_steps(
     job_id: &str,
+    action_name: Option<&RStr>,
     batch: &BatchConfig<'_, '_>,
     steps: &[Rc<Step>],
     runner: Option<&ActionRunner>,
@@ -57,6 +59,7 @@ pub(super) fn build_steps(
             if let Some(run) = &step.run {
                 commands.push(Schedule::Run(ScheduleRun::new(
                     format!("{}-{}", job_id, index).into(),
+                    action_name.map(Box::from),
                     Box::from(run.as_str()),
                     step.clone(),
                     tree.clone(),

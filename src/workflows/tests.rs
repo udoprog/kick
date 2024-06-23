@@ -232,4 +232,11 @@ fn test_eval() {
             "hello-world-${{ matrix.b } }-bar"
         )))
     );
+
+    assert_eq!(
+        eval.eval("prefix-${{ matrix.a }}-world-${{ matrix.b } }-bar"),
+        Ok(Cow::Owned(RString::from(
+            "prefix-hello-world-${{ matrix.b } }-bar"
+        )))
+    );
 }

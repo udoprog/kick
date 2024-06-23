@@ -21,17 +21,20 @@ impl RunOn {
         os: &Os,
         dist: Distribution,
     ) -> Result<RunOn> {
-        if batch.cx.os == *os && batch.cx.dist.matches(dist) {
+        if batch.cx.current_os == *os && batch.cx.dist.matches(dist) {
             return Ok(RunOn::Same);
         }
 
-        if batch.cx.os == Os::Windows && *os == Os::Linux && batch.cx.system.wsl.first().is_some() {
+        if batch.cx.current_os == Os::Windows
+            && *os == Os::Linux
+            && batch.cx.system.wsl.first().is_some()
+        {
             return Ok(RunOn::Wsl(dist));
         }
 
         bail!(
             "No support for {os}/{dist} on current system {}/{}",
-            batch.cx.os,
+            batch.cx.current_os,
             batch.cx.dist
         );
     }

@@ -4,6 +4,7 @@ use std::ffi::OsString;
 use anyhow::{bail, Context, Result};
 use termcolor::WriteColor;
 
+use crate::config::Os;
 use crate::rstr::RStr;
 use crate::workflows::Tree;
 
@@ -74,6 +75,7 @@ impl Scheduler {
         o: &mut O,
         batch: &BatchConfig<'_, '_>,
         session: &mut Session,
+        os: &Os,
     ) -> Result<Option<Run>>
     where
         O: ?Sized + WriteColor,
@@ -118,7 +120,7 @@ impl Scheduler {
                     return Ok(Some(run));
                 }
                 Schedule::Use(u) => {
-                    let group = u.build(batch, self.tree(), session.runners())?;
+                    let group = u.build(batch, self.tree(), session.runners(), os)?;
 
                     for run in group.main.into_iter().rev() {
                         self.main.push_front(run);

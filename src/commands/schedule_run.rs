@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use anyhow::{bail, Result};
 
-use crate::rstr::RStr;
+use crate::rstr::{RStr, RString};
 use crate::shell::Shell;
 use crate::workflows::{Eval, Step, Tree};
 
@@ -12,6 +12,7 @@ use super::{Env, Run};
 #[derive(Clone)]
 pub(crate) struct ScheduleRun {
     id: Box<str>,
+    action_name: Option<Box<RStr>>,
     script: Box<str>,
     step: Rc<Step>,
     tree: Rc<Tree>,
@@ -21,6 +22,7 @@ pub(crate) struct ScheduleRun {
 impl ScheduleRun {
     pub(super) fn new(
         id: Box<str>,
+        action_name: Option<Box<RStr>>,
         script: Box<str>,
         step: Rc<Step>,
         tree: Rc<Tree>,
@@ -28,6 +30,7 @@ impl ScheduleRun {
     ) -> Self {
         Self {
             id,
+            action_name,
             script,
             step,
             tree,
@@ -51,7 +54,7 @@ impl ScheduleRun {
         let mut skipped = None;
 
         if let Some(condition) = &self.step.condition {
-            if eval.test(condition)? {
+            if !eval.test(condition)? {
                 skipped = Some(condition.clone());
             }
         }
@@ -63,6 +66,15 @@ impl ScheduleRun {
 
         let id = self.step.id.as_ref().map(|v| eval.eval(v)).transpose()?;
         let name = self.step.name.as_ref().map(|v| eval.eval(v)).transpose()?;
+
+        let name = match (self.action_name.as_deref(), name.as_deref()) {
+            (Some(action_name), Some(name)) => {
+                Some(Cow::Owned(RString::from(format!("{action_name} / {name}"))))
+            }
+            (Some(action_name), None) => Some(Cow::Borrowed(action_name)),
+            (None, Some(name)) => Some(Cow::Borrowed(name)),
+            (None, None) => None,
+        };
 
         let working_directory = self
             .step

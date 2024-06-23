@@ -11,7 +11,7 @@ use crate::process::Command;
 use super::{ActionRunners, Actions, BatchConfig, Remediations};
 
 const CURL: &str = "curl --proto '=https' --tlsv1.2 -sSf";
-const DEBIAN_WANTED: &[&str] = &["gcc", "nodejs"];
+const DEBIAN_WANTED: &[&str] = &["gcc", "pkg-config", "nodejs", "libssl-dev"];
 const NODE_VERSION: u32 = 22;
 
 /// Preparations that need to be done before running a batch.
@@ -28,11 +28,13 @@ pub(crate) struct Session {
     remove_paths: Vec<Box<Path>>,
     /// Unique sequence number.
     sequence: u32,
+    /// Keep temporary files.
+    keep: bool,
 }
 
 impl Session {
     /// Construct a new preparation.
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(c: &BatchConfig<'_, '_>) -> Self {
         Self {
             dists: BTreeSet::new(),
             prepared_dists: BTreeSet::new(),
@@ -40,6 +42,7 @@ impl Session {
             runners: ActionRunners::default(),
             remove_paths: Vec::new(),
             sequence: 0,
+            keep: c.keep,
         }
     }
 
@@ -209,6 +212,10 @@ impl Session {
 
     /// Clean up any remaining temporary files.
     fn cleanup(&mut self) {
+        if self.keep {
+            return;
+        }
+
         for path in self.remove_paths.drain(..) {
             tracing::trace!(?path, "Removing file");
             _ = std::fs::remove_file(path);

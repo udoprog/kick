@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 
-use crate::config::Distribution;
+use crate::config::{Distribution, Os};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::shell::Shell;
@@ -39,6 +39,9 @@ pub(crate) struct BatchOptions {
     /// running commands, apply them automatically.
     #[arg(long)]
     pub(super) fix: bool,
+    /// Keep work files around and do not remove them at the end of the run.
+    #[arg(long)]
+    pub(super) keep: bool,
     /// The default shell to use when printing command invocations.
     ///
     /// By default this is `bash` for unix-like environments and `powershell`
@@ -63,12 +66,12 @@ impl BatchOptions {
     ) -> Result<BatchConfig<'a, 'cx>> {
         let repo_path = cx.to_path(repo.path());
 
-        let shell = self.shell.unwrap_or_else(|| cx.os.shell());
+        let shell = self.shell.unwrap_or_else(|| cx.current_os.shell());
 
         let mut c = BatchConfig::new(cx, repo_path, shell);
 
         for &run_on in &self.run_on {
-            c.add_run_on(run_on.to_run_on())?;
+            c.add_run_on(run_on.to_run_on(), run_on.to_os(&cx.current_os))?;
         }
 
         if self.exposed {
@@ -99,6 +102,10 @@ impl BatchOptions {
             c.fix = true;
         }
 
+        if self.keep {
+            c.keep = true;
+        }
+
         Ok(c)
     }
 }
@@ -118,6 +125,14 @@ impl RunOnOption {
         match self {
             Self::Same => RunOn::Same,
             Self::Wsl => RunOn::Wsl(Distribution::Ubuntu),
+        }
+    }
+
+    /// Coerce into a [`Os`].
+    pub(super) fn to_os(self, current_os: &Os) -> Os {
+        match self {
+            Self::Same => current_os.clone(),
+            Self::Wsl => Os::Linux,
         }
     }
 }

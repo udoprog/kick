@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fmt;
 use std::fs;
 use std::io;
+use std::mem::take;
 use std::rc::Rc;
 use std::str;
 
@@ -508,8 +509,6 @@ impl<'a> WorkflowManifest<'a, '_> {
 
         let mut tree = self.cx.eval.tree().clone();
 
-        tree.insert(["runner", "os"], self.cx.os.as_tree_value());
-
         if let Some(auth) = self.cx.github_auth() {
             if let Some(owned) = RString::redacted(auth.as_secret()) {
                 tree.insert_prefix(["secrets"], vec![("GITHUB_TOKEN".to_owned(), owned)]);
@@ -760,27 +759,28 @@ impl<'a> Eval<'a> {
     }
 
     /// Evaluate a string with matrix variables.
-    pub(crate) fn eval<'s>(&self, s: &'s str) -> Result<Cow<'s, RStr>, ExprError> {
+    pub(crate) fn eval<'s>(&self, source: &'s str) -> Result<Cow<'s, RStr>, ExprError> {
         use std::fmt::Write;
 
-        let Some(i) = s.find("${{") else {
-            return Ok(Cow::Borrowed(RStr::new(s)));
+        let Some(i) = source.find("${{") else {
+            return Ok(Cow::Borrowed(RStr::new(source)));
         };
 
+        let (mut head, mut current) = source.split_at(i);
         let mut result = RString::new();
-        let (head, mut s) = s.split_at(i);
-        result.push_rstr(head);
+        let mut found = false;
 
         loop {
-            let Some(rest) = s.strip_prefix("${{") else {
-                let mut it = s.chars();
+            let Some(rest) = current.strip_prefix("${{") else {
+                let mut it = current.chars();
 
                 let Some(c) = it.next() else {
-                    break;
+                    return Ok(Cow::Owned(result));
                 };
 
+                result.push_rstr(take(&mut head));
                 result.push(c);
-                s = it.as_str();
+                current = it.as_str();
                 continue;
             };
 
@@ -793,7 +793,8 @@ impl<'a> Eval<'a> {
                 loop {
                     if level == 2 {
                         if let Some(o) = it.as_str().strip_prefix("}}") {
-                            s = o;
+                            current = o;
+                            found = true;
                             break 'expr &rest[..e];
                         };
                     }
@@ -811,13 +812,20 @@ impl<'a> Eval<'a> {
                     e += c.len_utf8();
                 }
 
-                result.push_rstr(s);
+                if !found {
+                    return Ok(Cow::Borrowed(RStr::new(source)));
+                }
+
+                result.push_rstr(take(&mut head));
+                result.push_rstr(current);
                 return Ok(Cow::Owned(result));
             };
 
+            result.push_rstr(take(&mut head));
+
             match self.expr(expr)? {
                 Expr::Array(..) => {}
-                Expr::String(s) => result.push_rstr(s.as_raw()),
+                Expr::String(s) => result.push_rstr(s.as_ref()),
                 Expr::Float(f) => {
                     write!(result, "{f}").map_err(|_| ExprError::FormatError)?;
                 }
@@ -827,8 +835,6 @@ impl<'a> Eval<'a> {
                 Expr::Null => {}
             }
         }
-
-        Ok(Cow::Owned(result))
     }
 
     pub(crate) fn expr<'expr>(&'expr self, source: &'expr str) -> Result<Expr<'expr>, ExprError> {

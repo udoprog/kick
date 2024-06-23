@@ -77,7 +77,7 @@ impl ActionRunners {
     pub(super) fn build(
         &self,
         batch: &BatchConfig<'_, '_>,
-        c: &ActionConfig,
+        c: &ActionConfig<'_>,
         uses: &RStr,
     ) -> Result<(Vec<Schedule>, Vec<Schedule>)> {
         let exposed = uses.to_exposed();
@@ -123,7 +123,14 @@ impl ActionRunners {
                 main.push(Schedule::Pop);
             }
             ActionKind::Composite { steps } => {
-                let commands = build_steps(action.id(), batch, steps, Some(action), Some(c))?;
+                let commands = build_steps(
+                    action.id(),
+                    c.action_name(),
+                    batch,
+                    steps,
+                    Some(action),
+                    Some(c),
+                )?;
                 main.extend(commands);
             }
         }

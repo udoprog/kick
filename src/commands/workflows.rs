@@ -76,9 +76,9 @@ impl<'a, 'cx> LoadedJobMatrix<'a, 'cx> {
     }
 
     /// Build a batch from the current job matrix.
-    pub(crate) fn build(&self, same_os: bool) -> Result<Batch> {
+    pub(crate) fn build(&self, same_os: bool, current_os: &Os) -> Result<Batch> {
         self.workflows
-            .build_batch(self.job_id, self.matrix, self.steps, same_os)
+            .build_batch(self.job_id, self.matrix, self.steps, same_os, current_os)
     }
 }
 
@@ -115,6 +115,7 @@ impl<'a, 'cx> LoadedWorkflows<'a, 'cx> {
         matrix: &Matrix,
         steps: &Steps,
         same_os: bool,
+        current_os: &Os,
     ) -> Result<Batch> {
         let runs_on = steps.runs_on.to_exposed();
 
@@ -125,17 +126,18 @@ impl<'a, 'cx> LoadedWorkflows<'a, 'cx> {
             _ => bail!("Unsupported runs-on directive: {}", steps.runs_on),
         };
 
-        let run_on = if same_os {
-            RunOn::Same
+        let (run_on, os) = if same_os {
+            (RunOn::Same, current_os.clone())
         } else {
-            RunOn::from_os(self.batch, &os, dist)?
+            (RunOn::from_os(self.batch, &os, dist)?, os)
         };
 
-        let commands = build_steps(job_id, self.batch, &steps.steps, None, None)?;
+        let commands = build_steps(job_id, None, self.batch, &steps.steps, None, None)?;
 
         Ok(Batch::new(
-            commands,
             run_on,
+            os,
+            commands,
             if !matrix.is_empty() {
                 Some(matrix.clone())
             } else {
