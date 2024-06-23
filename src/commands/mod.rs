@@ -26,7 +26,7 @@ mod env;
 use self::env::{new_env, Env};
 
 mod r#prepare;
-pub(crate) use self::r#prepare::Prepare;
+pub(crate) use self::r#prepare::Session;
 
 mod remediations;
 pub(crate) use self::remediations::Remediations;

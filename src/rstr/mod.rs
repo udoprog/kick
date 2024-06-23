@@ -448,6 +448,13 @@ cmp!(RString);
 cmp_str!(RStr);
 cmp_str!(RString);
 
+impl From<String> for Box<RStr> {
+    #[inline]
+    fn from(value: String) -> Self {
+        Box::from(RString::from(value))
+    }
+}
+
 impl From<RString> for Box<RStr> {
     #[inline]
     fn from(value: RString) -> Self {

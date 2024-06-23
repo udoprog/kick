@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::path::Path;
 use std::process::Stdio;
 use std::str;
 
@@ -14,7 +15,7 @@ const DEBIAN_WANTED: &[&str] = &["gcc", "nodejs"];
 const NODE_VERSION: u32 = 22;
 
 /// Preparations that need to be done before running a batch.
-pub(crate) struct Prepare {
+pub(crate) struct Session {
     /// WSL distributions that need to be available.
     pub(super) dists: BTreeSet<Distribution>,
     /// Loaded distributions.
@@ -23,9 +24,13 @@ pub(crate) struct Prepare {
     pub(super) actions: Actions,
     /// Runners associated with actions.
     runners: ActionRunners,
+    /// Files that should be removed at the end of the session.
+    remove_paths: Vec<Box<Path>>,
+    /// Unique sequence number.
+    sequence: u32,
 }
 
-impl Prepare {
+impl Session {
     /// Construct a new preparation.
     pub(crate) fn new() -> Self {
         Self {
@@ -33,7 +38,31 @@ impl Prepare {
             prepared_dists: BTreeSet::new(),
             actions: Actions::default(),
             runners: ActionRunners::default(),
+            remove_paths: Vec::new(),
+            sequence: 0,
         }
+    }
+
+    /// Access a unique sequence number.
+    pub(crate) fn sequence(&mut self) -> u32 {
+        let sequence = self.sequence;
+        self.sequence += 1;
+        sequence
+    }
+
+    /// Mark a file that should be removed.
+    pub(super) fn remove_path(&mut self, path: impl AsRef<Path>) {
+        self.remove_paths.push(Box::from(path.as_ref()));
+    }
+
+    /// Clean up any remaining temporary files.
+    pub(crate) fn cleanup(self) -> Result<()> {
+        for path in self.remove_paths {
+            tracing::trace!(?path, "Removing file");
+            _ = std::fs::remove_file(path);
+        }
+
+        Ok(())
     }
 
     /// Access actions to prepare.

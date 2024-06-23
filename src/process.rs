@@ -17,18 +17,6 @@ enum OsArgKind {
     Str(Box<str>),
     OsStr(Box<OsStr>),
     RStr(Box<RStr>),
-    /// An argument which is bash-argument escaped. For some reason, bash
-    /// processes raw `$` in input arguments to `-c`. To avoid these from being
-    /// evaluated, we have to escape them.
-    ///
-    /// If you don't believe me, try this:
-    ///
-    /// ```sh
-    /// echo "echo $HOME"
-    /// echo 'echo $HOME'
-    /// bash -c 'echo $HOME'
-    /// ```
-    BashEscape(Box<RStr>),
 }
 
 /// A wrapper type that can losslessly represent many types which can be
@@ -39,27 +27,12 @@ pub(crate) struct OsArg {
 }
 
 impl OsArg {
-    /// Construct a bash escape os argument.
-    pub(crate) fn bash_escape(value: impl AsRef<RStr>) -> Self {
-        Self {
-            kind: OsArgKind::BashEscape(Box::from(value.as_ref())),
-        }
-    }
-
     pub(crate) fn to_string_lossy(&self) -> Cow<'_, str> {
         match &self.kind {
             OsArgKind::Path(p) => p.to_string_lossy(),
             OsArgKind::Str(p) => Cow::Borrowed(p.as_ref()),
             OsArgKind::OsStr(s) => s.to_string_lossy(),
             OsArgKind::RStr(s) => Cow::Owned(s.to_string()),
-            OsArgKind::BashEscape(s) => {
-                let value = s.to_string_lossy();
-
-                match bash_escape(value.as_ref()) {
-                    Cow::Owned(value) => Cow::Owned(value),
-                    Cow::Borrowed(..) => return value,
-                }
-            }
         }
     }
 
@@ -69,14 +42,6 @@ impl OsArg {
             OsArgKind::Str(p) => Cow::Borrowed(p.as_ref()),
             OsArgKind::OsStr(s) => s.to_string_lossy(),
             OsArgKind::RStr(s) => s.to_exposed(),
-            OsArgKind::BashEscape(s) => {
-                let value = s.to_string_lossy();
-
-                match bash_escape(value.as_ref()) {
-                    Cow::Owned(value) => Cow::Owned(value),
-                    Cow::Borrowed(..) => value,
-                }
-            }
         }
     }
 
@@ -90,17 +55,6 @@ impl OsArg {
                 Cow::Owned(value) => Cow::Owned(OsString::from(value)),
                 Cow::Borrowed(value) => Cow::Borrowed(OsStr::new(value)),
             },
-            OsArgKind::BashEscape(value) => {
-                let value = value.to_exposed();
-
-                match bash_escape(value.as_ref()) {
-                    Cow::Owned(value) => Cow::Owned(OsString::from(value)),
-                    Cow::Borrowed(..) => match value {
-                        Cow::Owned(value) => Cow::Owned(OsString::from(value)),
-                        Cow::Borrowed(value) => Cow::Borrowed(OsStr::new(value)),
-                    },
-                }
-            }
         }
     }
 }
@@ -112,7 +66,6 @@ impl fmt::Debug for OsArg {
             OsArgKind::Str(s) => s.fmt(f),
             OsArgKind::OsStr(s) => s.fmt(f),
             OsArgKind::RStr(s) => s.fmt(f),
-            OsArgKind::BashEscape(s) => s.fmt(f),
         }
     }
 }
@@ -431,25 +384,4 @@ impl fmt::Display for Display<'_> {
 
         Ok(())
     }
-}
-
-fn bash_escape(s: &str) -> Cow<'_, str> {
-    let Some(at) = s.find('$') else {
-        return Cow::Borrowed(s);
-    };
-
-    let mut escaped = String::with_capacity(s.len() + 2);
-
-    let (head, tail) = s.split_at(at);
-
-    escaped.push_str(head);
-
-    for c in tail.chars() {
-        match c {
-            '$' => escaped.push_str(r"\$"),
-            _ => escaped.push(c),
-        }
-    }
-
-    Cow::Owned(escaped)
 }

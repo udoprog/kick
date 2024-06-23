@@ -5,7 +5,7 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use termcolor::{ColorChoice, StandardStream};
 
-use crate::commands::{Batch, BatchOptions, Prepare};
+use crate::commands::{Batch, BatchOptions, Session};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 
@@ -159,11 +159,12 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
         batches.push(Batch::command(command, args));
     }
 
-    let mut prepare = Prepare::new();
+    let mut session = Session::new();
 
     for batch in batches {
-        batch.commit(o, &c, &mut prepare)?;
+        batch.commit(o, &c, &mut session)?;
     }
 
+    session.cleanup()?;
     Ok(())
 }

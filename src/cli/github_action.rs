@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use termcolor::{ColorChoice, StandardStream};
 
-use crate::commands::{ActionConfig, BatchOptions, Prepare};
+use crate::commands::{ActionConfig, BatchOptions, Session};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::rstr::{RStr, RString};
@@ -54,7 +54,8 @@ fn action(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Re
 
     let batch = action.new_use_batch(&c, id)?;
 
-    let mut prepare = Prepare::new();
-    batch.commit(o, &c, &mut prepare)?;
+    let mut session = Session::new();
+    batch.commit(o, &c, &mut session)?;
+    session.cleanup()?;
     Ok(())
 }

@@ -5,8 +5,8 @@ use anyhow::Result;
 use crate::workflows::Step;
 
 use super::{
-    new_env, ActionConfig, ActionRunner, BatchConfig, Prepare, ScheduleBasicCommand,
-    ScheduleNodeAction, ScheduleRun, ScheduleStaticSetup, ScheduleUse,
+    new_env, ActionConfig, ActionRunner, BatchConfig, ScheduleBasicCommand, ScheduleNodeAction,
+    ScheduleRun, ScheduleStaticSetup, ScheduleUse, Session,
 };
 
 /// A scheduled action.
@@ -23,10 +23,10 @@ pub(super) enum Schedule {
 
 impl Schedule {
     /// Add a preparation which matches the given schedule.
-    pub(super) fn prepare(&self, prepare: &mut Prepare) -> Result<()> {
+    pub(super) fn prepare(&self, session: &mut Session) -> Result<()> {
         match self {
             Schedule::Use(u) => {
-                prepare.actions_mut().insert_action(u.uses())?;
+                session.actions_mut().insert_action(u.uses())?;
                 Ok(())
             }
             _ => Ok(()),

@@ -7,7 +7,7 @@ use termcolor::WriteColor;
 use crate::rstr::RStr;
 use crate::workflows::Tree;
 
-use super::{BatchConfig, Prepare, Run, Schedule};
+use super::{BatchConfig, Run, Schedule, Session};
 
 pub(super) struct Scheduler {
     stack: Vec<Tree>,
@@ -73,17 +73,17 @@ impl Scheduler {
         &mut self,
         o: &mut O,
         batch: &BatchConfig<'_, '_>,
-        prepare: &mut Prepare,
+        session: &mut Session,
     ) -> Result<Option<Run>>
     where
         O: ?Sized + WriteColor,
     {
         while let Some(schedule) = self.next_schedule() {
-            schedule.prepare(prepare)?;
+            schedule.prepare(session)?;
 
             // This will take care to synchronize any actions which are needed
             // to advance the scheduler.
-            let remediations = prepare.prepare(batch)?;
+            let remediations = session.prepare(batch)?;
 
             if !remediations.is_empty() {
                 if !batch.fix {
@@ -118,7 +118,7 @@ impl Scheduler {
                     return Ok(Some(run));
                 }
                 Schedule::Use(u) => {
-                    let group = u.build(batch, self.tree(), prepare.runners())?;
+                    let group = u.build(batch, self.tree(), session.runners())?;
 
                     for run in group.main.into_iter().rev() {
                         self.main.push_front(run);

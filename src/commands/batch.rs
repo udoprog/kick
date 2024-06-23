@@ -14,13 +14,13 @@ use termcolor::WriteColor;
 
 use crate::config::Os;
 use crate::process::{Command, OsArg};
-use crate::rstr::{RStr, RString};
+use crate::rstr::RStr;
 use crate::shell::Shell;
 use crate::workflows::{Matrix, Step};
 
 use super::{
-    new_env, ActionConfig, BatchConfig, Prepare, Run, RunKind, RunOn, Schedule,
-    ScheduleBasicCommand, ScheduleUse, Scheduler,
+    new_env, ActionConfig, BatchConfig, Run, RunKind, RunOn, Schedule, ScheduleBasicCommand,
+    ScheduleUse, Scheduler, Session,
 };
 
 const WINDOWS_BASH_MESSAGE: &str = r#"Bash is not installed by default on Windows!
@@ -88,7 +88,7 @@ impl Batch {
         self,
         o: &mut O,
         batch: &BatchConfig<'_, '_>,
-        prepare: &mut Prepare,
+        session: &mut Session,
     ) -> Result<()>
     where
         O: ?Sized + WriteColor,
@@ -97,7 +97,7 @@ impl Batch {
 
         for run_on in self.runners(&batch.run_on) {
             if let RunOn::Wsl(dist) = run_on {
-                prepare.dists.insert(dist);
+                session.dists.insert(dist);
             }
 
             write!(o, "# In ")?;
@@ -130,7 +130,7 @@ impl Batch {
 
             let mut step = 0usize;
 
-            while let Some(run) = scheduler.advance(o, batch, prepare)? {
+            while let Some(run) = scheduler.advance(o, batch, session)? {
                 let modified;
 
                 let path = match &run.working_directory {
@@ -178,15 +178,9 @@ impl Batch {
 
                         let mut command;
                         let wslenv;
-                        let kick_script_file;
 
-                        (
-                            command,
-                            wslenv,
-                            kick_script_file,
-                            script_file,
-                            script_source,
-                        ) = setup_wsl(&run, env_keys.map(String::as_str));
+                        (command, wslenv, script_file, script_source) =
+                            setup_wsl(&run, env_keys.map(String::as_str));
 
                         run_command = wsl.shell(path, dist);
                         run_command.arg(&command.command);
@@ -201,13 +195,62 @@ impl Batch {
                             run_command.env("WSLENV", wslenv);
                         }
 
-                        if let Some(kick_script_file) = kick_script_file {
-                            run_command.env("KICK_SCRIPT_FILE", kick_script_file);
-                        }
-
                         display_command = Some(command);
                     }
                 };
+
+                if let Some(script_file) = script_file {
+                    let script_path = match script_file.kind {
+                        ScriptFileKind::Inline { contents, ext } => {
+                            let cache_dir = batch
+                                .cx
+                                .paths
+                                .project_dirs
+                                .as_ref()
+                                .context("Missing project directories")?
+                                .cache_dir();
+
+                            let scripts_dir = cache_dir.join("scripts");
+
+                            fs::create_dir_all(&scripts_dir).with_context(|| {
+                                anyhow!(
+                                    "Failed to create scripts directory: {}",
+                                    scripts_dir.display()
+                                )
+                            })?;
+
+                            let sequence = session.sequence();
+
+                            let script_path = scripts_dir.join(format!("kick-{sequence}.{}", ext));
+
+                            if !batch.dry_run {
+                                let contents = contents.to_exposed();
+
+                                fs::write(&script_path, contents.as_bytes()).with_context(
+                                    || {
+                                        anyhow!(
+                                            "Failed to write script file: {}",
+                                            script_path.display()
+                                        )
+                                    },
+                                )?;
+
+                                session.remove_path(&script_path);
+                            }
+
+                            Rc::from(script_path)
+                        }
+                        ScriptFileKind::Existing { path } => path.clone(),
+                    };
+
+                    if let Some(variable) = script_file.variable {
+                        run_command.env(variable, script_path.clone());
+                    }
+
+                    if script_file.argument {
+                        run_command.arg(script_path.clone());
+                    }
+                }
 
                 if !paths.is_empty() || !scheduler.paths().is_empty() {
                     let current_path = env::var_os("PATH").unwrap_or_default();
@@ -430,7 +473,7 @@ where
 
 fn parse_key_values(contents: &[u8]) -> Result<Vec<(String, String)>> {
     process_lines(contents, |line| {
-        let (key, value) = line.split_once("=")?;
+        let (key, value) = line.split_once('=')?;
 
         let key = key.trim();
         let value = value.trim();
@@ -482,14 +525,42 @@ where
     Ok(out)
 }
 
+enum ScriptFileKind {
+    Inline {
+        contents: Box<RStr>,
+        ext: &'static str,
+    },
+    Existing {
+        path: Rc<Path>,
+    },
+}
+
 struct ScriptFile {
-    contents: Box<RStr>,
-    ext: &'static str,
+    variable: Option<&'static str>,
+    argument: bool,
+    kind: ScriptFileKind,
 }
 
 impl ScriptFile {
-    fn new(contents: Box<RStr>, ext: &'static str) -> Self {
-        Self { contents, ext }
+    fn inline(
+        variable: Option<&'static str>,
+        argument: bool,
+        contents: Box<RStr>,
+        ext: &'static str,
+    ) -> Self {
+        Self {
+            variable,
+            argument,
+            kind: ScriptFileKind::Inline { contents, ext },
+        }
+    }
+
+    fn path(variable: Option<&'static str>, argument: bool, path: Rc<Path>) -> Self {
+        Self {
+            variable,
+            argument,
+            kind: ScriptFileKind::Existing { path },
+        }
     }
 }
 
@@ -520,10 +591,8 @@ fn setup_same<'a>(
                 };
 
                 let mut c = bash.command(path);
-                c.args(["-i", "-c"]);
-                c.arg(OsArg::bash_escape(script.as_ref()));
-
-                let script_file = ScriptFile::new(script.clone(), "bash");
+                c.args(["-i"]);
+                let script_file = ScriptFile::inline(None, true, script.clone(), "bash");
                 Ok((c, &bash.paths, Some(script_file)))
             }
         },
@@ -549,16 +618,9 @@ fn setup_same<'a>(
 fn setup_wsl<'a>(
     run: &Run,
     env: impl IntoIterator<Item = &'a str>,
-) -> (
-    Command,
-    String,
-    Option<Rc<Path>>,
-    Option<ScriptFile>,
-    Option<RString>,
-) {
+) -> (Command, String, Option<ScriptFile>, Option<Box<RStr>>) {
     let mut seen = HashSet::new();
     let mut wslenv = String::new();
-    let mut kick_script_file = None;
     let mut script_file = None;
     let mut script_source = None;
 
@@ -571,15 +633,18 @@ fn setup_wsl<'a>(
                 c.args(["-Command"]);
                 c.arg(script);
 
-                script_source = Some(script.as_ref().to_owned());
+                script_source = Some(script.clone());
             }
             Shell::Bash => {
                 c = Command::new("bash");
-                c.args(["-i", "-c"]);
-                c.arg(OsArg::bash_escape(script));
-                script_source = Some(script.as_ref().to_owned());
-                wslenv.push_str("KICK_SCRIPT_FILE/p");
-                script_file = Some(ScriptFile::new(script.clone(), "bash"));
+                c.args(["-i", "$KICK_SCRIPT_FILE"]);
+                script_file = Some(ScriptFile::inline(
+                    Some("KICK_SCRIPT_FILE"),
+                    false,
+                    script.clone(),
+                    "bash",
+                ));
+                script_source = Some(script.clone());
             }
         },
         RunKind::Command { command, args } => {
@@ -591,14 +656,16 @@ fn setup_wsl<'a>(
             ..
         } => {
             c = Command::new("bash");
-            c.args(["-i", "-c", "node \\$KICK_SCRIPT_FILE"]);
-            wslenv.push_str("KICK_SCRIPT_FILE/p");
-            kick_script_file = Some(node_script_file.clone());
-            script_source = Some(format!("node {}", node_script_file.display()).into());
-            script_file = Some(ScriptFile::new(
-                Box::from(RStr::new("node $KICK_SCRIPT_FILE")),
-                "js",
+            c.args(["-i", "-c", "exec node $KICK_SCRIPT_FILE"]);
+            script_file = Some(ScriptFile::path(
+                Some("KICK_SCRIPT_FILE"),
+                false,
+                node_script_file.clone(),
             ));
+            script_source = Some(Box::<RStr>::from(format!(
+                "node {}",
+                node_script_file.display()
+            )));
         }
     }
 
@@ -618,15 +685,20 @@ fn setup_wsl<'a>(
         }
     }
 
-    if kick_script_file.is_some() || script_file.is_some() {
+    if let Some(ScriptFile {
+        variable: Some(variable),
+        ..
+    }) = &script_file
+    {
         if !wslenv.is_empty() {
             wslenv.push(':');
         }
 
-        wslenv.push_str("KICK_SCRIPT_FILE/p");
+        wslenv.push_str(variable);
+        wslenv.push_str("/p");
     }
 
-    (c, wslenv, kick_script_file, script_file, script_source)
+    (c, wslenv, script_file, script_source)
 }
 
 fn translate_path_to_windows(path: &str) -> Result<String> {
