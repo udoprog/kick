@@ -15,6 +15,7 @@ use super::{Colors, LoadedWorkflows, RunOn};
 /// A batch runner configuration.
 pub(crate) struct BatchConfig<'a, 'cx> {
     pub(super) cx: &'a Ctxt<'cx>,
+    pub(super) process_id: u32,
     pub(super) path: PathBuf,
     pub(super) shell: Shell,
     pub(super) colors: Colors,
@@ -31,11 +32,12 @@ pub(crate) struct BatchConfig<'a, 'cx> {
 
 impl<'a, 'cx> BatchConfig<'a, 'cx> {
     /// Construct a new batch configuration.
-    pub(crate) fn new(cx: &'a Ctxt<'cx>, repo_path: PathBuf, shell: Shell) -> Self {
+    pub(crate) fn new(cx: &'a Ctxt<'cx>, path: PathBuf, shell: Shell) -> Self {
         Self {
             cx,
-            path: repo_path,
+            path,
             shell,
+            process_id: std::process::id(),
             colors: Colors::new(),
             env: BTreeMap::new(),
             env_passthrough: BTreeSet::new(),

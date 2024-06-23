@@ -220,11 +220,13 @@ impl Batch {
                             })?;
 
                             let sequence = session.sequence();
+                            let process_id = batch.process_id;
 
-                            let script_path =
-                                scripts_dir.join(format!("kick-{id}-{sequence}.{}", ext));
+                            let script_path = scripts_dir
+                                .join(format!("kick-{id}-{process_id}-{sequence}.{}", ext));
 
                             if !batch.dry_run {
+                                tracing::trace!(?script_path, "Writing temporary script");
                                 let contents = contents.to_exposed();
 
                                 fs::write(&script_path, contents.as_bytes()).with_context(
