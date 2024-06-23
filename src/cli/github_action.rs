@@ -56,6 +56,5 @@ fn action(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Re
 
     let mut session = Session::new();
     batch.commit(o, &c, &mut session)?;
-    session.cleanup()?;
     Ok(())
 }

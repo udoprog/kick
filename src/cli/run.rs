@@ -165,6 +165,5 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
         batch.commit(o, &c, &mut session)?;
     }
 
-    session.cleanup()?;
     Ok(())
 }

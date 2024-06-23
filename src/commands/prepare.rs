@@ -55,19 +55,14 @@ impl Session {
         self.remove_paths.push(Box::from(path.as_ref()));
     }
 
-    /// Clean up any remaining temporary files.
-    pub(crate) fn cleanup(self) -> Result<()> {
-        for path in self.remove_paths {
-            tracing::trace!(?path, "Removing file");
-            _ = std::fs::remove_file(path);
-        }
-
-        Ok(())
-    }
-
     /// Access actions to prepare.
     pub(super) fn actions_mut(&mut self) -> &mut Actions {
         &mut self.actions
+    }
+
+    /// Access prepared runners, if they are available.
+    pub(crate) fn runners(&self) -> &ActionRunners {
+        &self.runners
     }
 
     /// Run all preparations.
@@ -212,8 +207,17 @@ impl Session {
         Ok(suggestions)
     }
 
-    /// Access prepared runners, if they are available.
-    pub(crate) fn runners(&self) -> &ActionRunners {
-        &self.runners
+    /// Clean up any remaining temporary files.
+    fn cleanup(&mut self) {
+        for path in self.remove_paths.drain(..) {
+            tracing::trace!(?path, "Removing file");
+            _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.cleanup();
     }
 }
