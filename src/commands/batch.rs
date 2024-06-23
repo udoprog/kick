@@ -201,7 +201,7 @@ impl Batch {
 
                 if let Some(script_file) = script_file {
                     let script_path = match script_file.kind {
-                        ScriptFileKind::Inline { contents, ext } => {
+                        ScriptFileKind::Inline { id, contents, ext } => {
                             let cache_dir = batch
                                 .cx
                                 .paths
@@ -221,7 +221,8 @@ impl Batch {
 
                             let sequence = session.sequence();
 
-                            let script_path = scripts_dir.join(format!("kick-{sequence}.{}", ext));
+                            let script_path =
+                                scripts_dir.join(format!("kick-{id}-{sequence}.{}", ext));
 
                             if !batch.dry_run {
                                 let contents = contents.to_exposed();
@@ -527,6 +528,7 @@ where
 
 enum ScriptFileKind {
     Inline {
+        id: Box<str>,
         contents: Box<RStr>,
         ext: &'static str,
     },
@@ -545,13 +547,14 @@ impl ScriptFile {
     fn inline(
         variable: Option<&'static str>,
         argument: bool,
+        id: Box<str>,
         contents: Box<RStr>,
         ext: &'static str,
     ) -> Self {
         Self {
             variable,
             argument,
-            kind: ScriptFileKind::Inline { contents, ext },
+            kind: ScriptFileKind::Inline { id, contents, ext },
         }
     }
 
@@ -570,7 +573,7 @@ fn setup_same<'a>(
     run: &Run,
 ) -> Result<(Command, &'a [PathBuf], Option<ScriptFile>)> {
     match &run.run {
-        RunKind::Shell { script, shell } => match shell {
+        RunKind::Shell { id, script, shell } => match shell {
             Shell::Powershell => {
                 let Some(powershell) = c.cx.system.powershell.first() else {
                     bail!("PowerShell not available");
@@ -592,7 +595,8 @@ fn setup_same<'a>(
 
                 let mut c = bash.command(path);
                 c.args(["-i"]);
-                let script_file = ScriptFile::inline(None, true, script.clone(), "bash");
+                let script_file =
+                    ScriptFile::inline(None, true, id.clone(), script.clone(), "bash");
                 Ok((c, &bash.paths, Some(script_file)))
             }
         },
@@ -627,7 +631,7 @@ fn setup_wsl<'a>(
     let mut c;
 
     match &run.run {
-        RunKind::Shell { script, shell } => match shell {
+        RunKind::Shell { id, script, shell } => match shell {
             Shell::Powershell => {
                 c = Command::new("powershell");
                 c.args(["-Command"]);
@@ -641,6 +645,7 @@ fn setup_wsl<'a>(
                 script_file = Some(ScriptFile::inline(
                     Some("KICK_SCRIPT_FILE"),
                     false,
+                    id.clone(),
                     script.clone(),
                     "bash",
                 ));

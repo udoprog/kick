@@ -9,6 +9,7 @@ use crate::shell::Shell;
 
 pub(super) enum RunKind {
     Shell {
+        id: Box<str>,
         script: Box<RStr>,
         shell: Shell,
     },
@@ -55,8 +56,9 @@ impl Run {
     }
 
     /// Setup a script to run.
-    pub(super) fn script(script: impl Into<Box<RStr>>, shell: Shell) -> Self {
+    pub(super) fn script(id: impl AsRef<str>, script: impl Into<Box<RStr>>, shell: Shell) -> Self {
         Self::with_run(RunKind::Shell {
+            id: id.as_ref().into(),
             script: script.into(),
             shell,
         })

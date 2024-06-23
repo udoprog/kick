@@ -48,6 +48,7 @@ impl<'a, 'cx> LoadedJob<'a, 'cx> {
             .matrices
             .iter()
             .map(|(matrix, steps)| LoadedJobMatrix {
+                job_id: &self.job.id,
                 workflows: self.workflows,
                 matrix,
                 steps,
@@ -57,6 +58,7 @@ impl<'a, 'cx> LoadedJob<'a, 'cx> {
 
 /// A single loaded job.
 pub(crate) struct LoadedJobMatrix<'a, 'cx> {
+    job_id: &'a str,
     workflows: &'a LoadedWorkflows<'a, 'cx>,
     matrix: &'a Matrix,
     steps: &'a Steps,
@@ -75,7 +77,8 @@ impl<'a, 'cx> LoadedJobMatrix<'a, 'cx> {
 
     /// Build a batch from the current job matrix.
     pub(crate) fn build(&self, same_os: bool) -> Result<Batch> {
-        self.workflows.build_batch(self.matrix, self.steps, same_os)
+        self.workflows
+            .build_batch(self.job_id, self.matrix, self.steps, same_os)
     }
 }
 
@@ -108,6 +111,7 @@ impl<'a, 'cx> LoadedWorkflows<'a, 'cx> {
     /// Add jobs from a workflows, matrix, and associated steps.
     pub(super) fn build_batch(
         &self,
+        job_id: &str,
         matrix: &Matrix,
         steps: &Steps,
         same_os: bool,
@@ -127,7 +131,7 @@ impl<'a, 'cx> LoadedWorkflows<'a, 'cx> {
             RunOn::from_os(self.batch, &os, dist)?
         };
 
-        let commands = build_steps(self.batch, &steps.steps, None, None)?;
+        let commands = build_steps(job_id, self.batch, &steps.steps, None, None)?;
 
         Ok(Batch::new(
             commands,

@@ -12,7 +12,7 @@ use super::{build_steps, new_env, ActionConfig, BatchConfig, Schedule, ScheduleN
 
 #[derive(Debug)]
 pub(super) struct ActionRunner {
-    id: String,
+    id: Box<str>,
     kind: ActionKind,
     defaults: BTreeMap<String, String>,
     action_path: Rc<Path>,
@@ -21,7 +21,7 @@ pub(super) struct ActionRunner {
 
 impl ActionRunner {
     pub(super) fn new(
-        id: String,
+        id: Box<str>,
         kind: ActionKind,
         defaults: BTreeMap<String, String>,
         action_path: Rc<Path>,
@@ -82,21 +82,21 @@ impl ActionRunners {
     ) -> Result<(Vec<Schedule>, Vec<Schedule>)> {
         let exposed = uses.to_exposed();
 
-        let Some(runner) = self.runners.get(exposed.as_ref()) else {
+        let Some(action) = self.runners.get(exposed.as_ref()) else {
             bail!("Could not find action runner for {uses}");
         };
 
         let mut main = Vec::new();
         let mut post = Vec::new();
 
-        match &runner.kind {
+        match &action.kind {
             ActionKind::Node {
                 main_path,
                 post_path,
                 node_version,
             } => {
                 let id = c.id().map(RStr::as_rc);
-                let (env, _) = new_env(batch, Some(runner), Some(c))?;
+                let (env, _) = new_env(batch, Some(action), Some(c))?;
 
                 if let Some(path) = post_path {
                     post.push(Schedule::Push);
@@ -123,7 +123,7 @@ impl ActionRunners {
                 main.push(Schedule::Pop);
             }
             ActionKind::Composite { steps } => {
-                let commands = build_steps(batch, steps, Some(runner), Some(c))?;
+                let commands = build_steps(action.id(), batch, steps, Some(action), Some(c))?;
                 main.extend(commands);
             }
         }

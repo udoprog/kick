@@ -36,6 +36,7 @@ impl Schedule {
 
 /// Add jobs from a workflows, matrix, and associated steps.
 pub(super) fn build_steps(
+    job_id: &str,
     batch: &BatchConfig<'_, '_>,
     steps: &[Step],
     runner: Option<&ActionRunner>,
@@ -48,14 +49,15 @@ pub(super) fn build_steps(
     if !steps.is_empty() {
         commands.push(Schedule::Push);
 
-        for step in steps {
+        for (index, step) in steps.iter().enumerate() {
             let mut tree = tree.clone();
             tree.extend(&step.tree);
             let tree = Rc::new(tree);
 
             if let Some(run) = &step.run {
                 commands.push(Schedule::Run(ScheduleRun::new(
-                    run.clone(),
+                    format!("{}-{}", job_id, index).into(),
+                    Box::from(run.as_str()),
                     step.clone(),
                     tree.clone(),
                     env.clone(),

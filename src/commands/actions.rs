@@ -152,7 +152,7 @@ fn sync_action(
                     write_id(&id_path, id)?;
                 }
 
-                found = Some((kind, action, id, export));
+                found = Some((kind, action, export));
             }
         }
         Err(error) => {
@@ -168,10 +168,10 @@ fn sync_action(
 
         // Load an action runner directly out of a repository without checking it out.
         let (kind, action) = crate::action::load(&r, &cx.eval, id)?;
-        found = Some((kind, action, id, false));
+        found = Some((kind, action, false));
     }
 
-    let (kind, action, id, export) = found.context("No action found")?;
+    let (kind, action, export) = found.context("No action found")?;
 
     tracing::debug!(export, "Loading runner");
 
@@ -181,7 +181,7 @@ fn sync_action(
         .with_context(|| anyhow!("Failed to create envs directory: {}", state_dir.display()))?;
 
     let runner = ActionRunner::new(
-        id.to_string(),
+        format!("{repo}-{name}-{version}").into(),
         action.kind,
         action.defaults,
         Rc::from(work_dir),

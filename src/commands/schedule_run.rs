@@ -11,16 +11,24 @@ use super::{Env, Run};
 
 #[derive(Clone)]
 pub(crate) struct ScheduleRun {
-    run: String,
+    id: Box<str>,
+    script: Box<str>,
     step: Step,
     tree: Rc<Tree>,
     env: Env,
 }
 
 impl ScheduleRun {
-    pub(super) fn new(run: String, step: Step, tree: Rc<Tree>, env: Env) -> Self {
+    pub(super) fn new(
+        id: Box<str>,
+        script: Box<str>,
+        step: Step,
+        tree: Rc<Tree>,
+        env: Env,
+    ) -> Self {
         Self {
-            run,
+            id,
+            script,
             step,
             tree,
             env,
@@ -48,7 +56,7 @@ impl ScheduleRun {
             }
         }
 
-        let script = eval.eval(&self.run)?;
+        let script = eval.eval(&self.script)?;
 
         let shell = self.step.shell.as_ref().map(|v| eval.eval(v)).transpose()?;
         let shell = to_shell(shell.as_deref())?;
@@ -63,7 +71,7 @@ impl ScheduleRun {
             .map(|v| Ok::<_, anyhow::Error>(eval.eval(v)?.into_owned()))
             .transpose()?;
 
-        let run = Run::script(script.as_ref(), shell)
+        let run = Run::script(self.id, script.as_ref(), shell)
             .with_id(id.map(Cow::into_owned))
             .with_name(name.as_deref())
             .with_env(env)

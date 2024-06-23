@@ -103,12 +103,13 @@ pub(super) fn new_env(
     let mut file_env = BTreeMap::new();
 
     if let Some(runner) = runner {
-        env_file = Rc::<Path>::from(runner.state_dir().join(format!("env-{}", runner.id())));
-        output_file = Rc::<Path>::from(runner.state_dir().join(format!("output-{}", runner.id())));
-        path_file = Rc::<Path>::from(runner.state_dir().join(format!("path-{}", runner.id())));
-        tools_path = Some(Rc::<Path>::from(
-            runner.state_dir().join(format!("tools-{}", runner.id())),
-        ));
+        let base = runner.state_dir();
+        let id = runner.id();
+
+        env_file = Rc::<Path>::from(base.join(format!("{id}-env")));
+        output_file = Rc::<Path>::from(base.join(format!("{id}-output")));
+        path_file = Rc::<Path>::from(base.join(format!("{id}-path")));
+        tools_path = Some(Rc::<Path>::from(base.join(format!("{id}-tools"))));
 
         file_env.insert(
             String::from("GITHUB_ACTION_PATH"),
