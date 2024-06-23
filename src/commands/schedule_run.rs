@@ -13,7 +13,7 @@ use super::{Env, Run};
 pub(crate) struct ScheduleRun {
     id: Box<str>,
     script: Box<str>,
-    step: Step,
+    step: Rc<Step>,
     tree: Rc<Tree>,
     env: Env,
 }
@@ -22,7 +22,7 @@ impl ScheduleRun {
     pub(super) fn new(
         id: Box<str>,
         script: Box<str>,
-        step: Step,
+        step: Rc<Step>,
         tree: Rc<Tree>,
         env: Env,
     ) -> Self {

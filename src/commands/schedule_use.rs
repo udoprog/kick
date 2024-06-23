@@ -25,14 +25,14 @@ fn should_skip_use(uses: &str) -> bool {
 
 #[derive(Clone)]
 pub(crate) struct ScheduleUse {
-    uses: RString,
-    step: Step,
+    uses: Rc<RStr>,
+    step: Rc<Step>,
     tree: Rc<Tree>,
     env: Env,
 }
 
 impl ScheduleUse {
-    pub(super) fn new(uses: RString, step: Step, tree: Rc<Tree>, env: Env) -> Self {
+    pub(super) fn new(uses: Rc<RStr>, step: Rc<Step>, tree: Rc<Tree>, env: Env) -> Self {
         Self {
             uses,
             step,
@@ -83,48 +83,8 @@ impl ScheduleUse {
             .map(|(k, v)| Ok((k.clone(), eval.eval(v)?.into_owned())))
             .collect::<Result<BTreeMap<_, _>>>()?;
 
-        if let Some(rust_toolchain) = rust_toolchain(&self.uses, &with)? {
-            main.push(Schedule::Push);
-
-            if rust_toolchain.components.is_some() || rust_toolchain.targets.is_some() {
-                let mut args = vec![
-                    RString::from("toolchain"),
-                    RString::from("install"),
-                    RString::from(rust_toolchain.version),
-                ];
-
-                if let Some(c) = rust_toolchain.components {
-                    args.push(RString::from("-c"));
-                    args.push(RString::from(c));
-                }
-
-                if let Some(t) = rust_toolchain.targets {
-                    args.push(RString::from("-t"));
-                    args.push(RString::from(t));
-                }
-
-                args.extend([
-                    RString::from("--profile"),
-                    RString::from("minimal"),
-                    RString::from("--no-self-update"),
-                ]);
-
-                main.push(Schedule::StaticSetup(ScheduleStaticSetup {
-                    command: "rustup",
-                    args: args.clone(),
-                    name: "install toolchain",
-                    skipped: skipped.clone(),
-                }));
-            }
-
-            main.push(Schedule::StaticSetup(ScheduleStaticSetup {
-                command: "rustup",
-                args: vec![RString::from("default"), rust_toolchain.version.to_owned()],
-                name: "set default rust version",
-                skipped: skipped.clone(),
-            }));
-
-            main.push(Schedule::Pop);
+        if builtin_action(&self.uses, &with, skipped.as_deref(), &mut main)? {
+            return Ok(RunGroup { main, post });
         }
 
         let uses_exposed = self.uses.to_exposed();
@@ -157,38 +117,130 @@ pub(super) struct RunGroup {
 
 struct RustToolchain<'a> {
     version: &'a RStr,
-    components: Option<&'a RStr>,
+    components: Option<Cow<'a, RStr>>,
     targets: Option<&'a RStr>,
+}
+
+fn builtin_action(
+    uses: &RStr,
+    with: &BTreeMap<String, RString>,
+    skipped: Option<&str>,
+    main: &mut Vec<Schedule>,
+) -> Result<bool> {
+    let Some((head, version)) = uses.split_once('@') else {
+        return Ok(false);
+    };
+
+    let Some((user, repo)) = head.split_once('/') else {
+        return Ok(false);
+    };
+
+    if let Some(rust_toolchain) = rust_toolchain(user, repo, version, with)? {
+        main.push(Schedule::Push);
+
+        if rust_toolchain.components.is_some() || rust_toolchain.targets.is_some() {
+            let mut args = vec![
+                RString::from("toolchain"),
+                RString::from("install"),
+                RString::from(rust_toolchain.version),
+            ];
+
+            if let Some(c) = rust_toolchain.components.as_deref() {
+                args.push(RString::from("-c"));
+                args.push(RString::from(c));
+            }
+
+            if let Some(t) = rust_toolchain.targets {
+                args.push(RString::from("-t"));
+                args.push(RString::from(t));
+            }
+
+            args.extend([
+                RString::from("--profile"),
+                RString::from("minimal"),
+                RString::from("--no-self-update"),
+            ]);
+
+            main.push(Schedule::StaticSetup(ScheduleStaticSetup::new(
+                "rustup",
+                "install toolchain",
+                args.clone(),
+                skipped.map(str::to_owned),
+            )));
+        }
+
+        main.push(Schedule::StaticSetup(ScheduleStaticSetup::new(
+            "rustup",
+            "set default rust version",
+            vec![RString::from("default"), rust_toolchain.version.to_owned()],
+            skipped.map(str::to_owned),
+        )));
+
+        main.push(Schedule::Pop);
+        return Ok(true);
+    }
+
+    Ok(false)
 }
 
 /// Extract a rust version from a `rust-toolchain` job.
 fn rust_toolchain<'a>(
-    uses: &'a RStr,
+    user: &'a RStr,
+    repo: &'a RStr,
+    version: &'a RStr,
     with: &'a BTreeMap<String, RString>,
 ) -> Result<Option<RustToolchain<'a>>> {
-    let Some((head, version)) = uses.split_once('@') else {
-        return Ok(None);
-    };
+    if user.str_eq("dtolnay") && repo.str_eq("rust-toolchain") {
+        let version = with
+            .get("toolchain")
+            .map(RString::as_rstr)
+            .unwrap_or(version);
 
-    let Some((_, what)) = head.split_once('/') else {
-        return Ok(None);
-    };
+        let components = with.get("components").map(|v| split_join(v, ',', ','));
+        let targets = with.get("targets").map(RString::as_rstr);
 
-    if what.str_eq("rust-toolchain") {
-        return Ok(None);
+        return Ok(Some(RustToolchain {
+            version,
+            components,
+            targets,
+        }));
     }
 
-    let version = with
-        .get("toolchain")
-        .map(RString::as_rstr)
-        .unwrap_or(version);
+    if user.str_eq("actions-rs") && repo.str_eq("toolchain") {
+        let version = with
+            .get("toolchain")
+            .map(RString::as_rstr)
+            .unwrap_or(RStr::new("stable"));
 
-    let components = with.get("components").map(RString::as_rstr);
-    let targets = with.get("targets").map(RString::as_rstr);
+        let components = with.get("components").map(|v| split_join(v, ',', ','));
+        let target = with.get("target").map(RString::as_rstr);
 
-    Ok(Some(RustToolchain {
-        version,
-        components,
-        targets,
-    }))
+        return Ok(Some(RustToolchain {
+            version,
+            components,
+            targets: target,
+        }));
+    }
+
+    Ok(None)
+}
+
+fn split_join(value: &RStr, split: char, join: char) -> Cow<'_, RStr> {
+    let Some((head, tail)) = value.split_once(split) else {
+        return Cow::Borrowed(value);
+    };
+
+    let mut out = RString::with_capacity(value.len());
+    out.push_rstr(head.trim());
+    let mut current = tail;
+
+    while let Some((head, tail)) = current.split_once(split) {
+        out.push(join);
+        out.push_rstr(head.trim());
+        current = tail;
+    }
+
+    out.push(join);
+    out.push_rstr(current.trim());
+    Cow::Owned(out)
 }

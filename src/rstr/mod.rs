@@ -107,6 +107,11 @@ impl RStr {
         Cow::Owned(out)
     }
 
+    /// Get the strings length in bytes.
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
     /// Check if the redacted string is empty.
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
@@ -117,10 +122,15 @@ impl RStr {
         Chunks::new(&self.0)
     }
 
-    /// Split the redacted string oncoe over the given string.
-    pub(crate) fn split_once(&self, c: char) -> Option<(&RStr, &RStr)> {
+    /// Split the redacted string once over the given string.
+    pub(crate) fn split_once(&self, c: char) -> Option<(&Self, &Self)> {
         let (a, b) = self.0.split_once(c)?;
-        Some((RStr::new(a), RStr::new(b)))
+        Some((Self::new(a), Self::new(b)))
+    }
+
+    /// Trim any non-redacted whitespace from the string.
+    pub(crate) fn trim(&self) -> &Self {
+        Self::new(self.0.trim())
     }
 
     /// Test if the exposed content of this string equals the exposed other
@@ -258,9 +268,9 @@ impl RString {
         self.0.push(c);
     }
 
-    /// Push another raw non-redacted string.
-    pub(crate) fn push_str(&mut self, s: &str) {
-        self.0.push_str(s);
+    /// Push another string.
+    pub(crate) fn push_rstr(&mut self, s: impl AsRef<RStr>) {
+        self.0.push_str(s.as_ref().as_raw());
     }
 
     /// Push a redacted string.
@@ -359,7 +369,7 @@ impl fmt::Debug for RString {
 impl fmt::Write for RString {
     #[inline]
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.push_str(s);
+        self.0.push_str(s);
         Ok(())
     }
 }

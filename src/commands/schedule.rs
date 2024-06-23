@@ -38,7 +38,7 @@ impl Schedule {
 pub(super) fn build_steps(
     job_id: &str,
     batch: &BatchConfig<'_, '_>,
-    steps: &[Step],
+    steps: &[Rc<Step>],
     runner: Option<&ActionRunner>,
     c: Option<&ActionConfig>,
 ) -> Result<Vec<Schedule>> {

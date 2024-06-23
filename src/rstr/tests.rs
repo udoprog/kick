@@ -3,9 +3,9 @@ use super::*;
 #[test]
 fn test_redact() {
     let mut owned = RString::new();
-    owned.push_str("this is a password: ");
+    owned.push_rstr("this is a password: ");
     owned.push_redacted("hunter2");
-    owned.push_str("... now the secret is out!");
+    owned.push_rstr("... now the secret is out!");
 
     assert_eq!(
         format!("See {owned}"),
@@ -23,15 +23,15 @@ fn test_eq() {
     let mut a = RString::new();
     let mut b = RString::new();
 
-    a.push_str("prefix");
+    a.push_rstr("prefix");
     assert!(a.push_redacted("foo"));
     assert!(a.push_redacted("bar"));
-    a.push_str("suffix");
+    a.push_rstr("suffix");
 
-    b.push_str("prefix");
+    b.push_rstr("prefix");
     assert!(b.push_redacted("fo"));
     assert!(b.push_redacted("obar"));
-    b.push_str("suffix");
+    b.push_rstr("suffix");
 
     assert_eq!(a, b);
     assert_eq!(b, a);

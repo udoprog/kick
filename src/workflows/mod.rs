@@ -216,7 +216,7 @@ fn build_job(
 pub(crate) fn load_steps(
     mapping: &yaml::Mapping<'_>,
     eval: &Eval<'_>,
-) -> Result<(Vec<Step>, Vec<StepMapping>, Rc<Tree>)> {
+) -> Result<(Vec<Rc<Step>>, Vec<StepMapping>, Rc<Tree>)> {
     let mut steps = Vec::new();
     let mut step_mappings = Vec::new();
 
@@ -250,7 +250,7 @@ pub(crate) fn load_steps(
         let mut uses_mapping = None;
 
         if let Some((id, s)) = value.get("uses").and_then(|v| Some((v.id(), v.as_str()?))) {
-            uses = Some(eval.eval(s)?.into_owned());
+            uses = Some(eval.eval(s)?.as_rc());
             uses_mapping = Some(id);
         }
 
@@ -271,7 +271,7 @@ pub(crate) fn load_steps(
         let run = value.get("run").and_then(|v| v.as_str());
         let shell = value.get("shell").and_then(|v| v.as_str());
 
-        steps.push(Step {
+        steps.push(Rc::new(Step {
             id: id.map(str::to_owned),
             uses,
             tree: tree.clone(),
@@ -282,7 +282,7 @@ pub(crate) fn load_steps(
             name: name.map(str::to_owned),
             run: run.map(str::to_owned),
             shell: shell.map(str::to_owned),
-        });
+        }));
 
         step_mappings.push(StepMapping {
             id: value.id(),
@@ -558,7 +558,7 @@ pub(crate) struct Job {
 pub(crate) struct Steps {
     pub(crate) runs_on: RString,
     pub(crate) name: Option<RString>,
-    pub(crate) steps: Vec<Step>,
+    pub(crate) steps: Vec<Rc<Step>>,
     pub(crate) step_mappings: Vec<StepMapping>,
 }
 
@@ -571,7 +571,7 @@ pub(crate) struct StepMapping {
 #[derive(Default, Debug, Clone)]
 pub(crate) struct Step {
     pub(crate) id: Option<String>,
-    pub(crate) uses: Option<RString>,
+    pub(crate) uses: Option<Rc<RStr>>,
     pub(crate) tree: Rc<Tree>,
     pub(crate) env: BTreeMap<String, String>,
     pub(crate) working_directory: Option<String>,
@@ -767,7 +767,7 @@ impl<'a> Eval<'a> {
 
         let mut result = RString::new();
         let (head, mut s) = s.split_at(i);
-        result.push_str(head);
+        result.push_rstr(head);
 
         loop {
             let Some(rest) = s.strip_prefix("${{") else {
@@ -790,12 +790,12 @@ impl<'a> Eval<'a> {
 
             match self.expr(expr)? {
                 Expr::Array(..) => {}
-                Expr::String(s) => result.push_str(s.as_raw()),
+                Expr::String(s) => result.push_rstr(s.as_raw()),
                 Expr::Float(f) => {
                     write!(result, "{f}").context("Failed to format float")?;
                 }
                 Expr::Bool(b) => {
-                    result.push_str(if b { "true" } else { "false" });
+                    result.push_rstr(if b { "true" } else { "false" });
                 }
                 Expr::Null => {}
             }

@@ -28,7 +28,7 @@ pub(crate) enum ActionKind {
         node_version: u32,
     },
     Composite {
-        steps: Vec<Step>,
+        steps: Vec<Rc<Step>>,
     },
 }
 
@@ -103,7 +103,7 @@ pub(crate) struct ActionContext<'repo> {
     kind: Option<ActionRunnerKind>,
     main: Option<RelativePathBuf>,
     post: Option<RelativePathBuf>,
-    steps: Vec<Step>,
+    steps: Vec<Rc<Step>>,
     defaults: BTreeMap<String, String>,
     required: BTreeSet<String>,
     paths: HashMap<RelativePathBuf, (Id<'repo>, EntryMode)>,

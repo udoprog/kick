@@ -56,13 +56,15 @@ impl Batch {
     ) -> Result<Self> {
         let (env, tree) = new_env(batch, None, Some(c))?;
 
+        let u = Schedule::Use(ScheduleUse::new(
+            id.as_ref().as_rc(),
+            Rc::new(Step::default()),
+            Rc::new(tree),
+            env,
+        ));
+
         Ok(Self {
-            commands: vec![Schedule::Use(ScheduleUse::new(
-                id.as_ref().to_owned(),
-                Step::default(),
-                Rc::new(tree),
-                env,
-            ))],
+            commands: vec![u],
             run_on: RunOn::Same,
             matrix: None,
         })
@@ -127,8 +129,6 @@ impl Batch {
             for run in self.commands.iter() {
                 scheduler.push_back(run.clone());
             }
-
-            let mut step = 0usize;
 
             while let Some(run) = scheduler.advance(o, batch, session)? {
                 let modified;
@@ -270,8 +270,6 @@ impl Batch {
                     run_command.env("PATH", paths);
                 }
 
-                step += 1;
-
                 let display_impl;
 
                 let (display, shell, display_env): (&dyn fmt::Display, _, _) = 'display: {
@@ -303,8 +301,6 @@ impl Batch {
 
                 if let Some(name) = &run.name {
                     write!(o, "{name}")?;
-                } else {
-                    write!(o, "step {step}")?;
                 }
 
                 o.reset()?;
