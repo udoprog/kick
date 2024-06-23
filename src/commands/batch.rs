@@ -143,10 +143,11 @@ impl Batch {
                     None => &batch.path,
                 };
 
-                let mut command;
+                let mut run_command;
                 let mut paths = &[][..];
                 let mut display_command = None;
                 let mut script_source = None;
+                let script_file;
 
                 let env_keys = batch.env_passthrough.iter();
                 let env_keys = env_keys.chain(batch.env.keys());
@@ -164,10 +165,10 @@ impl Batch {
 
                 match run_on {
                     RunOn::Same => {
-                        (command, paths) = setup_same(batch, path, &run)?;
+                        (run_command, paths, script_file) = setup_same(batch, path, &run)?;
 
                         for (key, value) in env {
-                            command.env(key, value);
+                            run_command.env(key, value);
                         }
                     }
                     RunOn::Wsl(dist) => {
@@ -175,28 +176,36 @@ impl Batch {
                             bail!("WSL not available");
                         };
 
-                        let (mut inner, wslenv, kick_script_file, inner_script_source) =
-                            setup_wsl(&run, env_keys.map(String::as_str));
+                        let mut command;
+                        let wslenv;
+                        let kick_script_file;
 
-                        command = wsl.shell(path, dist);
-                        command.arg(&inner.command);
-                        command.args(&inner.args);
+                        (
+                            command,
+                            wslenv,
+                            kick_script_file,
+                            script_file,
+                            script_source,
+                        ) = setup_wsl(&run, env_keys.map(String::as_str));
+
+                        run_command = wsl.shell(path, dist);
+                        run_command.arg(&command.command);
+                        run_command.args(&command.args);
 
                         for (key, value) in env {
-                            command.env(key.clone(), value.clone());
-                            inner.env(key, value);
+                            run_command.env(key.clone(), value.clone());
+                            command.env(key, value);
                         }
 
                         if !wslenv.is_empty() {
-                            command.env("WSLENV", wslenv);
+                            run_command.env("WSLENV", wslenv);
                         }
 
                         if let Some(kick_script_file) = kick_script_file {
-                            command.env("KICK_SCRIPT_FILE", kick_script_file);
+                            run_command.env("KICK_SCRIPT_FILE", kick_script_file);
                         }
 
-                        display_command = Some(inner);
-                        script_source = inner_script_source;
+                        display_command = Some(command);
                     }
                 };
 
@@ -212,7 +221,7 @@ impl Batch {
                             .chain(current_path),
                     )?;
 
-                    command.env("PATH", paths);
+                    run_command.env("PATH", paths);
                 }
 
                 step += 1;
@@ -221,13 +230,13 @@ impl Batch {
 
                 let (display, shell, display_env): (&dyn fmt::Display, _, _) = 'display: {
                     if batch.verbose == 2 {
-                        display_impl = command
+                        display_impl = run_command
                             .display_with(batch.shell)
                             .with_exposed(batch.exposed);
-                        break 'display (&display_impl, batch.shell, &command.env);
+                        break 'display (&display_impl, batch.shell, &run_command.env);
                     }
 
-                    let display_env = &display_command.as_ref().unwrap_or(&command).env;
+                    let display_env = &display_command.as_ref().unwrap_or(&run_command).env;
 
                     if let Some(script_source) = &script_source {
                         break 'display (script_source, Shell::Bash, display_env);
@@ -235,7 +244,7 @@ impl Batch {
 
                     display_impl = display_command
                         .as_ref()
-                        .unwrap_or(&command)
+                        .unwrap_or(&run_command)
                         .display_with(Shell::Bash)
                         .with_exposed(batch.exposed);
 
@@ -327,7 +336,8 @@ impl Batch {
                     truncate(run.files())?;
                     make_dirs(run.dirs())?;
 
-                    let status = command.status()?;
+                    let status = run_command.status()?;
+
                     ensure!(status.success(), status);
 
                     let mut new_env = Vec::new();
@@ -472,11 +482,22 @@ where
     Ok(out)
 }
 
+struct ScriptFile {
+    contents: Box<RStr>,
+    ext: &'static str,
+}
+
+impl ScriptFile {
+    fn new(contents: Box<RStr>, ext: &'static str) -> Self {
+        Self { contents, ext }
+    }
+}
+
 fn setup_same<'a>(
     c: &BatchConfig<'_, 'a>,
     path: &Path,
     run: &Run,
-) -> Result<(Command, &'a [PathBuf])> {
+) -> Result<(Command, &'a [PathBuf], Option<ScriptFile>)> {
     match &run.run {
         RunKind::Shell { script, shell } => match shell {
             Shell::Powershell => {
@@ -487,7 +508,7 @@ fn setup_same<'a>(
                 let mut c = powershell.command(path);
                 c.arg("-Command");
                 c.arg(script);
-                Ok((c, &[]))
+                Ok((c, &[], None))
             }
             Shell::Bash => {
                 let Some(bash) = c.cx.system.bash.first() else {
@@ -500,15 +521,17 @@ fn setup_same<'a>(
 
                 let mut c = bash.command(path);
                 c.args(["-i", "-c"]);
-                c.arg(script);
-                Ok((c, &bash.paths))
+                c.arg(OsArg::bash_escape(script.as_ref()));
+
+                let script_file = ScriptFile::new(script.clone(), "bash");
+                Ok((c, &bash.paths, Some(script_file)))
             }
         },
         RunKind::Command { command, args } => {
             let mut c = Command::new(command);
             c.args(args.as_ref());
             c.current_dir(path);
-            Ok((c, &[]))
+            Ok((c, &[], None))
         }
         RunKind::Node {
             node_version,
@@ -518,7 +541,7 @@ fn setup_same<'a>(
             let mut c = Command::new(&node.path);
             c.arg(script_file);
             c.current_dir(path);
-            Ok((c, &[]))
+            Ok((c, &[], None))
         }
     }
 }
@@ -526,10 +549,17 @@ fn setup_same<'a>(
 fn setup_wsl<'a>(
     run: &Run,
     env: impl IntoIterator<Item = &'a str>,
-) -> (Command, String, Option<Rc<Path>>, Option<RString>) {
+) -> (
+    Command,
+    String,
+    Option<Rc<Path>>,
+    Option<ScriptFile>,
+    Option<RString>,
+) {
     let mut seen = HashSet::new();
     let mut wslenv = String::new();
     let mut kick_script_file = None;
+    let mut script_file = None;
     let mut script_source = None;
 
     let mut c;
@@ -546,21 +576,29 @@ fn setup_wsl<'a>(
             Shell::Bash => {
                 c = Command::new("bash");
                 c.args(["-i", "-c"]);
-                c.arg(script);
-
+                c.arg(OsArg::bash_escape(script));
                 script_source = Some(script.as_ref().to_owned());
+                wslenv.push_str("KICK_SCRIPT_FILE/p");
+                script_file = Some(ScriptFile::new(script.clone(), "bash"));
             }
         },
         RunKind::Command { command, args } => {
             c = Command::new(command);
             c.args(args.as_ref());
         }
-        RunKind::Node { script_file, .. } => {
+        RunKind::Node {
+            script_file: node_script_file,
+            ..
+        } => {
             c = Command::new("bash");
-            c.args(["-i", "-c", "node $KICK_SCRIPT_FILE"]);
+            c.args(["-i", "-c", "node \\$KICK_SCRIPT_FILE"]);
             wslenv.push_str("KICK_SCRIPT_FILE/p");
-            kick_script_file = Some(script_file.clone());
-            script_source = Some(format!("node {}", script_file.display()).into());
+            kick_script_file = Some(node_script_file.clone());
+            script_source = Some(format!("node {}", node_script_file.display()).into());
+            script_file = Some(ScriptFile::new(
+                Box::from(RStr::new("node $KICK_SCRIPT_FILE")),
+                "js",
+            ));
         }
     }
 
@@ -580,7 +618,7 @@ fn setup_wsl<'a>(
         }
     }
 
-    if kick_script_file.is_some() {
+    if kick_script_file.is_some() || script_file.is_some() {
         if !wslenv.is_empty() {
             wslenv.push(':');
         }
@@ -588,7 +626,7 @@ fn setup_wsl<'a>(
         wslenv.push_str("KICK_SCRIPT_FILE/p");
     }
 
-    (c, wslenv, kick_script_file, script_source)
+    (c, wslenv, kick_script_file, script_file, script_source)
 }
 
 fn translate_path_to_windows(path: &str) -> Result<String> {
@@ -607,6 +645,8 @@ fn translate_path_to_windows(path: &str) -> Result<String> {
     for c in drive.as_str().chars() {
         out.extend(c.to_uppercase());
     }
+
+    out.push(':');
 
     for c in it {
         out.push('\\');

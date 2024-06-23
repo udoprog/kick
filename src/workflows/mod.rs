@@ -7,7 +7,7 @@ mod lexer;
 mod parsing;
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fmt;
 use std::fs;
 use std::io;
@@ -168,7 +168,7 @@ fn build_job(
     id: &str,
     value: yaml::Mapping<'_>,
     ignore: &HashSet<String>,
-    filter: &HashMap<String, String>,
+    filter: &[(String, String)],
     eval: &Eval<'_>,
 ) -> Result<Job> {
     let runs_on = value
@@ -293,7 +293,7 @@ pub(crate) fn load_steps(
 pub(crate) fn build_matrices(
     value: &yaml::Mapping<'_>,
     ignore: &HashSet<String>,
-    filter: &HashMap<String, String>,
+    filter: &[(String, String)],
     eval: &Eval<'_>,
 ) -> Result<Vec<Matrix>> {
     let mut matrices = Vec::new();
@@ -345,7 +345,19 @@ pub(crate) fn build_matrices(
                 continue;
             }
 
-            let filter = filter.get(key).map(|s| s.as_str());
+            let filter = |value: &RStr| {
+                for (k, v) in filter {
+                    if k != key {
+                        continue;
+                    }
+
+                    if value != v {
+                        return false;
+                    }
+                }
+
+                true
+            };
 
             let mut values = Vec::new();
 
@@ -357,7 +369,7 @@ pub(crate) fn build_matrices(
                         if let Some(value) = value.as_str() {
                             let value = eval.eval(value)?.into_owned();
 
-                            if filter.map(|f| value.as_rstr() == f).unwrap_or(true) {
+                            if filter(&value) {
                                 values.push((value, id));
                             }
                         }
@@ -369,7 +381,7 @@ pub(crate) fn build_matrices(
                     if let Some(value) = value.as_str() {
                         let value = eval.eval(value)?.into_owned();
 
-                        if filter.map(|f| value.as_rstr() == f).unwrap_or(true) {
+                        if filter(&value) {
                             values.push((value, id));
                         }
                     }
@@ -478,7 +490,7 @@ impl<'a> WorkflowManifest<'a, '_> {
     pub(crate) fn jobs(
         &self,
         ignore: &HashSet<String>,
-        filter: &HashMap<String, String>,
+        filter: &[(String, String)],
     ) -> Result<Vec<Job>> {
         let Some(mapping) = self.doc.as_ref().as_mapping() else {
             bail!(

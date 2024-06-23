@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::str;
 
@@ -25,7 +25,7 @@ pub(crate) struct BatchConfig<'a, 'cx> {
     pub(super) dry_run: bool,
     pub(super) exposed: bool,
     pub(super) matrix_ignore: HashSet<String>,
-    pub(super) matrix_filter: HashMap<String, String>,
+    pub(super) matrix_filter: Vec<(String, String)>,
     pub(super) fix: bool,
 }
 
@@ -44,7 +44,7 @@ impl<'a, 'cx> BatchConfig<'a, 'cx> {
             dry_run: false,
             exposed: false,
             matrix_ignore: HashSet::new(),
-            matrix_filter: HashMap::new(),
+            matrix_filter: Vec::new(),
             fix: false,
         }
     }

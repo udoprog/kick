@@ -47,7 +47,11 @@ pub(crate) struct BatchOptions {
     pub(super) shell: Option<Shell>,
     /// Matrix values to ignore when running a Github workflows job.
     #[arg(long, value_name = "value")]
-    pub(super) ignore_matrix: Vec<String>,
+    pub(super) matrix_ignore: Vec<String>,
+    /// Filter matrix values when running a Github workflows job, only allowing
+    /// the values which matches one of the conditions specified.
+    #[arg(long, value_name = "key=value")]
+    pub(super) matrix_filter: Vec<String>,
 }
 
 impl BatchOptions {
@@ -81,8 +85,14 @@ impl BatchOptions {
             c.parse_env(env)?;
         }
 
-        for variable in &self.ignore_matrix {
+        for variable in &self.matrix_ignore {
             c.matrix_ignore.insert(variable.clone());
+        }
+
+        for filter in &self.matrix_filter {
+            if let Some((key, value)) = filter.split_once('=') {
+                c.matrix_filter.push((key.to_owned(), value.to_owned()));
+            }
         }
 
         if self.fix {

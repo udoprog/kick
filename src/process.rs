@@ -13,10 +13,22 @@ use crate::shell::Shell;
 
 #[derive(Clone)]
 enum OsArgKind {
-    Path(Rc<Path>),
+    Path(Box<Path>),
     Str(Box<str>),
-    OsString(OsString),
-    RString(Box<RStr>),
+    OsStr(Box<OsStr>),
+    RStr(Box<RStr>),
+    /// An argument which is bash-argument escaped. For some reason, bash
+    /// processes raw `$` in input arguments to `-c`. To avoid these from being
+    /// evaluated, we have to escape them.
+    ///
+    /// If you don't believe me, try this:
+    ///
+    /// ```sh
+    /// echo "echo $HOME"
+    /// echo 'echo $HOME'
+    /// bash -c 'echo $HOME'
+    /// ```
+    BashEscape(Box<RStr>),
 }
 
 /// A wrapper type that can losslessly represent many types which can be
@@ -27,12 +39,27 @@ pub(crate) struct OsArg {
 }
 
 impl OsArg {
+    /// Construct a bash escape os argument.
+    pub(crate) fn bash_escape(value: impl AsRef<RStr>) -> Self {
+        Self {
+            kind: OsArgKind::BashEscape(Box::from(value.as_ref())),
+        }
+    }
+
     pub(crate) fn to_string_lossy(&self) -> Cow<'_, str> {
         match &self.kind {
             OsArgKind::Path(p) => p.to_string_lossy(),
             OsArgKind::Str(p) => Cow::Borrowed(p.as_ref()),
-            OsArgKind::OsString(s) => s.to_string_lossy(),
-            OsArgKind::RString(s) => Cow::Owned(s.to_string()),
+            OsArgKind::OsStr(s) => s.to_string_lossy(),
+            OsArgKind::RStr(s) => Cow::Owned(s.to_string()),
+            OsArgKind::BashEscape(s) => {
+                let value = s.to_string_lossy();
+
+                match bash_escape(value.as_ref()) {
+                    Cow::Owned(value) => Cow::Owned(value),
+                    Cow::Borrowed(..) => return value,
+                }
+            }
         }
     }
 
@@ -40,8 +67,40 @@ impl OsArg {
         match &self.kind {
             OsArgKind::Path(p) => p.to_string_lossy(),
             OsArgKind::Str(p) => Cow::Borrowed(p.as_ref()),
-            OsArgKind::OsString(s) => s.to_string_lossy(),
-            OsArgKind::RString(s) => s.to_exposed(),
+            OsArgKind::OsStr(s) => s.to_string_lossy(),
+            OsArgKind::RStr(s) => s.to_exposed(),
+            OsArgKind::BashEscape(s) => {
+                let value = s.to_string_lossy();
+
+                match bash_escape(value.as_ref()) {
+                    Cow::Owned(value) => Cow::Owned(value),
+                    Cow::Borrowed(..) => value,
+                }
+            }
+        }
+    }
+
+    /// Convert the argument into an `OsStr`.
+    pub(crate) fn to_os_str(&self) -> Cow<'_, OsStr> {
+        match &self.kind {
+            OsArgKind::Path(value) => Cow::Borrowed(value.as_ref().as_os_str()),
+            OsArgKind::Str(value) => Cow::Borrowed(OsStr::new(value.as_ref())),
+            OsArgKind::OsStr(value) => Cow::Borrowed(value),
+            OsArgKind::RStr(value) => match value.to_exposed() {
+                Cow::Owned(value) => Cow::Owned(OsString::from(value)),
+                Cow::Borrowed(value) => Cow::Borrowed(OsStr::new(value)),
+            },
+            OsArgKind::BashEscape(value) => {
+                let value = value.to_exposed();
+
+                match bash_escape(value.as_ref()) {
+                    Cow::Owned(value) => Cow::Owned(OsString::from(value)),
+                    Cow::Borrowed(..) => match value {
+                        Cow::Owned(value) => Cow::Owned(OsString::from(value)),
+                        Cow::Borrowed(value) => Cow::Borrowed(OsStr::new(value)),
+                    },
+                }
+            }
         }
     }
 }
@@ -51,8 +110,9 @@ impl fmt::Debug for OsArg {
         match &self.kind {
             OsArgKind::Path(s) => s.fmt(f),
             OsArgKind::Str(s) => s.fmt(f),
-            OsArgKind::OsString(s) => s.fmt(f),
-            OsArgKind::RString(s) => s.fmt(f),
+            OsArgKind::OsStr(s) => s.fmt(f),
+            OsArgKind::RStr(s) => s.fmt(f),
+            OsArgKind::BashEscape(s) => s.fmt(f),
         }
     }
 }
@@ -71,126 +131,65 @@ impl From<&OsArg> for OsArg {
     }
 }
 
-impl From<Rc<Path>> for OsArg {
-    #[inline]
-    fn from(s: Rc<Path>) -> Self {
-        Self {
-            kind: OsArgKind::Path(s),
+macro_rules! from {
+    ($variant:ident, $borrowed:ident, $owned:ty) => {
+        impl From<Box<$borrowed>> for OsArg {
+            #[inline]
+            fn from(value: Box<$borrowed>) -> Self {
+                Self {
+                    kind: OsArgKind::$variant(value),
+                }
+            }
         }
-    }
-}
 
-impl From<&Rc<Path>> for OsArg {
-    #[inline]
-    fn from(path: &Rc<Path>) -> Self {
-        Self::from(path.clone())
-    }
-}
-
-impl From<&Path> for OsArg {
-    #[inline]
-    fn from(s: &Path) -> Self {
-        Self {
-            kind: OsArgKind::Path(Rc::from(s)),
+        impl From<&Box<$borrowed>> for OsArg {
+            #[inline]
+            fn from(value: &Box<$borrowed>) -> Self {
+                Self::from(value.clone())
+            }
         }
-    }
-}
 
-impl From<&PathBuf> for OsArg {
-    #[inline]
-    fn from(s: &PathBuf) -> Self {
-        Self::from(s.as_path())
-    }
-}
-
-impl From<RString> for OsArg {
-    #[inline]
-    fn from(s: RString) -> Self {
-        Self {
-            kind: OsArgKind::RString(s.into()),
+        impl From<Rc<$borrowed>> for OsArg {
+            #[inline]
+            fn from(value: Rc<$borrowed>) -> Self {
+                Self::from(&*value)
+            }
         }
-    }
-}
 
-impl From<Box<RStr>> for OsArg {
-    #[inline]
-    fn from(s: Box<RStr>) -> Self {
-        Self {
-            kind: OsArgKind::RString(s),
+        impl From<&Rc<$borrowed>> for OsArg {
+            #[inline]
+            fn from(value: &Rc<$borrowed>) -> Self {
+                Self::from(&**value)
+            }
         }
-    }
-}
 
-impl From<&Box<RStr>> for OsArg {
-    #[inline]
-    fn from(s: &Box<RStr>) -> Self {
-        Self::from(s.clone())
-    }
-}
-
-impl From<&str> for OsArg {
-    #[inline]
-    fn from(s: &str) -> Self {
-        Self {
-            kind: OsArgKind::Str(Box::from(s)),
+        impl From<&$borrowed> for OsArg {
+            #[inline]
+            fn from(value: &$borrowed) -> Self {
+                Self::from(Box::<$borrowed>::from(value))
+            }
         }
-    }
-}
 
-impl From<String> for OsArg {
-    #[inline]
-    fn from(s: String) -> Self {
-        Self {
-            kind: OsArgKind::Str(Box::from(s)),
+        impl From<$owned> for OsArg {
+            #[inline]
+            fn from(value: $owned) -> Self {
+                Self::from(&*value)
+            }
         }
-    }
-}
 
-impl From<&String> for OsArg {
-    #[inline]
-    fn from(s: &String) -> Self {
-        Self::from(s.as_str())
-    }
-}
-
-impl From<&RStr> for OsArg {
-    #[inline]
-    fn from(s: &RStr) -> Self {
-        Self {
-            kind: OsArgKind::RString(Box::from(s)),
+        impl From<&$owned> for OsArg {
+            #[inline]
+            fn from(value: &$owned) -> Self {
+                Self::from(&**value)
+            }
         }
-    }
+    };
 }
 
-impl From<&RString> for OsArg {
-    #[inline]
-    fn from(s: &RString) -> Self {
-        OsArg::from(s.as_rstr())
-    }
-}
-
-impl From<OsString> for OsArg {
-    #[inline]
-    fn from(s: OsString) -> Self {
-        Self {
-            kind: OsArgKind::OsString(s),
-        }
-    }
-}
-
-impl From<&OsStr> for OsArg {
-    #[inline]
-    fn from(s: &OsStr) -> Self {
-        Self::from(OsString::from(s))
-    }
-}
-
-impl From<&OsString> for OsArg {
-    #[inline]
-    fn from(s: &OsString) -> Self {
-        Self::from(s.as_os_str())
-    }
-}
+from!(Path, Path, PathBuf);
+from!(Str, str, String);
+from!(RStr, RStr, RString);
+from!(OsStr, OsStr, OsString);
 
 pub(crate) struct Command {
     pub(crate) command: OsArg,
@@ -308,31 +307,10 @@ impl Command {
     }
 
     fn command(&mut self) -> std::process::Command {
-        let mut command = match &self.command.kind {
-            OsArgKind::Path(s) => std::process::Command::new(s.as_ref()),
-            OsArgKind::Str(s) => std::process::Command::new(s.as_ref()),
-            OsArgKind::OsString(s) => std::process::Command::new(s),
-            OsArgKind::RString(s) => {
-                let s = s.to_exposed();
-                std::process::Command::new(s.as_ref())
-            }
-        };
+        let mut command = std::process::Command::new(self.command.to_os_str());
 
         for arg in &self.args {
-            match &arg.kind {
-                OsArgKind::Path(arg) => {
-                    command.arg(arg.as_ref());
-                }
-                OsArgKind::Str(arg) => {
-                    command.arg(arg.as_ref());
-                }
-                OsArgKind::OsString(arg) => {
-                    command.arg(arg);
-                }
-                OsArgKind::RString(arg) => {
-                    command.arg(arg.to_exposed().as_ref());
-                }
-            }
+            command.arg(arg.to_os_str());
         }
 
         if let Some(current_dir) = &self.current_dir {
@@ -352,20 +330,7 @@ impl Command {
         }
 
         for (key, value) in &self.env {
-            match &value.kind {
-                OsArgKind::Path(value) => {
-                    command.env(key, value.as_ref());
-                }
-                OsArgKind::Str(value) => {
-                    command.env(key, value.as_ref());
-                }
-                OsArgKind::OsString(value) => {
-                    command.env(key, value);
-                }
-                OsArgKind::RString(value) => {
-                    command.env(key, value.to_exposed().as_ref());
-                }
-            }
+            command.env(key, value.to_os_str());
         }
 
         command
@@ -466,4 +431,25 @@ impl fmt::Display for Display<'_> {
 
         Ok(())
     }
+}
+
+fn bash_escape(s: &str) -> Cow<'_, str> {
+    let Some(at) = s.find('$') else {
+        return Cow::Borrowed(s);
+    };
+
+    let mut escaped = String::with_capacity(s.len() + 2);
+
+    let (head, tail) = s.split_at(at);
+
+    escaped.push_str(head);
+
+    for c in tail.chars() {
+        match c {
+            '$' => escaped.push_str(r"\$"),
+            _ => escaped.push(c),
+        }
+    }
+
+    Cow::Owned(escaped)
 }

@@ -411,6 +411,34 @@ macro_rules! cmp_str {
                 (**self).chars().eq((*other).exposed_chars())
             }
         }
+
+        impl PartialEq<String> for $ty {
+            #[inline]
+            fn eq(&self, other: &String) -> bool {
+                (*self).exposed_chars().eq(other.chars())
+            }
+        }
+
+        impl PartialEq<$ty> for String {
+            #[inline]
+            fn eq(&self, other: &$ty) -> bool {
+                self.chars().eq((*other).exposed_chars())
+            }
+        }
+
+        impl PartialEq<&String> for $ty {
+            #[inline]
+            fn eq(&self, other: &&String) -> bool {
+                self.exposed_chars().eq((**other).chars())
+            }
+        }
+
+        impl PartialEq<$ty> for &String {
+            #[inline]
+            fn eq(&self, other: &$ty) -> bool {
+                (**self).chars().eq((*other).exposed_chars())
+            }
+        }
     };
 }
 
