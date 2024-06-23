@@ -84,6 +84,7 @@ pub(crate) enum ExprError {
     MultipleExpressions(Box<str>),
     EvalError(eval::EvalError, Box<str>),
     SynTree(syntree::Error),
+    FormatError,
 }
 
 impl From<syntree::Error> for ExprError {
@@ -103,6 +104,7 @@ impl fmt::Display for ExprError {
                 write!(f, "Evaluation error: {e}: `{source}`")
             }
             ExprError::SynTree(..) => write!(f, "Syntax tree error"),
+            ExprError::FormatError => write!(f, "Failed to format expression"),
         }
     }
 }
@@ -758,7 +760,7 @@ impl<'a> Eval<'a> {
     }
 
     /// Evaluate a string with matrix variables.
-    pub(crate) fn eval<'s>(&self, s: &'s str) -> Result<Cow<'s, RStr>> {
+    pub(crate) fn eval<'s>(&self, s: &'s str) -> Result<Cow<'s, RStr>, ExprError> {
         use std::fmt::Write;
 
         let Some(i) = s.find("${{") else {
@@ -782,25 +784,48 @@ impl<'a> Eval<'a> {
                 continue;
             };
 
-            let Some(end) = rest.find("}}") else {
-                break;
-            };
+            let mut e = 0;
+            let mut level = 2usize;
 
-            let expr = rest[..end].trim();
+            let expr = 'expr: {
+                let mut it = rest.chars();
+
+                loop {
+                    if level == 2 {
+                        if let Some(o) = it.as_str().strip_prefix("}}") {
+                            s = o;
+                            break 'expr &rest[..e];
+                        };
+                    }
+
+                    let Some(c) = it.next() else {
+                        break;
+                    };
+
+                    level = level.wrapping_add_signed(match c {
+                        '{' => 1,
+                        '}' => -1,
+                        _ => 0,
+                    });
+
+                    e += c.len_utf8();
+                }
+
+                result.push_rstr(s);
+                return Ok(Cow::Owned(result));
+            };
 
             match self.expr(expr)? {
                 Expr::Array(..) => {}
                 Expr::String(s) => result.push_rstr(s.as_raw()),
                 Expr::Float(f) => {
-                    write!(result, "{f}").context("Failed to format float")?;
+                    write!(result, "{f}").map_err(|_| ExprError::FormatError)?;
                 }
                 Expr::Bool(b) => {
                     result.push_rstr(if b { "true" } else { "false" });
                 }
                 Expr::Null => {}
             }
-
-            s = &rest[end + 2..];
         }
 
         Ok(Cow::Owned(result))

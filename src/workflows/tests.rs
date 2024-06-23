@@ -202,6 +202,7 @@ fn function_contains_array() {
         eval.expr("contains(matrix.*, 'foo-bar')"),
         Ok(Expr::Bool(true))
     );
+
     assert_eq!(
         eval.expr("contains(matrix.*, 'baz')"),
         Ok(Expr::Bool(false))
@@ -210,5 +211,25 @@ fn function_contains_array() {
     assert_eq!(
         eval.expr("contains(fromJSON('[\"push\", \"pull_request\"]'), github.event_name)"),
         Ok(Expr::Bool(true))
+    );
+}
+
+#[test]
+fn test_eval() {
+    let mut tree = Tree::new();
+    tree.insert(["matrix", "a"], "hello");
+
+    let eval = Eval::new(&tree);
+
+    assert_eq!(
+        eval.eval("${{ matrix.a }}-world-${{ matrix.b }}-bar"),
+        Ok(Cow::Owned(RString::from("hello-world--bar")))
+    );
+
+    assert_eq!(
+        eval.eval("${{ matrix.a }}-world-${{ matrix.b } }-bar"),
+        Ok(Cow::Owned(RString::from(
+            "hello-world-${{ matrix.b } }-bar"
+        )))
     );
 }
