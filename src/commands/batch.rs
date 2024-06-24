@@ -358,73 +358,75 @@ impl Batch {
 
                 writeln!(o)?;
 
-                match shell {
-                    Shell::Bash => {
-                        if batch.verbose > 0 {
-                            for (key, value) in display_env {
-                                let key = key.to_string_lossy();
+                if run.skipped.is_none() {
+                    match shell {
+                        Shell::Bash => {
+                            if batch.verbose > 0 {
+                                for (key, value) in display_env {
+                                    let key = key.to_string_lossy();
 
-                                let value = if batch.exposed {
-                                    value.to_exposed_lossy()
-                                } else {
-                                    value.to_string_lossy()
-                                };
+                                    let value = if batch.exposed {
+                                        value.to_exposed_lossy()
+                                    } else {
+                                        value.to_string_lossy()
+                                    };
 
-                                let value = shell.escape(value.as_ref());
-                                write!(o, "{key}={value} ")?;
-                            }
+                                    let value = shell.escape(value.as_ref());
+                                    write!(o, "{key}={value} ")?;
+                                }
 
-                            for key in display_env_remove {
-                                let key = key.to_string_lossy();
-                                write!(o, "{key}=\"\" ")?;
-                            }
-                        }
-
-                        write!(o, "{display}")?;
-                    }
-                    Shell::Powershell => {
-                        if batch.verbose > 0 && !display_env.is_empty() {
-                            writeln!(o, "powershell -Command {{")?;
-
-                            for (key, value) in display_env {
-                                let key = key.to_string_lossy();
-
-                                let value = if batch.exposed {
-                                    value.to_exposed_lossy()
-                                } else {
-                                    value.to_string_lossy()
-                                };
-
-                                let value = shell.escape_string(value.as_ref());
-
-                                if shell.is_env_literal(key.as_ref()) {
-                                    writeln!(o, r#"  $Env:{key}={value};"#)?;
-                                } else {
-                                    writeln!(o, r#"  ${{Env:{key}={value}}};"#)?;
+                                for key in display_env_remove {
+                                    let key = key.to_string_lossy();
+                                    write!(o, "{key}=\"\" ")?;
                                 }
                             }
 
-                            for key in display_env_remove {
-                                let key = key.to_string_lossy();
-                                writeln!(o, r#"  Remove-Item Env:{key};"#)?;
-                            }
-
-                            writeln!(o, "  {display}")?;
-                            write!(o, "}}")?;
-                        } else {
                             write!(o, "{display}")?;
                         }
+                        Shell::Powershell => {
+                            if batch.verbose > 0 && !display_env.is_empty() {
+                                writeln!(o, "powershell -Command {{")?;
+
+                                for (key, value) in display_env {
+                                    let key = key.to_string_lossy();
+
+                                    let value = if batch.exposed {
+                                        value.to_exposed_lossy()
+                                    } else {
+                                        value.to_string_lossy()
+                                    };
+
+                                    let value = shell.escape_string(value.as_ref());
+
+                                    if shell.is_env_literal(key.as_ref()) {
+                                        writeln!(o, r#"  $Env:{key}={value};"#)?;
+                                    } else {
+                                        writeln!(o, r#"  ${{Env:{key}={value}}};"#)?;
+                                    }
+                                }
+
+                                for key in display_env_remove {
+                                    let key = key.to_string_lossy();
+                                    writeln!(o, r#"  Remove-Item Env:{key};"#)?;
+                                }
+
+                                writeln!(o, "  {display}")?;
+                                write!(o, "}}")?;
+                            } else {
+                                write!(o, "{display}")?;
+                            }
+                        }
                     }
-                }
 
-                writeln!(o)?;
+                    writeln!(o)?;
 
-                if batch.verbose >= 2 {
-                    if let Some((source, shell)) = &script_source {
-                        o.set_color(&batch.colors.title)?;
-                        writeln!(o, "# {shell} script:")?;
-                        o.reset()?;
-                        writeln!(o, "{source}")?;
+                    if batch.verbose >= 2 {
+                        if let Some((source, shell)) = &script_source {
+                            o.set_color(&batch.colors.title)?;
+                            writeln!(o, "# {shell} script:")?;
+                            o.reset()?;
+                            writeln!(o, "{source}")?;
+                        }
                     }
                 }
 

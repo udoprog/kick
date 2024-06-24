@@ -498,3 +498,12 @@ impl Clone for Box<RStr> {
         Box::from(self.as_ref())
     }
 }
+
+macro_rules! __rformat {
+    ($($arg:tt)*) => {
+        $crate::rstr::RString::from(format!($($arg)*))
+    };
+}
+
+/// Format a string as an [`RString`].
+pub(crate) use __rformat as rformat;

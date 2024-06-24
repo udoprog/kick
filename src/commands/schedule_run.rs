@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use anyhow::{bail, Result};
 
-use crate::rstr::{RStr, RString};
+use crate::rstr::{rformat, RStr};
 use crate::shell::Shell;
 use crate::workflows::{Eval, Step, Tree};
 
@@ -56,9 +56,7 @@ impl ScheduleRun {
         let name = self.step.name.as_ref().map(|v| eval.eval(v)).transpose()?;
 
         let name = match (self.action_name.as_deref(), name.as_deref()) {
-            (Some(action_name), Some(name)) => {
-                Some(Cow::Owned(RString::from(format!("{action_name} / {name}"))))
-            }
+            (Some(action_name), Some(name)) => Some(Cow::Owned(rformat!("{action_name} / {name}"))),
             (Some(action_name), None) => Some(Cow::Borrowed(action_name)),
             (None, Some(name)) => Some(Cow::Borrowed(name)),
             (None, None) => None,

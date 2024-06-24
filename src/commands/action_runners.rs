@@ -6,7 +6,7 @@ use std::str;
 use anyhow::{bail, Result};
 
 use crate::action::ActionKind;
-use crate::rstr::RStr;
+use crate::rstr::{rformat, RStr};
 
 use super::{build_steps, ActionConfig, BatchConfig, Env, Schedule, ScheduleNodeAction};
 
@@ -102,7 +102,7 @@ impl ActionRunners {
                     post.push(Schedule::Push);
                     post.push(Schedule::NodeAction(ScheduleNodeAction::new(
                         id.clone(),
-                        uses.as_rc(),
+                        rformat!("{} / post", uses).as_rc(),
                         path.clone(),
                         *node_version,
                         c.skipped(),
@@ -114,7 +114,7 @@ impl ActionRunners {
                 main.push(Schedule::Push);
                 main.push(Schedule::NodeAction(ScheduleNodeAction::new(
                     id.clone(),
-                    uses.as_rc(),
+                    rformat!("{} / main", uses).as_rc(),
                     main_path.clone(),
                     *node_version,
                     c.skipped(),
