@@ -39,6 +39,9 @@ pub(crate) struct Run {
     pub(super) output_file: Option<Rc<Path>>,
     // The directory where to store tools, if possible.
     pub(super) tools_path: Option<Rc<Path>>,
+    // The directory where temporary data is stored.
+    pub(super) temp_path: Option<Rc<Path>>,
+    // Environment variables which are files.
     pub(super) env_is_file: HashSet<String>,
 }
 
@@ -84,6 +87,7 @@ impl Run {
             path_file: None,
             output_file: None,
             tools_path: None,
+            temp_path: None,
             env_is_file: HashSet::new(),
         }
     }
@@ -148,8 +152,15 @@ impl Run {
 
     /// Modify the tools path.
     #[inline]
-    pub(super) fn with_tools_path(mut self, tools_path: Option<Rc<Path>>) -> Self {
-        self.tools_path = tools_path;
+    pub(super) fn with_tools_path(mut self, tools_path: Rc<Path>) -> Self {
+        self.tools_path = Some(tools_path);
+        self
+    }
+
+    /// Modify the temp path.
+    #[inline]
+    pub(super) fn with_temp_path(mut self, temp_path: Rc<Path>) -> Self {
+        self.temp_path = Some(temp_path);
         self
     }
 
@@ -179,6 +190,14 @@ impl Run {
 
     /// Iterate over all directories that should exist.
     pub(super) fn dirs(&self) -> impl Iterator<Item = &Path> {
-        self.tools_path.as_slice().iter().map(Rc::as_ref)
+        self.tools_path
+            .as_deref()
+            .into_iter()
+            .chain(self.temp_path.as_deref())
+    }
+
+    /// Iterate over directories that should be purged after the run.
+    pub(super) fn purge_dirs(&self) -> impl Iterator<Item = &Path> {
+        self.temp_path.as_deref().into_iter()
     }
 }

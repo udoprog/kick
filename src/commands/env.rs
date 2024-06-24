@@ -17,7 +17,8 @@ pub(super) struct Env {
     env_file: Rc<Path>,
     path_file: Rc<Path>,
     output_file: Rc<Path>,
-    tools_path: Option<Rc<Path>>,
+    tools_path: Rc<Path>,
+    temp_path: Rc<Path>,
 }
 
 impl Env {
@@ -27,7 +28,8 @@ impl Env {
         env_file: Rc<Path>,
         path_file: Rc<Path>,
         output_file: Rc<Path>,
-        tools_path: Option<Rc<Path>>,
+        tools_path: Rc<Path>,
+        temp_path: Rc<Path>,
     ) -> Self {
         Self {
             env,
@@ -36,6 +38,7 @@ impl Env {
             path_file,
             output_file,
             tools_path,
+            temp_path,
         }
     }
 
@@ -51,7 +54,7 @@ impl Env {
 
         let mut tree_env = BTreeMap::new();
 
-        for (key, value) in self.file_env.as_ref() {
+        for (key, value) in &*self.file_env {
             tree_env.insert(
                 key.clone(),
                 RString::from(value.to_string_lossy().into_owned()),
@@ -77,6 +80,7 @@ impl Env {
             .with_path_file(Some(self.path_file.clone()))
             .with_output_file(Some(self.output_file.clone()))
             .with_tools_path(self.tools_path.clone())
+            .with_temp_path(self.temp_path.clone())
     }
 }
 
@@ -95,9 +99,11 @@ pub(super) fn new_env(
 
     let state_dir = cache_dir.join("state");
 
-    let env_file;
-    let path_file;
-    let output_file;
+    let env_file = Rc::<Path>::from(state_dir.join("env"));
+    let output_file = Rc::<Path>::from(state_dir.join("output"));
+    let path_file = Rc::<Path>::from(state_dir.join("path"));
+    let temp_path = Rc::<Path>::from(state_dir.join("temp"));
+
     let tools_path;
     let runner_os;
 
@@ -107,29 +113,22 @@ pub(super) fn new_env(
         let base = runner.state_dir();
         let id = runner.id();
 
-        env_file = Rc::<Path>::from(base.join(format!("{id}-env")));
-        output_file = Rc::<Path>::from(base.join(format!("{id}-output")));
-        path_file = Rc::<Path>::from(base.join(format!("{id}-path")));
-        tools_path = Some(Rc::<Path>::from(base.join(format!("{id}-tools"))));
-
         file_env.insert(
             String::from("GITHUB_ACTION_PATH"),
             Rc::<Path>::from(runner.action_path()),
         );
+
+        tools_path = Rc::<Path>::from(base.join(format!("{id}-tools")));
     } else {
-        env_file = Rc::<Path>::from(state_dir.join("env"));
-        output_file = Rc::<Path>::from(state_dir.join("output"));
-        path_file = Rc::<Path>::from(state_dir.join("path"));
-        tools_path = None;
+        tools_path = Rc::<Path>::from(state_dir.join("tools"));
     }
 
     file_env.insert(String::from("GITHUB_ENV"), env_file.clone());
     file_env.insert(String::from("GITHUB_PATH"), path_file.clone());
     file_env.insert(String::from("GITHUB_OUTPUT"), output_file.clone());
 
-    if let Some(tools_path) = &tools_path {
-        file_env.insert(String::from("RUNNER_TOOL_CACHE"), tools_path.clone());
-    }
+    file_env.insert(String::from("RUNNER_TOOL_CACHE"), tools_path.clone());
+    file_env.insert(String::from("RUNNER_TEMP"), temp_path.clone());
 
     let mut tree = Tree::new();
 
@@ -190,6 +189,14 @@ pub(super) fn new_env(
     let env = Rc::new(env);
     let file_env = Rc::new(file_env);
 
-    let env = Env::new(env, file_env, env_file, path_file, output_file, tools_path);
+    let env = Env::new(
+        env,
+        file_env,
+        env_file,
+        path_file,
+        output_file,
+        tools_path,
+        temp_path,
+    );
     Ok((env, tree))
 }

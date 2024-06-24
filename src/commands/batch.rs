@@ -437,6 +437,8 @@ impl Batch {
                             .insert_new_outputs(run.id.as_deref(), &new_outputs)
                             .with_context(|| anyhow!("New outputs {new_outputs:?}"))?;
                     }
+
+                    purge_dirs(run.purge_dirs())?;
                 }
             }
         }
@@ -476,7 +478,30 @@ where
         let path = path.as_ref();
 
         fs::create_dir_all(path)
-            .with_context(|| anyhow!("Failed to create temporary directory: {}", path.display()))?;
+            .with_context(|| anyhow!("Failed to create directory: {}", path.display()))?;
+    }
+
+    Ok(())
+}
+
+/// Purge directories.
+fn purge_dirs<I>(paths: I) -> Result<()>
+where
+    I: IntoIterator<Item: AsRef<Path>>,
+{
+    for path in paths {
+        let path = path.as_ref();
+
+        match fs::remove_dir_all(path) {
+            Ok(()) => {
+                tracing::debug!(?path, "Removed directory");
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| anyhow!("Failed to remove directory: {}", path.display()));
+            }
+        }
     }
 
     Ok(())
