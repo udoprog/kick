@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
@@ -34,6 +34,9 @@ pub(crate) struct Opts {
     /// Make a commit with the current version with the message `Release <version>`.
     #[arg(long)]
     commit: bool,
+    /// Filter crate names to bump.
+    #[arg(value_name = "crate")]
+    filter: Vec<String>,
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
@@ -63,18 +66,30 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
         }
     }
 
+    let filter = opts
+        .filter
+        .iter()
+        .map(|s| s.as_str())
+        .collect::<HashSet<_>>();
+
     with_repos!(
         cx,
         "bump version",
         format_args!("version: {opts:?}"),
-        |cx, repo| version(cx, opts, repo, &version_set),
+        |cx, repo| version(cx, opts, repo, &version_set, &filter),
     );
 
     Ok(())
 }
 
 #[tracing::instrument(skip_all)]
-fn version(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo, version_set: &VersionSet) -> Result<()> {
+fn version(
+    cx: &Ctxt<'_>,
+    opts: &Opts,
+    repo: &Repo,
+    version_set: &VersionSet,
+    filter: &HashSet<&str>,
+) -> Result<()> {
     let Some(workspace) = workspace::open(cx, repo)? else {
         bail!("Not a workspace");
     };
@@ -91,6 +106,10 @@ fn version(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo, version_set: &VersionSet) ->
         }
 
         let name = package.name()?;
+
+        if !filter.is_empty() && !filter.contains(name) {
+            continue;
+        }
 
         let current_version = if let Some(version) = package.version() {
             Some(Version::parse(version)?)

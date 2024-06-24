@@ -79,7 +79,7 @@ impl ActionRunners {
         batch: &BatchConfig<'_, '_>,
         c: &ActionConfig<'_>,
         uses: &RStr,
-    ) -> Result<(Vec<Schedule>, Vec<Schedule>)> {
+    ) -> Result<RunnerSteps> {
         let exposed = uses.to_exposed();
 
         let Some(action) = self.runners.get(exposed.as_ref()) else {
@@ -87,16 +87,33 @@ impl ActionRunners {
         };
 
         let mut main = Vec::new();
+        let mut pre = Vec::new();
         let mut post = Vec::new();
 
         match &action.kind {
             ActionKind::Node {
-                main_path,
-                post_path,
+                main: main_path,
+                pre: pre_path,
+                pre_if,
+                post: post_path,
+                post_if,
                 node_version,
             } => {
                 let id = c.id().map(RStr::as_rc);
                 let env = Env::new(batch, Some(action), Some(c))?;
+
+                if let Some(path) = pre_path {
+                    pre.push(Schedule::Push(Some(rformat!("{} (pre)", uses).as_rc())));
+                    pre.push(Schedule::NodeAction(ScheduleNodeAction::new(
+                        id.clone(),
+                        path.clone(),
+                        *node_version,
+                        c.skipped(),
+                        env.clone(),
+                        pre_if.clone(),
+                    )));
+                    pre.push(Schedule::Pop);
+                }
 
                 if let Some(path) = post_path {
                     post.push(Schedule::Push(Some(rformat!("{} (post)", uses).as_rc())));
@@ -106,6 +123,7 @@ impl ActionRunners {
                         *node_version,
                         c.skipped(),
                         env.clone(),
+                        post_if.clone(),
                     )));
                     post.push(Schedule::Pop);
                 }
@@ -117,6 +135,7 @@ impl ActionRunners {
                     *node_version,
                     c.skipped(),
                     env,
+                    None,
                 )));
                 main.push(Schedule::Pop);
             }
@@ -133,6 +152,12 @@ impl ActionRunners {
             }
         }
 
-        Ok((main, post))
+        Ok(RunnerSteps { main, pre, post })
     }
+}
+
+pub(super) struct RunnerSteps {
+    pub(super) main: Vec<Schedule>,
+    pub(super) pre: Vec<Schedule>,
+    pub(super) post: Vec<Schedule>,
 }

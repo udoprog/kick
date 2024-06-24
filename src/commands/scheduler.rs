@@ -15,6 +15,7 @@ pub(super) struct Scheduler {
     stack: Vec<(Option<Rc<RStr>>, Tree)>,
     env: BTreeMap<String, String>,
     main: VecDeque<Schedule>,
+    pre: VecDeque<Schedule>,
     post: VecDeque<Schedule>,
     paths: Vec<OsString>,
 }
@@ -25,6 +26,7 @@ impl Scheduler {
             stack: Vec::new(),
             env: BTreeMap::new(),
             main: VecDeque::new(),
+            pre: VecDeque::new(),
             post: VecDeque::new(),
             paths: Vec::new(),
         }
@@ -82,6 +84,10 @@ impl Scheduler {
     }
 
     fn next_schedule(&mut self) -> Option<Schedule> {
+        if let Some(item) = self.pre.pop_front() {
+            return Some(item);
+        }
+
         if let Some(item) = self.main.pop_front() {
             return Some(item);
         }
@@ -144,6 +150,10 @@ impl Scheduler {
                 }
                 Schedule::Use(u) => {
                     let group = u.build(batch, self.tree(), session.runners(), os)?;
+
+                    for run in group.pre {
+                        self.pre.push_back(run);
+                    }
 
                     for run in group.main.into_iter().rev() {
                         self.main.push_front(run);

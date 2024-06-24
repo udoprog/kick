@@ -54,6 +54,7 @@ impl ScheduleUse {
         let id = self.step.id.as_ref().map(|v| eval.eval(v)).transpose()?;
 
         let mut main = Vec::new();
+        let mut pre = Vec::new();
         let mut post = Vec::new();
 
         let mut skipped = None;
@@ -72,7 +73,7 @@ impl ScheduleUse {
             .collect::<Result<BTreeMap<_, _>>>()?;
 
         if builtin_action(&self.uses, &with, skipped.as_deref(), &mut main)? {
-            return Ok(RunGroup { main, post });
+            return Ok(RunGroup { main, pre, post });
         }
 
         let uses_exposed = self.uses.to_exposed();
@@ -83,23 +84,28 @@ impl ScheduleUse {
                 .with_skipped(skipped.as_ref())
                 .with_inputs(with);
 
-            let (runner_main, runner_post) = runners.build(batch, &c, &self.uses)?;
+            let steps = runners.build(batch, &c, &self.uses)?;
 
-            if !runner_main.is_empty() {
-                main.extend(runner_main);
+            if !steps.main.is_empty() {
+                main.extend(steps.main);
             }
 
-            if !runner_post.is_empty() {
-                post.extend(runner_post);
+            if !steps.pre.is_empty() {
+                pre.extend(steps.pre);
+            }
+
+            if !steps.post.is_empty() {
+                post.extend(steps.post);
             }
         }
 
-        Ok(RunGroup { main, post })
+        Ok(RunGroup { main, pre, post })
     }
 }
 
 pub(super) struct RunGroup {
     pub(super) main: Vec<Schedule>,
+    pub(super) pre: Vec<Schedule>,
     pub(super) post: Vec<Schedule>,
 }
 

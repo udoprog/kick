@@ -12,20 +12,24 @@ use gix::objs::tree::EntryMode;
 use gix::objs::Kind;
 use gix::{Id, ObjectId, Repository};
 use nondestructive::yaml;
-use relative_path::RelativePathBuf;
+use relative_path::{RelativePath, RelativePathBuf};
 
 use crate::workflows::{self, Eval, Step};
 
 pub(crate) struct Action {
     pub(crate) kind: ActionKind,
     pub(crate) defaults: BTreeMap<String, String>,
+    pub(crate) outputs: BTreeMap<String, String>,
 }
 
 #[derive(Debug)]
 pub(crate) enum ActionKind {
     Node {
-        main_path: Rc<Path>,
-        post_path: Option<Rc<Path>>,
+        main: Rc<Path>,
+        pre: Option<Rc<Path>>,
+        pre_if: Option<String>,
+        post: Option<Rc<Path>>,
+        post_if: Option<String>,
         node_version: u32,
     },
     Composite {
@@ -114,9 +118,13 @@ pub(crate) struct ActionContext<'repo> {
     kind: Option<ActionRunnerKind>,
     action_yml: Option<RelativePathBuf>,
     main: Option<RelativePathBuf>,
+    pre: Option<RelativePathBuf>,
+    pre_if: Option<String>,
     post: Option<RelativePathBuf>,
+    post_if: Option<String>,
     steps: Vec<Rc<Step>>,
     defaults: BTreeMap<String, String>,
+    outputs: BTreeMap<String, String>,
     required: BTreeSet<String>,
     paths: HashMap<RelativePathBuf, (Id<'repo>, EntryMode)>,
     dirs: Vec<(RelativePathBuf, EntryMode)>,
@@ -132,55 +140,34 @@ impl<'repo> ActionContext<'repo> {
         export: bool,
     ) -> Result<Action> {
         let kind = match kind {
-            ActionRunnerKind::Node(node_version) => {
-                let Ok(node_version) = u32::from_str(node_version.as_ref()) else {
-                    return Err(anyhow!("Invalid node runner version `{node_version}`"));
+            ActionRunnerKind::Node(node) => {
+                let Ok(node) = u32::from_str(node.as_ref()) else {
+                    return Err(anyhow!("Invalid node runner version `{node}`"));
                 };
 
-                let mut exports = Vec::new();
+                let mut out = Vec::new();
 
-                let main_path =
-                    Rc::<Path>::from(dir.join(format!("main-{node_version}-{version}.js")));
-                let main = self.main.with_context(|| anyhow!("Missing main script"))?;
+                let main = self
+                    .extract(version, node, dir, &mut out, self.main.as_deref(), "main")?
+                    .with_context(|| anyhow!("Missing main script"))?;
+                let pre = self.extract(version, node, dir, &mut out, self.pre.as_deref(), "pre")?;
+                let post =
+                    self.extract(version, node, dir, &mut out, self.post.as_deref(), "post")?;
 
-                let (main, _) = self
-                    .paths
-                    .get(&main)
-                    .with_context(|| anyhow!("Missing main script in repo: {main}"))?;
-
-                exports.push((main_path.clone(), main));
-
-                let post_path = 'post: {
-                    let Some(post) = self.post else {
-                        break 'post None;
-                    };
-
-                    let post_path =
-                        Rc::<Path>::from(dir.join(format!("post-{node_version}-{version}.js")));
-
-                    let (id, _) = self
-                        .paths
-                        .get(&post)
-                        .with_context(|| anyhow!("Missing post script in repo: {post}"))?;
-
-                    exports.push((post_path.clone(), id));
-                    Some(post_path)
-                };
-
-                if let Some(path) = self.action_yml {
+                if let Some(path) = &self.action_yml {
                     let (action_yml, _) = self
                         .paths
-                        .get(&path)
+                        .get(path)
                         .with_context(|| anyhow!("Missing {path}"))?;
 
                     let action_yml_path =
-                        Rc::<Path>::from(dir.join(format!("action-{node_version}-{version}.yml")));
+                        Rc::<Path>::from(dir.join(format!("action-{node}-{node}.yml")));
 
-                    exports.push((action_yml_path, action_yml));
+                    out.push((action_yml_path, action_yml));
                 }
 
                 if export {
-                    for (path, id) in exports {
+                    for (path, id) in out {
                         let object = id.object()?;
                         tracing::debug!(?path, "Writing");
 
@@ -191,9 +178,12 @@ impl<'repo> ActionContext<'repo> {
                 }
 
                 ActionKind::Node {
-                    main_path,
-                    post_path,
-                    node_version,
+                    main,
+                    pre,
+                    pre_if: self.pre_if.clone(),
+                    post,
+                    post_if: self.post_if.clone(),
+                    node_version: node,
                 }
             }
             ActionRunnerKind::Composite => {
@@ -252,7 +242,32 @@ impl<'repo> ActionContext<'repo> {
         Ok(Action {
             kind,
             defaults: self.defaults,
+            outputs: self.outputs,
         })
+    }
+
+    fn extract(
+        &'repo self,
+        version: &str,
+        node_version: u32,
+        dir: &Path,
+        exports: &mut Vec<(Rc<Path>, &Id<'repo>)>,
+        relative_path: Option<&RelativePath>,
+        name: &str,
+    ) -> Result<Option<Rc<Path>>> {
+        let Some(relative_path) = relative_path else {
+            return Ok(None);
+        };
+
+        let path = Rc::<Path>::from(dir.join(format!("{name}-{version}-{node_version}.js")));
+
+        let (id, _) = self
+            .paths
+            .get(relative_path)
+            .with_context(|| anyhow!("Missing {name} script in repo: {relative_path}"))?;
+
+        exports.push((path.clone(), id));
+        Ok(Some(path))
     }
 
     fn process_actions_yml(&mut self, action_yml: &yaml::Document, eval: &Eval) -> Result<()> {
@@ -279,6 +294,14 @@ impl<'repo> ActionContext<'repo> {
             let (steps, _, _) = workflows::load_steps(&runs, eval)?;
             self.steps = steps;
 
+            if let Some(s) = runs.get("pre").and_then(|v| v.as_str()) {
+                self.pre = Some(RelativePathBuf::from(s.trim().to_owned()));
+            }
+
+            if let Some(s) = runs.get("pre-if").and_then(|v| v.as_str()) {
+                self.pre_if = Some(s.to_owned());
+            }
+
             if let Some(s) = runs.get("main").and_then(|v| v.as_str()) {
                 self.main = Some(RelativePathBuf::from(s.trim().to_owned()));
             }
@@ -286,29 +309,24 @@ impl<'repo> ActionContext<'repo> {
             if let Some(s) = runs.get("post").and_then(|v| v.as_str()) {
                 self.post = Some(RelativePathBuf::from(s.trim().to_owned()));
             }
+
+            if let Some(s) = runs.get("post-if").and_then(|v| v.as_str()) {
+                self.post_if = Some(s.to_owned());
+            }
         }
 
-        let data = action_yml
+        let inputs = action_yml
             .get("inputs")
             .and_then(|value| value.as_mapping());
 
-        if let Some(data) = data {
-            for (key, value) in data.iter() {
+        if let Some(inputs) = inputs {
+            for (key, value) in inputs.iter() {
                 let (Ok(key), Some(value)) = (str::from_utf8(key), value.as_mapping()) else {
                     continue;
                 };
 
                 if let Some(default) = value.get("default") {
-                    let value = match default.into_any() {
-                        yaml::Any::Null => "null".to_owned(),
-                        yaml::Any::Bool(b) => b.to_string(),
-                        yaml::Any::Number(n) => n.as_raw().to_string(),
-                        yaml::Any::String(s) => s.to_str()?.to_owned(),
-                        any => {
-                            bail!("Unsupported value: {any:?}")
-                        }
-                    };
-
+                    let value = value_to_string(default)?;
                     self.defaults.insert(key.to_owned(), value);
                 }
 
@@ -318,6 +336,37 @@ impl<'repo> ActionContext<'repo> {
             }
         }
 
+        let outputs = action_yml
+            .get("outputs")
+            .and_then(|value| value.as_mapping());
+
+        if let Some(outputs) = outputs {
+            for (key, value) in outputs.iter() {
+                let (Ok(key), Some(value)) = (str::from_utf8(key), value.as_mapping()) else {
+                    continue;
+                };
+
+                if let Some(value) = value.get("value") {
+                    let value = value_to_string(value)?;
+                    self.outputs.insert(key.to_owned(), value);
+                }
+            }
+        }
+
         Ok(())
     }
+}
+
+fn value_to_string(default: yaml::Value<'_>) -> Result<String> {
+    let string = match default.into_any() {
+        yaml::Any::Null => "null".to_owned(),
+        yaml::Any::Bool(b) => b.to_string(),
+        yaml::Any::Number(n) => n.as_raw().to_string(),
+        yaml::Any::String(s) => s.to_str()?.to_owned(),
+        any => {
+            bail!("Unsupported value: {any:?}")
+        }
+    };
+
+    Ok(string)
 }
