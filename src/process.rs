@@ -152,6 +152,7 @@ pub(crate) struct Command {
     stdout: Option<Stdio>,
     stderr: Option<Stdio>,
     pub(crate) env: Vec<(OsString, OsArg)>,
+    env_remove: Vec<OsString>,
 }
 
 impl Command {
@@ -167,6 +168,7 @@ impl Command {
             stdout: None,
             stderr: None,
             env: Vec::new(),
+            env_remove: Vec::new(),
         }
     }
 
@@ -198,6 +200,15 @@ impl Command {
         V: Into<OsArg>,
     {
         self.env.push((key.as_ref().to_owned(), value.into()));
+        self
+    }
+
+    /// Mark an environment variable to be removed.
+    pub(crate) fn env_remove<K>(&mut self, key: K) -> &mut Self
+    where
+        K: AsRef<OsStr>,
+    {
+        self.env_remove.push(key.as_ref().to_owned());
         self
     }
 
@@ -284,6 +295,10 @@ impl Command {
 
         for (key, value) in &self.env {
             command.env(key, value.to_os_str());
+        }
+
+        for key in &self.env_remove {
+            command.env_remove(key);
         }
 
         command

@@ -23,7 +23,7 @@ mod colors;
 use self::colors::Colors;
 
 mod env;
-use self::env::{new_env, Env};
+use self::env::Env;
 
 mod r#prepare;
 pub(crate) use self::r#prepare::Session;

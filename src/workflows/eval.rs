@@ -161,13 +161,13 @@ impl Expr<'_> {
     }
 }
 
-fn eval_node<'node, 'm, W>(
-    mut node: Node<'node, Syntax, u32, W>,
-    source: &'m str,
-    eval: &Eval<'m>,
-) -> Result<Expr<'m>, EvalError>
+fn eval_node<'a, 'b: 'a, W>(
+    mut node: Node<'a, Syntax, u32, W>,
+    source: &'b str,
+    eval: &'b Eval,
+) -> Result<Expr<'b>, EvalError>
 where
-    W: 'node + pointer::Width,
+    W: 'a + pointer::Width,
 {
     loop {
         return match *node.value() {
@@ -432,11 +432,11 @@ fn unescape(string: &str) -> Option<Cow<'_, str>> {
 }
 
 /// Eval a tree emitting all available expressions parsed from it.
-pub(crate) fn eval<'b, 'a, W>(
-    tree: &'b Tree<Syntax, u32, W>,
-    source: &'a str,
-    eval: &'b Eval<'a>,
-) -> impl Iterator<Item = Result<Expr<'a>, EvalError>> + 'b
+pub(crate) fn eval<'a, 'b: 'a, W>(
+    tree: &'a Tree<Syntax, u32, W>,
+    source: &'b str,
+    eval: &'b Eval,
+) -> impl Iterator<Item = Result<Expr<'b>, EvalError>> + 'a
 where
     W: pointer::Width,
 {

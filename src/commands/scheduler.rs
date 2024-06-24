@@ -6,7 +6,7 @@ use termcolor::WriteColor;
 
 use crate::config::Os;
 use crate::rstr::RStr;
-use crate::workflows::Tree;
+use crate::workflows::{Eval, Tree};
 
 use super::{BatchConfig, Run, Schedule, Session};
 
@@ -42,8 +42,8 @@ impl Scheduler {
         &self.paths
     }
 
-    pub(super) fn tree(&self) -> Option<&Tree> {
-        self.stack.last()
+    pub(super) fn tree(&self) -> &Tree {
+        self.stack.last().unwrap_or_default()
     }
 
     pub(super) fn env_mut(&mut self) -> &mut BTreeMap<String, String> {
@@ -85,7 +85,7 @@ impl Scheduler {
 
             // This will take care to synchronize any actions which are needed
             // to advance the scheduler.
-            let remediations = session.prepare(batch)?;
+            let remediations = session.prepare(batch, Eval::empty())?;
 
             if !remediations.is_empty() {
                 if !batch.fix {

@@ -13,13 +13,13 @@ use tracing::Level;
 
 use crate::ctxt::Ctxt;
 use crate::rstr::RStr;
+use crate::workflows::Eval;
 
 use super::{ActionRunner, ActionRunners};
 
 const GITHUB_BASE: &str = "https://github.com";
 const GIT_OBJECT_ID_FILE: &str = ".git-object-id";
 const WORKDIR: &str = "workdir";
-const STATE: &str = "state";
 const GIT: &str = "git";
 
 /// Loaded uses.
@@ -54,9 +54,14 @@ impl Actions {
     }
 
     /// Synchronize github uses.
-    pub(super) fn synchronize(&mut self, runners: &mut ActionRunners, cx: &Ctxt<'_>) -> Result<()> {
+    pub(super) fn synchronize(
+        &mut self,
+        runners: &mut ActionRunners,
+        cx: &Ctxt<'_>,
+        eval: &Eval,
+    ) -> Result<()> {
         for (repo, name, version) in self.changed.drain(..) {
-            sync_action(runners, cx, &repo, &name, &version)
+            sync_action(runners, cx, eval, &repo, &name, &version)
                 .with_context(|| anyhow!("Failed to sync GitHub action {repo}/{name}@{version}"))?;
         }
 
@@ -67,6 +72,7 @@ impl Actions {
 fn sync_action(
     runners: &mut ActionRunners,
     cx: &Ctxt<'_>,
+    eval: &Eval,
     repo: &str,
     name: &str,
     version: &str,
@@ -96,7 +102,6 @@ fn sync_action(
     let actions_dir = project_dirs.cache_dir().join("actions");
     let repo_dir = actions_dir.join(repo).join(name);
 
-    let state_dir = repo_dir.join(STATE);
     let git_dir = repo_dir.join(GIT);
     let work_dir = repo_dir.join(WORKDIR).join(version);
     let id_path = work_dir.join(GIT_OBJECT_ID_FILE);
@@ -130,7 +135,7 @@ fn sync_action(
                     continue;
                 };
 
-                let (kind, action) = match crate::action::load(&r, &cx.eval, id) {
+                let (kind, action) = match crate::action::load(&r, eval, id) {
                     Ok(found) => found,
                     Err(error) => {
                         tracing::debug!(?remote_name, ?id, ?error, "Not an action");
@@ -167,7 +172,7 @@ fn sync_action(
         };
 
         // Load an action runner directly out of a repository without checking it out.
-        let (kind, action) = crate::action::load(&r, &cx.eval, id)?;
+        let (kind, action) = crate::action::load(&r, eval, id)?;
         found = Some((kind, action, false));
     }
 
@@ -177,15 +182,12 @@ fn sync_action(
 
     let action = action.load(kind, &work_dir, version, export)?;
 
-    fs::create_dir_all(&state_dir)
-        .with_context(|| anyhow!("Failed to create envs directory: {}", state_dir.display()))?;
-
     let runner = ActionRunner::new(
         format!("{repo}-{name}-{version}").into(),
         action.kind,
         action.defaults,
         Rc::from(work_dir),
-        Rc::from(state_dir),
+        Rc::from(repo_dir),
     );
 
     runners.insert(key, runner);

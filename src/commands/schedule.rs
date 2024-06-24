@@ -6,7 +6,7 @@ use crate::rstr::RStr;
 use crate::workflows::Step;
 
 use super::{
-    new_env, ActionConfig, ActionRunner, BatchConfig, ScheduleBasicCommand, ScheduleNodeAction,
+    ActionConfig, ActionRunner, BatchConfig, Env, ScheduleBasicCommand, ScheduleNodeAction,
     ScheduleRun, ScheduleStaticSetup, ScheduleUse, Session,
 };
 
@@ -44,7 +44,7 @@ pub(super) fn build_steps(
     runner: Option<&ActionRunner>,
     c: Option<&ActionConfig>,
 ) -> Result<Vec<Schedule>> {
-    let (env, tree) = new_env(batch, runner, c)?;
+    let env = Env::new(batch, runner, c)?;
 
     let mut commands = Vec::new();
 
@@ -52,9 +52,12 @@ pub(super) fn build_steps(
         commands.push(Schedule::Push);
 
         for (index, step) in steps.iter().enumerate() {
-            let mut tree = tree.clone();
-            tree.extend(&step.tree);
-            let tree = Rc::new(tree);
+            let mut env = env.clone();
+
+            if !step.tree.is_empty() {
+                let tree = env.tree.with_extended(&step.tree);
+                env = env.with_tree(Rc::new(tree));
+            }
 
             if let Some(run) = &step.run {
                 commands.push(Schedule::Run(ScheduleRun::new(
@@ -62,7 +65,6 @@ pub(super) fn build_steps(
                     action_name.map(Box::from),
                     Box::from(run.as_str()),
                     step.clone(),
-                    tree.clone(),
                     env.clone(),
                 )));
             }
@@ -71,7 +73,6 @@ pub(super) fn build_steps(
                 commands.push(Schedule::Use(ScheduleUse::new(
                     uses.clone(),
                     step.clone(),
-                    tree.clone(),
                     env.clone(),
                 )));
             }

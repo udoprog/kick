@@ -302,14 +302,14 @@ impl From<String> for RString {
 impl From<&String> for RString {
     #[inline]
     fn from(value: &String) -> Self {
-        RString(value.clone())
+        Self::from(value.clone())
     }
 }
 
 impl From<&str> for RString {
     #[inline]
     fn from(value: &str) -> Self {
-        RString(value.into())
+        Self::from(value.to_owned())
     }
 }
 
@@ -317,6 +317,13 @@ impl From<&RStr> for RString {
     #[inline]
     fn from(value: &RStr) -> Self {
         value.to_owned()
+    }
+}
+
+impl<'a> From<Cow<'a, str>> for RString {
+    #[inline]
+    fn from(value: Cow<'a, str>) -> Self {
+        Self::from(value.into_owned())
     }
 }
 

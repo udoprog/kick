@@ -369,7 +369,6 @@ use config::{Config, Distribution, Os};
 use directories::ProjectDirs;
 use env::SecretString;
 use relative_path::{RelativePath, RelativePathBuf};
-use workflows::Eval;
 
 use crate::ctxt::Paths;
 use crate::env::Env;
@@ -851,7 +850,6 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     };
 
     let mut cx = ctxt::Ctxt {
-        eval: Eval::empty(),
         system: &system,
         git_credentials: &git_credentials,
         current_os: os,

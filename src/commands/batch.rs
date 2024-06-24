@@ -19,7 +19,7 @@ use crate::shell::Shell;
 use crate::workflows::{Matrix, Step};
 
 use super::{
-    new_env, ActionConfig, BatchConfig, Run, RunKind, RunOn, Schedule, ScheduleBasicCommand,
+    ActionConfig, BatchConfig, Env, Run, RunKind, RunOn, Schedule, ScheduleBasicCommand,
     ScheduleUse, Scheduler, Session,
 };
 
@@ -61,12 +61,11 @@ impl Batch {
         c: &ActionConfig<'_>,
         id: impl AsRef<RStr>,
     ) -> Result<Self> {
-        let (env, tree) = new_env(batch, None, Some(c))?;
+        let env = Env::new(batch, None, Some(c))?;
 
         let u = Schedule::Use(ScheduleUse::new(
             id.as_ref().as_rc(),
             Rc::new(Step::default()),
-            Rc::new(tree),
             env,
         ));
 
@@ -264,9 +263,19 @@ impl Batch {
                     }
                 }
 
+                // Note that we don't want to pass PATH to WSL, it will only
+                // confuse any processes running in there since those paths
+                // points to OS-specified binaries.
                 if !paths.is_empty() || !scheduler.paths().is_empty() {
-                    let current_path = env::var_os("PATH").unwrap_or_default();
-                    let current_path = env::split_paths(&current_path);
+                    let current_path;
+
+                    let current_path = match run_on {
+                        RunOn::Wsl(..) => env::split_paths(""),
+                        RunOn::Same => {
+                            current_path = env::var_os("PATH").unwrap_or_default();
+                            env::split_paths(&current_path)
+                        }
+                    };
 
                     let paths = env::join_paths(
                         paths
@@ -277,12 +286,14 @@ impl Batch {
                     )?;
 
                     run_command.env("PATH", paths);
+                } else if matches!(run_on, RunOn::Wsl(..)) {
+                    run_command.env_remove("PATH");
                 }
 
                 let display_impl;
 
                 let (display, shell, display_env): (&dyn fmt::Display, _, _) = 'display: {
-                    if batch.verbose == 2 {
+                    if batch.verbose >= 2 {
                         display_impl = run_command
                             .display_with(batch.shell)
                             .with_exposed(batch.exposed);
@@ -291,17 +302,17 @@ impl Batch {
 
                     let display_env = &display_command.as_ref().unwrap_or(&run_command).env;
 
-                    if let Some(script_source) = &script_source {
-                        break 'display (script_source, Shell::Bash, display_env);
+                    if let Some((ref script_source, shell)) = script_source {
+                        break 'display (script_source, shell, display_env);
                     }
 
                     display_impl = display_command
                         .as_ref()
                         .unwrap_or(&run_command)
-                        .display_with(Shell::Bash)
+                        .display_with(batch.shell)
                         .with_exposed(batch.exposed);
 
-                    (&display_impl, Shell::Bash, display_env)
+                    (&display_impl, batch.shell, display_env)
                 };
 
                 if let Some(name) = &run.name {
@@ -383,6 +394,15 @@ impl Batch {
                 }
 
                 writeln!(o)?;
+
+                if batch.verbose >= 2 {
+                    if let Some((source, shell)) = &script_source {
+                        o.set_color(&batch.colors.title)?;
+                        writeln!(o, "# {shell} script:")?;
+                        o.reset()?;
+                        writeln!(o, "{source}")?;
+                    }
+                }
 
                 if run.skipped.is_none() && !batch.dry_run {
                     truncate(run.files())?;
@@ -657,7 +677,12 @@ fn setup_same<'a>(
 fn setup_wsl<'a>(
     run: &Run,
     env: impl IntoIterator<Item = &'a str>,
-) -> (Command, String, Option<ScriptFile>, Option<Box<RStr>>) {
+) -> (
+    Command,
+    String,
+    Option<ScriptFile>,
+    Option<(Box<RStr>, Shell)>,
+) {
     let mut seen = HashSet::new();
     let mut wslenv = String::new();
     let mut script_file = None;
@@ -672,7 +697,7 @@ fn setup_wsl<'a>(
                 c.args(["-Command"]);
                 c.arg(script);
 
-                script_source = Some(script.clone());
+                script_source = Some((script.clone(), Shell::Powershell));
             }
             Shell::Bash => {
                 c = Command::new("bash");
@@ -684,7 +709,7 @@ fn setup_wsl<'a>(
                     script.clone(),
                     "bash",
                 ));
-                script_source = Some(script.clone());
+                script_source = Some((script.clone(), Shell::Bash));
             }
         },
         RunKind::Command { command, args } => {
@@ -702,10 +727,10 @@ fn setup_wsl<'a>(
                 false,
                 node_script_file.clone(),
             ));
-            script_source = Some(Box::<RStr>::from(format!(
-                "node {}",
-                node_script_file.display()
-            )));
+
+            let source = Box::<RStr>::from(format!("node {}", node_script_file.display()));
+
+            script_source = Some((source, Shell::Bash));
         }
     }
 

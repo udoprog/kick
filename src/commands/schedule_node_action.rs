@@ -37,13 +37,11 @@ impl ScheduleNodeAction {
     }
 
     pub(super) fn build(self) -> Result<Run> {
-        let (env, _) = self.env.build(None)?;
-
         let run = Run::node(self.node_version, self.path)
             .with_id(self.id.map(|id| id.as_ref().to_owned()))
             .with_name(Some(self.uses))
             .with_skipped(self.skipped)
-            .with_env(env);
+            .with_env(self.env.build_os_env());
 
         Ok(self.env.decorate(run))
     }

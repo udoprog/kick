@@ -36,7 +36,7 @@ pub(crate) enum ActionKind {
 /// Load action context from the given repository.
 pub(crate) fn load<'repo>(
     repo: &'repo Repository,
-    eval: &Eval<'_>,
+    eval: &Eval,
     id: ObjectId,
 ) -> Result<(ActionRunnerKind, ActionContext<'repo>)> {
     let mut cx = ActionContext::default();
@@ -241,7 +241,7 @@ impl<'repo> ActionContext<'repo> {
         })
     }
 
-    fn process_actions_yml(&mut self, action_yml: &yaml::Document, eval: &Eval<'_>) -> Result<()> {
+    fn process_actions_yml(&mut self, action_yml: &yaml::Document, eval: &Eval) -> Result<()> {
         let Some(action_yml) = action_yml.as_ref().as_mapping() else {
             bail!("Expected mapping in action.yml");
         };

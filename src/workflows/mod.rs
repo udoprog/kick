@@ -31,6 +31,8 @@ use crate::shell::Shell;
 
 use self::eval::{EvalError, Expr};
 
+static EMPTY_TREE: Tree = Tree::new();
+
 type CustomFunction = for<'m> fn(&Span<u32>, &[Expr<'m>]) -> Result<Expr<'m>, eval::EvalError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,7 +180,7 @@ fn build_job(
     value: yaml::Mapping<'_>,
     ignore: &HashSet<String>,
     filter: &[(String, String)],
-    eval: &Eval<'_>,
+    eval: &Eval,
 ) -> Result<Job> {
     let runs_on = value
         .get("runs-on")
@@ -191,10 +193,10 @@ fn build_job(
 
     for matrix in build_matrices(&value, ignore, filter, eval)? {
         let tree = eval.tree().with_prefix(["matrix"], matrix.matrix.clone());
-        let eval = eval.with_tree(&tree);
+        let eval = Eval::new(&tree);
 
-        let (steps, step_mappings, tree) = load_steps(&value, &eval)?;
-        let eval = eval.with_tree(&tree);
+        let (steps, step_mappings, tree) = load_steps(&value, eval)?;
+        let eval = Eval::new(&tree);
 
         let steps = Steps {
             runs_on: eval.eval(runs_on)?.into_owned(),
@@ -219,7 +221,7 @@ fn build_job(
 /// Load steps from the given YAML value.
 pub(crate) fn load_steps(
     mapping: &yaml::Mapping<'_>,
-    eval: &Eval<'_>,
+    eval: &Eval,
 ) -> Result<(Vec<Rc<Step>>, Vec<StepMapping>, Rc<Tree>)> {
     let mut steps = Vec::new();
     let mut step_mappings = Vec::new();
@@ -231,8 +233,9 @@ pub(crate) fn load_steps(
     let tree = eval
         .tree()
         .with_prefix(["env"], extract_env(eval, mapping)?);
+
     let tree = Rc::new(tree);
-    let eval = eval.with_tree(tree.as_ref());
+    let eval = Eval::new(tree.as_ref());
 
     for value in seq {
         let Some(value) = value.as_mapping() else {
@@ -303,7 +306,7 @@ pub(crate) fn build_matrices(
     value: &yaml::Mapping<'_>,
     ignore: &HashSet<String>,
     filter: &[(String, String)],
-    eval: &Eval<'_>,
+    eval: &Eval,
 ) -> Result<Vec<Matrix>> {
     let mut matrices = Vec::new();
     let mut included = Vec::new();
@@ -452,7 +455,7 @@ pub(crate) fn build_matrices(
     Ok(matrices)
 }
 
-fn extract_env(eval: &Eval<'_>, m: &yaml::Mapping<'_>) -> Result<BTreeMap<String, RString>> {
+fn extract_env(eval: &Eval, m: &yaml::Mapping<'_>) -> Result<BTreeMap<String, RString>> {
     let mut env = BTreeMap::new();
 
     let Some(m) = m.get("env").and_then(|v| v.as_mapping()) else {
@@ -519,7 +522,7 @@ impl<'a> WorkflowManifest<'a, '_> {
             );
         };
 
-        let mut tree = self.cx.eval.tree().clone();
+        let mut tree = Tree::new();
 
         if let Some(auth) = self.cx.github_auth() {
             if let Some(owned) = RString::redacted(auth.as_secret()) {
@@ -527,8 +530,10 @@ impl<'a> WorkflowManifest<'a, '_> {
             }
         }
 
-        tree.insert_prefix(["env"], extract_env(&self.cx.eval, &mapping)?);
-        let eval = self.cx.eval.with_tree(&tree);
+        let new_env = extract_env(Eval::new(&tree), &mapping)?;
+        tree.insert_prefix(["env"], new_env);
+
+        let eval = Eval::new(&tree);
 
         let jobs = mapping
             .get("jobs")
@@ -547,14 +552,12 @@ impl<'a> WorkflowManifest<'a, '_> {
                 )
             })?;
 
-            outputs.push(
-                build_job(name, job, ignore, filter, &eval).with_context(|| {
-                    anyhow!(
-                        "{}: Building job `{name}`",
-                        self.cx.to_path(&self.path).display()
-                    )
-                })?,
-            );
+            outputs.push(build_job(name, job, ignore, filter, eval).with_context(|| {
+                anyhow!(
+                    "{}: Building job `{name}`",
+                    self.cx.to_path(&self.path).display()
+                )
+            })?);
         }
 
         Ok(outputs)
@@ -622,6 +625,11 @@ impl Tree {
         Tree { root: Node::new() }
     }
 
+    /// Test if the tree is empty.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.root.value.is_none() && self.root.children.is_empty()
+    }
+
     /// Return a modified clone of the current tree with the given prefix set.
     pub(crate) fn with_prefix<I, V, U>(&self, key: I, vars: V) -> Self
     where
@@ -632,6 +640,13 @@ impl Tree {
         let mut tree = self.clone();
         tree.insert_prefix(key, vars);
         tree
+    }
+
+    /// Modify the current tree and return it.
+    pub(crate) fn with_extended(&self, other: &Self) -> Self {
+        let mut this = self.clone();
+        this.extend(other);
+        this
     }
 
     /// Extend this tree with another tree.
@@ -662,21 +677,22 @@ impl Tree {
     }
 
     /// Insert a prefix into the current tree.
-    pub(crate) fn insert_prefix<I, V, U>(&mut self, key: I, vars: V)
+    pub(crate) fn insert_prefix<I, V, K, U>(&mut self, key: I, vars: V)
     where
         I: IntoIterator<Item: AsRef<str>>,
-        V: IntoIterator<Item = (String, U)>,
+        V: IntoIterator<Item = (K, U)>,
+        String: From<K>,
         RString: From<U>,
     {
         let mut current = &mut self.root;
 
         for key in key {
             let key = key.as_ref();
-
             current = current.children.entry(key.to_owned()).or_default();
         }
 
         for (key, value) in vars {
+            let key = String::from(key);
             current.children.entry(key).or_default().value = Some(RString::from(value));
         }
     }
@@ -728,6 +744,13 @@ impl Tree {
     }
 }
 
+impl Default for &Tree {
+    #[inline]
+    fn default() -> Self {
+        &EMPTY_TREE
+    }
+}
+
 impl fmt::Debug for Tree {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -735,43 +758,44 @@ impl fmt::Debug for Tree {
     }
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct Eval<'a> {
-    tree: &'a Tree,
-    functions: fn(&str) -> Option<CustomFunction>,
+/// An evaluation environment.
+#[repr(transparent)]
+pub(crate) struct Eval {
+    tree: Tree,
 }
 
-impl<'a> Eval<'a> {
-    pub(crate) const fn new(tree: &'a Tree) -> Self {
-        Self {
-            tree,
-            functions: lookup_function,
-        }
+impl Eval {
+    pub(crate) const fn new(tree: &Tree) -> &Self {
+        // SAFETY: Eval is repr transparent around a tree.
+        unsafe { &*(tree as *const Tree as *const Self) }
     }
 
-    pub(crate) fn empty() -> Self {
-        static EMPTY_TREE: Tree = Tree::new();
+    /// Return an empty eval.
+    pub(crate) fn empty() -> &'static Self {
         Self::new(&EMPTY_TREE)
     }
 
     /// Get a function by name.
     pub(crate) fn function(&self, name: &str) -> Option<CustomFunction> {
-        (self.functions)(name)
-    }
-
-    /// Modify the environment with a matrix.
-    pub(crate) fn with_tree(self, tree: &'a Tree) -> Self {
-        Self { tree, ..self }
+        lookup_function(name)
     }
 
     /// Clone the current tree so that it can be modified.
     #[inline]
     pub(crate) fn tree(&self) -> &Tree {
-        self.tree
+        &self.tree
     }
 
     /// Evaluate a string with matrix variables.
-    pub(crate) fn eval<'s>(&self, source: &'s str) -> Result<Cow<'s, RStr>, ExprError> {
+    #[inline]
+    pub(crate) fn eval<'s, S>(&self, source: &'s S) -> Result<Cow<'s, RStr>, ExprError>
+    where
+        S: ?Sized + AsRef<str>,
+    {
+        self.eval_inner(source.as_ref())
+    }
+
+    fn eval_inner<'s>(&self, source: &'s str) -> Result<Cow<'s, RStr>, ExprError> {
         use std::fmt::Write;
 
         let Some(i) = source.find("${{") else {
@@ -878,7 +902,7 @@ impl<'a> Eval<'a> {
     }
 
     /// Get a variable from the matrix.
-    fn lookup<I>(&self, key: I) -> Vec<&'a RStr>
+    fn lookup<I>(&self, key: I) -> Vec<&RStr>
     where
         I: IntoIterator<Item: AsRef<str>, IntoIter: Clone>,
     {

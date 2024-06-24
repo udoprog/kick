@@ -8,7 +8,7 @@ use anyhow::{bail, Result};
 use crate::action::ActionKind;
 use crate::rstr::RStr;
 
-use super::{build_steps, new_env, ActionConfig, BatchConfig, Schedule, ScheduleNodeAction};
+use super::{build_steps, ActionConfig, BatchConfig, Env, Schedule, ScheduleNodeAction};
 
 #[derive(Debug)]
 pub(super) struct ActionRunner {
@@ -16,7 +16,7 @@ pub(super) struct ActionRunner {
     kind: ActionKind,
     defaults: BTreeMap<String, String>,
     action_path: Rc<Path>,
-    state_dir: Rc<Path>,
+    repo_dir: Rc<Path>,
 }
 
 impl ActionRunner {
@@ -25,14 +25,14 @@ impl ActionRunner {
         kind: ActionKind,
         defaults: BTreeMap<String, String>,
         action_path: Rc<Path>,
-        state_dir: Rc<Path>,
+        repo_dir: Rc<Path>,
     ) -> Self {
         Self {
             id,
             kind,
             defaults,
             action_path,
-            state_dir,
+            repo_dir,
         }
     }
 
@@ -42,8 +42,8 @@ impl ActionRunner {
     }
 
     /// Get the state directory associated with the action.
-    pub(super) fn state_dir(&self) -> &Path {
-        &self.state_dir
+    pub(super) fn repo_dir(&self) -> &Path {
+        &self.repo_dir
     }
 
     /// Get the action path.
@@ -96,7 +96,7 @@ impl ActionRunners {
                 node_version,
             } => {
                 let id = c.id().map(RStr::as_rc);
-                let (env, _) = new_env(batch, Some(action), Some(c))?;
+                let env = Env::new(batch, Some(action), Some(c))?;
 
                 if let Some(path) = post_path {
                     post.push(Schedule::Push);

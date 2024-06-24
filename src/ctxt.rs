@@ -16,7 +16,6 @@ use crate::env::{Env, SecretString};
 use crate::model::{RenderRustVersions, Repo, RepoParams, RepoRef, State};
 use crate::process::Command;
 use crate::repo_sets::RepoSets;
-use crate::workflows::Eval;
 use crate::{octokit, system};
 
 /// Paths being used.
@@ -68,7 +67,6 @@ impl Paths<'_> {
 }
 
 pub(crate) struct Ctxt<'a> {
-    pub(crate) eval: Eval<'a>,
     pub(crate) system: &'a System,
     pub(crate) git_credentials: &'a Option<system::git::Credentials>,
     pub(crate) current_os: Os,

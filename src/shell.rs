@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::fmt;
 
 use clap::ValueEnum;
 
@@ -106,6 +107,16 @@ impl Shell {
                 r: "`r",
                 t: "`t",
             },
+        }
+    }
+}
+
+impl fmt::Display for Shell {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Shell::Bash => write!(f, "bash"),
+            Shell::Powershell => write!(f, "powershell"),
         }
     }
 }

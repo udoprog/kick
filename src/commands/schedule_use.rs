@@ -28,18 +28,12 @@ fn should_skip_use(uses: &str) -> bool {
 pub(crate) struct ScheduleUse {
     uses: Rc<RStr>,
     step: Rc<Step>,
-    tree: Rc<Tree>,
     env: Env,
 }
 
 impl ScheduleUse {
-    pub(super) fn new(uses: Rc<RStr>, step: Rc<Step>, tree: Rc<Tree>, env: Env) -> Self {
-        Self {
-            uses,
-            step,
-            tree,
-            env,
-        }
+    pub(super) fn new(uses: Rc<RStr>, step: Rc<Step>, env: Env) -> Self {
+        Self { uses, step, env }
     }
 
     /// Get what this scheduled use is using.
@@ -50,20 +44,12 @@ impl ScheduleUse {
     pub(super) fn build(
         self,
         batch: &BatchConfig<'_, '_>,
-        parent: Option<&Tree>,
+        parent: &Tree,
         runners: &ActionRunners,
         os: &Os,
     ) -> Result<RunGroup> {
-        let mut tree = self.tree.as_ref().clone();
-
-        if let Some(parent) = parent {
-            tree.extend(parent);
-        }
-
-        let eval = Eval::new(&tree);
-        let (_, tree_env) = self.env.build(Some((&eval, &self.step.env)))?;
-        tree.insert_prefix(["env"], tree_env);
-        let eval = Eval::new(&tree);
+        let env = self.env.extend_with(parent, &self.step.env)?;
+        let eval = Eval::new(&env.tree);
 
         let id = self.step.id.as_ref().map(|v| eval.eval(v)).transpose()?;
 

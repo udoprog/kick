@@ -15,7 +15,6 @@ pub(crate) struct ScheduleRun {
     action_name: Option<Box<RStr>>,
     script: Box<str>,
     step: Rc<Step>,
-    tree: Rc<Tree>,
     env: Env,
 }
 
@@ -25,7 +24,6 @@ impl ScheduleRun {
         action_name: Option<Box<RStr>>,
         script: Box<str>,
         step: Rc<Step>,
-        tree: Rc<Tree>,
         env: Env,
     ) -> Self {
         Self {
@@ -33,23 +31,13 @@ impl ScheduleRun {
             action_name,
             script,
             step,
-            tree,
             env,
         }
     }
 
-    pub(super) fn build(self, parent: Option<&Tree>) -> Result<Run> {
-        let mut tree = self.tree.as_ref().clone();
-
-        if let Some(parent) = parent {
-            tree.extend(parent);
-        }
-
-        let eval = Eval::new(&tree);
-        let (env, tree_env) = self.env.build(Some((&eval, &self.step.env)))?;
-
-        tree.insert_prefix(["env"], tree_env);
-        let eval = Eval::new(&tree);
+    pub(super) fn build(self, parent: &Tree) -> Result<Run> {
+        let env = self.env.extend_with(parent, &self.step.env)?;
+        let eval = Eval::new(&env.tree);
 
         let mut skipped = None;
 
@@ -86,11 +74,11 @@ impl ScheduleRun {
         let run = Run::script(self.id, script.as_ref(), shell)
             .with_id(id.map(Cow::into_owned))
             .with_name(name.as_deref())
-            .with_env(env)
+            .with_env(env.build_os_env())
             .with_skipped(skipped.clone())
             .with_working_directory(working_directory);
 
-        Ok(self.env.decorate(run))
+        Ok(env.decorate(run))
     }
 }
 

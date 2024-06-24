@@ -7,6 +7,7 @@ use anyhow::{bail, ensure, Result};
 
 use crate::config::Distribution;
 use crate::process::Command;
+use crate::workflows::Eval;
 
 use super::{ActionRunners, Actions, BatchConfig, Remediations};
 
@@ -69,7 +70,11 @@ impl Session {
     }
 
     /// Run all preparations.
-    pub(super) fn prepare(&mut self, config: &BatchConfig<'_, '_>) -> Result<Remediations> {
+    pub(super) fn prepare(
+        &mut self,
+        config: &BatchConfig<'_, '_>,
+        eval: &Eval,
+    ) -> Result<Remediations> {
         let mut suggestions = Remediations::default();
 
         if !self.dists.is_empty() {
@@ -206,7 +211,8 @@ impl Session {
             }
         }
 
-        self.actions.synchronize(&mut self.runners, config.cx)?;
+        self.actions
+            .synchronize(&mut self.runners, config.cx, eval)?;
         Ok(suggestions)
     }
 
