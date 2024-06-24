@@ -7,6 +7,7 @@ use std::rc::Rc;
 use std::str::{self, FromStr};
 
 use anyhow::{anyhow, bail, Context, Result};
+use bstr::ByteSlice;
 use gix::objs::tree::EntryMode;
 use gix::objs::Kind;
 use gix::{Id, ObjectId, Repository};
@@ -283,9 +284,18 @@ impl<'repo> ActionContext<'repo> {
                     continue;
                 };
 
-                if let Some(default) = value.get("default").and_then(|v| v.as_str()) {
-                    self.defaults
-                        .insert(key.to_owned(), default.trim().to_owned());
+                if let Some(default) = value.get("default") {
+                    let value = match default.into_any() {
+                        yaml::Any::Null => "null".to_owned(),
+                        yaml::Any::Bool(b) => b.to_string(),
+                        yaml::Any::Number(n) => n.as_raw().to_string(),
+                        yaml::Any::String(s) => s.to_str()?.to_owned(),
+                        any => {
+                            bail!("Unsupported value: {any:?}")
+                        }
+                    };
+
+                    self.defaults.insert(key.to_owned(), value);
                 }
 
                 if let Some(true) = value.get("required").and_then(|v| v.as_bool()) {

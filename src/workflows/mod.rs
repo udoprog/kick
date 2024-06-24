@@ -19,6 +19,7 @@ use std::rc::Rc;
 use std::str;
 
 use anyhow::{anyhow, bail, Context, Result};
+use bstr::ByteSlice;
 use nondestructive::yaml;
 use relative_path::{RelativePath, RelativePathBuf};
 use syntree::Span;
@@ -368,6 +369,7 @@ pub(crate) fn build_matrices(
             };
 
             let mut values = Vec::new();
+            let id = value.id();
 
             match value.into_any() {
                 yaml::Any::Sequence(sequence) => {
@@ -383,15 +385,25 @@ pub(crate) fn build_matrices(
                         }
                     }
                 }
-                yaml::Any::Scalar(value) => {
-                    let id = value.id();
+                yaml::Any::Bool(b) => {
+                    let value = RString::from(b.to_string());
 
-                    if let Some(value) = value.as_str() {
-                        let value = eval.eval(value)?.into_owned();
+                    if filter(&value) {
+                        values.push((value, id));
+                    }
+                }
+                yaml::Any::Number(n) => {
+                    let value = RStr::new(n.as_raw().to_str()?);
 
-                        if filter(&value) {
-                            values.push((value, id));
-                        }
+                    if filter(value) {
+                        values.push((value.to_owned(), id));
+                    }
+                }
+                yaml::Any::String(value) => {
+                    let value = eval.eval(value.to_str()?)?;
+
+                    if filter(&value) {
+                        values.push((value.into_owned(), id));
                     }
                 }
                 _ => {}
