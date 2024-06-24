@@ -152,7 +152,7 @@ pub(crate) struct Command {
     stdout: Option<Stdio>,
     stderr: Option<Stdio>,
     pub(crate) env: Vec<(OsString, OsArg)>,
-    env_remove: Vec<OsString>,
+    pub(crate) env_remove: Vec<OsString>,
 }
 
 impl Command {

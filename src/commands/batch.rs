@@ -270,10 +270,10 @@ impl Batch {
                     let current_path;
 
                     let current_path = match run_on {
-                        RunOn::Wsl(..) => env::split_paths(""),
+                        RunOn::Wsl(..) => None,
                         RunOn::Same => {
-                            current_path = env::var_os("PATH").unwrap_or_default();
-                            env::split_paths(&current_path)
+                            current_path = env::var_os("PATH");
+                            current_path.as_ref().map(env::split_paths)
                         }
                     };
 
@@ -281,8 +281,8 @@ impl Batch {
                         paths
                             .iter()
                             .cloned()
-                            .chain(scheduler.paths().iter().cloned().map(PathBuf::from))
-                            .chain(current_path),
+                            .chain(current_path.into_iter().flatten())
+                            .chain(scheduler.paths().iter().cloned().map(PathBuf::from)),
                     )?;
 
                     run_command.env("PATH", paths);
@@ -292,18 +292,32 @@ impl Batch {
 
                 let display_impl;
 
-                let (display, shell, display_env): (&dyn fmt::Display, _, _) = 'display: {
+                let (display, shell, display_env, display_env_remove): (
+                    &dyn fmt::Display,
+                    _,
+                    _,
+                    _,
+                ) = 'display: {
                     if batch.verbose >= 2 {
                         display_impl = run_command
                             .display_with(batch.shell)
                             .with_exposed(batch.exposed);
-                        break 'display (&display_impl, batch.shell, &run_command.env);
+
+                        break 'display (
+                            &display_impl,
+                            batch.shell,
+                            &run_command.env,
+                            &run_command.env_remove,
+                        );
                     }
 
-                    let display_env = &display_command.as_ref().unwrap_or(&run_command).env;
+                    let current_command = display_command.as_ref().unwrap_or(&run_command);
+
+                    let display_env = &current_command.env;
+                    let display_env_remove = &current_command.env_remove;
 
                     if let Some((ref script_source, shell)) = script_source {
-                        break 'display (script_source, shell, display_env);
+                        break 'display (script_source, shell, display_env, display_env_remove);
                     }
 
                     display_impl = display_command
@@ -312,7 +326,7 @@ impl Batch {
                         .display_with(batch.shell)
                         .with_exposed(batch.exposed);
 
-                    (&display_impl, batch.shell, display_env)
+                    (&display_impl, batch.shell, display_env, display_env_remove)
                 };
 
                 if let Some(name) = &run.name {
@@ -328,7 +342,7 @@ impl Batch {
                     o.reset()?;
                 }
 
-                if batch.verbose == 0 && !display_env.is_empty() {
+                if batch.verbose == 0 && !display_env.is_empty() && !display_env_remove.is_empty() {
                     let plural = if display_env.len() == 1 {
                         "variable"
                     } else {
@@ -359,6 +373,11 @@ impl Batch {
                                 let value = shell.escape(value.as_ref());
                                 write!(o, "{key}={value} ")?;
                             }
+
+                            for key in display_env_remove {
+                                let key = key.to_string_lossy();
+                                write!(o, "{key}=\"\" ")?;
+                            }
                         }
 
                         write!(o, "{display}")?;
@@ -383,6 +402,11 @@ impl Batch {
                                 } else {
                                     writeln!(o, r#"  ${{Env:{key}={value}}};"#)?;
                                 }
+                            }
+
+                            for key in display_env_remove {
+                                let key = key.to_string_lossy();
+                                writeln!(o, r#"  Remove-Item Env:{key};"#)?;
                             }
 
                             writeln!(o, "  {display}")?;
@@ -728,8 +752,7 @@ fn setup_wsl<'a>(
                 node_script_file.clone(),
             ));
 
-            let source = Box::<RStr>::from(format!("node {}", node_script_file.display()));
-
+            let source = Box::<RStr>::from("exec node $KICK_SCRIPT_FILE".to_owned());
             script_source = Some((source, Shell::Bash));
         }
     }
