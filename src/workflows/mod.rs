@@ -324,6 +324,22 @@ pub(crate) fn build_matrices(
             break 'bail;
         };
 
+        let filter = |key: &str, value: &RStr| {
+            let mut has_key = false;
+
+            for (k, v) in filter {
+                if k == key {
+                    has_key = true;
+
+                    if value.str_eq(v) {
+                        return true;
+                    }
+                }
+            }
+
+            !has_key
+        };
+
         for (key, value) in matrix {
             let key = str::from_utf8(key).context("Bad matrix key")?;
 
@@ -340,11 +356,27 @@ pub(crate) fn build_matrices(
                     for (key, value) in mapping {
                         let id = value.id();
                         let key = str::from_utf8(key).context("Bad matrix key")?;
-                        let value = value.as_str().with_context(|| {
-                            anyhow!(".include[{index}][{key}]: Value must be a string")
+
+                        if let Some(sequence) = value.as_sequence() {
+                            for value in sequence {
+                                let id = value.id();
+
+                                let value = value_as_string(eval, value)?
+                                    .with_context(|| anyhow!(".include[{index}][{key}]: Matrix value in array must be scalar"))?;
+
+                                if filter(key, value.as_ref()) {
+                                    matrix.insert_with_id(key, value, id);
+                                }
+                            }
+                        }
+
+                        let value = value_as_string(eval, value)?.with_context(|| {
+                            anyhow!(".include[{index}][{key}]: Value must be a scalar value")
                         })?;
-                        let value = eval.eval(value)?;
-                        matrix.insert_with_id(key, value, id);
+
+                        if filter(key, value.as_ref()) {
+                            matrix.insert_with_id(key, value, id);
+                        }
                     }
 
                     included.push(matrix);
@@ -357,59 +389,27 @@ pub(crate) fn build_matrices(
                 continue;
             }
 
-            let filter = |value: &RStr| {
-                for (k, v) in filter {
-                    if k != key {
-                        continue;
-                    }
-
-                    if !value.str_eq(v) {
-                        return false;
-                    }
-                }
-
-                true
-            };
-
             let mut values = Vec::new();
             let id = value.id();
 
-            match value.into_any() {
-                yaml::Any::Sequence(sequence) => {
-                    for value in sequence {
-                        let id = value.id();
+            if let Some(sequence) = value.as_sequence() {
+                for (index, value) in sequence.iter().enumerate() {
+                    let id = value.id();
 
-                        if let Some(value) = value.as_str() {
-                            let value = eval.eval(value)?.into_owned();
+                    let value = value_as_string(eval, value)?.with_context(|| {
+                        anyhow!(".{key}[{index}]: Matrix array value must be scalar")
+                    })?;
 
-                            if filter(&value) {
-                                values.push((value, id));
-                            }
-                        }
-                    }
-                }
-                yaml::Any::Bool(b) => {
-                    let value = RString::from(b.to_string());
-
-                    if filter(&value) {
+                    if filter(key, value.as_ref()) {
                         values.push((value, id));
                     }
                 }
-                yaml::Any::Number(n) => {
-                    let value = RStr::new(n.as_raw().to_str()?);
+            }
 
-                    if filter(value) {
-                        values.push((value.to_owned(), id));
-                    }
+            if let Some(value) = value_as_string(eval, value)? {
+                if filter(key, &value) {
+                    values.push((value, id));
                 }
-                yaml::Any::String(value) => {
-                    let value = eval.eval(value.to_str()?)?;
-
-                    if filter(&value) {
-                        values.push((value.into_owned(), id));
-                    }
-                }
-                _ => {}
             }
 
             if !values.is_empty() {
@@ -453,6 +453,15 @@ pub(crate) fn build_matrices(
     }
 
     Ok(matrices)
+}
+
+fn value_as_string(eval: &Eval, value: yaml::Value<'_>) -> Result<Option<RString>> {
+    match value.as_any() {
+        yaml::Any::Bool(b) => Ok(Some(RString::from(if b { "true" } else { "false" }))),
+        yaml::Any::Number(n) => Ok(Some(RString::from(n.as_raw().to_str()?))),
+        yaml::Any::String(value) => Ok(Some(eval.eval(value.to_str()?)?.into_owned())),
+        _ => Ok(None),
+    }
 }
 
 fn extract_env(eval: &Eval, m: &yaml::Mapping<'_>) -> Result<BTreeMap<String, RString>> {

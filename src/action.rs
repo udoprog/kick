@@ -59,20 +59,24 @@ pub(crate) fn load<'repo>(
                 Kind::Blob => {
                     tracing::trace!(?path, "blob");
 
-                    if path.parent().is_none() {
-                        if let (Some("action"), Some("yml" | "yaml")) =
-                            (path.file_stem(), path.extension())
-                        {
-                            let object = id.object()?;
+                    if let (Some("action"), Some("yml" | "yaml")) =
+                        (path.file_stem(), path.extension())
+                    {
+                        tracing::trace!(?path, "Processing action manifest");
 
-                            let action_yml = yaml::from_slice(&object.data)
-                                .with_context(|| anyhow!("Reading {path}"))?;
-
-                            cx.process_actions_yml(&action_yml, eval)
-                                .with_context(|| anyhow!("Processing {path}"))?;
-
-                            cx.action_yml = Some(path.to_owned());
+                        if let Some(existing) = &cx.action_yml {
+                            bail!("Multiple action yml files: {existing} and {path}");
                         }
+
+                        let object = id.object()?;
+
+                        let action_yml = yaml::from_slice(&object.data)
+                            .with_context(|| anyhow!("Reading {path}"))?;
+
+                        cx.process_actions_yml(&action_yml, eval)
+                            .with_context(|| anyhow!("Processing {path}"))?;
+
+                        cx.action_yml = Some(path.to_owned());
                     }
 
                     cx.paths.insert(path.clone(), (id, entry.mode()));
