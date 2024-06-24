@@ -11,7 +11,7 @@ use gix::objs::tree::EntryMode;
 use gix::objs::Kind;
 use gix::{Id, ObjectId, Repository};
 use nondestructive::yaml;
-use relative_path::RelativePathBuf;
+use relative_path::{RelativePath, RelativePathBuf};
 
 use crate::workflows::{self, Eval, Step};
 
@@ -115,7 +115,7 @@ impl<'repo> ActionContext<'repo> {
     pub(crate) fn load(
         self,
         kind: ActionRunnerKind,
-        work_dir: &Path,
+        dir: &Path,
         version: &str,
         export: bool,
     ) -> Result<Action> {
@@ -125,57 +125,55 @@ impl<'repo> ActionContext<'repo> {
                     return Err(anyhow!("Invalid node runner version `{node_version}`"));
                 };
 
-                let post = 'post: {
+                let mut exports = Vec::new();
+
+                let main_path =
+                    Rc::<Path>::from(dir.join(format!("main-{node_version}-{version}.js")));
+                let main = self.main.with_context(|| anyhow!("Missing main script"))?;
+
+                let (main, _) = self
+                    .paths
+                    .get(&main)
+                    .with_context(|| anyhow!("Missing main script in repo: {main}"))?;
+
+                exports.push((main_path.clone(), main));
+
+                let post_path = 'post: {
                     let Some(post) = self.post else {
                         break 'post None;
                     };
 
-                    let (post, _) = self
+                    let post_path =
+                        Rc::<Path>::from(dir.join(format!("post-{node_version}-{version}.js")));
+
+                    let (id, _) = self
                         .paths
                         .get(&post)
                         .with_context(|| anyhow!("Missing post script in repo: {post}"))?;
 
-                    Some(post)
+                    exports.push((post_path.clone(), id));
+                    Some(post_path)
                 };
 
-                let main_path = work_dir.join(format!("main-{node_version}-{version}.js"));
+                let (action_yml, _) = self
+                    .paths
+                    .get(RelativePath::new("action.yml"))
+                    .context("Missing action.yml")?;
+                let action_yml_path =
+                    Rc::<Path>::from(dir.join(format!("action-{node_version}-{version}.yml")));
+
+                exports.push((action_yml_path, action_yml));
 
                 if export {
-                    let main = self.main.with_context(|| anyhow!("Missing main script"))?;
+                    for (path, id) in exports {
+                        let object = id.object()?;
+                        tracing::debug!(?path, "Writing");
 
-                    let (main, _) = self
-                        .paths
-                        .get(&main)
-                        .with_context(|| anyhow!("Missing main script in repo: {main}"))?;
-
-                    let main = main.object()?;
-
-                    tracing::debug!(?main_path, "Writing main");
-
-                    fs::write(&main_path, &main.data[..]).with_context(|| {
-                        anyhow!("Failed to write main script to: {}", main_path.display())
-                    })?;
-                }
-
-                let main_path = Rc::from(main_path);
-
-                let post_path = if let Some(post) = post {
-                    let post_path = work_dir.join(format!("post-{node_version}-{version}.js"));
-
-                    if export {
-                        let post = post.object()?;
-
-                        tracing::debug!(?post_path, "Writing post");
-
-                        fs::write(&post_path, &post.data[..]).with_context(|| {
-                            anyhow!("Failed to write post script to: {}", post_path.display())
+                        fs::write(&path, &object.data[..]).with_context(|| {
+                            anyhow!("Failed to write main script to: {}", path.display())
                         })?;
                     }
-
-                    Some(Rc::from(post_path))
-                } else {
-                    None
-                };
+                }
 
                 ActionKind::Node {
                     main_path,
@@ -185,10 +183,10 @@ impl<'repo> ActionContext<'repo> {
             }
             ActionRunnerKind::Composite => {
                 if export {
-                    tracing::debug!(?work_dir, "Exporting composite action");
+                    tracing::debug!(?dir, "Exporting composite action");
 
-                    for (dir, _) in self.dirs {
-                        let path = dir.to_path(work_dir);
+                    for (path, _) in self.dirs {
+                        let path = path.to_path(dir);
 
                         match fs::create_dir(&path) {
                             Ok(()) => {}
@@ -202,7 +200,7 @@ impl<'repo> ActionContext<'repo> {
                     }
 
                     for (path, (id, mode)) in self.paths {
-                        let path = path.to_path(work_dir);
+                        let path = path.to_path(dir);
                         let object = id.object()?;
 
                         let mut f = File::create(&path).with_context(|| {

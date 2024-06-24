@@ -7,10 +7,13 @@ use anyhow::{bail, Result};
 use crate::config::{Distribution, Os};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
+use crate::rstr::{RStr, RString};
 use crate::shell::Shell;
 use crate::workflows::WorkflowManifests;
 
 use super::{Colors, LoadedWorkflows, RunOn};
+
+const GITHUB_SERVER: &str = "https://github.com";
 
 /// A batch runner configuration.
 pub(crate) struct BatchConfig<'a, 'cx> {
@@ -29,6 +32,8 @@ pub(crate) struct BatchConfig<'a, 'cx> {
     pub(super) matrix_filter: Vec<(String, String)>,
     pub(super) fix: bool,
     pub(super) keep: bool,
+    pub(super) github_server: Option<String>,
+    pub(super) github_token: Option<Box<RStr>>,
 }
 
 impl<'a, 'cx> BatchConfig<'a, 'cx> {
@@ -50,7 +55,22 @@ impl<'a, 'cx> BatchConfig<'a, 'cx> {
             matrix_filter: Vec::new(),
             fix: false,
             keep: false,
+            github_server: None,
+            github_token: cx
+                .github_auth()
+                .and_then(|t| RString::redacted(t.as_secret()))
+                .map(Box::<RStr>::from),
         }
+    }
+
+    /// Get the configured github server.
+    pub(crate) fn github_server(&self) -> &str {
+        self.github_server.as_deref().unwrap_or(GITHUB_SERVER)
+    }
+
+    /// A github token, if available.
+    pub(crate) fn github_token(&self) -> Option<&RStr> {
+        self.github_token.as_deref()
     }
 
     /// Parse an environment.

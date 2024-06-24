@@ -5,7 +5,7 @@ use std::rc::Rc;
 use anyhow::{Context, Result};
 
 use crate::process::OsArg;
-use crate::rstr::RString;
+use crate::rstr::{RStr, RString};
 use crate::workflows::{Eval, Tree};
 
 use super::{ActionConfig, ActionRunner, BatchConfig, Run};
@@ -131,15 +131,43 @@ pub(super) fn new_env(
         file_env.insert(String::from("RUNNER_TOOL_CACHE"), tools_path.clone());
     }
 
-    let mut env = BTreeMap::new();
     let mut tree = Tree::new();
+
+    if let Some(c) = c {
+        runner_os = c.os();
+    } else {
+        runner_os = &batch.cx.current_os;
+    }
+
+    tree.insert_prefix(
+        ["env"],
+        file_env
+            .iter()
+            .map(|(k, v)| (k.clone(), RString::from(v.to_string_lossy().as_ref()))),
+    );
+    tree.insert(["runner", "os"], runner_os.as_tree_value());
+
+    let github_tree = [(String::from("server"), RStr::new(batch.github_server()))]
+        .into_iter()
+        .chain(batch.github_token().map(|t| (String::from("token"), t)));
+
+    tree.insert_prefix(["github"], github_tree);
+
+    let mut env = BTreeMap::new();
+
+    env.insert(
+        String::from("GITHUB_SERVER"),
+        RString::from(batch.github_server()),
+    );
 
     if let Some(c) = c {
         let mut inputs = BTreeMap::new();
 
         if let Some(runner) = runner {
+            let eval = Eval::new(&tree);
+
             for (k, v) in runner.defaults() {
-                inputs.insert(k.to_owned(), RString::from(v));
+                inputs.insert(k.to_owned(), eval.eval(v)?.into_owned());
             }
         }
 
@@ -155,23 +183,13 @@ pub(super) fn new_env(
             }
 
             tree.insert_prefix(["inputs"], inputs.clone());
+            tree.insert_prefix(["env"], env.clone());
         }
-
-        runner_os = c.os();
-    } else {
-        runner_os = &batch.cx.current_os;
     }
-
-    let tree_env = file_env
-        .iter()
-        .map(|(k, v)| (k.clone(), RString::from(v.to_string_lossy().as_ref())))
-        .chain(env.iter().map(|(k, v)| (k.clone(), v.clone())));
-
-    tree.insert_prefix(["env"], tree_env);
-    tree.insert(["runner", "os"], runner_os.as_tree_value());
 
     let env = Rc::new(env);
     let file_env = Rc::new(file_env);
+
     let env = Env::new(env, file_env, env_file, path_file, output_file, tools_path);
     Ok((env, tree))
 }
