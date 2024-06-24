@@ -78,21 +78,20 @@ impl ScheduleUse {
         let uses_exposed = self.uses.to_exposed();
 
         if !should_skip_use(uses_exposed.as_ref()) {
-            let c = ActionConfig::new(os)
+            let c = ActionConfig::new(os, self.uses.as_ref())
                 .with_id(id.map(Cow::into_owned))
-                .with_action_name(self.uses.as_ref())
                 .with_skipped(skipped.as_ref())
                 .with_inputs(with);
 
             let (runner_main, runner_post) = runners.build(batch, &c, &self.uses)?;
 
-            main.push(Schedule::Push);
-            main.extend(runner_main);
-            main.push(Schedule::Pop);
+            if !runner_main.is_empty() {
+                main.extend(runner_main);
+            }
 
-            post.push(Schedule::Push);
-            post.extend(runner_post);
-            post.push(Schedule::Pop);
+            if !runner_post.is_empty() {
+                post.extend(runner_post);
+            }
         }
 
         Ok(RunGroup { main, post })
@@ -125,7 +124,9 @@ fn builtin_action(
     };
 
     if let Some(rust_toolchain) = rust_toolchain(user, repo, version, with)? {
-        main.push(Schedule::Push);
+        main.push(Schedule::Push(Some(
+            RStr::new("rust toolchain (builtin)").as_rc(),
+        )));
 
         if rust_toolchain.components.is_some() || rust_toolchain.targets.is_some() {
             let mut args = vec![

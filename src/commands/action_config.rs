@@ -10,18 +10,18 @@ use super::{Batch, BatchConfig};
 /// An actions configuration.
 pub(crate) struct ActionConfig<'a> {
     os: &'a Os,
+    action_name: &'a RStr,
     id: Option<Box<RStr>>,
-    action_name: Option<Box<RStr>>,
     skipped: Option<String>,
     inputs: BTreeMap<String, RString>,
 }
 
 impl<'a> ActionConfig<'a> {
     /// Construct a new action configuration.
-    pub(crate) fn new(os: &'a Os) -> Self {
+    pub(crate) fn new(os: &'a Os, action_name: &'a RStr) -> Self {
         Self {
             os,
-            action_name: None,
+            action_name,
             id: None,
             skipped: None,
             inputs: BTreeMap::new(),
@@ -33,14 +33,14 @@ impl<'a> ActionConfig<'a> {
         self.os
     }
 
+    /// Get the name of the action being configured.
+    pub(crate) fn action_name(&self) -> &RStr {
+        self.action_name
+    }
+
     /// Get the id of the action.
     pub(crate) fn id(&self) -> Option<&RStr> {
         self.id.as_deref()
-    }
-
-    /// Get the name of the action being configured.
-    pub(crate) fn action_name(&self) -> Option<&RStr> {
-        self.action_name.as_deref()
     }
 
     /// Get the skipped config.
@@ -59,15 +59,6 @@ impl<'a> ActionConfig<'a> {
         S: AsRef<RStr>,
     {
         self.id = id.map(|s| s.as_ref().into());
-        self
-    }
-
-    /// Set the name of the action.
-    pub(crate) fn with_action_name<S>(mut self, action_name: S) -> Self
-    where
-        S: AsRef<RStr>,
-    {
-        self.action_name = Some(action_name.as_ref().into());
         self
     }
 

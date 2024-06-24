@@ -329,7 +329,7 @@ impl Batch {
                     (&display_impl, batch.shell, display_env, display_env_remove)
                 };
 
-                if let Some(name) = &run.name {
+                if let Some(name) = scheduler.name(" / ", run.name.as_slice()) {
                     o.set_color(&batch.colors.title)?;
                     write!(o, "# {name}")?;
                     o.reset()?;
@@ -358,10 +358,10 @@ impl Batch {
 
                 writeln!(o)?;
 
-                if run.skipped.is_none() {
+                if run.skipped.is_none() && (batch.verbose >= 1 || run.name.is_none()) {
                     match shell {
                         Shell::Bash => {
-                            if batch.verbose > 0 {
+                            if batch.verbose >= 2 {
                                 for (key, value) in display_env {
                                     let key = key.to_string_lossy();
 
@@ -384,7 +384,7 @@ impl Batch {
                             write!(o, "{display}")?;
                         }
                         Shell::Powershell => {
-                            if batch.verbose > 0 && !display_env.is_empty() {
+                            if batch.verbose >= 2 && !display_env.is_empty() {
                                 writeln!(o, "powershell -Command {{")?;
 
                                 for (key, value) in display_env {

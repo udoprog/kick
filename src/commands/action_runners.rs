@@ -99,10 +99,9 @@ impl ActionRunners {
                 let env = Env::new(batch, Some(action), Some(c))?;
 
                 if let Some(path) = post_path {
-                    post.push(Schedule::Push);
+                    post.push(Schedule::Push(Some(rformat!("{} (post)", uses).as_rc())));
                     post.push(Schedule::NodeAction(ScheduleNodeAction::new(
                         id.clone(),
-                        rformat!("{} / post", uses).as_rc(),
                         path.clone(),
                         *node_version,
                         c.skipped(),
@@ -111,10 +110,9 @@ impl ActionRunners {
                     post.push(Schedule::Pop);
                 }
 
-                main.push(Schedule::Push);
+                main.push(Schedule::Push(Some(uses.as_rc())));
                 main.push(Schedule::NodeAction(ScheduleNodeAction::new(
                     id.clone(),
-                    rformat!("{} / main", uses).as_rc(),
                     main_path.clone(),
                     *node_version,
                     c.skipped(),
@@ -125,7 +123,7 @@ impl ActionRunners {
             ActionKind::Composite { steps } => {
                 let commands = build_steps(
                     action.id(),
-                    c.action_name(),
+                    Some(c.action_name()),
                     batch,
                     steps,
                     Some(action),

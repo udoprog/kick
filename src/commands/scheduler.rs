@@ -1,17 +1,18 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
+use std::rc::Rc;
 
 use anyhow::{bail, Context, Result};
 use termcolor::WriteColor;
 
 use crate::config::Os;
-use crate::rstr::RStr;
+use crate::rstr::{RStr, RString};
 use crate::workflows::{Eval, Tree};
 
 use super::{BatchConfig, Run, Schedule, Session};
 
 pub(super) struct Scheduler {
-    stack: Vec<Tree>,
+    stack: Vec<(Option<Rc<RStr>>, Tree)>,
     env: BTreeMap<String, String>,
     main: VecDeque<Schedule>,
     post: VecDeque<Schedule>,
@@ -29,6 +30,28 @@ impl Scheduler {
         }
     }
 
+    /// Get the current name of the thing being scheduled.
+    pub(super) fn name(&self, separator: &str, tail: &[RString]) -> Option<RString> {
+        let mut it = self
+            .stack
+            .iter()
+            .flat_map(|(name, _)| name.as_deref())
+            .chain(tail.iter().map(RString::as_rstr));
+
+        let first = it.next()?;
+
+        let mut name = RString::with_capacity(first.len());
+
+        name.push_rstr(first);
+
+        for step in it {
+            name.push_rstr(separator);
+            name.push_rstr(step);
+        }
+
+        Some(name)
+    }
+
     /// Push back a schedule onto the main queue.
     pub(super) fn push_back(&mut self, schedule: Schedule) {
         self.main.push_back(schedule);
@@ -43,7 +66,7 @@ impl Scheduler {
     }
 
     pub(super) fn tree(&self) -> &Tree {
-        self.stack.last().unwrap_or_default()
+        self.stack.last().map(|(_, tree)| tree).unwrap_or_default()
     }
 
     pub(super) fn env_mut(&mut self) -> &mut BTreeMap<String, String> {
@@ -55,7 +78,7 @@ impl Scheduler {
     }
 
     pub(super) fn tree_mut(&mut self) -> Option<&mut Tree> {
-        self.stack.last_mut()
+        Some(&mut self.stack.last_mut()?.1)
     }
 
     fn next_schedule(&mut self) -> Option<Schedule> {
@@ -97,8 +120,8 @@ impl Scheduler {
             }
 
             match schedule {
-                Schedule::Push => {
-                    self.stack.push(Tree::new());
+                Schedule::Push(name) => {
+                    self.stack.push((name, Tree::new()));
                 }
                 Schedule::Pop => {
                     self.stack.pop();
