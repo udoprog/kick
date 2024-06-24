@@ -38,13 +38,16 @@ pub(crate) struct Opts {
     /// effectively ignored.
     #[arg(long)]
     same_os: bool,
-    /// Arguments to pass to the command to run.
+    /// Command to run.
+    #[arg(value_name = "command")]
+    command: Option<String>,
+    /// Arguments to pass to the run command.
     #[arg(
         trailing_var_arg = true,
         allow_hyphen_values = true,
-        value_name = "command"
+        value_name = "args"
     )]
-    command: Vec<String>,
+    args: Vec<String>,
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
@@ -95,6 +98,10 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
     }
 
     let mut batches = Vec::new();
+
+    if let Some(command) = &opts.command {
+        batches.push(Batch::command(cx.current_os.clone(), command, &opts.args));
+    }
 
     if opts.workflow.is_some() || opts.job.is_some() || opts.list_jobs {
         let w = c.load_github_workflows(repo)?;
@@ -153,10 +160,6 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
                 }
             }
         }
-    }
-
-    if let [command, args @ ..] = &opts.command[..] {
-        batches.push(Batch::command(cx.current_os.clone(), command, args));
     }
 
     let mut session = Session::new(&c);

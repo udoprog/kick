@@ -10,7 +10,7 @@ use std::str;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use relative_path::{Component, RelativePath};
-use termcolor::WriteColor;
+use termcolor::{ColorSpec, WriteColor};
 
 use crate::config::Os;
 use crate::process::{Command, OsArg};
@@ -329,34 +329,29 @@ impl Batch {
                     (&display_impl, batch.shell, display_env, display_env_remove)
                 };
 
+                let mut line = Line::new(o);
+
                 if let Some(name) = scheduler.name(" / ", run.name.as_slice()) {
-                    o.set_color(&batch.colors.title)?;
-                    write!(o, "# {name}")?;
-                    o.reset()?;
+                    line.write(&batch.colors.title, format_args!("{name}"))?;
                 }
 
                 if let Some(skipped) = &run.skipped {
-                    write!(o, " ")?;
-                    o.set_color(&batch.colors.skip_cond)?;
-                    write!(o, "(skipped: {skipped})")?;
-                    o.reset()?;
+                    line.write(
+                        &batch.colors.skip_cond,
+                        format_args!("(skipped: {skipped})"),
+                    )?;
                 }
 
                 if batch.verbose == 0 && !display_env.is_empty() && !display_env_remove.is_empty() {
-                    let plural = if display_env.len() == 1 {
-                        "variable"
-                    } else {
-                        "variables"
-                    };
+                    let plural = pluralize(display_env.len(), "variable", "variables");
 
-                    write!(o, " ")?;
-
-                    o.set_color(&batch.colors.warn)?;
-                    write!(o, "(see {} env {plural} with `-V`)", display_env.len())?;
-                    o.reset()?;
+                    line.write(
+                        &batch.colors.warn,
+                        format_args!("(see {} env {plural} with `-VV`)", display_env.len()),
+                    )?;
                 }
 
-                writeln!(o)?;
+                line.finish()?;
 
                 if run.skipped.is_none() && (batch.verbose >= 1 || run.name.is_none()) {
                     match shell {
@@ -381,7 +376,7 @@ impl Batch {
                                 }
                             }
 
-                            write!(o, "{display}")?;
+                            writeln!(o, "{display}")?;
                         }
                         Shell::Powershell => {
                             if batch.verbose >= 2 && !display_env.is_empty() {
@@ -411,14 +406,12 @@ impl Batch {
                                 }
 
                                 writeln!(o, "  {display}")?;
-                                write!(o, "}}")?;
+                                writeln!(o, "}}")?;
                             } else {
-                                write!(o, "{display}")?;
+                                writeln!(o, "{display}")?;
                             }
                         }
                     }
-
-                    writeln!(o)?;
 
                     if batch.verbose >= 2 {
                         if let Some((source, shell)) = &script_source {
@@ -816,4 +809,54 @@ fn translate_path_to_windows(path: &str) -> Result<String> {
     }
 
     Ok(out)
+}
+
+fn pluralize<T>(len: usize, singular: T, plural: T) -> T {
+    if len == 1 {
+        singular
+    } else {
+        plural
+    }
+}
+
+struct Line<'a, O>
+where
+    O: ?Sized,
+{
+    out: &'a mut O,
+    written: bool,
+}
+
+impl<'a, O> Line<'a, O>
+where
+    O: ?Sized + WriteColor,
+{
+    fn new(out: &'a mut O) -> Self {
+        Self {
+            out,
+            written: false,
+        }
+    }
+
+    fn write(&mut self, color: &ColorSpec, args: impl fmt::Display) -> Result<()> {
+        if !self.written {
+            write!(self.out, "# ")?;
+        } else {
+            write!(self.out, " ")?;
+        }
+
+        self.out.set_color(color)?;
+        write!(self.out, "{args}")?;
+        self.out.reset()?;
+        self.written = true;
+        Ok(())
+    }
+
+    fn finish(self) -> Result<()> {
+        if self.written {
+            writeln!(self.out)?;
+        }
+
+        Ok(())
+    }
 }
