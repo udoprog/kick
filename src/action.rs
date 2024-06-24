@@ -12,7 +12,7 @@ use gix::objs::tree::EntryMode;
 use gix::objs::Kind;
 use gix::{Id, ObjectId, Repository};
 use nondestructive::yaml;
-use relative_path::{RelativePath, RelativePathBuf};
+use relative_path::RelativePathBuf;
 
 use crate::workflows::{self, Eval, Step};
 
@@ -59,14 +59,20 @@ pub(crate) fn load<'repo>(
                 Kind::Blob => {
                     tracing::trace!(?path, "blob");
 
-                    if path == "action.yml" {
-                        let object = id.object()?;
+                    if path.parent().is_none() {
+                        if let (Some("action"), Some("yml" | "yaml")) =
+                            (path.file_stem(), path.extension())
+                        {
+                            let object = id.object()?;
 
-                        let action_yml =
-                            yaml::from_slice(&object.data).context("Opening action.yml")?;
+                            let action_yml = yaml::from_slice(&object.data)
+                                .with_context(|| anyhow!("Reading {path}"))?;
 
-                        cx.process_actions_yml(&action_yml, eval)
-                            .context("Processing action.yml")?;
+                            cx.process_actions_yml(&action_yml, eval)
+                                .with_context(|| anyhow!("Processing {path}"))?;
+
+                            cx.action_yml = Some(path.to_owned());
+                        }
                     }
 
                     cx.paths.insert(path.clone(), (id, entry.mode()));
@@ -102,6 +108,7 @@ pub(crate) enum ActionRunnerKind {
 #[derive(Default)]
 pub(crate) struct ActionContext<'repo> {
     kind: Option<ActionRunnerKind>,
+    action_yml: Option<RelativePathBuf>,
     main: Option<RelativePathBuf>,
     post: Option<RelativePathBuf>,
     steps: Vec<Rc<Step>>,
@@ -156,14 +163,17 @@ impl<'repo> ActionContext<'repo> {
                     Some(post_path)
                 };
 
-                let (action_yml, _) = self
-                    .paths
-                    .get(RelativePath::new("action.yml"))
-                    .context("Missing action.yml")?;
-                let action_yml_path =
-                    Rc::<Path>::from(dir.join(format!("action-{node_version}-{version}.yml")));
+                if let Some(path) = self.action_yml {
+                    let (action_yml, _) = self
+                        .paths
+                        .get(&path)
+                        .with_context(|| anyhow!("Missing {path}"))?;
 
-                exports.push((action_yml_path, action_yml));
+                    let action_yml_path =
+                        Rc::<Path>::from(dir.join(format!("action-{node_version}-{version}.yml")));
+
+                    exports.push((action_yml_path, action_yml));
+                }
 
                 if export {
                     for (path, id) in exports {
@@ -243,7 +253,7 @@ impl<'repo> ActionContext<'repo> {
 
     fn process_actions_yml(&mut self, action_yml: &yaml::Document, eval: &Eval) -> Result<()> {
         let Some(action_yml) = action_yml.as_ref().as_mapping() else {
-            bail!("Expected mapping in action.yml");
+            bail!("Expected mapping");
         };
 
         let runs = action_yml.get("runs").and_then(|v| v.as_mapping());
