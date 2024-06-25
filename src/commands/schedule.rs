@@ -15,7 +15,7 @@ use super::{
 pub(super) enum Schedule {
     Push {
         name: Option<Rc<RStr>>,
-        id: Option<Rc<RStr>>,
+        id: Option<Rc<str>>,
     },
     Pop,
     Outputs(ScheduleOutputs),
@@ -41,8 +41,7 @@ impl Schedule {
 
 /// Add jobs from a workflows, matrix, and associated steps.
 pub(super) fn build_steps(
-    unique_id: &str,
-    parent_step_id: Option<&RStr>,
+    id: Option<&Rc<str>>,
     name: Option<&RStr>,
     batch: &BatchConfig<'_, '_>,
     steps: &[Rc<Step>],
@@ -56,10 +55,10 @@ pub(super) fn build_steps(
     if !steps.is_empty() {
         commands.push(Schedule::Push {
             name: name.map(RStr::as_rc),
-            id: parent_step_id.map(RStr::as_rc),
+            id: id.cloned(),
         });
 
-        for (index, step) in steps.iter().enumerate() {
+        for step in steps {
             let mut env = env.clone();
 
             if !step.tree.is_empty() {
@@ -69,7 +68,6 @@ pub(super) fn build_steps(
 
             if let Some(run) = &step.run {
                 commands.push(Schedule::Run(ScheduleRun::new(
-                    format!("{}-{}", unique_id, index).into(),
                     Box::from(run.as_str()),
                     step.clone(),
                     env.clone(),

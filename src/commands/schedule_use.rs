@@ -51,7 +51,7 @@ impl ScheduleUse {
         let env = self.env.extend_with(parent, &self.step.env)?;
         let eval = Eval::new(&env.tree);
 
-        let id = self.step.id.as_ref().map(|v| eval.eval(v)).transpose()?;
+        let id = self.step.id.as_ref().map(|s| Rc::<str>::from(s.as_str()));
 
         let mut main = Vec::new();
         let mut pre = Vec::new();
@@ -74,7 +74,7 @@ impl ScheduleUse {
 
         if builtin_action(
             &self.uses,
-            id.as_deref(),
+            id.as_ref(),
             &with,
             skipped.as_deref(),
             &mut main,
@@ -86,7 +86,7 @@ impl ScheduleUse {
 
         if !should_skip_use(uses_exposed.as_ref()) {
             let c = ActionConfig::new(os, self.uses.as_ref())
-                .with_id(id.map(Cow::into_owned))
+                .with_id(id)
                 .with_skipped(skipped.as_ref())
                 .with_inputs(with);
 
@@ -123,7 +123,7 @@ struct RustToolchain<'a> {
 
 fn builtin_action(
     uses: &RStr,
-    parent_step_id: Option<&RStr>,
+    id: Option<&Rc<str>>,
     with: &BTreeMap<String, RString>,
     skipped: Option<&str>,
     main: &mut Vec<Schedule>,
@@ -139,7 +139,7 @@ fn builtin_action(
     if let Some(rust_toolchain) = rust_toolchain(user, repo, version, with)? {
         main.push(Schedule::Push {
             name: Some(RStr::new("rust toolchain (builtin)").as_rc()),
-            id: parent_step_id.map(RStr::as_rc),
+            id: id.cloned(),
         });
 
         if rust_toolchain.components.is_some() || rust_toolchain.targets.is_some() {

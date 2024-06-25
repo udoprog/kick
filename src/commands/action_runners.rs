@@ -6,14 +6,13 @@ use std::str;
 use anyhow::{bail, Result};
 
 use crate::action::ActionKind;
-use crate::rstr::{rformat, RStr};
+use crate::rstr::rformat;
 
 use super::schedule_outputs::ScheduleOutputs;
 use super::{build_steps, ActionConfig, BatchConfig, Env, Schedule, ScheduleNodeAction};
 
 #[derive(Debug)]
 pub(super) struct ActionRunner {
-    id: Box<str>,
     kind: ActionKind,
     defaults: BTreeMap<String, String>,
     outputs: BTreeMap<String, String>,
@@ -23,7 +22,6 @@ pub(super) struct ActionRunner {
 
 impl ActionRunner {
     pub(super) fn new(
-        id: Box<str>,
         kind: ActionKind,
         defaults: BTreeMap<String, String>,
         outputs: BTreeMap<String, String>,
@@ -31,18 +29,12 @@ impl ActionRunner {
         repo_dir: Rc<Path>,
     ) -> Self {
         Self {
-            id,
             kind,
             defaults,
             outputs,
             action_path,
             repo_dir,
         }
-    }
-
-    /// Get the identifier of the action.
-    pub(super) fn id(&self) -> &str {
-        &self.id
     }
 
     /// Get the state directory associated with the action.
@@ -107,16 +99,14 @@ impl ActionRunners {
                 post_if,
                 node_version,
             } => {
-                let id = c.id().map(RStr::as_rc);
                 let env = Env::new(batch, Some(action), Some(c))?;
 
                 if let Some(path) = pre_path {
                     pre.push(Schedule::Push {
                         name: Some(rformat!("{} (pre)", c.action_name()).as_rc()),
-                        id: id.clone(),
+                        id: c.id().cloned(),
                     });
                     pre.push(Schedule::NodeAction(ScheduleNodeAction::new(
-                        id.clone(),
                         path.clone(),
                         *node_version,
                         c.skipped(),
@@ -129,10 +119,9 @@ impl ActionRunners {
                 if let Some(path) = post_path {
                     post.push(Schedule::Push {
                         name: Some(rformat!("{} (post)", c.action_name()).as_rc()),
-                        id: id.clone(),
+                        id: c.id().cloned(),
                     });
                     post.push(Schedule::NodeAction(ScheduleNodeAction::new(
-                        id.clone(),
                         path.clone(),
                         *node_version,
                         c.skipped(),
@@ -144,10 +133,9 @@ impl ActionRunners {
 
                 main.push(Schedule::Push {
                     name: Some(c.action_name().as_rc()),
-                    id: id.clone(),
+                    id: c.id().cloned(),
                 });
                 main.push(Schedule::NodeAction(ScheduleNodeAction::new(
-                    id.clone(),
                     main_path.clone(),
                     *node_version,
                     c.skipped(),
@@ -171,7 +159,6 @@ impl ActionRunners {
             }
             ActionKind::Composite { steps } => {
                 let commands = build_steps(
-                    action.id(),
                     c.id(),
                     Some(c.action_name()),
                     batch,

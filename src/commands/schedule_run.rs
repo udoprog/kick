@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::rc::Rc;
 
 use anyhow::{bail, Result};
@@ -11,20 +10,14 @@ use super::{Env, Run};
 
 #[derive(Clone)]
 pub(crate) struct ScheduleRun {
-    id: Box<str>,
     script: Box<str>,
     step: Rc<Step>,
     env: Env,
 }
 
 impl ScheduleRun {
-    pub(super) fn new(id: Box<str>, script: Box<str>, step: Rc<Step>, env: Env) -> Self {
-        Self {
-            id,
-            script,
-            step,
-            env,
-        }
+    pub(super) fn new(script: Box<str>, step: Rc<Step>, env: Env) -> Self {
+        Self { script, step, env }
     }
 
     pub(super) fn build(self, parent: &Tree) -> Result<Run> {
@@ -44,7 +37,6 @@ impl ScheduleRun {
         let shell = self.step.shell.as_ref().map(|v| eval.eval(v)).transpose()?;
         let shell = to_shell(shell.as_deref())?;
 
-        let id = self.step.id.as_ref().map(|v| eval.eval(v)).transpose()?;
         let name = self.step.name.as_ref().map(|v| eval.eval(v)).transpose()?;
 
         let working_directory = self
@@ -54,8 +46,8 @@ impl ScheduleRun {
             .map(|v| Ok::<_, anyhow::Error>(eval.eval(v)?.into_owned()))
             .transpose()?;
 
-        let run = Run::script(self.id, script.as_ref(), shell)
-            .with_id(id.map(Cow::into_owned))
+        let run = Run::script(script.as_ref(), shell)
+            .with_id(self.step.id.as_deref().map(Rc::from))
             .with_name(name.as_deref())
             .with_env(env.build_os_env())
             .with_skipped(skipped.clone())

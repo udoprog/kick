@@ -9,7 +9,6 @@ use crate::shell::Shell;
 
 pub(super) enum RunKind {
     Shell {
-        id: Box<str>,
         script: Box<RStr>,
         shell: Shell,
     },
@@ -25,8 +24,8 @@ pub(super) enum RunKind {
 
 /// A run configuration.
 pub(crate) struct Run {
-    pub(super) id: Option<RString>,
     pub(super) run: RunKind,
+    pub(super) id: Option<Rc<str>>,
     pub(super) name: Option<RString>,
     pub(super) env: BTreeMap<String, OsArg>,
     pub(super) skipped: Option<String>,
@@ -59,9 +58,8 @@ impl Run {
     }
 
     /// Setup a script to run.
-    pub(super) fn script(id: impl AsRef<str>, script: impl Into<Box<RStr>>, shell: Shell) -> Self {
+    pub(super) fn script(script: impl Into<Box<RStr>>, shell: Shell) -> Self {
         Self::with_run(RunKind::Shell {
-            id: id.as_ref().into(),
             script: script.into(),
             shell,
         })
@@ -77,8 +75,8 @@ impl Run {
 
     pub(super) fn with_run(run: RunKind) -> Self {
         Self {
-            id: None,
             run,
+            id: None,
             name: None,
             env: BTreeMap::new(),
             skipped: None,
@@ -93,7 +91,8 @@ impl Run {
     }
 
     /// Modify the id of the run command.
-    pub(super) fn with_id(mut self, id: Option<RString>) -> Self {
+    #[inline]
+    pub(super) fn with_id(mut self, id: Option<Rc<str>>) -> Self {
         self.id = id;
         self
     }

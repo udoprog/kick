@@ -14,7 +14,7 @@ use super::{BatchConfig, Run, Schedule, Session};
 struct StackEntry {
     name: Option<Rc<RStr>>,
     tree: Tree,
-    parent_step_id: Option<Rc<RStr>>,
+    id: Option<Rc<str>>,
 }
 
 pub(super) struct Scheduler {
@@ -139,19 +139,14 @@ impl Scheduler {
                     self.stack.push(StackEntry {
                         name,
                         tree: Tree::new(),
-                        parent_step_id,
+                        id: parent_step_id,
                     });
                 }
                 Schedule::Pop => {
                     self.stack.pop();
                 }
                 Schedule::Outputs(outputs) => {
-                    let Some(StackEntry {
-                        tree,
-                        parent_step_id: id,
-                        ..
-                    }) = self.stack.pop()
-                    else {
+                    let Some(StackEntry { tree, id, .. }) = self.stack.pop() else {
                         bail!("Missing tree for outputs");
                     };
 
@@ -165,7 +160,6 @@ impl Scheduler {
                     let eval = Eval::new(&env.tree);
 
                     let id = id.context("Missing step id for outputs")?;
-                    let id = id.to_exposed();
 
                     for (key, value) in outputs.outputs.as_ref() {
                         let value = eval.eval(&value)?.into_owned();
@@ -212,16 +206,11 @@ impl Scheduler {
     /// Insert new outputs with an associated id.
     pub(super) fn insert_new_outputs<'a>(
         &mut self,
-        id: Option<&RStr>,
+        id: &str,
         values: impl IntoIterator<Item = &'a (String, String)>,
     ) -> Result<()> {
-        let id = id.context("Missing step id for run")?;
-        let id = id.to_exposed();
         let tree = self.tree_mut().context("Missing scheduler tree")?;
-        tree.insert_prefix(
-            ["steps", id.as_ref(), "outputs"],
-            values.into_iter().cloned(),
-        );
+        tree.insert_prefix(["steps", id, "outputs"], values.into_iter().cloned());
         Ok(())
     }
 }

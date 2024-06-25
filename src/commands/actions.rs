@@ -183,7 +183,6 @@ fn sync_action(
     let action = action.load(kind, &work_dir, version, export)?;
 
     let runner = ActionRunner::new(
-        format!("{repo}-{name}-{version}").into(),
         action.kind,
         action.defaults,
         action.outputs,

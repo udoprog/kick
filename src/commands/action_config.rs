@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use anyhow::Result;
 
@@ -11,7 +12,7 @@ use super::{Batch, BatchConfig};
 pub(crate) struct ActionConfig<'a> {
     os: &'a Os,
     action_name: &'a RStr,
-    id: Option<Box<RStr>>,
+    id: Option<Rc<str>>,
     skipped: Option<String>,
     inputs: BTreeMap<String, RString>,
 }
@@ -39,8 +40,8 @@ impl<'a> ActionConfig<'a> {
     }
 
     /// Get the id of the action.
-    pub(crate) fn id(&self) -> Option<&RStr> {
-        self.id.as_deref()
+    pub(crate) fn id(&self) -> Option<&Rc<str>> {
+        self.id.as_ref()
     }
 
     /// Get the skipped config.
@@ -54,11 +55,8 @@ impl<'a> ActionConfig<'a> {
     }
 
     /// Set the id of the action.
-    pub(crate) fn with_id<S>(mut self, id: Option<S>) -> Self
-    where
-        S: AsRef<RStr>,
-    {
-        self.id = id.map(|s| s.as_ref().into());
+    pub(crate) fn with_id(mut self, id: Option<Rc<str>>) -> Self {
+        self.id = id;
         self
     }
 

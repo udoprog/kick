@@ -209,7 +209,7 @@ impl Batch {
 
                 if let Some(script_file) = script_file {
                     let script_path = match script_file.kind {
-                        ScriptFileKind::Inline { id, contents, ext } => {
+                        ScriptFileKind::Inline { contents, ext } => {
                             let cache_dir = batch
                                 .cx
                                 .paths
@@ -230,8 +230,8 @@ impl Batch {
                             let sequence = session.sequence();
                             let process_id = batch.process_id;
 
-                            let script_path = scripts_dir
-                                .join(format!("kick-{id}-{process_id}-{sequence}.{}", ext));
+                            let script_path =
+                                scripts_dir.join(format!("kick-{process_id}-{sequence}.{}", ext));
 
                             if !batch.dry_run {
                                 tracing::trace!(?script_path, "Writing temporary script");
@@ -461,7 +461,7 @@ impl Batch {
                         }
                     }
 
-                    tracing::debug!(id = ?run.id, ?new_env, ?new_paths, ?new_outputs);
+                    tracing::debug!(?new_env, ?new_paths, ?new_outputs);
 
                     for (key, value) in new_env {
                         scheduler.env_mut().insert(key, value);
@@ -472,9 +472,13 @@ impl Batch {
                     }
 
                     if !new_outputs.is_empty() {
-                        scheduler
-                            .insert_new_outputs(run.id.as_deref(), &new_outputs)
-                            .with_context(|| anyhow!("New outputs {new_outputs:?}"))?;
+                        if let Some(id) = &run.id {
+                            scheduler
+                                .insert_new_outputs(id, &new_outputs)
+                                .with_context(|| anyhow!("New outputs {new_outputs:?}"))?;
+                        } else {
+                            tracing::warn!("Outputs produced, but no id to store them");
+                        }
                     }
 
                     purge_dirs(run.purge_dirs())?;
@@ -602,7 +606,6 @@ where
 
 enum ScriptFileKind {
     Inline {
-        id: Box<str>,
         contents: Box<RStr>,
         ext: &'static str,
     },
@@ -621,14 +624,13 @@ impl ScriptFile {
     fn inline(
         variable: Option<&'static str>,
         argument: bool,
-        id: Box<str>,
         contents: Box<RStr>,
         ext: &'static str,
     ) -> Self {
         Self {
             variable,
             argument,
-            kind: ScriptFileKind::Inline { id, contents, ext },
+            kind: ScriptFileKind::Inline { contents, ext },
         }
     }
 
@@ -647,7 +649,7 @@ fn setup_same<'a>(
     run: &Run,
 ) -> Result<(Command, &'a [PathBuf], Option<ScriptFile>)> {
     match &run.run {
-        RunKind::Shell { id, script, shell } => match shell {
+        RunKind::Shell { script, shell } => match shell {
             Shell::Powershell => {
                 let Some(powershell) = c.cx.system.powershell.first() else {
                     bail!("PowerShell not available");
@@ -669,8 +671,7 @@ fn setup_same<'a>(
 
                 let mut c = bash.command(path);
                 c.args(["-i"]);
-                let script_file =
-                    ScriptFile::inline(None, true, id.clone(), script.clone(), "bash");
+                let script_file = ScriptFile::inline(None, true, script.clone(), "bash");
                 Ok((c, &bash.paths, Some(script_file)))
             }
         },
@@ -710,7 +711,7 @@ fn setup_wsl<'a>(
     let mut c;
 
     match &run.run {
-        RunKind::Shell { id, script, shell } => match shell {
+        RunKind::Shell { script, shell } => match shell {
             Shell::Powershell => {
                 c = Command::new("powershell");
                 c.args(["-Command"]);
@@ -724,7 +725,6 @@ fn setup_wsl<'a>(
                 script_file = Some(ScriptFile::inline(
                     Some("KICK_SCRIPT_FILE"),
                     false,
-                    id.clone(),
                     script.clone(),
                     "bash",
                 ));
