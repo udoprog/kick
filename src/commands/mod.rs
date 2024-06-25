@@ -52,6 +52,9 @@ use self::schedule_run::ScheduleRun;
 mod schedule_node_action;
 use self::schedule_node_action::ScheduleNodeAction;
 
+mod schedule_outputs;
+use self::schedule_outputs::ScheduleOutputs;
+
 mod schedule;
 use self::schedule::{build_steps, Schedule};
 

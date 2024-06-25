@@ -7,14 +7,18 @@ use crate::workflows::Step;
 
 use super::{
     ActionConfig, ActionRunner, BatchConfig, Env, ScheduleBasicCommand, ScheduleNodeAction,
-    ScheduleRun, ScheduleStaticSetup, ScheduleUse, Session,
+    ScheduleOutputs, ScheduleRun, ScheduleStaticSetup, ScheduleUse, Session,
 };
 
 /// A scheduled action.
 #[derive(Clone)]
 pub(super) enum Schedule {
-    Push(Option<Rc<RStr>>),
+    Push {
+        name: Option<Rc<RStr>>,
+        id: Option<Rc<RStr>>,
+    },
     Pop,
+    Outputs(ScheduleOutputs),
     BasicCommand(ScheduleBasicCommand),
     StaticSetup(ScheduleStaticSetup),
     NodeAction(ScheduleNodeAction),
@@ -37,7 +41,8 @@ impl Schedule {
 
 /// Add jobs from a workflows, matrix, and associated steps.
 pub(super) fn build_steps(
-    job_id: &str,
+    unique_id: &str,
+    parent_step_id: Option<&RStr>,
     name: Option<&RStr>,
     batch: &BatchConfig<'_, '_>,
     steps: &[Rc<Step>],
@@ -49,7 +54,10 @@ pub(super) fn build_steps(
     let mut commands = Vec::new();
 
     if !steps.is_empty() {
-        commands.push(Schedule::Push(name.map(RStr::as_rc)));
+        commands.push(Schedule::Push {
+            name: name.map(RStr::as_rc),
+            id: parent_step_id.map(RStr::as_rc),
+        });
 
         for (index, step) in steps.iter().enumerate() {
             let mut env = env.clone();
@@ -61,7 +69,7 @@ pub(super) fn build_steps(
 
             if let Some(run) = &step.run {
                 commands.push(Schedule::Run(ScheduleRun::new(
-                    format!("{}-{}", job_id, index).into(),
+                    format!("{}-{}", unique_id, index).into(),
                     Box::from(run.as_str()),
                     step.clone(),
                     env.clone(),

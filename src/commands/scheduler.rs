@@ -11,8 +11,14 @@ use crate::workflows::{Eval, Tree};
 
 use super::{BatchConfig, Run, Schedule, Session};
 
+struct StackEntry {
+    name: Option<Rc<RStr>>,
+    tree: Tree,
+    parent_step_id: Option<Rc<RStr>>,
+}
+
 pub(super) struct Scheduler {
-    stack: Vec<(Option<Rc<RStr>>, Tree)>,
+    stack: Vec<StackEntry>,
     env: BTreeMap<String, String>,
     main: VecDeque<Schedule>,
     pre: VecDeque<Schedule>,
@@ -37,7 +43,7 @@ impl Scheduler {
         let mut it = self
             .stack
             .iter()
-            .flat_map(|(name, _)| name.as_deref())
+            .flat_map(|e| e.name.as_deref())
             .chain(tail.iter().map(RString::as_rstr));
 
         let first = it.next()?;
@@ -68,7 +74,7 @@ impl Scheduler {
     }
 
     pub(super) fn tree(&self) -> &Tree {
-        self.stack.last().map(|(_, tree)| tree).unwrap_or_default()
+        self.stack.last().map(|e| &e.tree).unwrap_or_default()
     }
 
     pub(super) fn env_mut(&mut self) -> &mut BTreeMap<String, String> {
@@ -80,7 +86,7 @@ impl Scheduler {
     }
 
     pub(super) fn tree_mut(&mut self) -> Option<&mut Tree> {
-        Some(&mut self.stack.last_mut()?.1)
+        Some(&mut self.stack.last_mut()?.tree)
     }
 
     fn next_schedule(&mut self) -> Option<Schedule> {
@@ -126,11 +132,45 @@ impl Scheduler {
             }
 
             match schedule {
-                Schedule::Push(name) => {
-                    self.stack.push((name, Tree::new()));
+                Schedule::Push {
+                    name,
+                    id: parent_step_id,
+                } => {
+                    self.stack.push(StackEntry {
+                        name,
+                        tree: Tree::new(),
+                        parent_step_id,
+                    });
                 }
                 Schedule::Pop => {
                     self.stack.pop();
+                }
+                Schedule::Outputs(outputs) => {
+                    let Some(StackEntry {
+                        tree,
+                        parent_step_id: id,
+                        ..
+                    }) = self.stack.pop()
+                    else {
+                        bail!("Missing tree for outputs");
+                    };
+
+                    let raw_env = BTreeMap::new();
+                    let env = outputs.env.extend_with(&tree, &raw_env)?;
+
+                    let Some(last_tree) = self.tree_mut() else {
+                        bail!("Missing tree for outputs");
+                    };
+
+                    let eval = Eval::new(&env.tree);
+
+                    let id = id.context("Missing step id for outputs")?;
+                    let id = id.to_exposed();
+
+                    for (key, value) in outputs.outputs.as_ref() {
+                        let value = eval.eval(&value)?.into_owned();
+                        last_tree.insert(["steps", id.as_ref(), "outputs", key.as_str()], value);
+                    }
                 }
                 Schedule::BasicCommand(command) => {
                     let run = command.build();

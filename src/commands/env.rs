@@ -50,7 +50,6 @@ impl Env {
 
         if let Some(runner) = runner {
             file_env.insert("GITHUB_ACTION_PATH", Rc::<Path>::from(runner.action_path()));
-
             tools_path = Rc::<Path>::from(runner.repo_dir().join("tools"));
         } else {
             tools_path = Rc::<Path>::from(state_dir.join("tools"));

@@ -8,6 +8,7 @@ use anyhow::{bail, Result};
 use crate::action::ActionKind;
 use crate::rstr::{rformat, RStr};
 
+use super::schedule_outputs::ScheduleOutputs;
 use super::{build_steps, ActionConfig, BatchConfig, Env, Schedule, ScheduleNodeAction};
 
 #[derive(Debug)]
@@ -15,6 +16,7 @@ pub(super) struct ActionRunner {
     id: Box<str>,
     kind: ActionKind,
     defaults: BTreeMap<String, String>,
+    outputs: BTreeMap<String, String>,
     action_path: Rc<Path>,
     repo_dir: Rc<Path>,
 }
@@ -24,6 +26,7 @@ impl ActionRunner {
         id: Box<str>,
         kind: ActionKind,
         defaults: BTreeMap<String, String>,
+        outputs: BTreeMap<String, String>,
         action_path: Rc<Path>,
         repo_dir: Rc<Path>,
     ) -> Self {
@@ -31,6 +34,7 @@ impl ActionRunner {
             id,
             kind,
             defaults,
+            outputs,
             action_path,
             repo_dir,
         }
@@ -55,6 +59,11 @@ impl ActionRunner {
     pub(super) fn defaults(&self) -> impl Iterator<Item = (&str, &str)> {
         self.defaults.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
+
+    /// Get output variables.
+    pub(super) fn outputs(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.outputs.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
 }
 
 #[derive(Default, Debug)]
@@ -78,12 +87,11 @@ impl ActionRunners {
         &self,
         batch: &BatchConfig<'_, '_>,
         c: &ActionConfig<'_>,
-        uses: &RStr,
     ) -> Result<RunnerSteps> {
-        let exposed = uses.to_exposed();
+        let exposed = c.action_name().to_exposed();
 
         let Some(action) = self.runners.get(exposed.as_ref()) else {
-            bail!("Could not find action runner for {uses}");
+            bail!("Could not find action runner for {}", c.action_name());
         };
 
         let mut main = Vec::new();
@@ -103,7 +111,10 @@ impl ActionRunners {
                 let env = Env::new(batch, Some(action), Some(c))?;
 
                 if let Some(path) = pre_path {
-                    pre.push(Schedule::Push(Some(rformat!("{} (pre)", uses).as_rc())));
+                    pre.push(Schedule::Push {
+                        name: Some(rformat!("{} (pre)", c.action_name()).as_rc()),
+                        id: id.clone(),
+                    });
                     pre.push(Schedule::NodeAction(ScheduleNodeAction::new(
                         id.clone(),
                         path.clone(),
@@ -116,7 +127,10 @@ impl ActionRunners {
                 }
 
                 if let Some(path) = post_path {
-                    post.push(Schedule::Push(Some(rformat!("{} (post)", uses).as_rc())));
+                    post.push(Schedule::Push {
+                        name: Some(rformat!("{} (post)", c.action_name()).as_rc()),
+                        id: id.clone(),
+                    });
                     post.push(Schedule::NodeAction(ScheduleNodeAction::new(
                         id.clone(),
                         path.clone(),
@@ -128,20 +142,37 @@ impl ActionRunners {
                     post.push(Schedule::Pop);
                 }
 
-                main.push(Schedule::Push(Some(uses.as_rc())));
+                main.push(Schedule::Push {
+                    name: Some(c.action_name().as_rc()),
+                    id: id.clone(),
+                });
                 main.push(Schedule::NodeAction(ScheduleNodeAction::new(
                     id.clone(),
                     main_path.clone(),
                     *node_version,
                     c.skipped(),
-                    env,
+                    env.clone(),
                     None,
                 )));
-                main.push(Schedule::Pop);
+
+                let outputs = action
+                    .outputs()
+                    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                    .collect::<BTreeMap<_, _>>();
+
+                if outputs.is_empty() {
+                    post.push(Schedule::Pop);
+                } else {
+                    main.push(Schedule::Outputs(ScheduleOutputs {
+                        env,
+                        outputs: Rc::new(outputs),
+                    }));
+                }
             }
             ActionKind::Composite { steps } => {
                 let commands = build_steps(
                     action.id(),
+                    c.id(),
                     Some(c.action_name()),
                     batch,
                     steps,

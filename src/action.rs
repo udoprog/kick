@@ -16,14 +16,15 @@ use relative_path::{RelativePath, RelativePathBuf};
 
 use crate::workflows::{self, Eval, Step};
 
-pub(crate) struct Action {
-    pub(crate) kind: ActionKind,
-    pub(crate) defaults: BTreeMap<String, String>,
-    pub(crate) outputs: BTreeMap<String, String>,
+/// Configuration of an action.
+pub(super) struct Action {
+    pub(super) kind: ActionKind,
+    pub(super) defaults: BTreeMap<String, String>,
+    pub(super) outputs: BTreeMap<String, String>,
 }
 
 #[derive(Debug)]
-pub(crate) enum ActionKind {
+pub(super) enum ActionKind {
     Node {
         main: Rc<Path>,
         pre: Option<Rc<Path>>,
@@ -38,7 +39,7 @@ pub(crate) enum ActionKind {
 }
 
 /// Load action context from the given repository.
-pub(crate) fn load<'repo>(
+pub(super) fn load<'repo>(
     repo: &'repo Repository,
     eval: &Eval,
     id: ObjectId,
@@ -107,14 +108,14 @@ pub(crate) fn load<'repo>(
 
 /// A determined action runner kind.
 #[derive(Debug)]
-pub(crate) enum ActionRunnerKind {
+pub(super) enum ActionRunnerKind {
     Node(Box<str>),
     Composite,
 }
 
 /// The context of an action loaded from a repo.
 #[derive(Default)]
-pub(crate) struct ActionContext<'repo> {
+pub(super) struct ActionContext<'repo> {
     kind: Option<ActionRunnerKind>,
     action_yml: Option<RelativePathBuf>,
     main: Option<RelativePathBuf>,
@@ -132,7 +133,7 @@ pub(crate) struct ActionContext<'repo> {
 
 impl<'repo> ActionContext<'repo> {
     /// Checkout the given object id.
-    pub(crate) fn load(
+    pub(super) fn load(
         self,
         kind: ActionRunnerKind,
         dir: &Path,

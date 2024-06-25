@@ -142,7 +142,7 @@ fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Resul
                     }
 
                     for matrix in job.matrices() {
-                        match matrix.build(opts.same_os, &cx.current_os) {
+                        match matrix.build(None, opts.same_os, &cx.current_os) {
                             Ok(batch) => {
                                 batches.push(batch);
                             }

@@ -186,6 +186,7 @@ fn sync_action(
         format!("{repo}-{name}-{version}").into(),
         action.kind,
         action.defaults,
+        action.outputs,
         Rc::from(work_dir),
         Rc::from(repo_dir),
     );

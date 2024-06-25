@@ -72,7 +72,13 @@ impl ScheduleUse {
             .map(|(k, v)| Ok((k.clone(), eval.eval(v)?.into_owned())))
             .collect::<Result<BTreeMap<_, _>>>()?;
 
-        if builtin_action(&self.uses, &with, skipped.as_deref(), &mut main)? {
+        if builtin_action(
+            &self.uses,
+            id.as_deref(),
+            &with,
+            skipped.as_deref(),
+            &mut main,
+        )? {
             return Ok(RunGroup { main, pre, post });
         }
 
@@ -84,7 +90,7 @@ impl ScheduleUse {
                 .with_skipped(skipped.as_ref())
                 .with_inputs(with);
 
-            let steps = runners.build(batch, &c, &self.uses)?;
+            let steps = runners.build(batch, &c)?;
 
             if !steps.main.is_empty() {
                 main.extend(steps.main);
@@ -117,6 +123,7 @@ struct RustToolchain<'a> {
 
 fn builtin_action(
     uses: &RStr,
+    parent_step_id: Option<&RStr>,
     with: &BTreeMap<String, RString>,
     skipped: Option<&str>,
     main: &mut Vec<Schedule>,
@@ -130,9 +137,10 @@ fn builtin_action(
     };
 
     if let Some(rust_toolchain) = rust_toolchain(user, repo, version, with)? {
-        main.push(Schedule::Push(Some(
-            RStr::new("rust toolchain (builtin)").as_rc(),
-        )));
+        main.push(Schedule::Push {
+            name: Some(RStr::new("rust toolchain (builtin)").as_rc()),
+            id: parent_step_id.map(RStr::as_rc),
+        });
 
         if rust_toolchain.components.is_some() || rust_toolchain.targets.is_some() {
             let mut args = vec![
