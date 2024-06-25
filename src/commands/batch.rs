@@ -97,7 +97,7 @@ impl Batch {
     pub(crate) fn commit<O>(
         self,
         o: &mut O,
-        batch: &BatchConfig<'_, '_>,
+        c: &BatchConfig<'_, '_>,
         session: &mut Session,
     ) -> Result<()>
     where
@@ -105,21 +105,21 @@ impl Batch {
     {
         let mut scheduler = Scheduler::new();
 
-        for (run_on, os) in self.runners(&batch.run_on) {
+        for (run_on, os) in self.runners(&c.run_on) {
             if let RunOn::Wsl(dist) = run_on {
                 session.dists.insert(dist);
             }
 
             write!(o, "# In ")?;
 
-            o.set_color(&batch.colors.title)?;
-            write!(o, "{}", batch.path.display())?;
+            o.set_color(&c.colors.title)?;
+            write!(o, "{}", c.path.display())?;
             o.reset()?;
 
             if let RunOn::Wsl(dist) = run_on {
                 write!(o, " on ")?;
 
-                o.set_color(&batch.colors.title)?;
+                o.set_color(&c.colors.title)?;
                 write!(o, "{dist} (WSL)")?;
                 o.reset()?;
             }
@@ -127,7 +127,7 @@ impl Batch {
             if let Some(matrix) = &self.matrix {
                 write!(o, " ")?;
 
-                o.set_color(&batch.colors.matrix)?;
+                o.set_color(&c.colors.matrix)?;
                 write!(o, "{}", matrix.display())?;
                 o.reset()?;
             }
@@ -138,17 +138,17 @@ impl Batch {
                 scheduler.push_back(run.clone());
             }
 
-            while let Some(run) = scheduler.advance(o, batch, session, &os)? {
+            while let Some(run) = scheduler.advance(o, c, session, &os)? {
                 let modified;
 
                 let path = match &run.working_directory {
                     Some(working_directory) => {
                         let working_directory = working_directory.to_exposed();
                         let working_directory = RelativePath::new(working_directory.as_ref());
-                        modified = working_directory.to_logical_path(&batch.path);
+                        modified = working_directory.to_logical_path(&c.path);
                         &modified
                     }
-                    None => &batch.path,
+                    None => &c.path,
                 };
 
                 let mut run_command;
@@ -157,12 +157,12 @@ impl Batch {
                 let mut script_source = None;
                 let script_file;
 
-                let env_keys = batch.env_passthrough.iter();
-                let env_keys = env_keys.chain(batch.env.keys());
+                let env_keys = c.env_passthrough.iter();
+                let env_keys = env_keys.chain(c.env.keys());
                 let env_keys = env_keys.chain(run.env.keys());
                 let env_keys = env_keys.chain(scheduler.env().keys());
 
-                let env = batch.env.iter().map(|(k, v)| (k.clone(), OsArg::from(v)));
+                let env = c.env.iter().map(|(k, v)| (k.clone(), OsArg::from(v)));
                 let env = env.chain(run.env.iter().map(|(k, v)| (k.clone(), v.clone())));
                 let env = env.chain(
                     scheduler
@@ -173,14 +173,14 @@ impl Batch {
 
                 match run_on {
                     RunOn::Same => {
-                        (run_command, paths, script_file) = setup_same(batch, path, &run)?;
+                        (run_command, paths, script_file) = setup_same(c, path, &run)?;
 
                         for (key, value) in env {
                             run_command.env(key, value);
                         }
                     }
                     RunOn::Wsl(dist) => {
-                        let Some(wsl) = batch.cx.system.wsl.first() else {
+                        let Some(wsl) = c.cx.system.wsl.first() else {
                             bail!("WSL not available");
                         };
 
@@ -210,13 +210,12 @@ impl Batch {
                 if let Some(script_file) = script_file {
                     let script_path = match script_file.kind {
                         ScriptFileKind::Inline { contents, ext } => {
-                            let cache_dir = batch
-                                .cx
-                                .paths
-                                .project_dirs
-                                .as_ref()
-                                .context("Missing project directories")?
-                                .cache_dir();
+                            let cache_dir =
+                                c.cx.paths
+                                    .project_dirs
+                                    .as_ref()
+                                    .context("Missing project directories")?
+                                    .cache_dir();
 
                             let scripts_dir = cache_dir.join("scripts");
 
@@ -228,12 +227,20 @@ impl Batch {
                             })?;
 
                             let sequence = session.sequence();
-                            let process_id = batch.process_id;
+                            let process_id = c.process_id;
 
-                            let script_path =
-                                scripts_dir.join(format!("kick-{process_id}-{sequence}.{}", ext));
+                            let id = match scheduler.id("-", run.id.as_deref()) {
+                                Some(mut id) => {
+                                    id.push('-');
+                                    id
+                                }
+                                None => String::new(),
+                            };
 
-                            if !batch.dry_run {
+                            let script_path = scripts_dir
+                                .join(format!("kick-{id}{process_id}-{sequence}.{}", ext));
+
+                            if !c.dry_run {
                                 tracing::trace!(?script_path, "Writing temporary script");
                                 let contents = contents.to_exposed();
 
@@ -298,14 +305,12 @@ impl Batch {
                     _,
                     _,
                 ) = 'display: {
-                    if batch.verbose >= 2 {
-                        display_impl = run_command
-                            .display_with(batch.shell)
-                            .with_exposed(batch.exposed);
+                    if c.verbose >= 2 {
+                        display_impl = run_command.display_with(c.shell).with_exposed(c.exposed);
 
                         break 'display (
                             &display_impl,
-                            batch.shell,
+                            c.shell,
                             &run_command.env,
                             &run_command.env_remove,
                         );
@@ -323,44 +328,41 @@ impl Batch {
                     display_impl = display_command
                         .as_ref()
                         .unwrap_or(&run_command)
-                        .display_with(batch.shell)
-                        .with_exposed(batch.exposed);
+                        .display_with(c.shell)
+                        .with_exposed(c.exposed);
 
-                    (&display_impl, batch.shell, display_env, display_env_remove)
+                    (&display_impl, c.shell, display_env, display_env_remove)
                 };
 
                 let mut line = Line::new(o);
 
-                if let Some(name) = scheduler.name(" / ", run.name.as_slice()) {
-                    line.write(&batch.colors.title, format_args!("{name}"))?;
+                if let Some(name) = scheduler.name(" / ", run.name.as_deref()) {
+                    line.write(&c.colors.title, format_args!("{name}"))?;
                 }
 
                 if let Some(skipped) = &run.skipped {
-                    line.write(
-                        &batch.colors.skip_cond,
-                        format_args!("(skipped: {skipped})"),
-                    )?;
+                    line.write(&c.colors.skip_cond, format_args!("(skipped: {skipped})"))?;
                 }
 
-                if batch.verbose == 0 && !display_env.is_empty() && !display_env_remove.is_empty() {
+                if c.verbose == 0 && !display_env.is_empty() && !display_env_remove.is_empty() {
                     let plural = pluralize(display_env.len(), "variable", "variables");
 
                     line.write(
-                        &batch.colors.warn,
+                        &c.colors.warn,
                         format_args!("(see {} env {plural} with `-VV`)", display_env.len()),
                     )?;
                 }
 
                 line.finish()?;
 
-                if run.skipped.is_none() && (batch.verbose >= 1 || run.name.is_none()) {
+                if run.skipped.is_none() && (c.verbose >= 1 || run.name.is_none()) {
                     match shell {
                         Shell::Bash => {
-                            if batch.verbose >= 2 {
+                            if c.verbose >= 2 {
                                 for (key, value) in display_env {
                                     let key = key.to_string_lossy();
 
-                                    let value = if batch.exposed {
+                                    let value = if c.exposed {
                                         value.to_exposed_lossy()
                                     } else {
                                         value.to_string_lossy()
@@ -379,13 +381,13 @@ impl Batch {
                             writeln!(o, "{display}")?;
                         }
                         Shell::Powershell => {
-                            if batch.verbose >= 2 && !display_env.is_empty() {
+                            if c.verbose >= 2 && !display_env.is_empty() {
                                 writeln!(o, "powershell -Command {{")?;
 
                                 for (key, value) in display_env {
                                     let key = key.to_string_lossy();
 
-                                    let value = if batch.exposed {
+                                    let value = if c.exposed {
                                         value.to_exposed_lossy()
                                     } else {
                                         value.to_string_lossy()
@@ -413,9 +415,9 @@ impl Batch {
                         }
                     }
 
-                    if batch.verbose >= 2 {
+                    if c.verbose >= 2 {
                         if let Some((source, shell)) = &script_source {
-                            o.set_color(&batch.colors.title)?;
+                            o.set_color(&c.colors.title)?;
                             writeln!(o, "# {shell} script:")?;
                             o.reset()?;
                             writeln!(o, "{source}")?;
@@ -423,7 +425,7 @@ impl Batch {
                     }
                 }
 
-                if run.skipped.is_none() && !batch.dry_run {
+                if run.skipped.is_none() && !c.dry_run {
                     truncate(run.files())?;
                     make_dirs(run.dirs())?;
 
@@ -445,9 +447,7 @@ impl Batch {
                         if let Ok(contents) = fs::read(path_file) {
                             new_paths = parse_lines(&contents)?;
 
-                            if batch.cx.current_os == Os::Windows
-                                && matches!(run_on, RunOn::Wsl(..))
-                            {
+                            if c.cx.current_os == Os::Windows && matches!(run_on, RunOn::Wsl(..)) {
                                 for path in &mut new_paths {
                                     *path = translate_path_to_windows(path)?;
                                 }
