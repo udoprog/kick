@@ -19,7 +19,6 @@ use crate::workflows::Eval;
 use super::{ActionRunner, ActionRunners};
 
 const GITHUB_BASE: &str = "https://github.com";
-const GIT_OBJECT_ID_FILE: &str = ".git-object-id";
 const WORKDIR: &str = "workdir";
 const GIT: &str = "git";
 const KICK_META_JSON: &str = ".kick-meta.json";
@@ -146,7 +145,6 @@ fn sync_action(
 
     let git_dir = repo_dir.join(GIT);
     let work_dir = repo_dir.join(WORKDIR).join(version);
-    let id_path = work_dir.join(GIT_OBJECT_ID_FILE);
     let meta_path = work_dir.join(KICK_META_JSON);
 
     let span = tracing::span!(Level::DEBUG, "sync_action", ?key, ?repo_dir);
@@ -212,7 +210,7 @@ fn sync_action(
     // Try to read out remaining versions from the workdir cache.
     if found.is_none() {
         let Some(meta) = load_meta(&meta_path)? else {
-            bail!("Could not find meta: {}", id_path.display());
+            bail!("Could not find meta: {}", meta_path.display());
         };
 
         // Load an action runner directly out of a repository without checking it out.
@@ -293,9 +291,10 @@ fn load_meta(path: &Path) -> Result<Option<KickMeta>> {
 
     match serde_json::from_value(value) {
         Ok(id) => Ok(Some(id)),
-        Err(e) => {
+        Err(error) => {
             _ = fs::remove_file(path);
-            Err(e).context(anyhow!("{}: Failed to parse kick meta", path.display()))
+            tracing::warn!(?error, ?path, "Failed to parse kick meta");
+            Ok(None)
         }
     }
 }
