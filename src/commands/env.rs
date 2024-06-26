@@ -46,11 +46,17 @@ impl Env {
         let tools_path;
         let runner_os;
 
+        let mut tree = Tree::new();
+        let mut env = BTreeMap::new();
         let mut file_env = BTreeMap::new();
 
         if let Some(runner) = runner {
             file_env.insert("GITHUB_ACTION_PATH", Rc::<Path>::from(runner.action_path()));
             tools_path = Rc::<Path>::from(runner.repo_dir().join("tools"));
+            tree.insert(
+                ["runner", "action_path"],
+                runner.action_path().to_string_lossy().as_ref(),
+            );
         } else {
             tools_path = Rc::<Path>::from(state_dir.join("tools"));
         }
@@ -61,9 +67,11 @@ impl Env {
         file_env.insert("RUNNER_TOOL_CACHE", tools_path.clone());
         file_env.insert("RUNNER_TEMP", temp_path.clone());
 
-        let mut tree = Tree::new();
-
         if let Some(c) = c {
+            if let Some(repo) = c.repo {
+                env.insert(String::from("GITHUB_ACTION_REPOSITORY"), repo.to_owned());
+            }
+
             runner_os = c.os();
         } else {
             runner_os = &batch.cx.current_os;
@@ -76,8 +84,6 @@ impl Env {
             .chain(batch.github_token().map(|t| (String::from("token"), t)));
 
         tree.insert_prefix(["github"], github_tree);
-
-        let mut env = BTreeMap::new();
 
         env.insert(
             String::from("GITHUB_SERVER"),

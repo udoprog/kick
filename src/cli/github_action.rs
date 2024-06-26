@@ -50,7 +50,9 @@ fn action(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Re
         inputs.insert(key.to_string(), RString::from(value));
     }
 
-    let action = ActionConfig::new(&cx.current_os, id).with_inputs(inputs);
+    let action = ActionConfig::new(&cx.current_os, id)
+        .with_inputs(inputs)
+        .repo_from_name();
 
     let batch = action.new_use_batch(&c, id)?;
 

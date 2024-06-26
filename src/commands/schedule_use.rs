@@ -82,6 +82,7 @@ impl ScheduleUse {
 
         if !should_skip_use(uses_exposed.as_ref()) {
             let c = ActionConfig::new(os, self.uses.as_ref())
+                .repo_from_name()
                 .with_id(id)
                 .with_skipped(skipped.as_ref())
                 .with_inputs(with);

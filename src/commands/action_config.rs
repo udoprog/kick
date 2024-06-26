@@ -15,6 +15,7 @@ pub(crate) struct ActionConfig<'a> {
     id: Option<&'a Rc<RStr>>,
     skipped: Option<String>,
     inputs: BTreeMap<String, RString>,
+    pub(super) repo: Option<&'a RStr>,
 }
 
 impl<'a> ActionConfig<'a> {
@@ -26,7 +27,20 @@ impl<'a> ActionConfig<'a> {
             id: None,
             skipped: None,
             inputs: BTreeMap::new(),
+            repo: None,
         }
+    }
+
+    /// Get the repo from the name of the name of the action, if it matches the
+    /// pattern `<user>/<repo>@<version>`.
+    pub(crate) fn repo_from_name(mut self) -> Self {
+        if let Some((repo, _)) = self.action_name.split_once('@') {
+            if repo.find('/').is_some() {
+                self.repo = Some(repo);
+            }
+        }
+
+        self
     }
 
     /// Get the os of the action.

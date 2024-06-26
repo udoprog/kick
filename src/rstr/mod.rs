@@ -128,6 +128,37 @@ impl RStr {
         Some((Self::new(a), Self::new(b)))
     }
 
+    /// Find the first occurrence of the given character in the redacted string.
+    pub(crate) fn find(&self, c: char) -> Option<usize> {
+        let mut n = 0;
+
+        for chunk in self.chunks() {
+            if let Some(i) = chunk.public().find(c) {
+                return Some(n + i);
+            }
+
+            n += chunk.public().len();
+
+            let redacted = chunk.redacted();
+
+            if !redacted.is_empty() {
+                n += TAG_START.len();
+
+                for a in redacted {
+                    if a == c {
+                        return Some(n);
+                    }
+
+                    n += a.len_utf8();
+                }
+
+                n += TAG_END.len();
+            }
+        }
+
+        None
+    }
+
     /// Trim any non-redacted whitespace from the string.
     pub(crate) fn trim(&self) -> &Self {
         Self::new(self.0.trim())
