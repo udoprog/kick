@@ -9,7 +9,9 @@ use crate::config::Os;
 use crate::rstr::{RStr, RString};
 use crate::workflows::{Eval, Step, Tree};
 
-use super::{ActionConfig, ActionRunners, BatchConfig, Env, Schedule, ScheduleStaticSetup};
+use super::{
+    ActionConfig, ActionRunners, BatchConfig, Env, Schedule, ScheduleGroup, ScheduleStaticSetup,
+};
 
 /// Check if a use should be skipped.
 fn should_skip_use(uses: &str) -> bool {
@@ -51,7 +53,7 @@ impl ScheduleUse {
         let env = self.env.extend_with(parent, &self.step.env)?;
         let eval = Eval::new(&env.tree);
 
-        let id = self.step.id.as_ref().map(|s| Rc::<str>::from(s.as_str()));
+        let id = self.step.id.as_ref();
 
         let mut main = Vec::new();
         let mut pre = Vec::new();
@@ -72,13 +74,7 @@ impl ScheduleUse {
             .map(|(k, v)| Ok((k.clone(), eval.eval(v)?.into_owned())))
             .collect::<Result<BTreeMap<_, _>>>()?;
 
-        if builtin_action(
-            &self.uses,
-            id.as_ref(),
-            &with,
-            skipped.as_deref(),
-            &mut main,
-        )? {
+        if builtin_action(&self.uses, id, &with, skipped.as_deref(), &mut main)? {
             return Ok(RunGroup { main, pre, post });
         }
 
@@ -115,7 +111,7 @@ struct RustToolchain<'a> {
 
 fn builtin_action(
     uses: &RStr,
-    id: Option<&Rc<str>>,
+    id: Option<&Rc<RStr>>,
     with: &BTreeMap<String, RString>,
     skipped: Option<&str>,
     main: &mut Vec<Schedule>,
@@ -169,12 +165,11 @@ fn builtin_action(
             skipped.map(str::to_owned),
         )));
 
-        main.push(Schedule::Group {
-            name: Some(RStr::new("rust toolchain (builtin)").as_rc()),
-            id: id.cloned(),
-            steps: Box::from(group),
-            outputs: None,
-        });
+        main.push(Schedule::Group(ScheduleGroup::new(
+            Some(RStr::new("rust toolchain (builtin)").as_rc()),
+            id.cloned(),
+            Box::from(group),
+        )));
 
         return Ok(true);
     }

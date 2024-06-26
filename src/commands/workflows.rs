@@ -77,7 +77,7 @@ impl<'a, 'cx> LoadedJobMatrix<'a, 'cx> {
     /// Build a batch from the current job matrix.
     pub(crate) fn build(
         &self,
-        parent_step_id: Option<&Rc<str>>,
+        parent_step_id: Option<&Rc<RStr>>,
         same_os: bool,
         current_os: &Os,
     ) -> Result<Batch> {
@@ -117,7 +117,7 @@ impl<'a, 'cx> LoadedWorkflows<'a, 'cx> {
         &self,
         matrix: &Matrix,
         steps: &Steps,
-        parent_step_id: Option<&Rc<str>>,
+        parent_step_id: Option<&Rc<RStr>>,
         same_os: bool,
         current_os: &Os,
     ) -> Result<Batch> {
@@ -136,7 +136,7 @@ impl<'a, 'cx> LoadedWorkflows<'a, 'cx> {
             (RunOn::from_os(self.batch, &os, dist)?, os)
         };
 
-        let commands = build_steps(parent_step_id, None, self.batch, &steps.steps, None, None)?;
+        let commands = build_steps(self.batch, None, parent_step_id, None, &steps.steps, None)?;
 
         Ok(Batch::new(
             run_on,

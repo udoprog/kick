@@ -27,7 +27,7 @@ impl Env {
     pub(super) fn new(
         batch: &BatchConfig<'_, '_>,
         runner: Option<&ActionRunner>,
-        c: Option<&ActionConfig>,
+        c: Option<&ActionConfig<'_>>,
     ) -> Result<Self> {
         let cache_dir = batch
             .cx
@@ -69,10 +69,6 @@ impl Env {
             runner_os = &batch.cx.current_os;
         }
 
-        tree.insert_prefix(
-            ["env"],
-            file_env.iter().map(|(&k, v)| (k, v.to_string_lossy())),
-        );
         tree.insert(["runner", "os"], runner_os.as_tree_value());
 
         let github_tree = [(String::from("server"), RStr::new(batch.github_server()))]
@@ -111,9 +107,17 @@ impl Env {
                 }
 
                 tree.insert_prefix(["inputs"], inputs.clone());
-                tree.insert_prefix(["env"], env.clone());
             }
         }
+
+        let env_tree = env.iter().map(|(k, v)| (k.clone(), v.clone()));
+        let env_tree = env_tree.chain(
+            file_env
+                .iter()
+                .map(|(&k, v)| (k.to_owned(), RString::from(v.to_string_lossy()))),
+        );
+
+        tree.insert_prefix(["env"], env_tree);
 
         let env = Rc::new(env);
         let tree = Rc::new(tree);

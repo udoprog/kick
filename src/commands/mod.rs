@@ -56,7 +56,7 @@ mod schedule_outputs;
 use self::schedule_outputs::ScheduleOutputs;
 
 mod schedule;
-use self::schedule::{build_steps, Schedule};
+use self::schedule::{build_steps, Schedule, ScheduleGroup};
 
 mod scheduler;
 use self::scheduler::Scheduler;

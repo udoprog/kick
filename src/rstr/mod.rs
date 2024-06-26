@@ -248,6 +248,11 @@ impl RString {
         self
     }
 
+    /// Construct a reference counted container for an RStr.
+    pub(crate) fn into_rc(self) -> Rc<RStr> {
+        RStr::from_rc(Rc::<str>::from(self.0))
+    }
+
     /// Construct a new redacted string. This can only contain ascii characters.
     pub(crate) fn redacted<S>(s: S) -> Option<Self>
     where

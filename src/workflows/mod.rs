@@ -274,12 +274,13 @@ pub(crate) fn load_steps(
         }
 
         let id = value.get("id").and_then(|v| v.as_str());
+        let id = id.map(|id| eval.eval(id)).transpose()?;
         let name = value.get("name").and_then(|v| v.as_str());
         let run = value.get("run").and_then(|v| v.as_str());
         let shell = value.get("shell").and_then(|v| v.as_str());
 
         steps.push(Rc::new(Step {
-            id: id.map(str::to_owned),
+            id: id.map(Cow::into_owned).map(RString::into_rc),
             uses,
             tree: tree.clone(),
             env,
@@ -595,7 +596,7 @@ pub(crate) struct StepMapping {
 
 #[derive(Default, Debug, Clone)]
 pub(crate) struct Step {
-    pub(crate) id: Option<String>,
+    pub(crate) id: Option<Rc<RStr>>,
     pub(crate) uses: Option<Rc<RStr>>,
     pub(crate) tree: Rc<Tree>,
     pub(crate) env: BTreeMap<String, String>,

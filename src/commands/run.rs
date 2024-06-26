@@ -25,7 +25,7 @@ pub(super) enum RunKind {
 /// A run configuration.
 pub(crate) struct Run {
     pub(super) run: RunKind,
-    pub(super) id: Option<Rc<str>>,
+    pub(super) id: Option<Rc<RStr>>,
     pub(super) name: Option<RString>,
     pub(super) env: BTreeMap<String, OsArg>,
     pub(super) skipped: Option<String>,
@@ -92,7 +92,7 @@ impl Run {
 
     /// Modify the id of the run command.
     #[inline]
-    pub(super) fn with_id(mut self, id: Option<Rc<str>>) -> Self {
+    pub(super) fn with_id(mut self, id: Option<Rc<RStr>>) -> Self {
         self.id = id;
         self
     }

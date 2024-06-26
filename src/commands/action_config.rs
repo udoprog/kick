@@ -12,7 +12,7 @@ use super::{Batch, BatchConfig};
 pub(crate) struct ActionConfig<'a> {
     os: &'a Os,
     action_name: &'a RStr,
-    id: Option<Rc<str>>,
+    id: Option<&'a Rc<RStr>>,
     skipped: Option<String>,
     inputs: BTreeMap<String, RString>,
 }
@@ -40,8 +40,8 @@ impl<'a> ActionConfig<'a> {
     }
 
     /// Get the id of the action.
-    pub(crate) fn id(&self) -> Option<&Rc<str>> {
-        self.id.as_ref()
+    pub(crate) fn id(&self) -> Option<&Rc<RStr>> {
+        self.id
     }
 
     /// Get the skipped config.
@@ -55,7 +55,7 @@ impl<'a> ActionConfig<'a> {
     }
 
     /// Set the id of the action.
-    pub(crate) fn with_id(mut self, id: Option<Rc<str>>) -> Self {
+    pub(crate) fn with_id(mut self, id: Option<&'a Rc<RStr>>) -> Self {
         self.id = id;
         self
     }

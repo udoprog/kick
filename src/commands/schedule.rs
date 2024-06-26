@@ -10,15 +10,40 @@ use super::{
     ScheduleOutputs, ScheduleRun, ScheduleStaticSetup, ScheduleUse, Session,
 };
 
+#[derive(Clone)]
+pub(super) struct ScheduleGroup {
+    pub(super) name: Option<Rc<RStr>>,
+    pub(super) id: Option<Rc<RStr>>,
+    pub(super) steps: Box<[Schedule]>,
+    pub(super) outputs: Option<ScheduleOutputs>,
+}
+
+impl ScheduleGroup {
+    /// Construct a schedule group.
+    pub(super) fn new(
+        name: Option<Rc<RStr>>,
+        id: Option<Rc<RStr>>,
+        steps: Box<[Schedule]>,
+    ) -> Self {
+        Self {
+            name,
+            id,
+            steps,
+            outputs: None,
+        }
+    }
+
+    /// Modify outputs of the group.
+    pub(super) fn with_outputs(mut self, outputs: ScheduleOutputs) -> Self {
+        self.outputs = Some(outputs);
+        self
+    }
+}
+
 /// A scheduled action.
 #[derive(Clone)]
 pub(super) enum Schedule {
-    Group {
-        name: Option<Rc<RStr>>,
-        id: Option<Rc<str>>,
-        steps: Box<[Schedule]>,
-        outputs: Option<ScheduleOutputs>,
-    },
+    Group(ScheduleGroup),
     BasicCommand(ScheduleBasicCommand),
     StaticSetup(ScheduleStaticSetup),
     NodeAction(ScheduleNodeAction),
@@ -41,12 +66,12 @@ impl Schedule {
 
 /// Add jobs from a workflows, matrix, and associated steps.
 pub(super) fn build_steps(
-    id: Option<&Rc<str>>,
-    name: Option<&RStr>,
     batch: &BatchConfig<'_, '_>,
+    c: Option<&ActionConfig<'_>>,
+    id: Option<&Rc<RStr>>,
+    name: Option<&RStr>,
     steps: &[Rc<Step>],
     runner: Option<&ActionRunner>,
-    c: Option<&ActionConfig>,
 ) -> Result<Schedule> {
     let env = Env::new(batch, runner, c)?;
 
@@ -79,10 +104,9 @@ pub(super) fn build_steps(
         }
     }
 
-    Ok(Schedule::Group {
-        name: name.map(RStr::as_rc),
-        id: id.cloned(),
-        steps: group.into(),
-        outputs: None,
-    })
+    Ok(Schedule::Group(ScheduleGroup::new(
+        name.map(RStr::as_rc),
+        id.cloned(),
+        group.into(),
+    )))
 }

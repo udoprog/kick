@@ -9,7 +9,8 @@ use crate::action::ActionKind;
 use crate::rstr::rformat;
 
 use super::{
-    build_steps, ActionConfig, BatchConfig, Env, Schedule, ScheduleNodeAction, ScheduleOutputs,
+    build_steps, ActionConfig, BatchConfig, Env, Schedule, ScheduleGroup, ScheduleNodeAction,
+    ScheduleOutputs,
 };
 
 #[derive(Debug)]
@@ -103,33 +104,31 @@ impl ActionRunners {
                 let env = Env::new(batch, Some(action), Some(c))?;
 
                 if let Some(path) = pre_path {
-                    pre = Some(Schedule::Group {
-                        name: Some(rformat!("{} (post)", c.action_name()).as_rc()),
-                        id: c.id().cloned(),
-                        steps: Box::from([Schedule::NodeAction(ScheduleNodeAction::new(
+                    pre = Some(Schedule::Group(ScheduleGroup::new(
+                        Some(rformat!("{} (post)", c.action_name()).as_rc()),
+                        c.id().cloned(),
+                        Box::from([Schedule::NodeAction(ScheduleNodeAction::new(
                             path.clone(),
                             *node_version,
                             c.skipped(),
                             env.clone(),
                             pre_if.clone(),
                         ))]),
-                        outputs: None,
-                    });
+                    )));
                 }
 
                 if let Some(path) = post_path {
-                    post = Some(Schedule::Group {
-                        name: Some(rformat!("{} (post)", c.action_name()).as_rc()),
-                        id: c.id().cloned(),
-                        steps: Box::from([Schedule::NodeAction(ScheduleNodeAction::new(
+                    post = Some(Schedule::Group(ScheduleGroup::new(
+                        Some(rformat!("{} (post)", c.action_name()).as_rc()),
+                        c.id().cloned(),
+                        Box::from([Schedule::NodeAction(ScheduleNodeAction::new(
                             path.clone(),
                             *node_version,
                             c.skipped(),
                             env.clone(),
                             post_if.clone(),
                         ))]),
-                        outputs: None,
-                    });
+                    )));
                 }
 
                 let outputs = action
@@ -137,36 +136,35 @@ impl ActionRunners {
                     .map(|(k, v)| (k.to_owned(), v.to_owned()))
                     .collect::<BTreeMap<_, _>>();
 
-                let outputs = if !outputs.is_empty() {
-                    Some(ScheduleOutputs {
-                        env: env.clone(),
-                        outputs: Rc::new(outputs),
-                    })
-                } else {
-                    None
-                };
-
-                main = Schedule::Group {
-                    name: Some(c.action_name().as_rc()),
-                    id: c.id().cloned(),
-                    steps: Box::from([Schedule::NodeAction(ScheduleNodeAction::new(
+                let mut group = ScheduleGroup::new(
+                    Some(c.action_name().as_rc()),
+                    c.id().cloned(),
+                    Box::from([Schedule::NodeAction(ScheduleNodeAction::new(
                         main_path.clone(),
                         *node_version,
                         c.skipped(),
-                        env,
+                        env.clone(),
                         None,
                     ))]),
-                    outputs,
-                };
+                );
+
+                if !outputs.is_empty() {
+                    group = group.with_outputs(ScheduleOutputs {
+                        env,
+                        outputs: Rc::new(outputs),
+                    });
+                }
+
+                main = Schedule::Group(group);
             }
             ActionKind::Composite { steps } => {
                 main = build_steps(
+                    batch,
+                    Some(c),
                     c.id(),
                     Some(c.action_name()),
-                    batch,
                     steps,
                     Some(action),
-                    Some(c),
                 )?;
             }
         }

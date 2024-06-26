@@ -14,7 +14,7 @@ use super::{BatchConfig, Run, Schedule, ScheduleOutputs, Session};
 struct StackEntry {
     name: Option<Rc<RStr>>,
     tree: Tree,
-    id: Option<Rc<str>>,
+    id: Option<Rc<RStr>>,
     main: VecDeque<Schedule>,
     pre: VecDeque<Schedule>,
     post: VecDeque<Schedule>,
@@ -43,17 +43,17 @@ impl Scheduler {
     }
 
     /// Get a complete id of the thing being scheduled.
-    pub(super) fn id(&self, separator: &str, tail: Option<&str>) -> Option<String> {
+    pub(super) fn id(&self, separator: &str, tail: Option<&RStr>) -> Option<RString> {
         let mut it = self.stack.iter().flat_map(|e| e.id.as_deref()).chain(tail);
 
         let first = it.next()?;
 
-        let mut o = String::with_capacity(first.len());
-        o.push_str(first);
+        let mut o = RString::with_capacity(first.len());
+        o.push_rstr(first);
 
         for step in it {
-            o.push_str(separator);
-            o.push_str(step);
+            o.push_rstr(separator);
+            o.push_rstr(step);
         }
 
         Some(o)
@@ -137,6 +137,7 @@ impl Scheduler {
                 let env = o.env.extend_with(&e.tree, &raw_env)?;
 
                 let id = e.id.context("Missing id to store outputs")?;
+                let id = id.to_exposed();
                 let eval = Eval::new(&env.tree);
 
                 let mut values = BTreeMap::new();
@@ -178,20 +179,15 @@ impl Scheduler {
             }
 
             match schedule {
-                Schedule::Group {
-                    name,
-                    id: parent_step_id,
-                    steps,
-                    outputs,
-                } => {
+                Schedule::Group(g) => {
                     self.stack.push(StackEntry {
-                        name,
+                        name: g.name,
                         tree: Tree::new(),
-                        id: parent_step_id,
-                        main: steps.iter().cloned().collect(),
+                        id: g.id,
+                        main: g.steps.iter().cloned().collect(),
                         pre: VecDeque::new(),
                         post: VecDeque::new(),
-                        outputs,
+                        outputs: g.outputs,
                     });
                 }
                 Schedule::BasicCommand(command) => {

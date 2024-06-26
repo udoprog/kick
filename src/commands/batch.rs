@@ -14,7 +14,7 @@ use termcolor::{ColorSpec, WriteColor};
 
 use crate::config::Os;
 use crate::process::{Command, OsArg};
-use crate::rstr::RStr;
+use crate::rstr::{RStr, RString};
 use crate::shell::Shell;
 use crate::workflows::{Matrix, Step};
 
@@ -234,7 +234,7 @@ impl Batch {
                                     id.push('-');
                                     id
                                 }
-                                None => String::new(),
+                                None => RString::new(),
                             };
 
                             let script_path = scripts_dir
@@ -473,8 +473,9 @@ impl Batch {
 
                     if !new_outputs.is_empty() {
                         if let Some(id) = &run.id {
+                            let id = id.to_exposed();
                             scheduler
-                                .insert_new_outputs(id, &new_outputs)
+                                .insert_new_outputs(id.as_ref(), &new_outputs)
                                 .with_context(|| anyhow!("New outputs {new_outputs:?}"))?;
                         } else {
                             tracing::warn!("Outputs produced, but no id to store them");

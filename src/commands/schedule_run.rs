@@ -47,7 +47,7 @@ impl ScheduleRun {
             .transpose()?;
 
         let run = Run::script(script.as_ref(), shell)
-            .with_id(self.step.id.as_deref().map(Rc::from))
+            .with_id(self.step.id.clone())
             .with_name(name.as_deref())
             .with_env(env.build_os_env())
             .with_skipped(skipped.clone())
