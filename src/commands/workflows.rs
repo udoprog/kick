@@ -141,7 +141,7 @@ impl<'a, 'cx> LoadedWorkflows<'a, 'cx> {
         Ok(Batch::new(
             run_on,
             os,
-            commands,
+            vec![commands],
             if !matrix.is_empty() {
                 Some(matrix.clone())
             } else {

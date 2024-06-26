@@ -8,8 +8,9 @@ use anyhow::{bail, Result};
 use crate::action::ActionKind;
 use crate::rstr::rformat;
 
-use super::schedule_outputs::ScheduleOutputs;
-use super::{build_steps, ActionConfig, BatchConfig, Env, Schedule, ScheduleNodeAction};
+use super::{
+    build_steps, ActionConfig, BatchConfig, Env, Schedule, ScheduleNodeAction, ScheduleOutputs,
+};
 
 #[derive(Debug)]
 pub(super) struct ActionRunner {
@@ -86,9 +87,9 @@ impl ActionRunners {
             bail!("Could not find action runner for {}", c.action_name());
         };
 
-        let mut main = Vec::new();
-        let mut pre = Vec::new();
-        let mut post = Vec::new();
+        let main;
+        let mut pre = None;
+        let mut post = None;
 
         match &action.kind {
             ActionKind::Node {
@@ -102,63 +103,64 @@ impl ActionRunners {
                 let env = Env::new(batch, Some(action), Some(c))?;
 
                 if let Some(path) = pre_path {
-                    pre.push(Schedule::Push {
-                        name: Some(rformat!("{} (pre)", c.action_name()).as_rc()),
+                    pre = Some(Schedule::Group {
+                        name: Some(rformat!("{} (post)", c.action_name()).as_rc()),
                         id: c.id().cloned(),
+                        steps: Box::from([Schedule::NodeAction(ScheduleNodeAction::new(
+                            path.clone(),
+                            *node_version,
+                            c.skipped(),
+                            env.clone(),
+                            pre_if.clone(),
+                        ))]),
+                        outputs: None,
                     });
-                    pre.push(Schedule::NodeAction(ScheduleNodeAction::new(
-                        path.clone(),
-                        *node_version,
-                        c.skipped(),
-                        env.clone(),
-                        pre_if.clone(),
-                    )));
-                    pre.push(Schedule::Pop);
                 }
 
                 if let Some(path) = post_path {
-                    post.push(Schedule::Push {
+                    post = Some(Schedule::Group {
                         name: Some(rformat!("{} (post)", c.action_name()).as_rc()),
                         id: c.id().cloned(),
+                        steps: Box::from([Schedule::NodeAction(ScheduleNodeAction::new(
+                            path.clone(),
+                            *node_version,
+                            c.skipped(),
+                            env.clone(),
+                            post_if.clone(),
+                        ))]),
+                        outputs: None,
                     });
-                    post.push(Schedule::NodeAction(ScheduleNodeAction::new(
-                        path.clone(),
-                        *node_version,
-                        c.skipped(),
-                        env.clone(),
-                        post_if.clone(),
-                    )));
-                    post.push(Schedule::Pop);
                 }
-
-                main.push(Schedule::Push {
-                    name: Some(c.action_name().as_rc()),
-                    id: c.id().cloned(),
-                });
-                main.push(Schedule::NodeAction(ScheduleNodeAction::new(
-                    main_path.clone(),
-                    *node_version,
-                    c.skipped(),
-                    env.clone(),
-                    None,
-                )));
 
                 let outputs = action
                     .outputs()
                     .map(|(k, v)| (k.to_owned(), v.to_owned()))
                     .collect::<BTreeMap<_, _>>();
 
-                if outputs.is_empty() {
-                    post.push(Schedule::Pop);
-                } else {
-                    main.push(Schedule::Outputs(ScheduleOutputs {
-                        env,
+                let outputs = if !outputs.is_empty() {
+                    Some(ScheduleOutputs {
+                        env: env.clone(),
                         outputs: Rc::new(outputs),
-                    }));
-                }
+                    })
+                } else {
+                    None
+                };
+
+                main = Schedule::Group {
+                    name: Some(c.action_name().as_rc()),
+                    id: c.id().cloned(),
+                    steps: Box::from([Schedule::NodeAction(ScheduleNodeAction::new(
+                        main_path.clone(),
+                        *node_version,
+                        c.skipped(),
+                        env,
+                        None,
+                    ))]),
+                    outputs,
+                };
             }
             ActionKind::Composite { steps } => {
-                let commands = build_steps(
+                main = build_steps(
                     c.id(),
                     Some(c.action_name()),
                     batch,
@@ -166,7 +168,6 @@ impl ActionRunners {
                     Some(action),
                     Some(c),
                 )?;
-                main.extend(commands);
             }
         }
 
@@ -175,7 +176,7 @@ impl ActionRunners {
 }
 
 pub(super) struct RunnerSteps {
-    pub(super) main: Vec<Schedule>,
-    pub(super) pre: Vec<Schedule>,
-    pub(super) post: Vec<Schedule>,
+    pub(super) main: Schedule,
+    pub(super) pre: Option<Schedule>,
+    pub(super) post: Option<Schedule>,
 }

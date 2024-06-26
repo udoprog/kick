@@ -92,17 +92,9 @@ impl ScheduleUse {
 
             let steps = runners.build(batch, &c)?;
 
-            if !steps.main.is_empty() {
-                main.extend(steps.main);
-            }
-
-            if !steps.pre.is_empty() {
-                pre.extend(steps.pre);
-            }
-
-            if !steps.post.is_empty() {
-                post.extend(steps.post);
-            }
+            main.push(steps.main);
+            pre.extend(steps.pre);
+            post.extend(steps.post);
         }
 
         Ok(RunGroup { main, pre, post })
@@ -137,10 +129,7 @@ fn builtin_action(
     };
 
     if let Some(rust_toolchain) = rust_toolchain(user, repo, version, with)? {
-        main.push(Schedule::Push {
-            name: Some(RStr::new("rust toolchain (builtin)").as_rc()),
-            id: id.cloned(),
-        });
+        let mut group = Vec::new();
 
         if rust_toolchain.components.is_some() || rust_toolchain.targets.is_some() {
             let mut args = vec![
@@ -165,7 +154,7 @@ fn builtin_action(
                 RString::from("--no-self-update"),
             ]);
 
-            main.push(Schedule::StaticSetup(ScheduleStaticSetup::new(
+            group.push(Schedule::StaticSetup(ScheduleStaticSetup::new(
                 "rustup",
                 "install toolchain",
                 args.clone(),
@@ -173,14 +162,20 @@ fn builtin_action(
             )));
         }
 
-        main.push(Schedule::StaticSetup(ScheduleStaticSetup::new(
+        group.push(Schedule::StaticSetup(ScheduleStaticSetup::new(
             "rustup",
             "set default rust version",
             vec![RString::from("default"), rust_toolchain.version.to_owned()],
             skipped.map(str::to_owned),
         )));
 
-        main.push(Schedule::Pop);
+        main.push(Schedule::Group {
+            name: Some(RStr::new("rust toolchain (builtin)").as_rc()),
+            id: id.cloned(),
+            steps: Box::from(group),
+            outputs: None,
+        });
+
         return Ok(true);
     }
 

@@ -9,31 +9,35 @@ use crate::config::Os;
 use crate::rstr::{RStr, RString};
 use crate::workflows::{Eval, Tree};
 
-use super::{BatchConfig, Run, Schedule, Session};
+use super::{BatchConfig, Run, Schedule, ScheduleOutputs, Session};
 
 struct StackEntry {
     name: Option<Rc<RStr>>,
     tree: Tree,
     id: Option<Rc<str>>,
-}
-
-pub(super) struct Scheduler {
-    stack: Vec<StackEntry>,
-    env: BTreeMap<String, String>,
     main: VecDeque<Schedule>,
     pre: VecDeque<Schedule>,
     post: VecDeque<Schedule>,
+    outputs: Option<ScheduleOutputs>,
+}
+
+pub(super) struct Scheduler {
+    /// Main queue of schedules to seed the scheduler.
+    queue: VecDeque<Schedule>,
+    /// Stack of tasks being executed.
+    stack: Vec<StackEntry>,
+    /// Current environment variables set.
+    env: BTreeMap<String, String>,
+    /// Current paths configured.
     paths: Vec<OsString>,
 }
 
 impl Scheduler {
     pub(super) fn new() -> Self {
         Self {
+            queue: VecDeque::new(),
             stack: Vec::new(),
             env: BTreeMap::new(),
-            main: VecDeque::new(),
-            pre: VecDeque::new(),
-            post: VecDeque::new(),
             paths: Vec::new(),
         }
     }
@@ -79,7 +83,7 @@ impl Scheduler {
 
     /// Push back a schedule onto the main queue.
     pub(super) fn push_back(&mut self, schedule: Schedule) {
-        self.main.push_back(schedule);
+        self.queue.push_back(schedule);
     }
 
     pub(super) fn env(&self) -> &BTreeMap<String, String> {
@@ -106,20 +110,45 @@ impl Scheduler {
         Some(&mut self.stack.last_mut()?.tree)
     }
 
-    fn next_schedule(&mut self) -> Option<Schedule> {
-        if let Some(item) = self.pre.pop_front() {
-            return Some(item);
+    fn next_schedule(&mut self) -> Result<Option<Schedule>> {
+        loop {
+            let Some(e) = self.stack.last_mut() else {
+                return Ok(self.queue.pop_front());
+            };
+
+            if let Some(item) = e.pre.pop_front() {
+                return Ok(Some(item));
+            }
+
+            if let Some(item) = e.main.pop_front() {
+                return Ok(Some(item));
+            }
+
+            if let Some(item) = e.post.pop_front() {
+                // Defer running post action.
+                self.queue.push_back(item);
+                continue;
+            };
+
+            let e = self.stack.pop().context("Missing stack entry")?;
+
+            if let Some(o) = e.outputs {
+                let raw_env = BTreeMap::new();
+                let env = o.env.extend_with(&e.tree, &raw_env)?;
+
+                let id = e.id.context("Missing id to store outputs")?;
+                let eval = Eval::new(&env.tree);
+
+                let mut values = BTreeMap::new();
+
+                for (key, value) in o.outputs.as_ref() {
+                    values.insert(key.clone(), eval.eval(&value)?.into_owned());
+                }
+
+                let tree = self.tree_mut().context("Missing scheduler tree")?;
+                tree.insert_prefix(["steps", id.as_ref(), "outputs"], values);
+            }
         }
-
-        if let Some(item) = self.main.pop_front() {
-            return Some(item);
-        }
-
-        if let Some(item) = self.post.pop_front() {
-            return Some(item);
-        };
-
-        None
     }
 
     pub(super) fn advance<O>(
@@ -132,7 +161,7 @@ impl Scheduler {
     where
         O: ?Sized + WriteColor,
     {
-        while let Some(schedule) = self.next_schedule() {
+        while let Some(schedule) = self.next_schedule()? {
             schedule.prepare(session)?;
 
             // This will take care to synchronize any actions which are needed
@@ -149,38 +178,21 @@ impl Scheduler {
             }
 
             match schedule {
-                Schedule::Push {
+                Schedule::Group {
                     name,
                     id: parent_step_id,
+                    steps,
+                    outputs,
                 } => {
                     self.stack.push(StackEntry {
                         name,
                         tree: Tree::new(),
                         id: parent_step_id,
+                        main: steps.iter().cloned().collect(),
+                        pre: VecDeque::new(),
+                        post: VecDeque::new(),
+                        outputs,
                     });
-                }
-                Schedule::Pop => {
-                    self.stack.pop();
-                }
-                Schedule::Outputs(outputs) => {
-                    let Some(StackEntry { tree, id, .. }) = self.stack.pop() else {
-                        bail!("Missing tree for outputs");
-                    };
-
-                    let raw_env = BTreeMap::new();
-                    let env = outputs.env.extend_with(&tree, &raw_env)?;
-
-                    let id = id.context("Missing id to store outputs")?;
-                    let eval = Eval::new(&env.tree);
-
-                    let mut values = BTreeMap::new();
-
-                    for (key, value) in outputs.outputs.as_ref() {
-                        values.insert(key.clone(), eval.eval(&value)?.into_owned());
-                    }
-
-                    let tree = self.tree_mut().context("Missing scheduler tree")?;
-                    tree.insert_prefix(["steps", id.as_ref(), "outputs"], values);
                 }
                 Schedule::BasicCommand(command) => {
                     let run = command.build();
@@ -200,17 +212,21 @@ impl Scheduler {
                 }
                 Schedule::Use(u) => {
                     let group = u.build(batch, self.tree(), session.runners(), os)?;
+                    let e = self
+                        .stack
+                        .last_mut()
+                        .context("Missing stack entry to incorporate use")?;
 
                     for run in group.pre {
-                        self.pre.push_back(run);
+                        e.pre.push_back(run);
                     }
 
                     for run in group.main.into_iter().rev() {
-                        self.main.push_front(run);
+                        e.main.push_front(run);
                     }
 
                     for run in group.post.into_iter().rev() {
-                        self.post.push_front(run);
+                        e.post.push_front(run);
                     }
                 }
             }

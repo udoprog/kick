@@ -13,12 +13,12 @@ use super::{
 /// A scheduled action.
 #[derive(Clone)]
 pub(super) enum Schedule {
-    Push {
+    Group {
         name: Option<Rc<RStr>>,
         id: Option<Rc<str>>,
+        steps: Box<[Schedule]>,
+        outputs: Option<ScheduleOutputs>,
     },
-    Pop,
-    Outputs(ScheduleOutputs),
     BasicCommand(ScheduleBasicCommand),
     StaticSetup(ScheduleStaticSetup),
     NodeAction(ScheduleNodeAction),
@@ -47,17 +47,12 @@ pub(super) fn build_steps(
     steps: &[Rc<Step>],
     runner: Option<&ActionRunner>,
     c: Option<&ActionConfig>,
-) -> Result<Vec<Schedule>> {
+) -> Result<Schedule> {
     let env = Env::new(batch, runner, c)?;
 
-    let mut commands = Vec::new();
+    let mut group = Vec::new();
 
     if !steps.is_empty() {
-        commands.push(Schedule::Push {
-            name: name.map(RStr::as_rc),
-            id: id.cloned(),
-        });
-
         for step in steps {
             let mut env = env.clone();
 
@@ -67,7 +62,7 @@ pub(super) fn build_steps(
             }
 
             if let Some(run) = &step.run {
-                commands.push(Schedule::Run(ScheduleRun::new(
+                group.push(Schedule::Run(ScheduleRun::new(
                     Box::from(run.as_str()),
                     step.clone(),
                     env.clone(),
@@ -75,16 +70,19 @@ pub(super) fn build_steps(
             }
 
             if let Some(uses) = &step.uses {
-                commands.push(Schedule::Use(ScheduleUse::new(
+                group.push(Schedule::Use(ScheduleUse::new(
                     uses.clone(),
                     step.clone(),
                     env.clone(),
                 )));
             }
         }
-
-        commands.push(Schedule::Pop);
     }
 
-    Ok(commands)
+    Ok(Schedule::Group {
+        name: name.map(RStr::as_rc),
+        id: id.cloned(),
+        steps: group.into(),
+        outputs: None,
+    })
 }
