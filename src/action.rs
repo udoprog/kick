@@ -14,6 +14,7 @@ use gix::{Id, ObjectId, Repository};
 use nondestructive::yaml;
 use relative_path::{RelativePath, RelativePathBuf};
 
+use crate::commands::StringObjectId;
 use crate::workflows::{self, Eval, Step};
 
 /// Configuration of an action.
@@ -43,6 +44,7 @@ pub(super) fn load<'repo>(
     repo: &'repo Repository,
     eval: &Eval,
     id: ObjectId,
+    files: &mut Vec<(RelativePathBuf, StringObjectId)>,
 ) -> Result<(ActionRunnerKind, ActionContext<'repo>)> {
     let mut cx = ActionContext::default();
 
@@ -84,6 +86,7 @@ pub(super) fn load<'repo>(
                         cx.action_yml = Some(path.to_owned());
                     }
 
+                    files.push((path.clone(), StringObjectId(ObjectId::from(id))));
                     cx.paths.insert(path.clone(), (id, entry.mode()));
                 }
                 Kind::Tree => {
@@ -260,7 +263,7 @@ impl<'repo> ActionContext<'repo> {
             return Ok(None);
         };
 
-        let path = Rc::<Path>::from(dir.join(format!("{name}-{version}-{node_version}.js")));
+        let path = Rc::<Path>::from(dir.join(format!("{name}-{node_version}-{version}.js")));
 
         let (id, _) = self
             .paths

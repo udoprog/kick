@@ -8,7 +8,7 @@ use self::action_runners::ActionRunner;
 pub(crate) use self::action_runners::ActionRunners;
 
 mod actions;
-pub(crate) use self::actions::Actions;
+pub(crate) use self::actions::{Actions, StringObjectId};
 
 mod batch;
 pub(crate) use self::batch::Batch;

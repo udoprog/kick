@@ -1,5 +1,5 @@
-use std::collections::{BTreeSet, HashSet};
-use std::fs::{self};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fs::{self, File};
 use std::io::{self};
 use std::path::Path;
 use std::rc::Rc;
@@ -7,8 +7,9 @@ use std::str;
 
 use anyhow::{anyhow, bail, Context, Result};
 use bstr::BString;
-use gix::hash::Kind;
 use gix::ObjectId;
+use relative_path::RelativePathBuf;
+use serde::{Deserialize, Serialize};
 use tracing::Level;
 
 use crate::ctxt::Ctxt;
@@ -21,6 +22,47 @@ const GITHUB_BASE: &str = "https://github.com";
 const GIT_OBJECT_ID_FILE: &str = ".git-object-id";
 const WORKDIR: &str = "workdir";
 const GIT: &str = "git";
+const KICK_META_JSON: &str = ".kick-meta.json";
+const CURRENT_VERSION: &str = "v1";
+
+#[derive(PartialEq, Eq, Hash)]
+pub(crate) struct StringObjectId(pub(crate) ObjectId);
+
+impl Serialize for StringObjectId {
+    #[inline]
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.collect_str(&self.0.to_hex())
+    }
+}
+
+impl<'de> Deserialize<'de> for StringObjectId {
+    #[inline]
+    fn deserialize<D>(deserializer: D) -> Result<StringObjectId, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        ObjectId::from_hex(s.as_bytes())
+            .map(StringObjectId)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Deserialize)]
+struct KickMeta {
+    id: StringObjectId,
+    files: Vec<(RelativePathBuf, StringObjectId)>,
+}
+
+#[derive(Serialize)]
+struct KickMetaRef<'a> {
+    version: &'a str,
+    id: StringObjectId,
+    files: &'a [(RelativePathBuf, StringObjectId)],
+}
 
 /// Loaded uses.
 #[derive(Default)]
@@ -105,6 +147,7 @@ fn sync_action(
     let git_dir = repo_dir.join(GIT);
     let work_dir = repo_dir.join(WORKDIR).join(version);
     let id_path = work_dir.join(GIT_OBJECT_ID_FILE);
+    let meta_path = work_dir.join(KICK_META_JSON);
 
     let span = tracing::span!(Level::DEBUG, "sync_action", ?key, ?repo_dir);
     let _enter = span.enter();
@@ -135,7 +178,9 @@ fn sync_action(
                     continue;
                 };
 
-                let (kind, action) = match crate::action::load(&r, eval, id) {
+                let mut files = Vec::new();
+
+                let (kind, action) = match crate::action::load(&r, eval, id, &mut files) {
                     Ok(found) => found,
                     Err(error) => {
                         tracing::debug!(?remote_name, ?id, ?error, "Not an action");
@@ -149,15 +194,14 @@ fn sync_action(
                     anyhow!("Failed to create work directory: {}", work_dir.display())
                 })?;
 
-                let existing = load_id(&id_path)?;
+                let existing_meta = load_meta(&meta_path)?;
 
-                let export = existing != Some(id);
+                let meta = existing_meta.unwrap_or_else(|| KickMeta {
+                    id: StringObjectId(id),
+                    files: Vec::new(),
+                });
 
-                if export {
-                    write_id(&id_path, id)?;
-                }
-
-                found = Some((kind, action, export));
+                found = Some((kind, action, files, meta));
             }
         }
         Err(error) => {
@@ -167,20 +211,53 @@ fn sync_action(
 
     // Try to read out remaining versions from the workdir cache.
     if found.is_none() {
-        let Some(id) = load_id(&id_path)? else {
-            bail!("Could not find Object ID: {}", id_path.display());
+        let Some(meta) = load_meta(&meta_path)? else {
+            bail!("Could not find meta: {}", id_path.display());
         };
 
         // Load an action runner directly out of a repository without checking it out.
-        let (kind, action) = crate::action::load(&r, eval, id)?;
-        found = Some((kind, action, false));
+        let mut files = Vec::new();
+        let (kind, action) = crate::action::load(&r, eval, meta.id.0, &mut files)?;
+        found = Some((kind, action, files, meta));
     }
 
-    let (kind, action, export) = found.context("No action found")?;
+    let (kind, action, repo_files, meta) = found.context("No action found")?;
+
+    let mut current = meta
+        .files
+        .iter()
+        .map(|(k, v)| (k, v))
+        .collect::<HashMap<_, _>>();
+
+    let export = 'export: {
+        // TODO: Only look at files that we care about instead of every file.
+        for (path, actual_hash) in &repo_files {
+            let Some(hash) = current.remove(path) else {
+                break 'export true;
+            };
+
+            if *hash != *actual_hash {
+                break 'export true;
+            }
+        }
+
+        false
+    };
 
     tracing::debug!(export, "Loading runner");
 
     let action = action.load(kind, &work_dir, version, export)?;
+
+    if export {
+        write_meta(
+            &meta_path,
+            KickMetaRef {
+                version: CURRENT_VERSION,
+                id: meta.id,
+                files: &repo_files,
+            },
+        )?;
+    }
 
     let runner = ActionRunner::new(
         action.kind,
@@ -194,29 +271,41 @@ fn sync_action(
     Ok(())
 }
 
-fn load_id(path: &Path) -> Result<Option<ObjectId>> {
-    use bstr::ByteSlice;
+fn load_meta(path: &Path) -> Result<Option<KickMeta>> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).context(path.display().to_string()),
+    };
 
-    match fs::read(path) {
-        Ok(id) => match ObjectId::from_hex(id.trim()) {
-            Ok(id) => Ok(Some(id)),
-            Err(e) => {
-                _ = fs::remove_file(path);
-                Err(e).context(anyhow!("{}: Failed to parse Object ID", path.display()))
-            }
-        },
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).context(path.display().to_string()),
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .with_context(|| anyhow!("{}: Failed to parse JSON", path.display()))?;
+
+    let Some(version) = value.get("version").and_then(|version| version.as_str()) else {
+        _ = fs::remove_file(path);
+        return Ok(None);
+    };
+
+    if version != CURRENT_VERSION {
+        _ = fs::remove_file(path);
+        return Ok(None);
+    }
+
+    match serde_json::from_value(value) {
+        Ok(id) => Ok(Some(id)),
+        Err(e) => {
+            _ = fs::remove_file(path);
+            Err(e).context(anyhow!("{}: Failed to parse kick meta", path.display()))
+        }
     }
 }
 
-fn write_id(path: &Path, id: ObjectId) -> Result<()> {
-    let mut buf = [0u8; const { Kind::longest().len_in_hex() + 8 }];
-    let n = id.hex_to_buf(&mut buf[..]);
-    buf[n] = b'\n';
+fn write_meta(path: &Path, value: KickMetaRef<'_>) -> Result<()> {
+    let w = File::create(path)
+        .with_context(|| anyhow!("{}: Failed to create kick meta", path.display()))?;
 
-    fs::write(path, &buf[..n + 1])
-        .with_context(|| anyhow!("Failed to write Object ID: {}", path.display()))?;
+    serde_json::to_writer_pretty(w, &value)
+        .with_context(|| anyhow!("{}: Failed to write kick meta", path.display()))?;
 
     Ok(())
 }

@@ -212,6 +212,7 @@ impl Scheduler {
                 }
                 Schedule::Use(u) => {
                     let group = u.build(batch, self.tree(), session.runners(), os)?;
+
                     let e = self
                         .stack
                         .last_mut()
