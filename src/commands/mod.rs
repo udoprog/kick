@@ -37,26 +37,11 @@ use self::run_on::RunOn;
 mod run;
 use self::run::{Run, RunKind};
 
-mod schedule_basic_command;
-use self::schedule_basic_command::ScheduleBasicCommand;
-
-mod schedule_static_setup;
-use self::schedule_static_setup::ScheduleStaticSetup;
-
-mod schedule_use;
-use self::schedule_use::ScheduleUse;
-
-mod schedule_run;
-use self::schedule_run::ScheduleRun;
-
-mod schedule_node_action;
-use self::schedule_node_action::ScheduleNodeAction;
-
-mod schedule_outputs;
-use self::schedule_outputs::ScheduleOutputs;
-
 mod schedule;
-use self::schedule::{build_steps, Schedule, ScheduleGroup};
+use self::schedule::{
+    build_steps, Schedule, ScheduleBasicCommand, ScheduleGroup, ScheduleNodeAction,
+    ScheduleOutputs, ScheduleUse,
+};
 
 mod scheduler;
 use self::scheduler::Scheduler;

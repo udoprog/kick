@@ -107,7 +107,7 @@ impl ActionRunners {
                     pre = Some(Schedule::Group(ScheduleGroup::new(
                         Some(rformat!("{} (post)", c.action_name()).as_rc()),
                         c.id().cloned(),
-                        Box::from([Schedule::NodeAction(ScheduleNodeAction::new(
+                        Rc::from([Schedule::NodeAction(ScheduleNodeAction::new(
                             path.clone(),
                             *node_version,
                             c.skipped(),
@@ -121,7 +121,7 @@ impl ActionRunners {
                     post = Some(Schedule::Group(ScheduleGroup::new(
                         Some(rformat!("{} (post)", c.action_name()).as_rc()),
                         c.id().cloned(),
-                        Box::from([Schedule::NodeAction(ScheduleNodeAction::new(
+                        Rc::from([Schedule::NodeAction(ScheduleNodeAction::new(
                             path.clone(),
                             *node_version,
                             c.skipped(),
@@ -139,7 +139,7 @@ impl ActionRunners {
                 let mut group = ScheduleGroup::new(
                     Some(c.action_name().as_rc()),
                     c.id().cloned(),
-                    Box::from([Schedule::NodeAction(ScheduleNodeAction::new(
+                    Rc::from([Schedule::NodeAction(ScheduleNodeAction::new(
                         main_path.clone(),
                         *node_version,
                         c.skipped(),
