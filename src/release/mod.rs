@@ -71,6 +71,15 @@ pub(crate) struct ReleaseOpts {
 impl ReleaseOpts {
     /// Construct a release from provided arguments.
     pub(crate) fn version<'a>(&'a self, env: &'a Env) -> Result<Version<'_>> {
+        let Some(version) = self.try_version(env)? else {
+            bail!("Could not determine version from --version or KICK_VERSION");
+        };
+
+        Ok(version)
+    }
+
+    /// Try to construct a kick version.
+    pub(crate) fn try_version<'a>(&'a self, env: &'a Env) -> Result<Option<Version<'_>>> {
         let mut version = self.version.as_deref().filter(|c| !c.is_empty());
 
         if version.is_none() {
@@ -106,7 +115,7 @@ impl ReleaseOpts {
         github_release(env, &mut vars);
 
         let Some(version) = version else {
-            bail!("Could not determine version from --version or KICK_VERSION");
+            return Ok(None);
         };
 
         let Some(mut version) = self::parser::expr(version, &vars, &prefixes)? else {
@@ -141,7 +150,7 @@ impl ReleaseOpts {
             version.push(append);
         }
 
-        Ok(version)
+        Ok(Some(version))
     }
 }
 
