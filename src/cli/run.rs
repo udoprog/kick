@@ -8,9 +8,20 @@ use termcolor::{ColorChoice, StandardStream};
 use crate::commands::{Batch, BatchOptions, Session};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
+use crate::release::{ReleaseOpts, Version};
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
+    /// Command to run.
+    #[arg(value_name = "command")]
+    command: Option<String>,
+    /// Arguments to pass to the run command.
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "args"
+    )]
+    args: Vec<String>,
     #[command(flatten)]
     batch_opts: BatchOptions,
     /// If the specified operating system is different for the repo, execute the
@@ -38,34 +49,53 @@ pub(crate) struct Opts {
     /// effectively ignored.
     #[arg(long)]
     same_os: bool,
-    /// Command to run.
-    #[arg(value_name = "command")]
-    command: Option<String>,
-    /// Arguments to pass to the run command.
-    #[arg(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        value_name = "args"
-    )]
-    args: Vec<String>,
+    /// Environment variable to set containing the version string if a version
+    /// is specified.
+    ///
+    /// This defaults to KICK_VERSION.
+    #[arg(long)]
+    version_env: Option<String>,
+    /// The version produced should be in MSI format.
+    #[arg(long)]
+    version_msi: bool,
+    #[clap(flatten)]
+    release: ReleaseOpts,
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
+    let version = opts.release.try_version(cx.env)?;
+    let version_env = opts.version_env.as_deref().unwrap_or("KICK_VERSION");
+    let version = version.as_ref().map(|version| (version_env, version));
+
     let mut o = StandardStream::stdout(ColorChoice::Auto);
 
     with_repos!(
         cx,
         "run commands",
         format_args!("for: {opts:?}"),
-        |cx, repo| { run(&mut o, cx, repo, opts) }
+        |cx, repo| { run(&mut o, cx, repo, opts, version) }
     );
 
     Ok(())
 }
 
 #[tracing::instrument(skip_all)]
-fn run(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
+fn run(
+    o: &mut StandardStream,
+    cx: &Ctxt<'_>,
+    repo: &Repo,
+    opts: &Opts,
+    version: Option<(&str, &Version)>,
+) -> Result<()> {
     let mut c = opts.batch_opts.build(cx, repo)?;
+
+    if let Some((env, version)) = version {
+        if opts.version_msi {
+            c.set_env(env, version.msi_version()?);
+        } else {
+            c.set_env(env, version.to_string());
+        }
+    }
 
     let mut all_workflows = false;
     let mut filter_workflows = HashSet::new();

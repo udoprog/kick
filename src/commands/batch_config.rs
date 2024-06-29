@@ -73,6 +73,12 @@ impl<'a, 'cx> BatchConfig<'a, 'cx> {
         self.github_token.as_deref()
     }
 
+    /// Set an environment variable.
+    pub(crate) fn set_env(&mut self, key: impl AsRef<str>, env: impl AsRef<str>) {
+        self.env
+            .insert(key.as_ref().to_owned(), env.as_ref().to_owned());
+    }
+
     /// Parse an environment.
     pub(crate) fn parse_env(&mut self, env: &str) -> Result<()> {
         if let Some((key, value)) = env.split_once('=') {

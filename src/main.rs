@@ -375,7 +375,16 @@ use crate::env::Env;
 use crate::{glob::Fragment, model::Repo};
 
 /// The version of kick in use.
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+const VERSION: &str = const {
+    match option_env!("KICK_VERSION") {
+        Some(version) => version,
+        None => env!("CARGO_PKG_VERSION"),
+    }
+};
+
+const OWNER: &str = "udoprog";
+const REPO: &str = "kick";
+
 /// Name of project configuration files.
 const KICK_TOML: &str = "Kick.toml";
 /// User agent to use for http requests.
@@ -389,6 +398,8 @@ enum Action {
     Check(SharedAction<cli::check::Opts>),
     /// Review or apply staged changes.
     Changes(SharedOptions),
+    /// Update Kick itself.
+    Update(SharedOptions),
     /// Collect and define release variables.
     Define(SharedAction<cli::define::Opts>),
     /// Manage sets.
@@ -399,7 +410,7 @@ enum Action {
     Status(SharedAction<cli::status::Opts>),
     /// Find the minimum supported rust version.
     Msrv(SharedAction<cli::msrv::Opts>),
-    /// Update package version.
+    /// Modify package versions.
     Version(SharedAction<cli::version::Opts>),
     /// Publish packages in reverse order of dependencies.
     Publish(SharedAction<cli::publish::Opts>),
@@ -430,6 +441,7 @@ impl Action {
         match self {
             Action::Check(action) => &action.shared,
             Action::Changes(shared) => shared,
+            Action::Update(shared) => shared,
             Action::Define(action) => &action.shared,
             Action::Set(action) => &action.shared,
             Action::Run(action) => &action.shared,
@@ -452,6 +464,7 @@ impl Action {
         match self {
             Action::Check(action) => Some(&action.repo),
             Action::Changes(..) => None,
+            Action::Update(..) => None,
             Action::Define(..) => None,
             Action::Set(action) => Some(&action.repo),
             Action::Run(action) => Some(&action.repo),
@@ -870,6 +883,10 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         }
         Action::Changes(shared) => {
             cli::changes::entry(&mut cx, shared, &changes_path)?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        Action::Update(shared) => {
+            cli::update::entry(&mut cx, shared).await?;
             return Ok(ExitCode::SUCCESS);
         }
         Action::Set(opts) => {

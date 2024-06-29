@@ -49,6 +49,22 @@ impl Client {
         })
     }
 
+    /// Get the latest release in a repo.
+    pub(crate) async fn latest_release(&self, owner: &str, repo: &str) -> Result<Option<Release>> {
+        let mut url = self.url.clone();
+
+        url.path_segments_mut()
+            .ok()
+            .context("path")?
+            .extend(&["repos", owner, repo, "releases", "latest"]);
+
+        let Some(release) = self.get(&url).await? else {
+            return Ok(None);
+        };
+
+        Ok(Some(release))
+    }
+
     /// Get the runs for the given workflow id.
     ///
     /// Returns `None` if the workflow doesn't exist.
