@@ -1,3 +1,4 @@
+mod dnf;
 mod generic;
 pub(crate) mod git;
 mod node;
@@ -15,6 +16,7 @@ use std::process::Stdio;
 
 use anyhow::{anyhow, bail, Context, Result};
 
+pub(crate) use self::dnf::Dnf;
 pub(crate) use self::generic::Generic;
 pub(crate) use self::git::Git;
 pub(crate) use self::node::Node;
@@ -30,6 +32,10 @@ const TESTS: &[(&str, ProbeFn, Allow)] = &[
     ("bash", bash_probe, Allow::None),
     ("node", node_probe, Allow::None),
     ("podman", podman_probe, Allow::None),
+    ("dnf", dnf_probe, Allow::None),
+    ("sudo", sudo_probe, Allow::None),
+    ("dpkg-query", dpkg_query_probe, Allow::None),
+    ("apt", apt_probe, Allow::None),
 ];
 
 #[cfg(windows)]
@@ -45,6 +51,10 @@ pub(crate) struct System {
     pub(crate) bash: Vec<Generic>,
     pub(crate) node: Vec<Node>,
     pub(crate) podman: Vec<Generic>,
+    pub(crate) dnf: Vec<Dnf>,
+    pub(crate) sudo: Vec<Generic>,
+    pub(crate) dpkg_query: Vec<Generic>,
+    pub(crate) apt: Vec<Generic>,
 }
 
 impl System {
@@ -236,6 +246,38 @@ fn bash_probe(s: &mut System, path: &Path) -> Result<()> {
 fn podman_probe(s: &mut System, path: &Path) -> Result<()> {
     if probe(path, "--version")? {
         s.podman.push(Generic::new(path.to_owned()));
+    }
+
+    Ok(())
+}
+
+fn dnf_probe(s: &mut System, path: &Path) -> Result<()> {
+    if probe(path, "--version")? {
+        s.dnf.push(Dnf::new(path.to_owned()));
+    }
+
+    Ok(())
+}
+
+fn sudo_probe(s: &mut System, path: &Path) -> Result<()> {
+    if probe(path, "--version")? {
+        s.sudo.push(Generic::new(path.to_owned()));
+    }
+
+    Ok(())
+}
+
+fn dpkg_query_probe(s: &mut System, path: &Path) -> Result<()> {
+    if probe(path, "--version")? {
+        s.dpkg_query.push(Generic::new(path.to_owned()));
+    }
+
+    Ok(())
+}
+
+fn apt_probe(s: &mut System, path: &Path) -> Result<()> {
+    if probe(path, "--version")? {
+        s.apt.push(Generic::new(path.to_owned()));
     }
 
     Ok(())

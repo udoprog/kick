@@ -106,8 +106,13 @@ impl Batch {
         let mut scheduler = Scheduler::new();
 
         for (run_on, os) in self.runners(&c.run_on) {
-            if let RunOn::Wsl(dist) = run_on {
-                session.dists.insert(dist);
+            match run_on {
+                RunOn::Same => {
+                    session.is_same = true;
+                }
+                RunOn::Wsl(dist) => {
+                    session.dists.insert(dist);
+                }
             }
 
             write!(o, "# In ")?;
@@ -656,7 +661,7 @@ fn setup_same<'a>(
                     bail!("PowerShell not available");
                 };
 
-                let mut c = powershell.command(path);
+                let mut c = powershell.command_in(path);
                 c.arg("-Command");
                 c.arg(script);
                 Ok((c, &[], None))
@@ -670,7 +675,7 @@ fn setup_same<'a>(
                     bail!("Bash is not available");
                 };
 
-                let mut c = bash.command(path);
+                let mut c = bash.command_in(path);
                 c.args(["-i"]);
                 let script_file = ScriptFile::inline(None, true, script.clone(), "bash");
                 Ok((c, &bash.paths, Some(script_file)))

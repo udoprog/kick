@@ -24,7 +24,12 @@ impl Generic {
     }
 
     /// Set up a command.
-    pub(crate) fn command<D>(&self, dir: D) -> Command
+    pub(crate) fn command(&self) -> Command {
+        Command::new(&self.path)
+    }
+
+    /// Set up a command.
+    pub(crate) fn command_in<D>(&self, dir: D) -> Command
     where
         D: AsRef<Path>,
     {

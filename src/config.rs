@@ -362,17 +362,6 @@ pub(crate) enum Distribution {
 }
 
 impl Distribution {
-    /// Test if this distribution is basically compatible with another.
-    pub(crate) fn matches(&self, other: Self) -> bool {
-        match (self, other) {
-            (
-                Distribution::Ubuntu | Distribution::Debian,
-                Distribution::Ubuntu | Distribution::Debian,
-            ) => true,
-            _ => *self == other,
-        }
-    }
-
     /// Get the distribution from a string.
     pub(crate) fn from_string_ignore_case(string: impl AsRef<str>) -> Self {
         let string = string.as_ref();

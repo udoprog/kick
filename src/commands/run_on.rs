@@ -21,7 +21,7 @@ impl RunOn {
         os: &Os,
         dist: Distribution,
     ) -> Result<RunOn> {
-        if batch.cx.current_os == *os && batch.cx.dist.matches(dist) {
+        if batch.cx.current_os == *os {
             return Ok(RunOn::Same);
         }
 
