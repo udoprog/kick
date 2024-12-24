@@ -26,7 +26,7 @@ use std::path::Path;
 use anyhow::{anyhow, Context, Result};
 use musli::{Decode, Encode};
 use relative_path::{RelativePath, RelativePathBuf};
-use toml_edit::{Array, Document, Formatted, Item, Key, Table, TableLike, Value};
+use toml_edit::{Array, DocumentMut, Formatted, Item, Key, Table, TableLike, Value};
 
 use crate::ctxt::Paths;
 use crate::workspace::Crates;
@@ -99,7 +99,7 @@ pub(crate) struct Manifest {
     #[musli(with = musli::serde)]
     path: Box<RelativePath>,
     #[musli(with = crate::musli::string)]
-    doc: Document,
+    doc: DocumentMut,
 }
 
 impl Manifest {

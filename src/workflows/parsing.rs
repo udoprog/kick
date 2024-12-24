@@ -8,7 +8,7 @@ use super::Syntax;
 /// Parser and lexer baked into one.
 pub(crate) struct Parser<'a> {
     lexer: Lexer<'a>,
-    pub(crate) tree: Builder<Syntax, u32, usize>,
+    pub(crate) tree: Builder<Syntax>,
     // One token of lookahead.
     buf: Option<Token>,
 }

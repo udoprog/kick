@@ -7,7 +7,7 @@ use crate::rstr::{RStr, RString};
 
 use super::{Eval, Syntax};
 
-use syntree::{pointer, Node, Span, Tree};
+use syntree::{FlavorDefault, Node, Span, Tree};
 use thiserror::Error;
 
 use Syntax::*;
@@ -161,16 +161,13 @@ impl Expr<'_> {
     }
 }
 
-fn eval_node<'a, 'b: 'a, W>(
-    mut node: Node<'a, Syntax, u32, W>,
+fn eval_node<'a, 'b: 'a>(
+    mut node: Node<'a, Syntax, FlavorDefault>,
     source: &'b str,
     eval: &'b Eval,
-) -> Result<Expr<'b>, EvalError>
-where
-    W: 'a + pointer::Width,
-{
+) -> Result<Expr<'b>, EvalError> {
     loop {
-        return match *node.value() {
+        return match node.value() {
             Function => {
                 let mut it = node.children().skip_tokens();
 
@@ -259,7 +256,7 @@ where
                     .next()
                     .ok_or(EvalError::new(*node.span(), ExpectedOperator))?;
 
-                let calculate: UnaryFn = match *op.value() {
+                let calculate: UnaryFn = match op.value() {
                     Not => op_not,
                     what => return Err(EvalError::new(*node.span(), UnexpectedOperator(what))),
                 };
@@ -285,7 +282,7 @@ where
                         .first()
                         .ok_or(EvalError::new(*node.span(), ExpectedOperator))?;
 
-                    let calculate: BinaryFn = match *op.value() {
+                    let calculate: BinaryFn = match op.value() {
                         Eq => op_eq,
                         Neq => op_neq,
                         And => op_and,
@@ -432,14 +429,11 @@ fn unescape(string: &str) -> Option<Cow<'_, str>> {
 }
 
 /// Eval a tree emitting all available expressions parsed from it.
-pub(crate) fn eval<'a, 'b: 'a, W>(
-    tree: &'a Tree<Syntax, u32, W>,
+pub(crate) fn eval<'a, 'b: 'a>(
+    tree: &'a Tree<Syntax, FlavorDefault>,
     source: &'b str,
     eval: &'b Eval,
-) -> impl Iterator<Item = Result<Expr<'b>, EvalError>> + 'a
-where
-    W: pointer::Width,
-{
+) -> impl Iterator<Item = Result<Expr<'b>, EvalError>> + 'a {
     tree.children()
         .skip_tokens()
         .map(move |node| eval_node(node, source, eval))

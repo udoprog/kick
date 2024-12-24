@@ -70,7 +70,7 @@ pub(crate) struct ReleaseOpts {
 
 impl ReleaseOpts {
     /// Construct a release from provided arguments.
-    pub(crate) fn version<'a>(&'a self, env: &'a Env) -> Result<Version<'_>> {
+    pub(crate) fn version<'a>(&'a self, env: &'a Env) -> Result<Version<'a>> {
         let Some(version) = self.try_version(env)? else {
             bail!("Could not determine version from --version or KICK_VERSION");
         };
@@ -79,7 +79,7 @@ impl ReleaseOpts {
     }
 
     /// Try to construct a kick version.
-    pub(crate) fn try_version<'a>(&'a self, env: &'a Env) -> Result<Option<Version<'_>>> {
+    pub(crate) fn try_version<'a>(&'a self, env: &'a Env) -> Result<Option<Version<'a>>> {
         let mut version = self.version.as_deref().filter(|c| !c.is_empty());
 
         if version.is_none() {

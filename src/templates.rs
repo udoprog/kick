@@ -57,7 +57,7 @@ impl Templating {
 }
 
 fn dash_escape(
-    h: &Helper<'_, '_>,
+    h: &Helper<'_>,
     _: &Handlebars<'_>,
     _: &Context,
     _: &mut RenderContext<'_, '_>,
@@ -69,7 +69,7 @@ fn dash_escape(
 }
 
 fn literal(
-    h: &Helper<'_, '_>,
+    h: &Helper<'_>,
     _: &Handlebars<'_>,
     _: &Context,
     _: &mut RenderContext<'_, '_>,

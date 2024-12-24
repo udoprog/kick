@@ -312,7 +312,7 @@ fn markdown_checks(readme: &mut Readme<'_, '_>, file: &Arc<File>) -> Result<Mark
 
     let opts = Options::empty();
 
-    let parser = Parser::new_with_broken_link_callback(comment.as_str(), opts, None);
+    let parser = Parser::new_ext(comment.as_str(), opts);
     let mut preceeding_newline = false;
 
     for (event, range) in parser.into_offset_iter() {
@@ -324,7 +324,7 @@ fn markdown_checks(readme: &mut Readme<'_, '_>, file: &Arc<File>) -> Result<Mark
                 }
             }
             Event::Start(tag) => match tag {
-                Tag::Heading(level, _, _) => {
+                Tag::Heading { level, .. } => {
                     if !preceeding_newline {
                         checks
                             .missing_preceeding_br
@@ -335,14 +335,26 @@ fn markdown_checks(readme: &mut Readme<'_, '_>, file: &Arc<File>) -> Result<Mark
                         checks.toplevel_headings.push((file.clone(), range.clone()));
                     }
                 }
-                Tag::Link(LinkType::Autolink, href, _) => {
-                    visit_url(readme, href.as_ref(), &file, &range, &checks)?;
+                Tag::Link {
+                    link_type: LinkType::Autolink,
+                    dest_url,
+                    ..
+                } => {
+                    visit_url(readme, dest_url.as_ref(), &file, &range, &checks)?;
                 }
-                Tag::Link(LinkType::Inline, href, _) => {
-                    visit_url(readme, href.as_ref(), &file, &range, &checks)?;
+                Tag::Link {
+                    link_type: LinkType::Inline,
+                    dest_url,
+                    ..
+                } => {
+                    visit_url(readme, dest_url.as_ref(), &file, &range, &checks)?;
                 }
-                Tag::Link(LinkType::Shortcut, href, _) => {
-                    visit_url(readme, href.as_ref(), &file, &range, &checks)?;
+                Tag::Link {
+                    link_type: LinkType::Shortcut,
+                    dest_url,
+                    ..
+                } => {
+                    visit_url(readme, dest_url.as_ref(), &file, &range, &checks)?;
                 }
                 _ => {}
             },

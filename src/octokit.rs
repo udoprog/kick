@@ -5,6 +5,7 @@ use anyhow::{ensure, Context, Result};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures_core::Stream;
+use reqwest::header::HeaderMap;
 use reqwest::{header, Method, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -37,8 +38,15 @@ impl Client {
         let uploads_url = Url::parse(UPLOADS_URL)?;
         let url = Url::parse(API_URL)?;
 
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-GitHub-Api-Version",
+            header::HeaderValue::from_static("2022-11-28"),
+        );
+
         let client = reqwest::Client::builder()
             .user_agent(&crate::USER_AGENT)
+            .default_headers(headers)
             .build()?;
 
         Ok(Self {
@@ -134,7 +142,7 @@ impl Client {
             .context("path")?
             .extend(&["repos", owner, repo, "git", "refs", r#ref]);
 
-        let req = self.request(Method::GET, url.clone()).build()?;
+        let req = self.request(Method::GET, url.clone())?.build()?;
 
         let res = self.client.execute(req).await?;
 
@@ -172,7 +180,7 @@ impl Client {
         let body = Request { sha, force };
 
         let req = self
-            .request(Method::PATCH, url.clone())
+            .request(Method::PATCH, url.clone())?
             .json(&body)
             .build()?;
 
@@ -207,7 +215,7 @@ impl Client {
         let body = Request { sha, r#ref };
 
         let req = self
-            .request(Method::POST, url.clone())
+            .request(Method::POST, url.clone())?
             .json(&body)
             .build()?;
 
@@ -230,7 +238,7 @@ impl Client {
             &id.to_string(),
         ]);
 
-        let req = self.request(Method::DELETE, url).build()?;
+        let req = self.request(Method::DELETE, url)?.build()?;
         let res = self.client.execute(req).await?;
 
         ensure!(res.status().is_success(), res.status());
@@ -278,7 +286,7 @@ impl Client {
             generate_release_notes: false,
         };
 
-        let req = self.request(Method::POST, url).json(&request).build()?;
+        let req = self.request(Method::POST, url)?.json(&request).build()?;
         let res = self.client.execute(req).await?;
 
         ensure!(res.status().is_success(), res.status());
@@ -331,7 +339,7 @@ impl Client {
             generate_release_notes: false,
         };
 
-        let req = self.request(Method::PATCH, url).json(&request).build()?;
+        let req = self.request(Method::PATCH, url)?.json(&request).build()?;
         let res = self.client.execute(req).await?;
 
         ensure!(res.status().is_success(), res.status());
@@ -368,7 +376,7 @@ impl Client {
         let body = reqwest::Body::wrap_stream(stream_body(input));
 
         let req = self
-            .request(Method::POST, url.clone())
+            .request(Method::POST, url.clone())?
             .header(header::CONTENT_TYPE, &OCTET_STREAM)
             .header(header::CONTENT_LENGTH, len)
             .body(body)
@@ -398,7 +406,7 @@ impl Client {
             &id.to_string(),
         ]);
 
-        let req = self.request(Method::DELETE, url).build()?;
+        let req = self.request(Method::DELETE, url)?.build()?;
         let res = self.client.execute(req).await?;
 
         ensure!(res.status().is_success(), res.status());
@@ -410,7 +418,7 @@ impl Client {
     where
         T: DeserializeOwned,
     {
-        let req = self.request(Method::GET, url.clone()).build()?;
+        let req = self.request(Method::GET, url.clone())?.build()?;
         let res = self.client.execute(req).await?;
 
         if res.status() == StatusCode::NOT_FOUND {
@@ -434,7 +442,7 @@ impl Client {
         let page = paged.next_page();
         url.query_pairs_mut().append_pair("page", &page.to_string());
 
-        let req = self.request(Method::GET, url.clone()).build()?;
+        let req = self.request(Method::GET, url.clone())?.build()?;
 
         let res = self.client.execute(req).await?;
 
@@ -448,7 +456,7 @@ impl Client {
         Ok(Some(page))
     }
 
-    fn request(&self, method: Method, url: Url) -> reqwest::RequestBuilder {
+    fn request(&self, method: Method, url: Url) -> Result<reqwest::RequestBuilder> {
         let mut builder = self
             .client
             .request(method, url.clone())
@@ -456,19 +464,18 @@ impl Client {
 
         match &self.auth {
             Auth::Bearer(token) => {
-                builder = builder.header(
-                    header::AUTHORIZATION,
-                    format!("Bearer {}", token.as_secret()),
-                );
+                builder = builder.bearer_auth(token.as_secret());
             }
             Auth::Basic(auth) => {
-                builder =
-                    builder.header(header::AUTHORIZATION, format!("Basic {}", auth.as_secret()));
+                let mut value =
+                    header::HeaderValue::try_from(format!("Basic {}", auth.as_secret()))?;
+                value.set_sensitive(true);
+                builder = builder.header(header::AUTHORIZATION, value);
             }
             Auth::None => {}
         }
 
-        builder
+        Ok(builder)
     }
 }
 
