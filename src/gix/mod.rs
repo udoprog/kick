@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicBool;
 use anyhow::{Context, Result};
 use bstr::{BStr, BString};
 use gix::protocol::handshake::Ref;
-use gix::remote::fetch::Source;
+use gix::remote::fetch::refmap::Source;
 use gix::{ObjectId, Repository};
 
 use self::progress::Logger;

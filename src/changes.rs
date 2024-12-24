@@ -44,8 +44,7 @@ pub(crate) fn load_changes(path: &Path) -> Result<Option<Vec<Change>>> {
     let mut buf = Vec::new();
     encoder.read_to_end(&mut buf)?;
 
-    let alloc = musli::allocator::System::new();
-    let mut cx = musli::context::SystemContext::new(&alloc);
+    let mut cx = musli::context::DefaultContext::default();
     cx.include_type();
 
     let value: Vec<Change> = match ENCODING.from_slice_with(&cx, &buf) {
