@@ -73,6 +73,55 @@ impl Client {
         Ok(Some(release))
     }
 
+    /// Enable a workflow.
+    pub(crate) async fn workflows_enable(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: &str,
+    ) -> Result<StatusCode> {
+        let mut url = self.url.clone();
+
+        url.path_segments_mut()
+            .ok()
+            .context("path")?
+            .extend(["repos", owner, repo, "actions", "workflows"])
+            .extend([format!("{id}.yml")])
+            .push("enable");
+
+        let req = self.request(Method::PUT, url.clone())?.build()?;
+        let res = self.client.execute(req).await?;
+        Ok(res.status())
+    }
+
+    /// Enable a workflow.
+    pub(crate) async fn workflows_get(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: &str,
+    ) -> Result<Option<Workflow>> {
+        let mut url = self.url.clone();
+
+        url.path_segments_mut()
+            .ok()
+            .context("path")?
+            .extend(["repos", owner, repo, "actions", "workflows"])
+            .extend([format!("{id}.yml")]);
+
+        let req = self.request(Method::GET, url.clone())?.build()?;
+
+        let res = self.client.execute(req).await?;
+
+        if res.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        ensure!(res.status().is_success(), res.status());
+        let data = res.json().await?;
+        Ok(Some(data))
+    }
+
     /// Get the runs for the given workflow id.
     ///
     /// Returns `None` if the workflow doesn't exist.
@@ -465,6 +514,21 @@ impl Client {
 
         Ok(builder)
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[allow(unused)]
+pub(crate) struct Workflow {
+    id: u64,
+    node_id: String,
+    name: String,
+    path: String,
+    state: String,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    url: String,
+    html_url: String,
+    badge_url: String,
 }
 
 #[derive(Debug, Deserialize)]

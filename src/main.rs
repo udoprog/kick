@@ -406,8 +406,10 @@ enum Action {
     Set(SharedAction<cli::set::Opts>),
     /// Run a custom command.
     Run(SharedAction<cli::run::Opts>),
-    /// Fetch github actions build status.
+    /// Fetch github workflows status.
     Status(SharedAction<cli::status::Opts>),
+    /// Modify remote state of github workflows.
+    Workflows(SharedAction<cli::workflows::Opts>),
     /// Find the minimum supported rust version.
     Msrv(SharedAction<cli::msrv::Opts>),
     /// Modify package versions.
@@ -446,6 +448,7 @@ impl Action {
             Action::Set(action) => &action.shared,
             Action::Run(action) => &action.shared,
             Action::Status(action) => &action.shared,
+            Action::Workflows(action) => &action.shared,
             Action::Msrv(action) => &action.shared,
             Action::Version(action) => &action.shared,
             Action::Publish(action) => &action.shared,
@@ -469,6 +472,7 @@ impl Action {
             Action::Set(action) => Some(&action.repo),
             Action::Run(action) => Some(&action.repo),
             Action::Status(action) => Some(&action.repo),
+            Action::Workflows(action) => Some(&action.repo),
             Action::Msrv(action) => Some(&action.repo),
             Action::Version(action) => Some(&action.repo),
             Action::Publish(action) => Some(&action.repo),
@@ -895,6 +899,9 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         }
         Action::Status(opts) => {
             cli::status::entry(&mut cx, &opts.action).await?;
+        }
+        Action::Workflows(opts) => {
+            cli::workflows::entry(&mut cx, &opts.action).await?;
         }
         Action::Msrv(opts) => {
             cli::msrv::entry(&mut cx, &opts.action)?;

@@ -59,3 +59,4 @@ pub(crate) mod status;
 pub(crate) mod update;
 pub(crate) mod upgrade;
 pub(crate) mod version;
+pub(crate) mod workflows;
