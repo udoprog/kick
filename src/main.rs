@@ -633,13 +633,11 @@ async fn main() -> Result<ExitCode> {
         }
     };
 
-    let default_directive =
-        if let Some(logging) = opts.action.as_ref().map(|a| a.shared().directive()) {
-            logging
-        } else {
-            "kick=info"
-        };
-
+    let default_directive = opts
+        .action
+        .as_ref()
+        .map(|a| a.shared().directive())
+        .unwrap_or("kick=info");
     let filter = tracing_subscriber::EnvFilter::builder();
 
     let filter = if let Ok(var) = std::env::var("RUST_LOG") {

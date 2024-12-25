@@ -124,7 +124,7 @@ pub(crate) struct Matcher<'a> {
     queue: VecDeque<(RelativePathBuf, &'a [Component<'a>])>,
 }
 
-impl<'a> Iterator for Matcher<'a> {
+impl Iterator for Matcher<'_> {
     type Item = io::Result<RelativePathBuf>;
 
     fn next(&mut self) -> Option<Self::Item> {

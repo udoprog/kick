@@ -513,7 +513,7 @@ pub(crate) struct WorkflowManifest<'a, 'cx> {
     pub(crate) doc: yaml::Document,
 }
 
-impl<'a> WorkflowManifest<'a, '_> {
+impl WorkflowManifest<'_, '_> {
     /// Get the identifier of the workflow.
     pub(crate) fn id(&self) -> &str {
         &self.id

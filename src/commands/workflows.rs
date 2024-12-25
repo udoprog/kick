@@ -16,7 +16,7 @@ pub(crate) struct LoadedWorkflow<'a, 'cx> {
     jobs: &'a [Job],
 }
 
-impl<'a, 'cx> LoadedWorkflow<'a, 'cx> {
+impl<'cx> LoadedWorkflow<'_, 'cx> {
     /// Get the identifier of the workflow.
     pub(crate) fn id(&self) -> &str {
         self.manifest.id()
@@ -37,7 +37,7 @@ pub(crate) struct LoadedJob<'a, 'cx> {
     job: &'a Job,
 }
 
-impl<'a, 'cx> LoadedJob<'a, 'cx> {
+impl<'cx> LoadedJob<'_, 'cx> {
     /// Get the identifier of the job.
     pub(crate) fn id(&self) -> &str {
         &self.job.id
@@ -63,7 +63,7 @@ pub(crate) struct LoadedJobMatrix<'a, 'cx> {
     steps: &'a Steps,
 }
 
-impl<'a, 'cx> LoadedJobMatrix<'a, 'cx> {
+impl LoadedJobMatrix<'_, '_> {
     /// Get the expanded name of a job.
     pub(crate) fn name(&self) -> Option<&RStr> {
         self.steps.name.as_deref()

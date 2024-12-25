@@ -69,12 +69,10 @@ fn contains<'m>(span: &Span<u32>, args: &[Expr<'m>]) -> Result<Expr<'m>, EvalErr
 
             Ok(Expr::Bool(found))
         }
-        lhs => {
-            return Err(EvalError::custom(
-                *span,
-                format_args!("Expected string or array, got {lhs:?}"),
-            ));
-        }
+        lhs => Err(EvalError::custom(
+            *span,
+            format_args!("Expected string or array, got {lhs:?}"),
+        )),
     }
 }
 

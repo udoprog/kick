@@ -76,7 +76,7 @@ pub(crate) struct Redacted<'a> {
     string: &'a str,
 }
 
-impl<'a> Redacted<'a> {
+impl Redacted<'_> {
     /// Test if the redacted component is empty.
     pub(crate) fn is_empty(&self) -> bool {
         self.string.is_empty()

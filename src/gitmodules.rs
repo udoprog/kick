@@ -8,7 +8,7 @@ pub(crate) struct SectionParser<'a, 'p> {
     parser: &'a mut Parser<'p>,
 }
 
-impl<'a, 'p> SectionParser<'a, 'p> {
+impl<'p> SectionParser<'_, 'p> {
     /// Get the name of the section.
     #[allow(unused)]
     pub(crate) fn name(&self) -> &'p str {

@@ -103,7 +103,7 @@ impl<'m> From<&'m str> for Expr<'m> {
 }
 
 #[cfg(test)]
-impl<'m> From<f64> for Expr<'m> {
+impl From<f64> for Expr<'_> {
     #[inline]
     fn from(value: f64) -> Self {
         Self::Float(value)

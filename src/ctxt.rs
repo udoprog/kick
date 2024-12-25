@@ -81,7 +81,7 @@ pub(crate) struct Ctxt<'a> {
     pub(crate) env: &'a Env,
 }
 
-impl<'a> Ctxt<'a> {
+impl Ctxt<'_> {
     /// Get known github authentication.
     pub(crate) fn github_auth(&self) -> Option<SecretString> {
         if let Some(credentials) = &self.git_credentials {

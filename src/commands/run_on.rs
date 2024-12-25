@@ -25,9 +25,7 @@ impl RunOn {
             return Ok(RunOn::Same);
         }
 
-        if batch.cx.current_os == Os::Windows
-            && *os == Os::Linux
-            && batch.cx.system.wsl.first().is_some()
+        if batch.cx.current_os == Os::Windows && *os == Os::Linux && !batch.cx.system.wsl.is_empty()
         {
             return Ok(RunOn::Wsl(dist));
         }
