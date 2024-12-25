@@ -64,7 +64,7 @@ impl Client {
         url.path_segments_mut()
             .ok()
             .context("path")?
-            .extend(&["repos", owner, repo, "releases", "latest"]);
+            .extend(["repos", owner, repo, "releases", "latest"]);
 
         let Some(release) = self.get(&url).await? else {
             return Ok(None);
@@ -86,15 +86,12 @@ impl Client {
     ) -> Result<Option<PagedWorkflowRuns>> {
         let mut url = self.url.clone();
 
-        url.path_segments_mut().ok().context("path")?.extend(&[
-            "repos",
-            owner,
-            repo,
-            "actions",
-            "workflows",
-            &format!("{id}.yml"),
-            "runs",
-        ]);
+        url.path_segments_mut()
+            .ok()
+            .context("path")?
+            .extend(["repos", owner, repo, "actions", "workflows"])
+            .extend([format!("{id}.yml")])
+            .push("runs");
 
         {
             let mut query = url.query_pairs_mut();
@@ -119,7 +116,7 @@ impl Client {
         url.path_segments_mut()
             .ok()
             .context("path")?
-            .extend(&["repos", owner, repo, "releases"]);
+            .extend(["repos", owner, repo, "releases"]);
 
         let Some(initial) = self.get(&url).await? else {
             return Ok(None);
@@ -140,7 +137,7 @@ impl Client {
         url.path_segments_mut()
             .ok()
             .context("path")?
-            .extend(&["repos", owner, repo, "git", "refs", r#ref]);
+            .extend(["repos", owner, repo, "git", "refs", r#ref]);
 
         let req = self.request(Method::GET, url.clone())?.build()?;
 
@@ -175,7 +172,7 @@ impl Client {
         url.path_segments_mut()
             .ok()
             .context("path")?
-            .extend(&["repos", owner, repo, "git", "refs", r#ref]);
+            .extend(["repos", owner, repo, "git", "refs", r#ref]);
 
         let body = Request { sha, force };
 
@@ -210,7 +207,7 @@ impl Client {
         url.path_segments_mut()
             .ok()
             .context("path")?
-            .extend(&["repos", owner, repo, "git", "refs"]);
+            .extend(["repos", owner, repo, "git", "refs"]);
 
         let body = Request { sha, r#ref };
 
@@ -230,13 +227,11 @@ impl Client {
     pub(crate) async fn delete_release(&self, owner: &str, repo: &str, id: u64) -> Result<()> {
         let mut url = self.url.clone();
 
-        url.path_segments_mut().ok().context("path")?.extend(&[
-            "repos",
-            owner,
-            repo,
-            "releases",
-            &id.to_string(),
-        ]);
+        url.path_segments_mut()
+            .ok()
+            .context("path")?
+            .extend(["repos", owner, repo, "releases"])
+            .extend([id.to_string()]);
 
         let req = self.request(Method::DELETE, url)?.build()?;
         let res = self.client.execute(req).await?;
@@ -274,7 +269,7 @@ impl Client {
         url.path_segments_mut()
             .ok()
             .context("path")?
-            .extend(&["repos", owner, repo, "releases"]);
+            .extend(["repos", owner, repo, "releases"]);
 
         let request = Request {
             tag_name,
@@ -321,13 +316,11 @@ impl Client {
 
         let mut url = self.url.clone();
 
-        url.path_segments_mut().ok().context("path")?.extend(&[
-            "repos",
-            owner,
-            repo,
-            "releases",
-            &id.to_string(),
-        ]);
+        url.path_segments_mut()
+            .ok()
+            .context("path")?
+            .extend(["repos", owner, repo, "releases"])
+            .extend([id.to_string()]);
 
         let request = Request {
             tag_name,
@@ -362,14 +355,12 @@ impl Client {
     {
         let mut url = self.uploads_url.clone();
 
-        url.path_segments_mut().ok().context("path")?.extend(&[
-            "repos",
-            owner,
-            repo,
-            "releases",
-            &release_id.to_string(),
-            "assets",
-        ]);
+        url.path_segments_mut()
+            .ok()
+            .context("path")?
+            .extend(["repos", owner, repo, "releases"])
+            .extend([release_id.to_string()])
+            .extend(["assets"]);
 
         url.query_pairs_mut().append_pair("name", name);
 
@@ -397,14 +388,11 @@ impl Client {
     ) -> Result<()> {
         let mut url = self.url.clone();
 
-        url.path_segments_mut().ok().context("path")?.extend(&[
-            "repos",
-            owner,
-            repo,
-            "releases",
-            "assets",
-            &id.to_string(),
-        ]);
+        url.path_segments_mut()
+            .ok()
+            .context("path")?
+            .extend(["repos", owner, repo, "releases", "assets"])
+            .extend([id.to_string()]);
 
         let req = self.request(Method::DELETE, url)?.build()?;
         let res = self.client.execute(req).await?;
