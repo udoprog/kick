@@ -430,6 +430,8 @@ pub(crate) struct RepoConfig {
     pub(crate) os: BTreeSet<Os>,
     /// Name of the repo branch.
     pub(crate) branch: Option<String>,
+    /// Filesystem workflows that have been found.
+    pub(crate) filesystem_workflows: HashSet<String>,
     /// Workflows to incorporate.
     pub(crate) workflows: HashMap<String, PartialWorkflowConfig>,
     /// License of the project.
@@ -470,6 +472,10 @@ impl RepoConfig {
         self.name = other.name.or(self.name.take());
         self.os.extend(other.os);
         self.branch = other.branch.or(self.branch.take());
+
+        for id in other.filesystem_workflows {
+            self.filesystem_workflows.insert(id);
+        }
 
         for (id, workflow) in other.workflows {
             self.workflows.entry(id).or_default().merge_with(workflow);
@@ -644,21 +650,17 @@ pub(crate) struct Config<'a> {
 impl Config<'_> {
     /// A workflow configuration.
     pub(crate) fn workflows(&self, repo: &RepoRef) -> Result<BTreeMap<String, WorkflowConfig>> {
-        let mut ids = HashSet::new();
-
-        for id in self.base.workflows.keys() {
-            ids.insert(id.as_str());
-        }
-
-        if let Some(repo) = self.repos.get(repo.path()) {
-            for id in repo.workflows.keys() {
-                ids.insert(id.as_str());
-            }
-        }
+        let ids = self.get_all(repo, |c| {
+            c.filesystem_workflows.iter().chain(c.workflows.keys())
+        });
 
         let mut out = BTreeMap::new();
 
         for id in ids {
+            if out.contains_key(id) {
+                continue;
+            }
+
             let mut config = PartialWorkflowConfig::default();
 
             for repo in self.repos(repo) {
@@ -764,17 +766,16 @@ impl Config<'_> {
     }
 
     /// Get all elements corresponding to the given field.
-    pub(crate) fn get_all<'a, G, O>(&'a self, repo: &RepoRef, get: G) -> Vec<&'a O>
+    pub(crate) fn get_all<'a, O: 'a, I>(
+        &'a self,
+        repo: &RepoRef,
+        mut get: impl FnMut(&'a RepoConfig) -> I,
+    ) -> impl Iterator<Item = &'a O>
     where
-        G: Fn(&'a RepoConfig) -> &'a [O],
+        I: IntoIterator<Item = &'a O>,
     {
-        let mut requires = get(&self.base).iter().collect::<Vec<_>>();
-
-        if let Some(values) = self.repos.get(repo.path()).map(get) {
-            requires.extend(values);
-        }
-
-        requires
+        let a = get(&self.base).into_iter();
+        a.chain(self.repos.get(repo.path()).into_iter().flat_map(get))
     }
 
     fn badges<F>(&self, path: &RelativePath, mut filter: F) -> impl Iterator<Item = &'_ ConfigBadge>
@@ -1190,6 +1191,7 @@ impl<'a> ConfigCtxt<'a> {
             name: cx.as_string("name")?,
             os,
             branch: cx.as_string("branch")?,
+            filesystem_workflows: HashSet::new(),
             workflows: cx
                 .in_table("workflows", |cx, id, value| Ok((id, cx.workflow(value)?)))?
                 .unwrap_or_default(),
