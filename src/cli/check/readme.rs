@@ -3,7 +3,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
-use pulldown_cmark::{Event, HeadingLevel, LinkType, Options, Parser, Tag};
+use pulldown_cmark::{Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd};
 use relative_path::RelativePath;
 use reqwest::Url;
 use serde::Serialize;
@@ -314,6 +314,7 @@ fn markdown_checks(readme: &mut Readme<'_, '_>, file: &Arc<File>) -> Result<Mark
 
     let parser = Parser::new_ext(comment.as_str(), opts);
     let mut preceeding_newline = false;
+    let mut block = 0u32;
 
     for (event, range) in parser.into_offset_iter() {
         match event {
@@ -324,6 +325,9 @@ fn markdown_checks(readme: &mut Readme<'_, '_>, file: &Arc<File>) -> Result<Mark
                 }
             }
             Event::Start(tag) => match tag {
+                Tag::HtmlBlock => {
+                    block += 1;
+                }
                 Tag::Heading { level, .. } => {
                     if !preceeding_newline {
                         checks
@@ -358,6 +362,15 @@ fn markdown_checks(readme: &mut Readme<'_, '_>, file: &Arc<File>) -> Result<Mark
                 }
                 _ => {}
             },
+            Event::End(tag) => {
+                if tag == TagEnd::HtmlBlock {
+                    block = block.saturating_sub(1);
+
+                    if preceeding_newline {
+                        continue;
+                    }
+                }
+            }
             _ => {}
         }
 
