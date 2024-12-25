@@ -78,7 +78,7 @@ impl Client {
         &self,
         owner: &str,
         repo: &str,
-        id: &str,
+        id: u64,
     ) -> Result<StatusCode> {
         let mut url = self.url.clone();
 
@@ -86,7 +86,7 @@ impl Client {
             .ok()
             .context("path")?
             .extend(["repos", owner, repo, "actions", "workflows"])
-            .extend([format!("{id}.yml")])
+            .extend([id.to_string()])
             .push("enable");
 
         let req = self.request(Method::PUT, url.clone())?.build()?;
@@ -94,20 +94,42 @@ impl Client {
         Ok(res.status())
     }
 
-    /// Enable a workflow.
-    pub(crate) async fn workflows_get(
+    /// Disable a workflow.
+    pub(crate) async fn workflows_disable(
         &self,
         owner: &str,
         repo: &str,
-        id: &str,
-    ) -> Result<Option<Workflow>> {
+        id: u64,
+    ) -> Result<StatusCode> {
         let mut url = self.url.clone();
 
         url.path_segments_mut()
             .ok()
             .context("path")?
             .extend(["repos", owner, repo, "actions", "workflows"])
-            .extend([format!("{id}.yml")]);
+            .extend([id.to_string()])
+            .push("disable");
+
+        let req = self.request(Method::PUT, url.clone())?.build()?;
+        let res = self.client.execute(req).await?;
+        Ok(res.status())
+    }
+
+    /// List available workflows.
+    pub(crate) async fn workflows_list(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Option<Workflows>> {
+        let mut url = self.url.clone();
+
+        url.path_segments_mut().ok().context("path")?.extend([
+            "repos",
+            owner,
+            repo,
+            "actions",
+            "workflows",
+        ]);
 
         let req = self.request(Method::GET, url.clone())?.build()?;
 
@@ -518,10 +540,17 @@ impl Client {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[allow(unused)]
+pub(crate) struct Workflows {
+    total_count: usize,
+    pub(crate) workflows: Vec<Workflow>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[allow(unused)]
 pub(crate) struct Workflow {
-    id: u64,
+    pub(crate) id: u64,
     node_id: String,
-    name: String,
+    pub(crate) name: String,
     path: String,
     state: String,
     created_at: DateTime<Utc>,
