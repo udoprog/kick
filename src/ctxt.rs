@@ -3,6 +3,8 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::process::{ExitCode, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use directories::ProjectDirs;
@@ -67,6 +69,7 @@ impl Paths<'_> {
 }
 
 pub(crate) struct Ctxt<'a> {
+    pub(crate) term: Arc<AtomicBool>,
     pub(crate) system: &'a System,
     pub(crate) git_credentials: &'a Option<system::git::Credentials>,
     pub(crate) current_os: Os,
@@ -82,6 +85,11 @@ pub(crate) struct Ctxt<'a> {
 }
 
 impl Ctxt<'_> {
+    /// Check if context is terminated or not.
+    pub(crate) fn is_terminated(&self) -> bool {
+        self.term.load(Ordering::Relaxed)
+    }
+
     /// Get known github authentication.
     pub(crate) fn github_auth(&self) -> Option<SecretString> {
         if let Some(credentials) = &self.git_credentials {

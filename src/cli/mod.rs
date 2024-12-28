@@ -4,6 +4,10 @@ macro_rules! with_repos {
         let mut bad = $crate::repo_sets::RepoSet::default();
 
         for $repo in $c.repos() {
+            if $c.is_terminated() {
+                break;
+            }
+
             let span = tracing::info_span!(
                 "repo",
                 source = $repo.source().to_string(),

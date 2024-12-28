@@ -215,7 +215,7 @@ impl Known {
 }
 
 /// A set of loaded repos.
-#[derive(Debug, Default)]
+#[derive(Default, Debug, Clone)]
 pub(crate) struct RepoSet {
     raw: Vec<String>,
     repos: HashMap<RelativePathBuf, usize>,

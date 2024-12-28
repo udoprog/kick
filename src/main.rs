@@ -361,6 +361,8 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, FromArgMatches, Parser, Subcommand};
@@ -368,7 +370,9 @@ use clap::{Args, FromArgMatches, Parser, Subcommand};
 use config::{Config, Distribution, Os};
 use directories::ProjectDirs;
 use env::SecretString;
+use model::State;
 use relative_path::{RelativePath, RelativePathBuf};
+use repo_sets::RepoSet;
 
 use crate::ctxt::Paths;
 use crate::env::Env;
@@ -577,6 +581,13 @@ struct RepoOptions {
     /// Load sets with the given id.
     #[arg(long, value_name = "set")]
     set: Vec<String>,
+    /// Save remaining or failed repos to the specified set.
+    ///
+    /// In case an operation is cancelled, or for repos where the operation
+    /// fails, this will cause the remaining repos to be saved to the set of the
+    /// specified names.
+    #[arg(long, value_name = "set")]
+    set_remaining: Vec<String>,
     /// Intersect with the specified set.
     #[arg(long, value_name = "set")]
     set_intersect: Vec<String>,
@@ -660,6 +671,16 @@ async fn main() -> Result<ExitCode> {
 }
 
 async fn entry(opts: Opts) -> Result<ExitCode> {
+    let term = Arc::new(AtomicBool::new(false));
+
+    ctrlc::try_set_handler({
+        let term = term.clone();
+
+        move || {
+            term.store(true, Ordering::SeqCst);
+        }
+    })?;
+
     let action = opts.action.unwrap_or_default();
     let shared = action.shared();
 
@@ -865,6 +886,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     };
 
     let mut cx = ctxt::Ctxt {
+        term,
         system: &system,
         git_credentials: &git_credentials,
         current_os: os,
@@ -960,6 +982,24 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     }
 
     let outcome = cx.outcome();
+
+    if let Some(opts) = repo_opts {
+        let mut remaining = RepoSet::default();
+
+        for repo in cx.repos() {
+            if repo.is_disabled() {
+                continue;
+            }
+
+            if matches!(repo.state(), State::Error | State::Pending) {
+                remaining.insert(repo);
+            }
+        }
+
+        for name in opts.set_remaining.iter() {
+            sets.save(name, remaining.clone(), "Remaining repo set");
+        }
+    }
 
     if from_gitmodules {
         sets.commit()?;
