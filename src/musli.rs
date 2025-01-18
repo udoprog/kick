@@ -1,10 +1,11 @@
 pub(crate) mod string {
+    use std::error::Error;
     use std::fmt;
     use std::str::FromStr;
 
     use musli::{Context, Decoder, Encoder};
 
-    pub(crate) fn encode<T, E>(doc: &T, _: &E::Cx, encoder: E) -> Result<E::Ok, E::Error>
+    pub(crate) fn encode<T, E>(doc: &T, encoder: E) -> Result<E::Ok, E::Error>
     where
         T: fmt::Display,
         E: Encoder,
@@ -12,12 +13,12 @@ pub(crate) mod string {
         encoder.collect_string(doc)
     }
 
-    pub(crate) fn decode<'de, T, D>(cx: &D::Cx, decoder: D) -> Result<T, D::Error>
+    pub(crate) fn decode<'de, T, D>(decoder: D) -> Result<T, D::Error>
     where
-        T: FromStr,
-        T::Err: fmt::Display,
+        T: FromStr<Err: 'static + Send + Sync + Error>,
         D: Decoder<'de>,
     {
-        decoder.decode_unsized(|string: &str| string.parse().map_err(cx.map_message()))
+        let cx = decoder.cx();
+        decoder.decode_unsized(|string: &str| string.parse().map_err(cx.map()))
     }
 }

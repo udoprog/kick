@@ -23,13 +23,14 @@ bytes = "1.5.0"
 chrono = { version = "0.4.24", features = ["serde"] }
 clap = { version = "4.2.2", features = ["derive", "wrap_help"] }
 ctrlc = "3.4.5"
-directories = "5.0.1"
+directories = "6.0.0"
 elf = "0.7.4"
 flate2 = "1.0.25"
-futures-core = "0.3.29"
+futures-core = "0.3.31"
+futures-util = { version = "0.3.31", default-features = false }
 handlebars = "6.2.0"
 md5 = "0.7.0"
-musli = { version = "0.0.125", features = ["serde", "storage"] }
+musli = { version = "0.0.126", features = ["serde", "storage"] }
 nondestructive = { version = "0.0.26", features = ["serde-edits"] }
 pulldown-cmark = "0.12.2"
 rand = "0.8.5"

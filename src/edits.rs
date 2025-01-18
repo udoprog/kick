@@ -59,7 +59,7 @@ impl Edits {
     pub(crate) fn edit(&mut self, keys: &mut Keys, actual: yaml::Value<'_>, value: Value) {
         match value {
             Value::String(string) => {
-                if !actual.as_str().map_or(false, |actual| actual == string) {
+                if !actual.as_str().is_some_and(|actual| actual == string) {
                     self.set(
                         actual.id(),
                         format_args!("{keys}: expected string `{string}`"),

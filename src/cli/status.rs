@@ -1,15 +1,22 @@
 use std::fmt;
+use std::io::Write;
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Local, TimeZone};
 use clap::Parser;
+use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 use crate::ctxt::Ctxt;
 use crate::model::{Repo, RepoPath};
 use crate::octokit;
 
+const PARALLELISM: &str = "8";
+
 #[derive(Debug, Default, Parser)]
 pub(crate) struct Opts {
+    /// The number of repositories to read in parallel.
+    #[arg(long, default_value = PARALLELISM, value_name = "count")]
+    parallelism: usize,
     /// Include information on individual jobs.
     #[arg(long)]
     jobs: bool,
@@ -19,47 +26,46 @@ pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     let client = cx.octokit()?;
     let today = Local::now();
 
-    with_repos!(
+    let mut o = StandardStream::stdout(ColorChoice::Auto);
+
+    async_with_repos!(
         cx,
         "get build status",
         format_args!("status: {opts:?}"),
-        |cx, repo| do_status(cx, repo, opts, &client, today).await,
+        opts.parallelism,
+        async |cx, repo| do_status(cx, repo, opts, &client).await?,
+        |outcome| outcome.display(&mut o, today),
     );
 
     Ok(())
 }
 
-async fn do_status(
+async fn do_status<'repo>(
     cx: &Ctxt<'_>,
-    repo: &Repo,
+    repo: &'repo Repo,
     opts: &Opts,
     client: &octokit::Client,
-    today: DateTime<Local>,
-) -> Result<()> {
+) -> Result<Outcome<'repo>> {
     let workflows = cx.config.workflows(repo)?;
 
     if workflows.is_empty() {
-        return Ok(());
+        return Ok(Outcome::ignore(repo));
     }
 
     let Some(repo_path) = repo.repo() else {
-        return Ok(());
+        return Ok(Outcome::ignore(repo));
     };
 
-    println!("{}: {}", repo.path(), repo.url());
-
+    let mut statuses = Vec::new();
     let mut ok = true;
 
     for id in workflows.into_keys() {
-        println!("Workflow `{id}`:");
-        ok &= status(cx, &id, opts, repo, repo_path, today, client).await?;
+        let mut reports = Vec::new();
+        ok &= status(cx, &id, opts, repo, repo_path, client, &mut reports).await?;
+        statuses.push(Status { id, reports });
     }
 
-    if !ok {
-        bail!("Status is not OK")
-    }
-
-    Ok(())
+    Ok(Outcome::output(repo, !ok, statuses))
 }
 
 #[tracing::instrument(skip_all)]
@@ -69,8 +75,8 @@ async fn status(
     opts: &Opts,
     repo: &Repo,
     path: RepoPath<'_>,
-    today: DateTime<Local>,
     client: &octokit::Client,
+    reports: &mut Vec<Report>,
 ) -> Result<bool> {
     let sha;
 
@@ -88,7 +94,7 @@ async fn status(
         .workflow_runs(path.owner, path.name, id, true, Some(1))
         .await?
     else {
-        println!("  Workflow `{id}` not found");
+        reports.push(Report::NotFound);
         return Ok(false);
     };
 
@@ -102,56 +108,31 @@ async fn status(
 
         for run in runs.into_iter().take(remaining) {
             remaining -= 1;
-            let updated_at = FormatTime::new(today, Some(run.updated_at.with_timezone(&Local)));
-
-            let head = if sha == Some(&run.head_sha) {
-                "* "
-            } else {
-                "  "
-            };
-
-            println!(
-                " {head}{sha} {branch}: {updated_at}: status: {}, conclusion: {}",
-                run.status,
-                run.conclusion.as_deref().unwrap_or("*in progress*"),
-                branch = run.head_branch,
-                sha = short(&run.head_sha),
-            );
 
             let failure = run.conclusion.as_deref() == Some("failure");
 
-            if opts.jobs || failure {
-                if let Some(jobs_url) = &run.jobs_url {
-                    let jobs: Option<octokit::Jobs> = client.get(jobs_url).await?;
-
-                    let Some(jobs) = jobs else {
-                        continue;
-                    };
-
-                    for job in jobs.jobs {
-                        println!(
-                            "   {name}: {html_url}",
-                            name = job.name,
-                            html_url = job.html_url
-                        );
-
-                        println!(
-                            "     status: {status}, conclusion: {conclusion}",
-                            status = job.status,
-                            conclusion = job.conclusion.as_deref().unwrap_or("*in progress*"),
-                        );
-
-                        println!(
-                            "     time: {} - {}",
-                            FormatTime::new(today, job.started_at.map(|d| d.with_timezone(&Local))),
-                            FormatTime::new(
-                                today,
-                                job.completed_at.map(|d| d.with_timezone(&Local))
-                            )
-                        );
-                    }
+            let jobs = 'jobs: {
+                if !(opts.jobs || failure) {
+                    break 'jobs Vec::new();
                 }
-            }
+
+                let Some(jobs_url) = &run.jobs_url else {
+                    break 'jobs Vec::new();
+                };
+
+                let Some(jobs) = client.get::<octokit::Jobs>(jobs_url).await? else {
+                    break 'jobs Vec::new();
+                };
+
+                jobs.jobs
+            };
+
+            reports.push(Report::Conclusion {
+                failure,
+                sha: sha.map(str::to_owned),
+                run: Box::new(run),
+                jobs,
+            });
 
             ok &= !failure;
         }
@@ -199,5 +180,147 @@ where
         }
 
         date.date_naive().fmt(f)
+    }
+}
+
+enum Report {
+    NotFound,
+    Conclusion {
+        failure: bool,
+        sha: Option<String>,
+        run: Box<octokit::WorkflowRun>,
+        jobs: Vec<octokit::Job>,
+    },
+}
+
+struct Status {
+    id: String,
+    reports: Vec<Report>,
+}
+
+struct InnerOutcome {
+    failure: bool,
+    statuses: Vec<Status>,
+}
+
+struct Outcome<'repo> {
+    repo: &'repo Repo,
+    outcome: Option<InnerOutcome>,
+}
+
+impl<'repo> Outcome<'repo> {
+    fn output(repo: &'repo Repo, failure: bool, statuses: Vec<Status>) -> Self {
+        Self {
+            repo,
+            outcome: Some(InnerOutcome { failure, statuses }),
+        }
+    }
+
+    fn ignore(repo: &'repo Repo) -> Self {
+        Self {
+            repo,
+            outcome: None,
+        }
+    }
+
+    fn display(self, o: &mut StandardStream, today: DateTime<Local>) -> Result<()> {
+        let Some(InnerOutcome { failure, statuses }) = self.outcome else {
+            return Ok(());
+        };
+
+        let failure_color = {
+            let mut c = ColorSpec::new();
+            c.set_fg(Some(Color::Red));
+            c
+        };
+
+        writeln!(o, "{}: {}", self.repo.path(), self.repo.url())?;
+
+        for w in statuses {
+            let Status { id, reports } = w;
+
+            writeln!(o, "Workflow `{id}`:")?;
+
+            for report in reports {
+                match report {
+                    Report::NotFound => {
+                        writeln!(o, "  Workflow `{id}` not found")?;
+                    }
+                    Report::Conclusion {
+                        failure,
+                        sha,
+                        run,
+                        jobs,
+                    } => {
+                        let updated_at =
+                            FormatTime::new(today, Some(run.updated_at.with_timezone(&Local)));
+
+                        let head = if sha.as_deref() == Some(run.head_sha.as_str()) {
+                            "* "
+                        } else {
+                            "  "
+                        };
+
+                        if failure {
+                            o.set_color(&failure_color)?;
+                        }
+
+                        writeln!(
+                            o,
+                            " {head}{sha} {branch}: {updated_at}: status: {}, conclusion: {}",
+                            run.status,
+                            run.conclusion.as_deref().unwrap_or("*in progress*"),
+                            branch = run.head_branch,
+                            sha = short(&run.head_sha),
+                        )?;
+
+                        if failure {
+                            o.reset()?;
+                        }
+
+                        for job in jobs {
+                            let failure = job.conclusion.as_deref() == Some("failure");
+
+                            if failure {
+                                o.set_color(&failure_color)?;
+                            }
+
+                            writeln!(o, "   {}", job.name)?;
+                            writeln!(o, "     {}", job.html_url)?;
+
+                            writeln!(
+                                o,
+                                "     status: {status}, conclusion: {conclusion}",
+                                status = job.status,
+                                conclusion = job.conclusion.as_deref().unwrap_or("*in progress*"),
+                            )?;
+
+                            writeln!(
+                                o,
+                                "     time: {} - {}",
+                                FormatTime::new(
+                                    today,
+                                    job.started_at.map(|d| d.with_timezone(&Local))
+                                ),
+                                FormatTime::new(
+                                    today,
+                                    job.completed_at.map(|d| d.with_timezone(&Local))
+                                )
+                            )?;
+
+                            if failure {
+                                o.reset()?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if failure {
+            bail!("Status is not OK")
+        }
+
+        Ok(())
     }
 }

@@ -84,7 +84,7 @@ pub(crate) struct Ctxt<'a> {
     pub(crate) env: &'a Env,
 }
 
-impl Ctxt<'_> {
+impl<'a> Ctxt<'a> {
     /// Check if context is terminated or not.
     pub(crate) fn is_terminated(&self) -> bool {
         self.term.load(Ordering::Relaxed)
@@ -172,7 +172,7 @@ impl Ctxt<'_> {
     }
 
     /// Iterate over non-disabled modules.
-    pub(crate) fn repos(&self) -> impl Iterator<Item = &Repo> + '_ {
+    pub(crate) fn repos(&self) -> Repos<'a> {
         Repos {
             repos: self.repos,
             index: 0,
@@ -227,7 +227,8 @@ pub(crate) fn rustc_version() -> Option<RustVersion> {
     RustVersion::parse(version)
 }
 
-struct Repos<'a> {
+/// Iterator over repositories.
+pub(crate) struct Repos<'a> {
     repos: &'a [Repo],
     index: usize,
 }
