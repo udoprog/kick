@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashSet};
 use std::env;
 use std::ffi::OsString;
@@ -159,8 +160,8 @@ impl Batch {
                 let mut run_command;
                 let mut paths = &[][..];
                 let mut display_command = None;
-                let mut script_source = None;
                 let script_file;
+                let mut script_source = None;
 
                 let env_keys = c.env_passthrough.iter();
                 let env_keys = env_keys.chain(c.env.keys());
@@ -182,6 +183,12 @@ impl Batch {
 
                         for (key, value) in env {
                             run_command.env(key, value);
+                        }
+
+                        if let Some(script) = &script_file {
+                            if let ScriptFileKind::Inline { contents, .. } = &script.kind {
+                                script_source = Some((Cow::Borrowed(contents.as_ref()), c.shell));
+                            }
                         }
                     }
                     RunOn::Wsl(dist) => {
@@ -212,8 +219,8 @@ impl Batch {
                     }
                 };
 
-                if let Some(script_file) = script_file {
-                    let script_path = match script_file.kind {
+                if let Some(script_file) = &script_file {
+                    let script_path = match &script_file.kind {
                         ScriptFileKind::Inline { contents, ext } => {
                             let cache_dir =
                                 c.cx.paths
@@ -223,13 +230,6 @@ impl Batch {
                                     .cache_dir();
 
                             let scripts_dir = cache_dir.join("scripts");
-
-                            fs::create_dir_all(&scripts_dir).with_context(|| {
-                                anyhow!(
-                                    "Failed to create scripts directory: {}",
-                                    scripts_dir.display()
-                                )
-                            })?;
 
                             let sequence = session.sequence();
                             let process_id = c.process_id;
@@ -247,6 +247,14 @@ impl Batch {
 
                             if !c.dry_run {
                                 tracing::trace!(?script_path, "Writing temporary script");
+
+                                fs::create_dir_all(&scripts_dir).with_context(|| {
+                                    anyhow!(
+                                        "Failed to create scripts directory: {}",
+                                        scripts_dir.display()
+                                    )
+                                })?;
+
                                 let contents = contents.to_exposed();
 
                                 fs::write(&script_path, contents.as_bytes()).with_context(
@@ -304,30 +312,30 @@ impl Batch {
 
                 let display_impl;
 
-                let (display, shell, display_env, display_env_remove): (
-                    &dyn fmt::Display,
-                    _,
-                    _,
-                    _,
-                ) = 'display: {
+                let display: &dyn fmt::Display;
+                let shell;
+                let display_env;
+                let display_env_remove;
+
+                'display: {
                     if c.verbose >= 2 {
                         display_impl = run_command.display_with(c.shell).with_exposed(c.exposed);
-
-                        break 'display (
-                            &display_impl,
-                            c.shell,
-                            &run_command.env,
-                            &run_command.env_remove,
-                        );
+                        display = &display_impl;
+                        shell = c.shell;
+                        display_env = &run_command.env;
+                        display_env_remove = &run_command.env_remove;
+                        break 'display;
                     }
 
                     let current_command = display_command.as_ref().unwrap_or(&run_command);
 
-                    let display_env = &current_command.env;
-                    let display_env_remove = &current_command.env_remove;
+                    display_env = &current_command.env;
+                    display_env_remove = &current_command.env_remove;
 
-                    if let Some((ref script_source, shell)) = script_source {
-                        break 'display (script_source, shell, display_env, display_env_remove);
+                    if let Some((ref script_source, this_shell)) = script_source {
+                        display = script_source;
+                        shell = this_shell;
+                        break 'display;
                     }
 
                     display_impl = display_command
@@ -336,7 +344,8 @@ impl Batch {
                         .display_with(c.shell)
                         .with_exposed(c.exposed);
 
-                    (&display_impl, c.shell, display_env, display_env_remove)
+                    display = &display_impl;
+                    shell = c.shell;
                 };
 
                 let mut line = Line::new(o);
@@ -610,6 +619,7 @@ where
     Ok(out)
 }
 
+#[derive(Debug)]
 enum ScriptFileKind {
     Inline {
         contents: Box<RStr>,
@@ -620,6 +630,7 @@ enum ScriptFileKind {
     },
 }
 
+#[derive(Debug)]
 struct ScriptFile {
     variable: Option<&'static str>,
     argument: bool,
@@ -700,14 +711,14 @@ fn setup_same<'a>(
     }
 }
 
-fn setup_wsl<'a>(
-    run: &Run,
+fn setup_wsl<'run, 'a>(
+    run: &'run Run,
     env: impl IntoIterator<Item = &'a str>,
 ) -> (
     Command,
     String,
     Option<ScriptFile>,
-    Option<(Box<RStr>, Shell)>,
+    Option<(Cow<'run, RStr>, Shell)>,
 ) {
     let mut seen = HashSet::new();
     let mut wslenv = String::new();
@@ -723,7 +734,7 @@ fn setup_wsl<'a>(
                 c.args(["-Command"]);
                 c.arg(script);
 
-                script_source = Some((script.clone(), Shell::Powershell));
+                script_source = Some((Cow::Borrowed(script.as_ref()), Shell::Powershell));
             }
             Shell::Bash => {
                 c = Command::new("bash");
@@ -734,7 +745,7 @@ fn setup_wsl<'a>(
                     script.clone(),
                     "bash",
                 ));
-                script_source = Some((script.clone(), Shell::Bash));
+                script_source = Some((Cow::Borrowed(script.as_ref()), Shell::Bash));
             }
         },
         RunKind::Command { command, args } => {
@@ -753,8 +764,8 @@ fn setup_wsl<'a>(
                 node_script_file.clone(),
             ));
 
-            let source = Box::<RStr>::from("exec node $KICK_SCRIPT_FILE".to_owned());
-            script_source = Some((source, Shell::Bash));
+            let source = RString::from("exec node $KICK_SCRIPT_FILE".to_owned());
+            script_source = Some((Cow::Owned(source), Shell::Bash));
         }
     }
 
