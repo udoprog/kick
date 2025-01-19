@@ -156,15 +156,15 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
             let mut save = false;
 
             if !opts.no_remove_dev_dependencies {
-                tracing::info!("{}: Removing dev-dependencies", manifest_path.display());
+                tracing::debug!("{}: Removing dev-dependencies", manifest_path.display());
                 save |= manifest.remove_all(cargo::DEV_DEPENDENCIES);
             }
 
             if version < RUST_VERSION_SUPPORTED {
-                tracing::info!("{}: Removing rust-version (since rust-version=\"{version}\" is less than {RUST_VERSION_SUPPORTED})", manifest_path.display());
+                tracing::debug!("{}: Removing rust-version (since rust-version=\"{version}\" is less than {RUST_VERSION_SUPPORTED})", manifest_path.display());
                 save |= manifest.remove_rust_version();
             } else {
-                tracing::info!(
+                tracing::debug!(
                     "{}: Setting rust-version=\"{version}\"",
                     manifest_path.display()
                 );
@@ -173,14 +173,14 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
             if let Some(mut package) = manifest.as_package_mut() {
                 if !package.is_publish() && version < NO_PUBLISH_VERSION_OMIT {
-                    tracing::info!("{}: Setting version = \"0.0.0\" (since publish = false and rust-version=\"{version}\" is less than {NO_PUBLISH_VERSION_OMIT})", manifest_path.display());
+                    tracing::debug!("{}: Setting version = \"0.0.0\" (since publish = false and rust-version=\"{version}\" is less than {NO_PUBLISH_VERSION_OMIT})", manifest_path.display());
                     save |= package.set_version("0.0.0");
                 }
             }
 
             if save {
                 move_paths(&manifest_path, &original_path)?;
-                tracing::trace!("Saving {}", manifest.path());
+                tracing::debug!("Saving {}", manifest.path());
                 manifest.save_to(&manifest_path)?;
                 restore
                     .paths
@@ -195,9 +195,7 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                 .push((cargo_lock_original.clone(), cargo_lock.clone()));
         }
 
-        tracing::trace!(?current_dir, "Testing against rust {version}");
-
-        let mut all_ok = true;
+        let mut failures = Vec::new();
 
         for p in &packages {
             let manifest_path = cx.to_path(p.manifest().path());
@@ -218,20 +216,25 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                 rustup.stdout(Stdio::null()).stderr(Stdio::null());
             }
 
-            tracing::info!("Testing Rust {version}: {}", rustup.display());
+            tracing::info!("{}", rustup.display_with(cx.current_os.shell()));
+
             let status = rustup.status().context("Command through `rustup run`")?;
 
             if !status.success() {
-                all_ok = false;
-                break;
+                failures.push((status, rustup));
             }
         }
 
-        if all_ok {
+        if failures.is_empty() {
             tracing::info!("Rust {version}: ok");
             candidates.ok();
         } else {
             tracing::info!("Rust {version}: failed");
+
+            for (status, failure) in failures {
+                tracing::warn!("{status}: {}", failure.display_with(cx.current_os.shell()));
+            }
+
             candidates.fail();
         }
 
@@ -274,7 +277,7 @@ fn parse_minor_version(
 }
 
 fn move_paths(from: &Path, to: &Path) -> Result<()> {
-    tracing::trace!("moving {} -> {}", from.display(), to.display());
+    tracing::debug!("moving {} -> {}", from.display(), to.display());
 
     if to.exists() {
         let _ = fs::remove_file(to).with_context(|| anyhow!("{}", to.display()));
