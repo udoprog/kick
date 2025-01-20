@@ -60,9 +60,9 @@ async fn do_status<'repo>(
     let mut ok = true;
 
     for id in workflows.into_keys() {
-        let mut reports = Vec::new();
-        ok &= status(cx, &id, opts, repo, repo_path, client, &mut reports).await?;
-        statuses.push(Status { id, reports });
+        let mut conclusions = Vec::new();
+        ok &= status(cx, &id, opts, repo, repo_path, client, &mut conclusions).await?;
+        statuses.push(Status { id, conclusions });
     }
 
     Ok(Outcome::output(repo, !ok, statuses))
@@ -76,7 +76,7 @@ async fn status(
     repo: &Repo,
     path: RepoPath<'_>,
     client: &octokit::Client,
-    reports: &mut Vec<Report>,
+    conclusions: &mut Vec<Conclusion>,
 ) -> Result<bool> {
     let sha;
 
@@ -94,8 +94,7 @@ async fn status(
         .workflow_runs(path.owner, path.name, id, true, Some(1))
         .await?
     else {
-        reports.push(Report::NotFound);
-        return Ok(false);
+        bail!("No workflow runs found");
     };
 
     let mut remaining = 1;
@@ -127,7 +126,7 @@ async fn status(
                 jobs.jobs
             };
 
-            reports.push(Report::Conclusion {
+            conclusions.push(Conclusion {
                 failure,
                 sha: sha.map(str::to_owned),
                 run: Box::new(run),
@@ -161,6 +160,7 @@ impl<T> FormatTime<T>
 where
     T: TimeZone,
 {
+    #[inline]
     fn new(today: DateTime<T>, date: Option<DateTime<T>>) -> Self {
         Self { today, date }
     }
@@ -170,6 +170,7 @@ impl<T> fmt::Display for FormatTime<T>
 where
     T: TimeZone,
 {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Some(date) = &self.date else {
             return "?".fmt(f);
@@ -183,19 +184,16 @@ where
     }
 }
 
-enum Report {
-    NotFound,
-    Conclusion {
-        failure: bool,
-        sha: Option<String>,
-        run: Box<octokit::WorkflowRun>,
-        jobs: Vec<octokit::Job>,
-    },
+struct Conclusion {
+    failure: bool,
+    sha: Option<String>,
+    run: Box<octokit::WorkflowRun>,
+    jobs: Vec<octokit::Job>,
 }
 
 struct Status {
     id: String,
-    reports: Vec<Report>,
+    conclusions: Vec<Conclusion>,
 }
 
 struct InnerOutcome {
@@ -236,82 +234,68 @@ impl<'repo> Outcome<'repo> {
 
         writeln!(o, "{}: {}", self.repo.path(), self.repo.url())?;
 
-        for w in statuses {
-            let Status { id, reports } = w;
-
+        for Status { id, conclusions } in statuses {
             writeln!(o, "Workflow `{id}`:")?;
 
-            for report in reports {
-                match report {
-                    Report::NotFound => {
-                        writeln!(o, "  Workflow `{id}` not found")?;
+            for conclusion in conclusions {
+                let Conclusion {
+                    failure,
+                    sha,
+                    run,
+                    jobs,
+                } = conclusion;
+
+                let updated_at = FormatTime::new(today, Some(run.updated_at.with_timezone(&Local)));
+
+                let head = if sha.as_deref() == Some(run.head_sha.as_str()) {
+                    "* "
+                } else {
+                    "  "
+                };
+
+                if failure {
+                    o.set_color(&failure_color)?;
+                }
+
+                writeln!(
+                    o,
+                    "{head}{sha} {branch}: {updated_at}: status: {}, conclusion: {}",
+                    run.status,
+                    run.conclusion.as_deref().unwrap_or("*in progress*"),
+                    branch = run.head_branch,
+                    sha = short(&run.head_sha),
+                )?;
+
+                if failure {
+                    o.reset()?;
+                }
+
+                for job in jobs {
+                    let failure = job.conclusion.as_deref() == Some("failure");
+
+                    if failure {
+                        o.set_color(&failure_color)?;
                     }
-                    Report::Conclusion {
-                        failure,
-                        sha,
-                        run,
-                        jobs,
-                    } => {
-                        let updated_at =
-                            FormatTime::new(today, Some(run.updated_at.with_timezone(&Local)));
 
-                        let head = if sha.as_deref() == Some(run.head_sha.as_str()) {
-                            "* "
-                        } else {
-                            "  "
-                        };
+                    writeln!(o, "  {}", job.name)?;
+                    writeln!(o, "    {}", job.html_url)?;
 
-                        if failure {
-                            o.set_color(&failure_color)?;
-                        }
+                    writeln!(
+                        o,
+                        "    status: {status}, conclusion: {conclusion}",
+                        status = job.status,
+                        conclusion = job.conclusion.as_deref().unwrap_or("*in progress*"),
+                    )?;
 
-                        writeln!(
-                            o,
-                            " {head}{sha} {branch}: {updated_at}: status: {}, conclusion: {}",
-                            run.status,
-                            run.conclusion.as_deref().unwrap_or("*in progress*"),
-                            branch = run.head_branch,
-                            sha = short(&run.head_sha),
-                        )?;
+                    writeln!(
+                        o,
+                        "    time: {} - {}",
+                        FormatTime::new(today, job.started_at.map(|d| d.with_timezone(&Local))),
+                        FormatTime::new(today, job.completed_at.map(|d| d.with_timezone(&Local)))
+                    )?;
 
-                        if failure {
-                            o.reset()?;
-                        }
-
-                        for job in jobs {
-                            let failure = job.conclusion.as_deref() == Some("failure");
-
-                            if failure {
-                                o.set_color(&failure_color)?;
-                            }
-
-                            writeln!(o, "   {}", job.name)?;
-                            writeln!(o, "     {}", job.html_url)?;
-
-                            writeln!(
-                                o,
-                                "     status: {status}, conclusion: {conclusion}",
-                                status = job.status,
-                                conclusion = job.conclusion.as_deref().unwrap_or("*in progress*"),
-                            )?;
-
-                            writeln!(
-                                o,
-                                "     time: {} - {}",
-                                FormatTime::new(
-                                    today,
-                                    job.started_at.map(|d| d.with_timezone(&Local))
-                                ),
-                                FormatTime::new(
-                                    today,
-                                    job.completed_at.map(|d| d.with_timezone(&Local))
-                                )
-                            )?;
-
-                            if failure {
-                                o.reset()?;
-                            }
-                        }
+                    if failure {
+                        o.reset()?;
                     }
                 }
             }
