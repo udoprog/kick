@@ -8,8 +8,9 @@ use std::{ffi::OsString, fmt};
 use anyhow::{ensure, Context, Result};
 use clap::{Parser, ValueEnum};
 
-use crate::env::Env;
+use crate::ctxt::Ctxt;
 use crate::release::ReleaseOpts;
+use crate::Repo;
 
 #[derive(Default, Debug, Clone, Copy, ValueEnum)]
 enum Format {
@@ -98,8 +99,19 @@ pub(crate) struct Opts {
     github_action: bool,
 }
 
-pub(crate) fn entry(env: &Env, opts: &Opts) -> Result<()> {
-    let version = opts.release.version(env)?;
+pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
+    with_repos!(
+        cx,
+        "publish github release",
+        format_args!("github-release: {opts:?}"),
+        |cx, repo| { define(cx, repo, opts) }
+    );
+
+    Ok(())
+}
+
+fn define(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
+    let version = opts.release.version(cx, repo)?;
 
     let output_from_env = 'out: {
         if let Some(key) = opts.output_from_env.as_deref() {

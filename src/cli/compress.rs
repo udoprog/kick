@@ -13,7 +13,6 @@ use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::model::Repo;
 use crate::release::ReleaseOpts;
-use crate::workspace;
 
 use super::output::OutputOpts;
 
@@ -63,11 +62,9 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, ty: Kind, opts: &Opts) -> Result<()> {
 
 #[tracing::instrument(skip_all)]
 fn compress(cx: &Ctxt<'_>, ty: Kind, opts: &Opts, repo: &Repo) -> Result<()> {
-    let Some(workspace) = workspace::open(cx, repo)? else {
-        bail!("Not a workspace");
-    };
+    let workspace = repo.workspace(cx)?;
 
-    let release = opts.release.version(cx.env)?;
+    let release = opts.release.version(cx, repo)?;
 
     let package = workspace.primary_package()?;
     let name = package.name()?;

@@ -6,11 +6,8 @@ use relative_path::RelativePathBuf;
 
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
-use crate::release::Version;
-use crate::wix::Wix;
-use crate::workspace;
-
 use crate::release::ReleaseOpts;
+use crate::wix::Wix;
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -22,22 +19,18 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    let release = opts.release.version(cx.env)?;
-
     with_repos!(cx, "build .msi", format!("msi: {opts:?}"), |cx, repo| {
-        msi(cx, repo, opts, &release)
+        msi(cx, repo, opts)
     });
 
     Ok(())
 }
 
 #[tracing::instrument(skip_all)]
-fn msi(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts, release: &Version<'_>) -> Result<()> {
+fn msi(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
+    let release = opts.release.version(cx, repo)?;
     let root = cx.to_path(repo.path());
-
-    let Some(workspace) = workspace::open(cx, repo)? else {
-        bail!("Not a workspace");
-    };
+    let workspace = repo.workspace(cx)?;
 
     let package = workspace.primary_package()?;
     let name = package.name()?;

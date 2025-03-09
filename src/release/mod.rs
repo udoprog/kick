@@ -11,7 +11,9 @@ use chrono::{Datelike, Utc};
 use clap::Parser;
 use serde::Serialize;
 
+use crate::ctxt::Ctxt;
 use crate::env::Env;
+use crate::Repo;
 
 /// The base year. Cannot perform releases prior to this year.
 const BASE_YEAR: u32 = 2000;
@@ -70,16 +72,26 @@ pub(crate) struct ReleaseOpts {
 
 impl ReleaseOpts {
     /// Construct a release from provided arguments.
-    pub(crate) fn version<'a>(&'a self, env: &'a Env) -> Result<Version<'a>> {
-        let Some(version) = self.try_version(env)? else {
-            bail!("Could not determine version from --version or KICK_VERSION");
+    pub(crate) fn version<'a>(&'a self, cx: &Ctxt<'a>, repo: &'a Repo) -> Result<Version<'a>> {
+        let today = Date::today()?;
+
+        if let Some(version) = self.try_env_argument(cx.env, today)? {
+            return Ok(version);
+        };
+
+        let Some(version) = self.try_project(cx, repo, today)? else {
+            bail!("Could not determine version, this can be done through --version, KICK_VERSION, or a project configuration like Cargo.toml");
         };
 
         Ok(version)
     }
 
     /// Try to construct a kick version.
-    pub(crate) fn try_version<'a>(&'a self, env: &'a Env) -> Result<Option<Version<'a>>> {
+    pub(crate) fn try_env_argument<'a>(
+        &'a self,
+        env: &'a Env,
+        today: Date,
+    ) -> Result<Option<Version<'a>>> {
         let mut version = self.version.as_deref().filter(|c| !c.is_empty());
 
         if version.is_none() {
@@ -95,10 +107,41 @@ impl ReleaseOpts {
 
         let _span = span.entered();
 
-        let mut vars = Vars::new(Date::today()?);
+        let Some(version) = version else {
+            return Ok(None);
+        };
 
-        let mut prefixes = HashSet::new();
-        prefixes.insert(String::from("v"));
+        Ok(Some(self.parse_version(env, today, version)?))
+    }
+
+    /// Try to construct a kick version.
+    pub(crate) fn try_project<'a>(
+        &'a self,
+        cx: &Ctxt<'a>,
+        repo: &'a Repo,
+        today: Date,
+    ) -> Result<Option<Version<'a>>> {
+        let Some(workspace) = repo.try_workspace(cx)? else {
+            return Ok(None);
+        };
+
+        let package = workspace.primary_package()?;
+
+        let Some(version) = package.version() else {
+            return Ok(None);
+        };
+
+        let version = self.parse_version(cx.env, today, version)?;
+        Ok(Some(version))
+    }
+
+    fn parse_version<'a>(
+        &'a self,
+        env: &'a Env,
+        today: Date,
+        version: &'a str,
+    ) -> Result<Version<'a>, anyhow::Error> {
+        let mut vars = Vars::new(today);
 
         for define in &self.define {
             let Some((key, value)) = define.split_once('=') else {
@@ -114,9 +157,8 @@ impl ReleaseOpts {
 
         github_release(env, &mut vars);
 
-        let Some(version) = version else {
-            return Ok(None);
-        };
+        let mut prefixes = HashSet::new();
+        prefixes.insert(String::from("v"));
 
         let Some(mut version) = self::parser::expr(version, &vars, &prefixes)? else {
             bail!("Could not determine release from version");
@@ -150,7 +192,7 @@ impl ReleaseOpts {
             version.push(append);
         }
 
-        Ok(Some(version))
+        Ok(version)
     }
 }
 
@@ -183,7 +225,7 @@ impl Date {
         Ok(Self { year, month, day })
     }
 
-    fn today() -> Result<Self> {
+    pub(crate) fn today() -> Result<Self> {
         let now = Utc::now().naive_local().date();
         Self::new(now.year(), now.month(), now.day())
     }

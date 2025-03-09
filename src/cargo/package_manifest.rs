@@ -6,10 +6,12 @@ use crate::cargo::RustVersion;
 use crate::model::{PackageParams, RepoRef};
 
 macro_rules! package_field {
-    ($get:ident, $field:literal) => {
-        pub(crate) fn $get(&self) -> Option<&str> {
-            self.doc.get($field).and_then(Item::as_str)
-        }
+    ($lt:lifetime, $($get:ident, $field:literal),* $(,)?) => {
+        $(
+            pub(crate) fn $get(&self) -> Option<&$lt str> {
+                self.doc.get($field).and_then(Item::as_str)
+            }
+        )*
     };
 }
 
@@ -73,12 +75,15 @@ impl<'a> Package<'a> {
         RustVersion::parse(self.doc.get("rust-version").and_then(Item::as_str)?)
     }
 
-    package_field!(version, "version");
-    package_field!(license, "license");
-    package_field!(readme, "readme");
-    package_field!(repository, "repository");
-    package_field!(homepage, "homepage");
-    package_field!(documentation, "documentation");
+    package_field! {
+        'a,
+        version, "version",
+        license, "license",
+        readme, "readme",
+        repository, "repository",
+        homepage, "homepage",
+        documentation, "documentation",
+    }
 
     /// Construct crate parameters.
     pub(crate) fn package_params<'p>(&'p self, repo: &'p RepoRef) -> Result<PackageParams<'p>> {

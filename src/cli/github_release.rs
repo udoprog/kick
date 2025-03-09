@@ -61,17 +61,13 @@ pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
         }
     }
 
-    let version = opts.release.version(cx.env)?;
-
     let client = cx.octokit()?;
-    let name = version.to_string();
-    let prerelease = version.is_pre();
 
     with_repos!(
         cx,
         "publish github release",
         format_args!("github-release: {opts:?}"),
-        |cx, repo| { github_publish(cx, &opts, repo, &client, &name, prerelease).await }
+        |cx, repo| { github_publish(cx, &opts, repo, &client).await }
     );
 
     Ok(())
@@ -83,9 +79,11 @@ async fn github_publish(
     opts: &Opts,
     repo: &Repo,
     client: &octokit::Client,
-    name: &str,
-    prerelease: bool,
 ) -> Result<()> {
+    let version = opts.release.version(cx, repo)?;
+    let name = version.to_string();
+    let prerelease = version.is_pre();
+
     let Some(path) = repo.repo() else {
         bail!("Repo is not a github repo");
     };
@@ -115,7 +113,7 @@ async fn github_publish(
         "Creating release"
     };
 
-    if cx.env.github_tag() == Some(name) {
+    if cx.env.github_tag() == Some(name.as_str()) {
         tracing::info!("Not updating '{name}' which is being built through GITHUB_REF");
     } else {
         let r#ref = format!("tags/{}", name);
@@ -190,9 +188,9 @@ async fn github_publish(
                     path.owner,
                     path.name,
                     release.id,
-                    name,
+                    &name,
                     sha,
-                    name,
+                    &name,
                     opts.body.as_deref(),
                     prerelease,
                     opts.draft,
@@ -202,14 +200,14 @@ async fn github_publish(
             release
         }
     } else {
-        tracing::info!("Creating release '{}'", name);
+        tracing::info!("Creating release '{name}'");
         client
             .create_release(
                 path.owner,
                 path.name,
-                name,
+                &name,
                 sha,
-                name,
+                &name,
                 opts.body.as_deref(),
                 prerelease,
                 opts.draft,

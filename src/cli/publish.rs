@@ -9,7 +9,6 @@ use crate::cargo::Dependency;
 use crate::changes::{Change, NoVerify};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
-use crate::workspace;
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -40,10 +39,7 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 
 #[tracing::instrument(skip_all)]
 fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
-    let Some(workspace) = workspace::open(cx, repo)? else {
-        bail!("Not a workspace");
-    };
-
+    let workspace = repo.workspace(cx)?;
     let no_verify = opts.no_verify.iter().cloned().collect::<HashSet<_>>();
     let skip = opts.skip.iter().cloned().collect::<HashSet<_>>();
 
@@ -66,15 +62,15 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
         let m = package.manifest();
 
         let a = m
-            .dependencies(&workspace)
+            .dependencies(workspace)
             .map(|d| d.iter().map(Dep::runtime));
 
         let b = m
-            .dev_dependencies(&workspace)
+            .dev_dependencies(workspace)
             .map(|d| d.iter().map(Dep::dev));
 
         let c = m
-            .build_dependencies(&workspace)
+            .build_dependencies(workspace)
             .map(|d| d.iter().map(Dep::build));
 
         let it = a

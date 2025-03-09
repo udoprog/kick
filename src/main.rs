@@ -364,7 +364,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::{Args, FromArgMatches, Parser, Subcommand};
 
 use config::{Config, Distribution, Os};
@@ -722,11 +722,6 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     let mut env = Env::new();
     tracing::trace!(?env, "Using environment");
 
-    if let Action::Define(opts) = &action {
-        cli::define::entry(&env, &opts.action)?;
-        return Ok(ExitCode::SUCCESS);
-    };
-
     if let Some(github_token) = &shared.github_token {
         env.github_token = Some(github_token.clone());
     }
@@ -913,6 +908,10 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             cli::update::entry(&mut cx, shared).await?;
             return Ok(ExitCode::SUCCESS);
         }
+        Action::Define(opts) => {
+            cli::define::entry(&mut cx, &opts.action)?;
+            return Ok(ExitCode::SUCCESS);
+        }
         Action::Set(opts) => {
             cli::set::entry(&mut cx, &opts.action)?;
         }
@@ -957,9 +956,6 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         }
         Action::GithubAction(opts) => {
             cli::github_action::entry(&mut cx, &opts.action)?;
-        }
-        _ => {
-            bail!("Unsupported action at this stage")
         }
     }
 

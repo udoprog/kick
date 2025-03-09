@@ -4,7 +4,7 @@ pub(crate) mod readme;
 
 use std::io::Write;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use clap::Parser;
 
 use crate::changes;
@@ -75,11 +75,11 @@ fn check(cx: &Ctxt<'_>, repo: &Repo, urls: &mut Urls) -> Result<()> {
 
     for package in crates.packages() {
         let rust_version = primary_crate.rust_version();
-        cargo::work_cargo_toml(cx, &crates, &package, &update_params, rust_version)?;
+        cargo::work_cargo_toml(cx, crates, &package, &update_params, rust_version)?;
     }
 
     if cx.config.is_enabled(repo, "ci") {
-        ci::build(cx, &primary_crate, repo, &crates).with_context(|| anyhow!("ci change"))?;
+        ci::build(cx, &primary_crate, repo, crates).context("ci change")?;
     }
 
     if cx.config.is_enabled(repo, "readme") {

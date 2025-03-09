@@ -1,4 +1,4 @@
-use std::cell::{Cell, Ref, RefCell};
+use std::cell::{Cell, UnsafeCell};
 use std::env;
 use std::fmt;
 use std::fs;
@@ -204,7 +204,7 @@ struct RepoInner {
     /// Whether we've tried to initialize the workspace.
     init: Cell<bool>,
     /// Initialized workspace.
-    crates: RefCell<Option<Crates>>,
+    crates: UnsafeCell<Option<Crates>>,
 }
 
 /// A git module.
@@ -233,7 +233,7 @@ impl Repo {
                 symbolic: RepoRef { path, url },
                 state: Cell::new(State::Pending),
                 init: Cell::new(false),
-                crates: RefCell::new(None),
+                crates: UnsafeCell::new(None),
             }),
         }
     }
@@ -268,30 +268,39 @@ impl Repo {
         &self.inner.source
     }
 
-    /// Try to get a workspace, if one is present in the module.
-    #[tracing::instrument(skip_all, fields(source = ?self.inner.source, module = self.path().as_str()))]
-    pub(crate) fn try_workspace(&self, cx: &Ctxt<'_>) -> Result<Option<Ref<'_, Crates>>> {
-        self.init_workspace(cx)?;
-        Ok(Ref::filter_map(self.inner.crates.borrow(), Option::as_ref).ok())
+    /// Get the inner workspace.
+    fn get_workspace(&self) -> Option<&Crates> {
+        // SAFETY: This is the only way to access this interior value.
+        unsafe { (*self.inner.crates.get().cast_const()).as_ref() }
     }
 
     /// Try to get a workspace, if one is present in the module.
     #[tracing::instrument(skip_all, fields(source = ?self.inner.source, module = self.path().as_str()))]
-    pub(crate) fn workspace(&self, cx: &Ctxt<'_>) -> Result<Ref<'_, Crates>> {
+    pub(crate) fn try_workspace(&self, cx: &Ctxt<'_>) -> Result<Option<&'_ Crates>> {
+        self.init_workspace(cx)?;
+        Ok(self.get_workspace())
+    }
+
+    /// Try to get a workspace, if one is present in the module.
+    #[tracing::instrument(skip_all, fields(source = ?self.inner.source, module = self.path().as_str()))]
+    pub(crate) fn workspace(&self, cx: &Ctxt<'_>) -> Result<&'_ Crates> {
         self.init_workspace(cx)?;
 
-        if let Ok(workspace) = Ref::filter_map(self.inner.crates.borrow(), Option::as_ref) {
-            Ok(workspace)
-        } else {
+        let Some(workspace) = self.get_workspace() else {
             bail!("missing workspace")
-        }
+        };
+
+        Ok(workspace)
     }
 
     #[tracing::instrument(skip_all)]
     fn init_workspace(&self, cx: &Ctxt<'_>) -> Result<()> {
         if !self.inner.init.get() {
             if let Some(workspace) = self.inner_workspace(cx)? {
-                *self.inner.crates.borrow_mut() = Some(workspace);
+                // This is the only place where this is initialized.
+                unsafe {
+                    *self.inner.crates.get() = Some(workspace);
+                }
             } else {
                 tracing::warn!("Missing workspace for module");
             };

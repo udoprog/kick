@@ -8,7 +8,7 @@ use termcolor::{ColorChoice, StandardStream};
 use crate::commands::{Batch, BatchOptions, Session};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
-use crate::release::{ReleaseOpts, Version};
+use crate::release::{Date, ReleaseOpts, Version};
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -63,7 +63,8 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    let version = opts.release.try_version(cx.env)?;
+    let today = Date::today()?;
+    let version = opts.release.try_env_argument(cx.env, today)?;
     let version_env = opts.version_env.as_deref().unwrap_or("KICK_VERSION");
     let version = version.as_ref().map(|version| (version_env, version));
 

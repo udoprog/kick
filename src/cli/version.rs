@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use clap::Parser;
 use semver::{Comparator, Op, Prerelease, Version, VersionReq};
 use toml_edit::{Formatted, Item, TableLike, Value};
@@ -9,7 +9,6 @@ use crate::cargo;
 use crate::changes::Change;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
-use crate::workspace;
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -90,9 +89,7 @@ fn version(
     version_set: &VersionSet,
     filter: &HashSet<&str>,
 ) -> Result<()> {
-    let Some(workspace) = workspace::open(cx, repo)? else {
-        bail!("Not a workspace");
-    };
+    let workspace = repo.workspace(cx)?;
 
     let mut versions = HashMap::new();
 

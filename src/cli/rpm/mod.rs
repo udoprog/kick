@@ -13,8 +13,6 @@ use crate::config::{rpm_requires, PackageFile, VersionConstraint, VersionRequire
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::packaging::InstallFile;
-use crate::release::Version;
-
 use crate::release::ReleaseOpts;
 
 use super::output::OutputOpts;
@@ -28,20 +26,19 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    let release = opts.release.version(cx.env)?;
-
     with_repos!(
         cx,
         "build .rpm",
-        format_args!("rpm: {:?}", opts),
-        |cx, repo| { rpm(cx, repo, opts, &release) }
+        format_args!("rpm: {opts:?}"),
+        |cx, repo| { rpm(cx, repo, opts) }
     );
 
     Ok(())
 }
 
 #[tracing::instrument(skip_all)]
-fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts, release: &Version<'_>) -> Result<()> {
+fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
+    let release = opts.release.version(cx, repo)?;
     let workspace = repo.workspace(cx)?;
 
     let package = workspace.primary_package()?;
