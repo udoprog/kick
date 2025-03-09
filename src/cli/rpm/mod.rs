@@ -3,6 +3,8 @@ mod find_requires_by_elf;
 
 use std::collections::BTreeSet;
 use std::env::consts::ARCH;
+use std::fs::File;
+use std::io::{BufWriter, Write as _};
 use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
@@ -106,8 +108,15 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     let pkg = pkg.build()?;
     let output = opts.output.make_directory(cx, repo, "rpm");
     let output_path = output.make_path(format!("{name}-{release}-{ARCH}.rpm"))?;
-    pkg.write_file(&output_path)
+
+    let mut out = BufWriter::new(File::create(&output_path)?);
+
+    pkg.write(&mut out)
         .with_context(|| anyhow!("Writing rpm to {}", output_path.display()))?;
+
+    let mut out = out.into_inner()?;
+    out.flush()?;
+    drop(out);
     Ok(())
 }
 
