@@ -379,7 +379,16 @@ pub(crate) fn parse_git_module(parser: &mut gitmodules::Parser<'_>) -> Result<Op
             }
             "url" => {
                 let string = std::str::from_utf8(value)?;
-                parsed_url = Some(str::parse::<Url>(string)?);
+
+                let out = 'out: {
+                    if let Ok(url) = str::parse::<Url>(string) {
+                        break 'out url;
+                    }
+
+                    parse_remote(string)?
+                };
+
+                parsed_url = Some(out);
             }
             _ => {}
         }
@@ -390,6 +399,20 @@ pub(crate) fn parse_git_module(parser: &mut gitmodules::Parser<'_>) -> Result<Op
     };
 
     Ok(Some(Repo::new(RepoSource::Gitmodules, path, url)))
+}
+
+fn parse_remote(remote: &str) -> Result<Url> {
+    let remote = match remote.split_once('@') {
+        Some((_, remote)) => remote,
+        None => remote,
+    };
+
+    let Some((domain, path)) = remote.split_once(':') else {
+        bail!("Missing domain:path")
+    };
+
+    let string = format!("https://{domain}/{path}");
+    Ok(Url::parse(&string)?)
 }
 
 /// Parse gitmodules from the given input.
