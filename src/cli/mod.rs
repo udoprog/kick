@@ -9,9 +9,11 @@ macro_rules! async_with_repos {
 
             let mut it = $c.repos();
 
-            while !$c.is_terminated() {
-                while count < $parallelism {
-                    let Some($repo) = it.next() else {
+            while true {
+                let done = $c.is_terminated();
+
+                while !done && count < $parallelism {
+                    let Some($repo) = ::core::iter::Iterator::next(&mut it) else {
                         break;
                     };
 
@@ -68,6 +70,10 @@ macro_rules! async_with_repos {
                         bad.insert(repo);
                     }
                 }
+            }
+
+            while let Some(repo) = ::core::iter::Iterator::next(&mut it) {
+                repo.set_error();
             }
         }
 
