@@ -10,16 +10,16 @@ use crate::ctxt::Ctxt;
 use crate::model::{Repo, RepoPath};
 use crate::octokit;
 
-const PARALLELISM: &str = "8";
+use super::{with_repos_async, PARALLELISM};
 
 #[derive(Debug, Default, Parser)]
 pub(crate) struct Opts {
-    /// The number of repositories to read in parallel.
-    #[arg(long, default_value = PARALLELISM, value_name = "count")]
-    parallelism: usize,
     /// Include information on individual jobs.
     #[arg(long)]
     jobs: bool,
+    /// The number of repositories to read in parallel.
+    #[arg(long, default_value = PARALLELISM, value_name = "count")]
+    parallelism: usize,
 }
 
 pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
@@ -28,14 +28,15 @@ pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 
     let mut o = StandardStream::stdout(ColorChoice::Auto);
 
-    async_with_repos!(
+    with_repos_async(
         cx,
         "get build status",
         format_args!("status: {opts:?}"),
         opts.parallelism,
-        async |cx, repo| do_status(cx, repo, opts, &client).await?,
+        async |cx, repo| do_status(cx, repo, opts, &client).await,
         |outcome| outcome.display(&mut o, today),
-    );
+    )
+    .await?;
 
     Ok(())
 }

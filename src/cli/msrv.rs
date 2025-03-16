@@ -14,6 +14,8 @@ use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::process::Command;
 
+use super::with_repos;
+
 /// Oldest version where rust-version was introduced.
 const RUST_VERSION_SUPPORTED: RustVersion = RustVersion::new(1, 56);
 /// Oldest version to test by default.
@@ -73,12 +75,12 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    with_repos!(
+    with_repos(
         cx,
         "find msrv",
         format_args!("msrv: {opts:?}"),
-        |cx, repo| { msrv(cx, repo, opts) }
-    );
+        |cx, repo| msrv(cx, repo, opts),
+    )?;
 
     Ok(())
 }

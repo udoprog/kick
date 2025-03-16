@@ -10,6 +10,8 @@ use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::release::{Date, ReleaseOpts, Version};
 
+use super::with_repos;
+
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     /// Command to run.
@@ -70,12 +72,12 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 
     let mut o = StandardStream::stdout(ColorChoice::Auto);
 
-    with_repos!(
+    with_repos(
         cx,
         "run commands",
         format_args!("for: {opts:?}"),
-        |cx, repo| { run(&mut o, cx, repo, opts, version) }
-    );
+        |cx, repo| run(&mut o, cx, repo, opts, version),
+    )?;
 
     Ok(())
 }

@@ -10,6 +10,8 @@ use crate::changes::{Change, NoVerify};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 
+use super::with_repos;
+
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     /// Provide a list of crates which we do not verify locally by adding
@@ -27,12 +29,12 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    with_repos!(
+    with_repos(
         cx,
         "cargo publish",
         format_args!("publish: {opts:?}"),
-        |cx, repo| { publish(cx, opts, repo) }
-    );
+        |cx, repo| publish(cx, opts, repo),
+    )?;
 
     Ok(())
 }

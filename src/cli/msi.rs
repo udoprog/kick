@@ -9,6 +9,8 @@ use crate::model::Repo;
 use crate::release::ReleaseOpts;
 use crate::wix::Wix;
 
+use super::with_repos;
+
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     #[clap(flatten)]
@@ -19,9 +21,9 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    with_repos!(cx, "build .msi", format!("msi: {opts:?}"), |cx, repo| {
+    with_repos(cx, "build .msi", format!("msi: {opts:?}"), |cx, repo| {
         msi(cx, repo, opts)
-    });
+    })?;
 
     Ok(())
 }

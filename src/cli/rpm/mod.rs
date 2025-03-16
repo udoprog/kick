@@ -18,6 +18,7 @@ use crate::packaging::InstallFile;
 use crate::release::ReleaseOpts;
 
 use super::output::OutputOpts;
+use super::with_repos;
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -28,12 +29,12 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    with_repos!(
+    with_repos(
         cx,
         "build .rpm",
         format_args!("rpm: {opts:?}"),
-        |cx, repo| { rpm(cx, repo, opts) }
-    );
+        |cx, repo| rpm(cx, repo, opts),
+    )?;
 
     Ok(())
 }

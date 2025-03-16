@@ -12,6 +12,8 @@ use crate::ctxt::Ctxt;
 use crate::release::ReleaseOpts;
 use crate::Repo;
 
+use super::with_repos;
+
 #[derive(Default, Debug, Clone, Copy, ValueEnum)]
 enum Format {
     #[default]
@@ -100,12 +102,12 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    with_repos!(
+    with_repos(
         cx,
         "publish github release",
         format_args!("github-release: {opts:?}"),
-        |cx, repo| { define(cx, repo, opts) }
-    );
+        |cx, repo| define(cx, repo, opts),
+    )?;
 
     Ok(())
 }

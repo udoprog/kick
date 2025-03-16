@@ -12,6 +12,8 @@ use crate::model::Repo;
 use crate::octokit;
 use crate::release::ReleaseOpts;
 
+use super::{with_repos_async, PARALLELISM};
+
 #[derive(Default, Debug, Clone, Parser)]
 pub(crate) struct Opts {
     #[clap(flatten)]
@@ -43,6 +45,9 @@ pub(crate) struct Opts {
     /// Get details from the GitHub action context.
     #[arg(long)]
     github_action: bool,
+    /// The number of repositories to read in parallel.
+    #[arg(long, default_value = PARALLELISM, value_name = "count")]
+    parallelism: usize,
 }
 
 pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
@@ -63,12 +68,15 @@ pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
 
     let client = cx.octokit()?;
 
-    with_repos!(
+    with_repos_async(
         cx,
         "publish github release",
         format_args!("github-release: {opts:?}"),
-        |cx, repo| { github_publish(cx, &opts, repo, &client).await }
-    );
+        opts.parallelism,
+        async |cx, repo| github_publish(cx, &opts, repo, &client).await,
+        |_| Ok(()),
+    )
+    .await?;
 
     Ok(())
 }

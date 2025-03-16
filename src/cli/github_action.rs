@@ -9,6 +9,8 @@ use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::rstr::{RStr, RString};
 
+use super::with_repos;
+
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     #[command(flatten)]
@@ -24,12 +26,12 @@ pub(crate) struct Opts {
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     let mut o = StandardStream::stdout(ColorChoice::Auto);
 
-    with_repos!(
+    with_repos(
         cx,
         "run action",
         format_args!("for: {opts:?}"),
-        |cx, repo| { action(&mut o, cx, repo, opts) }
-    );
+        |cx, repo| action(&mut o, cx, repo, opts),
+    )?;
 
     Ok(())
 }

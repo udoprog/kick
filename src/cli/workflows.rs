@@ -7,6 +7,8 @@ use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::octokit;
 
+use super::{with_repos_async, PARALLELISM};
+
 #[derive(Debug, Default, Parser)]
 pub(crate) struct Opts {
     /// List all workflows.
@@ -18,17 +20,23 @@ pub(crate) struct Opts {
     /// Disable github workflows.
     #[arg(long)]
     disable: bool,
+    /// The number of repositories to read in parallel.
+    #[arg(long, default_value = PARALLELISM, value_name = "count")]
+    parallelism: usize,
 }
 
 pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     let client = cx.octokit()?;
 
-    with_repos!(
+    with_repos_async(
         cx,
         "workflows",
         format_args!("workflows: {opts:?}"),
-        |cx, repo| do_workflows(cx, repo, opts, &client).await,
-    );
+        opts.parallelism,
+        async |cx, repo| do_workflows(cx, repo, opts, &client).await,
+        |_| Ok(()),
+    )
+    .await?;
 
     Ok(())
 }

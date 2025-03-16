@@ -1,132 +1,161 @@
-macro_rules! async_with_repos {
-    ($c:expr, $what:expr, $hint:expr, $parallelism:expr, async |$cx:ident, $repo:ident| $block:expr, |$report:pat_param| $report_block:expr $(,)?) => {
-        let mut good = $crate::repo_sets::RepoSet::default();
-        let mut bad = $crate::repo_sets::RepoSet::default();
+use core::fmt;
 
-        {
-            let mut futures = futures_util::stream::FuturesUnordered::new();
-            let mut count = 0;
+use crate::ctxt::Ctxt;
+use crate::model::Repo;
 
-            let mut it = $c.repos();
+use anyhow::{Context, Result};
+use futures_util::stream::StreamExt;
+use tracing::Instrument;
 
-            while true {
-                let done = $c.is_terminated();
+const PARALLELISM: &str = "8";
 
-                while !done && count < $parallelism {
-                    let Some($repo) = ::core::iter::Iterator::next(&mut it) else {
-                        break;
-                    };
+/// Run over repos asynchronously with a final report on successful run.
+async fn with_repos_async<'repo, T, F>(
+    cx: &mut Ctxt<'repo>,
+    what: impl fmt::Display,
+    hint: impl fmt::Display,
+    parallelism: usize,
+    f: F,
+    mut report_fn: impl FnMut(T) -> Result<()>,
+) -> Result<()>
+where
+    F: AsyncFn(&Ctxt<'repo>, &'repo Repo) -> Result<T>,
+{
+    let mut good = crate::repo_sets::RepoSet::default();
+    let mut bad = crate::repo_sets::RepoSet::default();
 
-                    let span = ::tracing::info_span!(
-                        "repo",
-                        source = $repo.source().to_string(),
-                        path = $c.to_path($repo.path()).display().to_string()
-                    );
+    {
+        let (cx, what, f) = (&*cx, &what, &f);
 
-                    let $cx = &*$c;
+        let mut futures = futures_util::stream::FuturesUnordered::new();
+        let mut count = 0;
 
-                    let result = async {
-                        tracing::trace!("Running `{}`", $what);
-                        let output = $block;
-                        Ok::<_, ::anyhow::Error>(output)
-                    };
+        let mut it = cx.repos();
 
-                    futures.push(async move {
-                        let result = ::tracing::Instrument::instrument(result, span.clone()).await;
-                        (result, $repo, span)
-                    });
+        loop {
+            let done = cx.is_terminated();
 
-                    count += 1;
-                }
-
-                let Some((result, repo, span)) =
-                    ::futures_util::stream::StreamExt::next(&mut futures).await
-                else {
+            while !done && count < parallelism {
+                let Some(repo) = it.next() else {
                     break;
                 };
 
-                count -= 1;
+                let span = ::tracing::info_span!(
+                    "repo",
+                    source = repo.source().to_string(),
+                    path = cx.to_path(repo.path()).display().to_string()
+                );
 
-                let _span = span.enter();
+                futures.push(async move {
+                    tracing::trace!("Running `{what}`");
+                    let result = f(cx, repo).instrument(span.clone()).await;
+                    (result, repo, span)
+                });
 
-                let result = match result {
-                    Ok($report) => $report_block,
-                    Err(error) => Err(error),
-                };
-
-                match ::anyhow::Context::with_context(result, $c.context(repo)) {
-                    Ok(()) => {
-                        repo.set_success();
-                        good.insert(repo);
-                    }
-                    Err(error) => {
-                        tracing::error!("{error}");
-
-                        for cause in error.chain().skip(1) {
-                            tracing::error!("Caused by: {}", cause);
-                        }
-
-                        repo.set_error();
-                        bad.insert(repo);
-                    }
-                }
+                count += 1;
             }
 
-            while let Some(repo) = ::core::iter::Iterator::next(&mut it) {
-                repo.set_error();
-            }
-        }
-
-        $c.sets.save("good", good, &$hint);
-        $c.sets.save("bad", bad, &$hint);
-    };
-}
-
-macro_rules! with_repos {
-    ($c:expr, $what:expr, $hint:expr, |$cx:ident, $repo:ident| $block:expr $(,)?) => {
-        let mut good = $crate::repo_sets::RepoSet::default();
-        let mut bad = $crate::repo_sets::RepoSet::default();
-
-        for $repo in $c.repos() {
-            if $c.is_terminated() {
+            let Some((result, repo, span)) = futures.next().await else {
                 break;
-            }
+            };
 
-            let span = tracing::info_span!(
-                "repo",
-                source = $repo.source().to_string(),
-                path = $c.to_path($repo.path()).display().to_string()
-            );
+            count -= 1;
+
             let _span = span.enter();
 
-            if $repo.is_disabled() {
-                tracing::trace!("Skipping disabled");
-                continue;
-            }
+            let result = match result {
+                Ok(report) => report_fn(report),
+                Err(error) => Err(error),
+            };
 
-            let $cx = &*$c;
-            let result = $block;
-
-            tracing::trace!("Running `{}`", $what);
-
-            if let Err(error) = ::anyhow::Context::with_context(result, $cx.context($repo)) {
-                tracing::error!("{error}");
-
-                for cause in error.chain().skip(1) {
-                    tracing::error!("Caused by: {}", cause);
+            match result.with_context(cx.context(repo)) {
+                Ok(()) => {
+                    repo.set_success();
+                    good.insert(repo);
                 }
+                Err(error) => {
+                    tracing::error!("{error}");
 
-                $repo.set_error();
-                bad.insert($repo);
-            } else {
-                $repo.set_success();
-                good.insert($repo);
+                    for cause in error.chain().skip(1) {
+                        tracing::error!("Caused by: {}", cause);
+                    }
+
+                    repo.set_error();
+                    bad.insert(repo);
+                }
             }
         }
 
-        $c.sets.save("good", good, &$hint);
-        $c.sets.save("bad", bad, &$hint);
-    };
+        for repo in it {
+            repo.set_error();
+            bad.insert(repo);
+        }
+    }
+
+    cx.sets.save("good", good, &hint);
+    cx.sets.save("bad", bad, &hint);
+    Ok(())
+}
+
+/// Run over repos.
+fn with_repos<'repo, T, F>(
+    cx: &mut Ctxt<'repo>,
+    what: impl fmt::Display,
+    hint: impl fmt::Display,
+    mut f: F,
+) -> Result<()>
+where
+    F: FnMut(&Ctxt<'repo>, &'repo Repo) -> Result<T>,
+{
+    let mut good = crate::repo_sets::RepoSet::default();
+    let mut bad = crate::repo_sets::RepoSet::default();
+
+    let mut it = cx.repos();
+
+    loop {
+        if cx.is_terminated() {
+            break;
+        }
+
+        let Some(repo) = it.next() else {
+            break;
+        };
+
+        let span = tracing::info_span!(
+            "repo",
+            source = repo.source().to_string(),
+            path = cx.to_path(repo.path()).display().to_string()
+        );
+        let _span = span.enter();
+
+        let result = f(cx, repo);
+
+        tracing::trace!("Running `{what}`");
+
+        if let Err(error) = ::anyhow::Context::with_context(result, cx.context(repo)) {
+            tracing::error!("{error}");
+
+            for cause in error.chain().skip(1) {
+                tracing::error!("Caused by: {}", cause);
+            }
+
+            repo.set_error();
+            bad.insert(repo);
+        } else {
+            repo.set_success();
+            good.insert(repo);
+        }
+    }
+
+    for repo in it {
+        repo.set_error();
+        bad.insert(repo);
+    }
+
+    cx.sets.save("good", good, &hint);
+    cx.sets.save("bad", bad, &hint);
+
+    Ok(())
 }
 
 pub(crate) mod changes;

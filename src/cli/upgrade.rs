@@ -5,6 +5,8 @@ use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::process::Command;
 
+use super::with_repos;
+
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     /// Pass `--workspace` to `cargo upgrade`.
@@ -19,12 +21,12 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    with_repos!(
+    with_repos(
         cx,
         "upgrade",
         format_args!("upgrade: {opts:?}"),
         |cx, repo| upgrade(cx, opts, repo),
-    );
+    )?;
 
     Ok(())
 }

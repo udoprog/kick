@@ -10,6 +10,8 @@ use crate::changes::Change;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 
+use super::with_repos;
+
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     /// An explicit version override.
@@ -71,12 +73,12 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
         .map(|s| s.as_str())
         .collect::<HashSet<_>>();
 
-    with_repos!(
+    with_repos(
         cx,
         "bump version",
         format_args!("version: {opts:?}"),
         |cx, repo| version(cx, opts, repo, &version_set, &filter),
-    );
+    )?;
 
     Ok(())
 }

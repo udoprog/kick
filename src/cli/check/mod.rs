@@ -12,6 +12,8 @@ use crate::ctxt::Ctxt;
 use crate::model::{Repo, UpdateParams};
 use crate::urls::{UrlError, Urls};
 
+use super::with_repos;
+
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     /// Perform URL checks where we go out and try and fetch every references
@@ -23,9 +25,9 @@ pub(crate) struct Opts {
 pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     let mut urls = Urls::default();
 
-    with_repos!(cx, "check", format_args!("check: {opts:?}"), |cx, repo| {
+    with_repos(cx, "check", format_args!("check: {opts:?}"), |cx, repo| {
         check(cx, repo, &mut urls)
-    });
+    })?;
 
     let o = std::io::stdout();
     let mut o = o.lock();

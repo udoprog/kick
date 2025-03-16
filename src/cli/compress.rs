@@ -15,6 +15,7 @@ use crate::model::Repo;
 use crate::release::ReleaseOpts;
 
 use super::output::OutputOpts;
+use super::with_repos;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Kind {
@@ -50,12 +51,12 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, ty: Kind, opts: &Opts) -> Result<()> {
-    with_repos!(
+    with_repos(
         cx,
         format!("compress {}", ty.extension()),
         format_args!("compress: {opts:?}"),
-        |cx, repo| { compress(cx, ty, opts, repo) }
-    );
+        |cx, repo| compress(cx, ty, opts, repo),
+    )?;
 
     Ok(())
 }
