@@ -121,10 +121,6 @@ impl<'a> Ctxt<'a> {
     /// Convert a context into an outcome.
     pub(crate) fn outcome(&self) -> ExitCode {
         for repo in self.repos() {
-            if repo.is_disabled() {
-                continue;
-            }
-
             if matches!(repo.state(), State::Error) {
                 return ExitCode::FAILURE;
             }

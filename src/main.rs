@@ -701,8 +701,9 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         }
         None => {
             let current_dir = std::env::current_dir().context("Getting current directory")?;
+            let found = find_from_current_dir(&current_dir);
 
-            match find_from_current_dir(&current_dir) {
+            match found {
                 Some((root, current_path)) => (root, Some(current_path)),
                 None => (current_dir, Some(RelativePathBuf::new())),
             }
@@ -801,6 +802,12 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
 
     let mut sets = repo_sets::RepoSets::new(root.join("sets"))?;
 
+    // This is `true` if the current directory is currently inside one of the
+    // repos.
+    let in_repo_path = paths
+        .current_path
+        .is_some_and(|p| repos.iter().any(|m| p.starts_with(m.path())));
+
     if let Some(repo_opts) = repo_opts {
         let mut filters = Vec::new();
 
@@ -847,9 +854,11 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             }
         };
 
-        let in_current_path = paths
-            .current_path
-            .filter(|p| !repo_opts.all && repos.iter().any(|m| p.starts_with(m.path())));
+        let in_current_path = if !repo_opts.all && in_repo_path {
+            paths.current_path
+        } else {
+            None
+        };
 
         filter_repos(
             &config,
@@ -983,11 +992,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         let mut remaining = RepoSet::default();
 
         for repo in cx.repos() {
-            if repo.is_disabled() {
-                continue;
-            }
-
-            if matches!(repo.state(), State::Error | State::Pending) {
+            if !matches!(repo.state(), State::Error | State::Pending) {
                 remaining.insert(repo);
             }
         }
@@ -997,7 +1002,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         }
     }
 
-    if from_gitmodules {
+    if from_gitmodules && !in_repo_path {
         sets.commit()?;
     }
 
