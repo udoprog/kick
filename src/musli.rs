@@ -5,7 +5,7 @@ pub(crate) mod string {
 
     use musli::{Context, Decoder, Encoder};
 
-    pub(crate) fn encode<T, E>(doc: &T, encoder: E) -> Result<E::Ok, E::Error>
+    pub(crate) fn encode<T, E>(doc: &T, encoder: E) -> Result<(), E::Error>
     where
         T: fmt::Display,
         E: Encoder,

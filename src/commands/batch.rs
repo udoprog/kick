@@ -222,13 +222,7 @@ impl Batch {
                 if let Some(script_file) = &script_file {
                     let script_path = match &script_file.kind {
                         ScriptFileKind::Inline { contents, ext } => {
-                            let cache_dir =
-                                c.cx.paths
-                                    .project_dirs
-                                    .as_ref()
-                                    .context("Missing project directories")?
-                                    .cache_dir();
-
+                            let cache_dir = c.cx.paths.cache.context("Missing cache directory")?;
                             let scripts_dir = cache_dir.join("scripts");
 
                             let sequence = session.sequence();

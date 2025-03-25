@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
-use directories::ProjectDirs;
 use relative_path::RelativePath;
 
 use super::system::{Git, System};
@@ -24,8 +23,9 @@ use crate::{octokit, system};
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Paths<'a> {
     pub(super) root: &'a Path,
-    pub(crate) current_path: Option<&'a RelativePath>,
-    pub(crate) project_dirs: Option<&'a ProjectDirs>,
+    pub(crate) current: Option<&'a RelativePath>,
+    pub(crate) config: Option<&'a Path>,
+    pub(crate) cache: Option<&'a Path>,
 }
 
 impl Paths<'_> {
@@ -38,7 +38,7 @@ impl Paths<'_> {
             return PathBuf::from(path.as_ref().as_str());
         }
 
-        if let Some(current_path) = self.current_path {
+        if let Some(current_path) = self.current {
             let output = current_path.relative(path);
 
             if output.components().next().is_none() {

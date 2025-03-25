@@ -170,9 +170,9 @@ impl RepoRef {
         let mut rng = rand::rngs::StdRng::seed_from_u64(state);
 
         Random {
-            minute: rng.gen_range(0..60),
-            hour: rng.gen_range(0..24),
-            day: rng.gen_range(0..7),
+            minute: rng.random_range(0..60),
+            hour: rng.random_range(0..24),
+            day: rng.random_range(0..7),
         }
     }
 

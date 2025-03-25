@@ -29,12 +29,7 @@ impl Env {
         runner: Option<&ActionRunner>,
         c: Option<&ActionConfig<'_>>,
     ) -> Result<Self> {
-        let cache_dir = batch
-            .cx
-            .paths
-            .project_dirs
-            .context("Missing project dirs for Kick")?
-            .cache_dir();
+        let cache_dir = batch.cx.paths.cache.context("Missing cache directory")?;
 
         let state_dir = cache_dir.join("state");
 

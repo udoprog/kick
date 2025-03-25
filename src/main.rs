@@ -403,6 +403,8 @@ enum Action {
     Check(SharedAction<cli::check::Opts>),
     /// Review or apply staged changes.
     Changes(SharedOptions),
+    /// List paths used by kick.
+    Paths(SharedOptions),
     /// Update Kick itself.
     Update(SharedOptions),
     /// Collect and define release variables.
@@ -448,6 +450,7 @@ impl Action {
         match self {
             Action::Check(action) => &action.shared,
             Action::Changes(shared) => shared,
+            Action::Paths(shared) => shared,
             Action::Update(shared) => shared,
             Action::Define(action) => &action.shared,
             Action::Set(action) => &action.shared,
@@ -472,6 +475,7 @@ impl Action {
         match self {
             Action::Check(action) => Some(&action.repo),
             Action::Changes(..) => None,
+            Action::Paths(..) => None,
             Action::Update(..) => None,
             Action::Define(..) => None,
             Action::Set(action) => Some(&action.repo),
@@ -715,11 +719,12 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
 
     let paths = Paths {
         root: &root,
-        current_path: current_path.as_deref(),
-        project_dirs: project_dirs.as_ref(),
+        current: current_path.as_deref(),
+        config: project_dirs.as_ref().map(|p| p.config_dir()),
+        cache: project_dirs.as_ref().map(|p| p.cache_dir()),
     };
 
-    tracing::trace!(?paths, "Using project root");
+    tracing::trace!(?paths, "Using paths");
 
     let mut env = Env::new();
     tracing::trace!(?env, "Using environment");
@@ -730,7 +735,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
 
     if env.github_token.is_none() {
         let path = root.join(".github-token");
-        env.github_token = crate::env::read_secret_string(path)?;
+        env.github_token = crate::env::read_secret_string(&path)?;
     }
 
     if env.github_token.is_none() {
@@ -806,71 +811,19 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     // This is `true` if the current directory is currently inside one of the
     // repos.
     let in_repo_path = paths
-        .current_path
+        .current
         .is_some_and(|p| repos.iter().any(|m| p.starts_with(m.path())));
 
-    if let Some(repo_opts) = repo_opts {
-        let mut filters = Vec::new();
-
-        for repo in &repo_opts.repos {
-            filters.push(Fragment::parse(repo));
-        }
-
-        let set = match &repo_opts.set[..] {
-            [] => None,
-            ids => {
-                let mut set = HashSet::new();
-
-                for id in ids {
-                    if let Some(s) = sets.load(id)? {
-                        set.extend(s.iter().map(RelativePath::to_owned));
-                    }
-                }
-
-                if !repo_opts.set_intersect.is_empty() {
-                    let mut intersect = HashSet::new();
-
-                    for id in &repo_opts.set_intersect {
-                        if let Some(s) = sets.load(id)? {
-                            intersect.extend(s.iter().map(RelativePath::to_owned));
-                        }
-                    }
-
-                    set = &set & &intersect;
-                }
-
-                if !repo_opts.set_difference.is_empty() {
-                    let mut intersect = HashSet::new();
-
-                    for id in &repo_opts.set_difference {
-                        if let Some(s) = sets.load(id)? {
-                            intersect.extend(s.iter().map(RelativePath::to_owned));
-                        }
-                    }
-
-                    set = &set ^ &intersect;
-                }
-
-                Some(set)
-            }
-        };
-
-        let in_current_path = if !repo_opts.all && in_repo_path {
-            paths.current_path
-        } else {
-            None
-        };
-
-        filter_repos(
-            &config,
+    if let Some(opts) = repo_opts {
+        apply_repo_options(
+            opts,
             paths,
-            in_current_path,
-            repo_opts,
-            system.git.first(),
-            &repos,
-            &filters,
-            set.as_ref(),
+            &config,
             &os,
+            &system,
+            &repos,
+            &sets,
+            in_repo_path,
         )?;
     }
 
@@ -909,6 +862,23 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     match &action {
         Action::Check(opts) => {
             cli::check::entry(&mut cx, &opts.action).await?;
+        }
+        Action::Paths(..) => {
+            println!("Root: {}", paths.root.display());
+
+            if let Some(current) = paths.current {
+                println!("Current: {current}");
+            }
+
+            if let Some(config) = paths.config {
+                println!("Config: {}", config.display());
+            }
+
+            if let Some(cache) = paths.cache {
+                println!("Cache: {}", cache.display());
+            }
+
+            return Ok(ExitCode::SUCCESS);
         }
         Action::Changes(shared) => {
             cli::changes::entry(&mut cx, shared, &changes_path)?;
@@ -1008,6 +978,82 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     }
 
     Ok(outcome)
+}
+
+fn apply_repo_options(
+    repo_opts: &RepoOptions,
+    paths: Paths<'_>,
+    config: &Config<'_>,
+    os: &Os,
+    system: &system::System,
+    repos: &[Repo],
+    sets: &repo_sets::RepoSets,
+    in_repo_path: bool,
+) -> Result<()> {
+    let mut filters = Vec::new();
+
+    for repo in &repo_opts.repos {
+        filters.push(Fragment::parse(repo));
+    }
+
+    let set = match &repo_opts.set[..] {
+        [] => None,
+        ids => {
+            let mut set = HashSet::new();
+
+            for id in ids {
+                if let Some(s) = sets.load(id)? {
+                    set.extend(s.iter().map(RelativePath::to_owned));
+                }
+            }
+
+            if !repo_opts.set_intersect.is_empty() {
+                let mut intersect = HashSet::new();
+
+                for id in &repo_opts.set_intersect {
+                    if let Some(s) = sets.load(id)? {
+                        intersect.extend(s.iter().map(RelativePath::to_owned));
+                    }
+                }
+
+                set = &set & &intersect;
+            }
+
+            if !repo_opts.set_difference.is_empty() {
+                let mut intersect = HashSet::new();
+
+                for id in &repo_opts.set_difference {
+                    if let Some(s) = sets.load(id)? {
+                        intersect.extend(s.iter().map(RelativePath::to_owned));
+                    }
+                }
+
+                set = &set ^ &intersect;
+            }
+
+            Some(set)
+        }
+    };
+
+    let in_current_path = if !repo_opts.all && in_repo_path {
+        paths.current
+    } else {
+        None
+    };
+
+    filter_repos(
+        config,
+        paths,
+        in_current_path,
+        repo_opts,
+        system.git.first(),
+        repos,
+        &filters,
+        set.as_ref(),
+        os,
+    )?;
+
+    Ok(())
 }
 
 /// Perform more advanced filtering over modules.

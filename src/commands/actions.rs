@@ -135,12 +135,12 @@ fn sync_action(
         expected.insert(remote_name);
     }
 
-    let project_dirs = cx
+    let cache_dir = cx
         .paths
-        .project_dirs
+        .cache
         .context("Kick does not have project directories")?;
 
-    let actions_dir = project_dirs.cache_dir().join("actions");
+    let actions_dir = cache_dir.join("actions");
     let repo_dir = actions_dir.join(repo).join(name);
 
     let git_dir = repo_dir.join(GIT);
