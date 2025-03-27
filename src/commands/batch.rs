@@ -24,6 +24,35 @@ use super::{
     ScheduleUse, Scheduler, Session,
 };
 
+struct Once<T, F> {
+    value: Option<T>,
+    init: Option<F>,
+}
+
+impl<T, F> Once<T, F> {
+    fn new(init: F) -> Self {
+        Self {
+            value: None,
+            init: Some(init),
+        }
+    }
+}
+
+impl<T, F> Once<T, F>
+where
+    F: FnOnce() -> Result<T>,
+{
+    fn get(&mut self) -> Result<&T> {
+        if let Some(init) = self.init.take() {
+            let value = init()?;
+            self.value = Some(value);
+        }
+
+        // SAFETY: We have exclusive access to the interior value.
+        unsafe { Ok(self.value.as_ref().unwrap_unchecked()) }
+    }
+}
+
 const WINDOWS_BASH_MESSAGE: &str = r#"Bash is not installed by default on Windows!
 
 To install it, consider:
@@ -105,6 +134,11 @@ impl Batch {
         O: ?Sized + WriteColor,
     {
         let mut scheduler = Scheduler::new();
+
+        let mut scripts_dir = Once::new(|| {
+            let dir = c.cx.paths.cache.context("Missing cache directory")?;
+            Ok(dir.join("scripts"))
+        });
 
         for (run_on, os) in self.runners(&c.run_on) {
             match run_on {
@@ -219,11 +253,12 @@ impl Batch {
                     }
                 };
 
+                let mut make_script = None;
+
                 if let Some(script_file) = &script_file {
                     let script_path = match &script_file.kind {
                         ScriptFileKind::Inline { contents, ext } => {
-                            let cache_dir = c.cx.paths.cache.context("Missing cache directory")?;
-                            let scripts_dir = cache_dir.join("scripts");
+                            let scripts_dir = scripts_dir.get()?;
 
                             let sequence = session.sequence();
                             let process_id = c.process_id;
@@ -236,34 +271,12 @@ impl Batch {
                                 None => RString::new(),
                             };
 
-                            let script_path = scripts_dir
-                                .join(format!("kick-{id}{process_id}-{sequence}.{}", ext));
+                            let script_path = Rc::<Path>::from(
+                                scripts_dir.join(format!("kick-{id}{process_id}-{sequence}.{ext}")),
+                            );
 
-                            if !c.dry_run {
-                                tracing::trace!(?script_path, "Writing temporary script");
-
-                                fs::create_dir_all(&scripts_dir).with_context(|| {
-                                    anyhow!(
-                                        "Failed to create scripts directory: {}",
-                                        scripts_dir.display()
-                                    )
-                                })?;
-
-                                let contents = contents.to_exposed();
-
-                                fs::write(&script_path, contents.as_bytes()).with_context(
-                                    || {
-                                        anyhow!(
-                                            "Failed to write script file: {}",
-                                            script_path.display()
-                                        )
-                                    },
-                                )?;
-
-                                session.remove_path(&script_path);
-                            }
-
-                            Rc::from(script_path)
+                            make_script = Some((script_path.clone(), contents));
+                            script_path
                         }
                         ScriptFileKind::Existing { path } => path.clone(),
                     };
@@ -435,7 +448,21 @@ impl Batch {
 
                 if run.skipped.is_none() && !c.dry_run {
                     truncate(run.files())?;
-                    make_dirs(run.dirs())?;
+
+                    make_dirs(
+                        run.dirs()
+                            .chain(make_script.as_ref().and_then(|(s, _)| s.parent())),
+                    )?;
+
+                    if let Some((p, contents)) = make_script.take() {
+                        tracing::trace!(?p, "Writing temporary script");
+
+                        fs::write(&p, contents.to_exposed().as_bytes()).with_context(|| {
+                            anyhow!("Failed to write script file: {}", p.display())
+                        })?;
+
+                        session.remove_path(&p);
+                    }
 
                     let status = run_command.status()?;
 
