@@ -96,8 +96,8 @@ impl<'a> Ctxt<'a> {
             return Some(credentials.get());
         }
 
-        if let Some(token) = &self.env.github_token {
-            return Some(token.clone());
+        if let Some(token) = self.env.github_tokens.first() {
+            return Some(token.secret.clone());
         }
 
         None
@@ -105,9 +105,9 @@ impl<'a> Ctxt<'a> {
 
     /// Grab an octokit client optionally configured with a token.
     pub(crate) fn octokit(&self) -> Result<octokit::Client> {
-        let auth = match (&self.git_credentials, &self.env.github_token) {
+        let auth = match (&self.git_credentials, self.env.github_tokens.first()) {
             (Some(auth_manager), _) => octokit::Auth::Basic(auth_manager.get()),
-            (_, Some(token)) => octokit::Auth::Bearer(token.clone()),
+            (_, Some(token)) => octokit::Auth::Bearer(token.secret.clone()),
             _ => octokit::Auth::None,
         };
 

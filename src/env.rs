@@ -8,33 +8,76 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result};
 
+#[derive(Debug, Clone)]
+pub(crate) enum GithubTokenSource {
+    Environment,
+    CommandLine,
+    Path(Box<Path>),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct GithubToken {
+    pub(crate) source: GithubTokenSource,
+    pub(crate) secret: SecretString,
+}
+
+impl GithubToken {
+    #[inline]
+    pub(crate) fn env(secret: SecretString) -> Self {
+        Self {
+            source: GithubTokenSource::Environment,
+            secret,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn cli(secret: SecretString) -> Self {
+        Self {
+            source: GithubTokenSource::CommandLine,
+            secret,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn path(path: impl AsRef<Path>, secret: SecretString) -> Self {
+        Self {
+            source: GithubTokenSource::Path(path.as_ref().into()),
+            secret,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Env {
     pub(crate) kick_version: Option<String>,
     pub(crate) github_event_name: Option<String>,
     pub(crate) github_ref: Option<String>,
     pub(crate) github_sha: Option<String>,
-    pub(crate) github_token: Option<SecretString>,
+    pub(crate) github_tokens: Vec<GithubToken>,
 }
 
 impl Env {
     pub(crate) fn new() -> Self {
-        let kick_version = env::var("KICK_VERSION").ok().filter(|e| !e.is_empty());
-        let github_event_name = env::var("GITHUB_EVENT_NAME").ok().filter(|e| !e.is_empty());
-        let github_ref = env::var("GITHUB_REF").ok().filter(|e| !e.is_empty());
-        let github_sha = env::var("GITHUB_SHA").ok().filter(|e| !e.is_empty());
-        let github_token = env::var("GITHUB_TOKEN")
-            .ok()
-            .filter(|e| !e.is_empty())
-            .map(SecretString::new);
-
         Self {
-            kick_version,
-            github_event_name,
-            github_ref,
-            github_sha,
-            github_token,
+            kick_version: None,
+            github_event_name: None,
+            github_ref: None,
+            github_sha: None,
+            github_tokens: Vec::new(),
         }
+    }
+
+    pub(crate) fn update_from_env(&mut self) {
+        self.kick_version = env::var("KICK_VERSION").ok().filter(|e| !e.is_empty());
+        self.github_event_name = env::var("GITHUB_EVENT_NAME").ok().filter(|e| !e.is_empty());
+        self.github_ref = env::var("GITHUB_REF").ok().filter(|e| !e.is_empty());
+        self.github_sha = env::var("GITHUB_SHA").ok().filter(|e| !e.is_empty());
+        self.github_tokens.extend(
+            env::var("GITHUB_TOKEN")
+                .ok()
+                .filter(|e| !e.is_empty())
+                .map(|s| GithubToken::env(SecretString::new(s))),
+        );
     }
 
     /// The tag GITHUB_REF refers to.

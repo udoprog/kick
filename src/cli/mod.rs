@@ -165,6 +165,7 @@ pub(crate) mod deb;
 pub(crate) mod define;
 pub(crate) mod github_action;
 pub(crate) mod github_release;
+pub(crate) mod login;
 pub(crate) mod msi;
 pub(crate) mod msrv;
 mod output;

@@ -338,6 +338,7 @@ mod deb;
 mod edits;
 mod env;
 mod file;
+mod fs;
 mod gitmodules;
 mod gix;
 mod glob;
@@ -392,6 +393,10 @@ const REPO: &str = "kick";
 
 /// Name of project configuration files.
 const KICK_TOML: &str = "Kick.toml";
+
+/// Name of the github token file.
+const GITHUB_TOKEN: &str = ".github-token";
+
 /// User agent to use for http requests.
 static USER_AGENT: reqwest::header::HeaderValue =
     reqwest::header::HeaderValue::from_static("kick/0.0");
@@ -409,6 +414,9 @@ enum Action {
     Update(SharedOptions),
     /// Collect and define release variables.
     Define(SharedAction<cli::define::Opts>),
+    /// Make sure you are logged into Github to access the API without rate
+    /// limiting.
+    Login(SharedAction<cli::login::Opts>),
     /// Manage sets.
     Set(SharedAction<cli::set::Opts>),
     /// Run a custom command.
@@ -453,6 +461,7 @@ impl Action {
             Action::Paths(shared) => shared,
             Action::Update(shared) => shared,
             Action::Define(action) => &action.shared,
+            Action::Login(action) => &action.shared,
             Action::Set(action) => &action.shared,
             Action::Run(action) => &action.shared,
             Action::Status(action) => &action.shared,
@@ -478,6 +487,7 @@ impl Action {
             Action::Paths(..) => None,
             Action::Update(..) => None,
             Action::Define(..) => None,
+            Action::Login(..) => None,
             Action::Set(action) => Some(&action.repo),
             Action::Run(action) => Some(&action.repo),
             Action::Status(action) => Some(&action.repo),
@@ -494,6 +504,11 @@ impl Action {
             Action::GithubRelease(action) => Some(&action.repo),
             Action::GithubAction(action) => Some(&action.repo),
         }
+    }
+
+    #[inline]
+    fn needs_ctrlc_handler(&self) -> bool {
+        !matches!(self, Action::Login(..))
     }
 }
 
@@ -678,16 +693,18 @@ async fn main() -> Result<ExitCode> {
 async fn entry(opts: Opts) -> Result<ExitCode> {
     let term = Arc::new(AtomicBool::new(false));
 
-    ctrlc::try_set_handler({
-        let term = term.clone();
-
-        move || {
-            term.store(true, Ordering::SeqCst);
-        }
-    })?;
-
     let action = opts.action.unwrap_or_default();
     let shared = action.shared();
+
+    if action.needs_ctrlc_handler() {
+        ctrlc::try_set_handler({
+            let term = term.clone();
+
+            move || {
+                term.store(true, Ordering::SeqCst);
+            }
+        })?;
+    }
 
     let repo_opts = action.repo();
 
@@ -730,21 +747,38 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     tracing::trace!(?env, "Using environment");
 
     if let Some(github_token) = &shared.github_token {
-        env.github_token = Some(github_token.clone());
+        env.github_tokens
+            .push(env::GithubToken::cli(github_token.clone()));
     }
 
-    if env.github_token.is_none() {
-        let path = root.join(".github-token");
-        env.github_token = crate::env::read_secret_string(&path)?;
+    for p in paths
+        .config
+        .into_iter()
+        .map(|p| p.join(GITHUB_TOKEN))
+        .chain([root.join(GITHUB_TOKEN)])
+    {
+        if let Some(secret) = crate::env::read_secret_string(&p)? {
+            env.github_tokens.push(env::GithubToken::path(&p, secret));
+        }
+
+        let issues = self::fs::test_secure(&p);
+
+        for issue in issues {
+            if let Err(e) = issue.fix(&p).with_context(|| p.display().to_string()) {
+                tracing::error!("{}: {issue}: {e}", p.display());
+            }
+        }
     }
 
-    if env.github_token.is_none() {
+    if env.github_tokens.is_empty() {
         if action.requires_token() {
             tracing::warn!("No .github-token or --token argument found");
         } else {
             tracing::trace!("No .github-token or --token argument found, heavy rate limiting will apply and unless specified some actions will not work")
         }
     }
+
+    env.update_from_env();
 
     let templating = templates::Templating::new()?;
     let gitmodules_repos = model::load_gitmodules(&root)?;
@@ -890,6 +924,10 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         }
         Action::Define(opts) => {
             cli::define::entry(&mut cx, &opts.action)?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        Action::Login(opts) => {
+            cli::login::entry(&mut cx, &opts.action)?;
             return Ok(ExitCode::SUCCESS);
         }
         Action::Set(opts) => {
