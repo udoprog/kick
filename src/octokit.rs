@@ -1,12 +1,12 @@
 use std::marker::PhantomData;
 use std::pin::pin;
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures_core::Stream;
 use reqwest::header::HeaderMap;
-use reqwest::{header, Method, StatusCode};
+use reqwest::{header, Method, Response, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use url::Url;
@@ -18,6 +18,14 @@ const API_URL: &str = "https://api.github.com";
 static ACCEPT: header::HeaderValue = header::HeaderValue::from_static("application/json");
 static OCTET_STREAM: header::HeaderValue =
     header::HeaderValue::from_static("application/octet-stream");
+
+async fn ensure(res: Response) -> Result<Response> {
+    if !res.status().is_success() {
+        return Err(anyhow!("{}: {}", res.status(), res.text().await?));
+    }
+
+    Ok(res)
+}
 
 pub(crate) enum Auth {
     Bearer(SecretString),
@@ -79,7 +87,7 @@ impl Client {
         owner: &str,
         repo: &str,
         id: u64,
-    ) -> Result<StatusCode> {
+    ) -> Result<(StatusCode, String)> {
         let mut url = self.url.clone();
 
         url.path_segments_mut()
@@ -91,7 +99,7 @@ impl Client {
 
         let req = self.request(Method::PUT, url.clone())?.build()?;
         let res = self.client.execute(req).await?;
-        Ok(res.status())
+        Ok((res.status(), res.text().await?))
     }
 
     /// Disable a workflow.
@@ -100,7 +108,7 @@ impl Client {
         owner: &str,
         repo: &str,
         id: u64,
-    ) -> Result<StatusCode> {
+    ) -> Result<(StatusCode, String)> {
         let mut url = self.url.clone();
 
         url.path_segments_mut()
@@ -112,7 +120,7 @@ impl Client {
 
         let req = self.request(Method::PUT, url.clone())?.build()?;
         let res = self.client.execute(req).await?;
-        Ok(res.status())
+        Ok((res.status(), res.text().await?))
     }
 
     /// List available workflows.
@@ -139,7 +147,7 @@ impl Client {
             return Ok(None);
         }
 
-        ensure!(res.status().is_success(), res.status());
+        let res = ensure(res).await?;
         let data = res.json().await?;
         Ok(Some(data))
     }
@@ -218,7 +226,7 @@ impl Client {
             return Ok(None);
         }
 
-        ensure!(res.status().is_success(), res.status());
+        let res = ensure(res).await?;
         let reference = res.json().await?;
         Ok(Some(reference))
     }
@@ -254,7 +262,7 @@ impl Client {
 
         let res = self.client.execute(req).await?;
 
-        ensure!(res.status().is_success(), res.status());
+        let res = ensure(res).await?;
         let update = res.json().await?;
         Ok(update)
     }
@@ -289,7 +297,7 @@ impl Client {
 
         let res = self.client.execute(req).await?;
 
-        ensure!(res.status().is_success(), res.status());
+        let res = ensure(res).await?;
         let update = res.json().await?;
         Ok(update)
     }
@@ -307,7 +315,7 @@ impl Client {
         let req = self.request(Method::DELETE, url)?.build()?;
         let res = self.client.execute(req).await?;
 
-        ensure!(res.status().is_success(), res.status());
+        let res = ensure(res).await?;
         Ok(())
     }
 
@@ -355,7 +363,7 @@ impl Client {
         let req = self.request(Method::POST, url)?.json(&request).build()?;
         let res = self.client.execute(req).await?;
 
-        ensure!(res.status().is_success(), res.status());
+        let res = ensure(res).await?;
         let update = res.json().await?;
         Ok(update)
     }
@@ -406,7 +414,7 @@ impl Client {
         let req = self.request(Method::PATCH, url)?.json(&request).build()?;
         let res = self.client.execute(req).await?;
 
-        ensure!(res.status().is_success(), res.status());
+        let res = ensure(res).await?;
         let update = res.json().await?;
         Ok(update)
     }
@@ -446,7 +454,7 @@ impl Client {
 
         let res = self.client.execute(req).await?;
 
-        ensure!(res.status().is_success(), res.status());
+        let res = ensure(res).await?;
         Ok(res.json().await?)
     }
 
@@ -468,7 +476,7 @@ impl Client {
         let req = self.request(Method::DELETE, url)?.build()?;
         let res = self.client.execute(req).await?;
 
-        ensure!(res.status().is_success(), res.status());
+        let _ = ensure(res).await?;
         Ok(())
     }
 
@@ -484,7 +492,7 @@ impl Client {
             return Ok(None);
         }
 
-        ensure!(res.status().is_success(), res.status());
+        let res = ensure(res).await?;
         Ok(Some(res.json().await?))
     }
 
@@ -505,7 +513,7 @@ impl Client {
 
         let res = self.client.execute(req).await?;
 
-        ensure!(res.status().is_success(), res.status());
+        let res = ensure(res).await?;
         let page = T::to_items(res.json().await?);
 
         if page.is_empty() {

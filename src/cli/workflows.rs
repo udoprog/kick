@@ -74,9 +74,10 @@ async fn do_workflows(
         );
 
         for w in &workflows.workflows {
-            let status = client.workflows_enable(r.owner, r.name, w.id).await?;
+            let (status, body) = client.workflows_enable(r.owner, r.name, w.id).await?;
+
             println!(
-                "{}: Enabling workflow `{}`: {status:?}",
+                "{}: Enabling workflow `{}`: {status}: {body}",
                 repo.path(),
                 w.name
             );
@@ -91,9 +92,10 @@ async fn do_workflows(
         );
 
         for w in &workflows.workflows {
-            let status = client.workflows_disable(r.owner, r.name, w.id).await?;
+            let (status, body) = client.workflows_disable(r.owner, r.name, w.id).await?;
+
             println!(
-                "{}: Disabling workflow `{}`: {status:?}",
+                "{}: Disabling workflow `{}`: {status}: {body}",
                 repo.path(),
                 w.name
             );
