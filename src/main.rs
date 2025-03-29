@@ -346,6 +346,7 @@ mod keys;
 mod model;
 mod musli;
 mod octokit;
+mod once;
 mod packaging;
 mod process;
 mod release;
@@ -420,8 +421,6 @@ enum Command {
     Set(SharedAction<cli::set::Opts>),
     /// Run a custom command.
     Run(SharedAction<cli::run::Opts>),
-    /// Fetch github workflows status.
-    Status(SharedAction<cli::status::Opts>),
     /// Find the minimum supported rust version.
     Msrv(SharedAction<cli::msrv::Opts>),
     /// Modify package versions.
@@ -462,7 +461,6 @@ impl Command {
             Command::Login(action) => &action.shared,
             Command::Set(action) => &action.shared,
             Command::Run(action) => &action.shared,
-            Command::Status(action) => &action.shared,
             Command::Github(action) => &action.shared,
             Command::Msrv(action) => &action.shared,
             Command::Version(action) => &action.shared,
@@ -487,7 +485,6 @@ impl Command {
             Command::Login(..) => None,
             Command::Set(action) => Some(&action.repo),
             Command::Run(action) => Some(&action.repo),
-            Command::Status(action) => Some(&action.repo),
             Command::Github(action) => Some(&action.repo),
             Command::Msrv(action) => Some(&action.repo),
             Command::Version(action) => Some(&action.repo),
@@ -926,9 +923,6 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         }
         Command::Run(opts) => {
             cli::run::entry(&mut cx, &opts.action)?;
-        }
-        Command::Status(opts) => {
-            cli::status::entry(&mut cx, &opts.action).await?;
         }
         Command::Msrv(opts) => {
             cli::msrv::entry(&mut cx, &opts.action)?;

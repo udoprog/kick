@@ -9,34 +9,35 @@ use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 use crate::ctxt::Ctxt;
 use crate::model::{Repo, RepoPath};
 use crate::octokit;
+use crate::once::Once;
 
-use super::{with_repos_async, PARALLELISM};
+use super::WithRepos;
 
 #[derive(Debug, Default, Parser)]
-pub(crate) struct Opts {
+pub(super) struct Opts {
     /// Include information on individual jobs.
     #[arg(long)]
     jobs: bool,
-    /// The number of repositories to read in parallel.
-    #[arg(long, default_value = PARALLELISM, value_name = "count")]
-    parallelism: usize,
 }
 
-pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    let client = cx.octokit()?;
-    let today = Local::now();
+pub(super) async fn entry(
+    opts: &Opts,
+    with_repos: impl WithRepos<'_>,
+    client: &octokit::Client,
+) -> Result<()> {
+    let today = Once::new(Local::now);
 
-    let mut o = StandardStream::stdout(ColorChoice::Auto);
-
-    with_repos_async(
-        cx,
-        "get build status",
-        format_args!("status: {opts:?}"),
-        opts.parallelism,
-        async |cx, repo| do_status(cx, repo, opts, &client).await,
-        |outcome| outcome.display(&mut o, today),
-    )
-    .await?;
+    with_repos
+        .run(
+            "Github API (status)",
+            format_args!("Github API (status): {opts:?}"),
+            async |cx, repo| do_status(cx, repo, opts, client).await,
+            |outcome| {
+                let mut o = StandardStream::stdout(ColorChoice::Auto);
+                outcome.display(&mut o, &today)
+            },
+        )
+        .await?;
 
     Ok(())
 }
@@ -176,7 +177,11 @@ struct Outcome<'repo> {
 
 impl Outcome<'_> {
     #[inline]
-    fn display(self, o: &mut StandardStream, today: DateTime<Local>) -> Result<()> {
+    fn display(
+        self,
+        o: &mut StandardStream,
+        today: &Once<DateTime<Local>, impl Fn() -> DateTime<Local>>,
+    ) -> Result<()> {
         let failure_color = {
             let mut c = ColorSpec::new();
             c.set_fg(Some(Color::Red));
@@ -208,7 +213,7 @@ impl Outcome<'_> {
                 ..
             } = run;
 
-            let updated_at = FormatTime::new(today, Some(updated_at.with_timezone(&Local)));
+            let updated_at = FormatTime::new(today.get(), Some(updated_at.with_timezone(&Local)));
 
             let head = if self.sha.as_deref() == Some(head_sha.as_str()) {
                 "*"
@@ -251,9 +256,10 @@ impl Outcome<'_> {
 
                 let failure = conclusion.as_deref() == Some("failure");
                 let status = conclusion.as_deref().unwrap_or(&status);
-                let started = FormatTime::new(today, started_at.map(|d| d.with_timezone(&Local)));
+                let started =
+                    FormatTime::new(today.get(), started_at.map(|d| d.with_timezone(&Local)));
                 let completed =
-                    FormatTime::new(today, completed_at.map(|d| d.with_timezone(&Local)));
+                    FormatTime::new(today.get(), completed_at.map(|d| d.with_timezone(&Local)));
 
                 write!(o, "    Job `{name}` (")?;
 

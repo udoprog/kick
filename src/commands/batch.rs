@@ -14,6 +14,7 @@ use relative_path::{Component, RelativePath};
 use termcolor::{ColorSpec, WriteColor};
 
 use crate::config::Os;
+use crate::once::Once;
 use crate::process::{Command, OsArg};
 use crate::rstr::{RStr, RString};
 use crate::shell::Shell;
@@ -23,35 +24,6 @@ use super::{
     ActionConfig, BatchConfig, Env, Run, RunKind, RunOn, Schedule, ScheduleBasicCommand,
     ScheduleUse, Scheduler, Session,
 };
-
-struct Once<T, F> {
-    value: Option<T>,
-    init: Option<F>,
-}
-
-impl<T, F> Once<T, F> {
-    fn new(init: F) -> Self {
-        Self {
-            value: None,
-            init: Some(init),
-        }
-    }
-}
-
-impl<T, F> Once<T, F>
-where
-    F: FnOnce() -> Result<T>,
-{
-    fn get(&mut self) -> Result<&T> {
-        if let Some(init) = self.init.take() {
-            let value = init()?;
-            self.value = Some(value);
-        }
-
-        // SAFETY: We have exclusive access to the interior value.
-        unsafe { Ok(self.value.as_ref().unwrap_unchecked()) }
-    }
-}
 
 const WINDOWS_BASH_MESSAGE: &str = r#"Bash is not installed by default on Windows!
 
@@ -135,7 +107,7 @@ impl Batch {
     {
         let mut scheduler = Scheduler::new();
 
-        let mut scripts_dir = Once::new(|| {
+        let scripts_dir = Once::new(|| {
             let dir = c.cx.paths.cache.context("Missing cache directory")?;
             Ok(dir.join("scripts"))
         });
@@ -258,7 +230,7 @@ impl Batch {
                 if let Some(script_file) = &script_file {
                     let script_path = match &script_file.kind {
                         ScriptFileKind::Inline { contents, ext } => {
-                            let scripts_dir = scripts_dir.get()?;
+                            let scripts_dir = scripts_dir.try_get()?;
 
                             let sequence = session.sequence();
                             let process_id = c.process_id;

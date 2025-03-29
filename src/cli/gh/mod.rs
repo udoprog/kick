@@ -1,4 +1,5 @@
 mod release;
+mod status;
 mod workflows;
 
 use core::fmt;
@@ -51,7 +52,11 @@ pub(crate) struct Opts {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Get the build status of workflows.
+    Status(self::status::Opts),
+    /// Modify workflows.
     Workflows(self::workflows::Opts),
+    /// Build a release and upload files.
     Release(self::release::Opts),
 }
 
@@ -64,6 +69,9 @@ pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     };
 
     match &opts.command {
+        Command::Status(opts) => {
+            self::status::entry(opts, with_repos, &client).await?;
+        }
         Command::Workflows(opts) => {
             self::workflows::entry(opts, with_repos, &client).await?;
         }
