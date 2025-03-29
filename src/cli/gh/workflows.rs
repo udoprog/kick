@@ -7,10 +7,10 @@ use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::octokit;
 
-use super::{with_repos_async, PARALLELISM};
+use super::WithRepos;
 
 #[derive(Debug, Default, Parser)]
-pub(crate) struct Opts {
+pub(super) struct Opts {
     /// List all workflows.
     #[arg(long)]
     list: bool,
@@ -20,33 +20,26 @@ pub(crate) struct Opts {
     /// Disable github workflows.
     #[arg(long)]
     disable: bool,
-    /// The number of repositories to read in parallel.
-    #[arg(long, default_value = PARALLELISM, value_name = "count")]
-    parallelism: usize,
 }
 
-pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    let client = cx.octokit()?;
-
-    with_repos_async(
-        cx,
-        "workflows",
-        format_args!("workflows: {opts:?}"),
-        opts.parallelism,
-        async |cx, repo| do_workflows(cx, repo, opts, &client).await,
-        |_| Ok(()),
-    )
-    .await?;
+pub(super) async fn entry(
+    opts: &Opts,
+    with_repos: impl WithRepos<'_>,
+    client: &octokit::Client,
+) -> Result<()> {
+    with_repos
+        .run(
+            "Github API (release)",
+            format_args!("Github API (release): {opts:?}"),
+            async |cx, repo| run(cx, repo, opts, client).await,
+            |_| Ok(()),
+        )
+        .await?;
 
     Ok(())
 }
 
-async fn do_workflows(
-    _: &Ctxt<'_>,
-    repo: &Repo,
-    opts: &Opts,
-    client: &octokit::Client,
-) -> Result<()> {
+async fn run(_: &Ctxt<'_>, repo: &Repo, opts: &Opts, client: &octokit::Client) -> Result<()> {
     let Some(r) = repo.repo() else {
         return Ok(());
     };

@@ -12,10 +12,10 @@ use crate::model::Repo;
 use crate::octokit;
 use crate::release::ReleaseOpts;
 
-use super::{with_repos_async, PARALLELISM};
+use super::WithRepos;
 
 #[derive(Default, Debug, Clone, Parser)]
-pub(crate) struct Opts {
+pub(super) struct Opts {
     #[clap(flatten)]
     release: ReleaseOpts,
     /// SHA of Github commit.
@@ -45,48 +45,59 @@ pub(crate) struct Opts {
     /// Get details from the GitHub action context.
     #[arg(long)]
     github_action: bool,
-    /// The number of repositories to read in parallel.
-    #[arg(long, default_value = PARALLELISM, value_name = "count")]
-    parallelism: usize,
 }
 
-pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    let mut opts = opts.clone();
+pub(super) async fn entry(
+    opts: &Opts,
+    with_repos: impl WithRepos<'_>,
+    client: &octokit::Client,
+) -> Result<()> {
+    let sha_from_env = if opts.github_action {
+        Some("GITHUB_SHA")
+    } else {
+        opts.sha_from_env.as_deref()
+    };
 
-    if opts.github_action {
-        opts.sha_from_env = Some("GITHUB_SHA".into());
-    }
+    let local_env;
 
-    if opts.sha.is_none() {
-        if let Some(env) = opts.sha_from_env.as_deref() {
-            if let Ok(sha) = env::var("GITHUB_SHA") {
-                tracing::info!("Using sha from {env}={sha}");
-                opts.sha = Some(sha);
-            }
-        }
-    }
+    let env_sha = 'done: {
+        if let Some(sha) = opts.sha.as_deref() {
+            break 'done Some(sha);
+        };
 
-    let client = cx.octokit()?;
+        let Some(env) = sha_from_env else {
+            break 'done None;
+        };
 
-    with_repos_async(
-        cx,
-        "publish github release",
-        format_args!("github-release: {opts:?}"),
-        opts.parallelism,
-        async |cx, repo| github_publish(cx, &opts, repo, &client).await,
-        |_| Ok(()),
-    )
-    .await?;
+        let Ok(s) = env::var(env) else {
+            break 'done None;
+        };
+
+        local_env = s;
+
+        tracing::info!("Using SHA from {env}={local_env}");
+        Some(&local_env)
+    };
+
+    with_repos
+        .run(
+            "Github API (release)",
+            format_args!("Github API (release): {opts:?}"),
+            async |cx, repo| run(cx, repo, opts, client, env_sha).await,
+            |_| Ok(()),
+        )
+        .await?;
 
     Ok(())
 }
 
 #[tracing::instrument(skip_all)]
-async fn github_publish(
+async fn run(
     cx: &Ctxt<'_>,
-    opts: &Opts,
     repo: &Repo,
+    opts: &Opts,
     client: &octokit::Client,
+    env_sha: Option<&str>,
 ) -> Result<()> {
     let version = opts.release.version(cx, repo)?;
     let name = version.to_string();
@@ -98,7 +109,7 @@ async fn github_publish(
 
     let git_sha;
 
-    let sha = match opts.sha.as_deref() {
+    let sha = match env_sha {
         Some(sha) => sha,
         None => {
             let git = cx.require_git()?;

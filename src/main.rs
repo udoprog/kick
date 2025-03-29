@@ -402,8 +402,7 @@ static USER_AGENT: reqwest::header::HeaderValue =
     reqwest::header::HeaderValue::from_static("kick/0.0");
 
 #[derive(Subcommand)]
-#[allow(clippy::enum_variant_names)]
-enum Action {
+enum Command {
     /// Checks each repo (default action).
     Check(SharedAction<cli::check::Opts>),
     /// Review or apply staged changes.
@@ -423,8 +422,6 @@ enum Action {
     Run(SharedAction<cli::run::Opts>),
     /// Fetch github workflows status.
     Status(SharedAction<cli::status::Opts>),
-    /// Modify remote state of github workflows.
-    Workflows(SharedAction<cli::workflows::Opts>),
     /// Find the minimum supported rust version.
     Msrv(SharedAction<cli::msrv::Opts>),
     /// Modify package versions.
@@ -443,76 +440,75 @@ enum Action {
     Zip(SharedAction<cli::compress::Opts>),
     /// Build a .tar.gz package.
     Gzip(SharedAction<cli::compress::Opts>),
-    /// Build a github release.
-    GithubRelease(SharedAction<cli::github_release::Opts>),
     /// Run a github action.
     GithubAction(SharedAction<cli::github_action::Opts>),
+    /// Interact with the github API parameterized over repositories.
+    #[command(name = "gh")]
+    Github(SharedAction<cli::gh::Opts>),
 }
 
-impl Action {
+impl Command {
     fn requires_token(&self) -> bool {
-        matches!(self, Action::GithubRelease(..))
+        matches!(self, Command::Github(..))
     }
 
     fn shared(&self) -> &SharedOptions {
         match self {
-            Action::Check(action) => &action.shared,
-            Action::Changes(shared) => shared,
-            Action::Paths(shared) => shared,
-            Action::Update(shared) => shared,
-            Action::Define(action) => &action.shared,
-            Action::Login(action) => &action.shared,
-            Action::Set(action) => &action.shared,
-            Action::Run(action) => &action.shared,
-            Action::Status(action) => &action.shared,
-            Action::Workflows(action) => &action.shared,
-            Action::Msrv(action) => &action.shared,
-            Action::Version(action) => &action.shared,
-            Action::Publish(action) => &action.shared,
-            Action::Upgrade(action) => &action.shared,
-            Action::Msi(action) => &action.shared,
-            Action::Rpm(action) => &action.shared,
-            Action::Deb(action) => &action.shared,
-            Action::Zip(action) => &action.shared,
-            Action::Gzip(action) => &action.shared,
-            Action::GithubRelease(action) => &action.shared,
-            Action::GithubAction(action) => &action.shared,
+            Command::Check(action) => &action.shared,
+            Command::Changes(shared) => shared,
+            Command::Paths(shared) => shared,
+            Command::Update(shared) => shared,
+            Command::Define(action) => &action.shared,
+            Command::Login(action) => &action.shared,
+            Command::Set(action) => &action.shared,
+            Command::Run(action) => &action.shared,
+            Command::Status(action) => &action.shared,
+            Command::Github(action) => &action.shared,
+            Command::Msrv(action) => &action.shared,
+            Command::Version(action) => &action.shared,
+            Command::Publish(action) => &action.shared,
+            Command::Upgrade(action) => &action.shared,
+            Command::Msi(action) => &action.shared,
+            Command::Rpm(action) => &action.shared,
+            Command::Deb(action) => &action.shared,
+            Command::Zip(action) => &action.shared,
+            Command::Gzip(action) => &action.shared,
+            Command::GithubAction(action) => &action.shared,
         }
     }
 
     fn repo(&self) -> Option<&RepoOptions> {
         match self {
-            Action::Check(action) => Some(&action.repo),
-            Action::Changes(..) => None,
-            Action::Paths(..) => None,
-            Action::Update(..) => None,
-            Action::Define(..) => None,
-            Action::Login(..) => None,
-            Action::Set(action) => Some(&action.repo),
-            Action::Run(action) => Some(&action.repo),
-            Action::Status(action) => Some(&action.repo),
-            Action::Workflows(action) => Some(&action.repo),
-            Action::Msrv(action) => Some(&action.repo),
-            Action::Version(action) => Some(&action.repo),
-            Action::Publish(action) => Some(&action.repo),
-            Action::Upgrade(action) => Some(&action.repo),
-            Action::Msi(action) => Some(&action.repo),
-            Action::Rpm(action) => Some(&action.repo),
-            Action::Deb(action) => Some(&action.repo),
-            Action::Zip(action) => Some(&action.repo),
-            Action::Gzip(action) => Some(&action.repo),
-            Action::GithubRelease(action) => Some(&action.repo),
-            Action::GithubAction(action) => Some(&action.repo),
+            Command::Check(action) => Some(&action.repo),
+            Command::Changes(..) => None,
+            Command::Paths(..) => None,
+            Command::Update(..) => None,
+            Command::Define(..) => None,
+            Command::Login(..) => None,
+            Command::Set(action) => Some(&action.repo),
+            Command::Run(action) => Some(&action.repo),
+            Command::Status(action) => Some(&action.repo),
+            Command::Github(action) => Some(&action.repo),
+            Command::Msrv(action) => Some(&action.repo),
+            Command::Version(action) => Some(&action.repo),
+            Command::Publish(action) => Some(&action.repo),
+            Command::Upgrade(action) => Some(&action.repo),
+            Command::Msi(action) => Some(&action.repo),
+            Command::Rpm(action) => Some(&action.repo),
+            Command::Deb(action) => Some(&action.repo),
+            Command::Zip(action) => Some(&action.repo),
+            Command::Gzip(action) => Some(&action.repo),
+            Command::GithubAction(action) => Some(&action.repo),
         }
     }
 
     #[inline]
     fn needs_ctrlc_handler(&self) -> bool {
-        !matches!(self, Action::Login(..))
+        !matches!(self, Command::Login(..))
     }
 }
 
-impl Default for Action {
+impl Default for Command {
     fn default() -> Self {
         Self::Check(SharedAction {
             shared: SharedOptions::default(),
@@ -647,7 +643,7 @@ where
 struct Opts {
     /// Action to perform. Defaults to `check`.
     #[command(subcommand, name = "action")]
-    action: Option<Action>,
+    action: Command,
 }
 
 #[tokio::main]
@@ -668,11 +664,7 @@ async fn main() -> Result<ExitCode> {
         }
     };
 
-    let default_directive = opts
-        .action
-        .as_ref()
-        .map(|a| a.shared().directive())
-        .unwrap_or("kick=info");
+    let default_directive = opts.action.shared().directive();
     let filter = tracing_subscriber::EnvFilter::builder();
 
     let filter = if let Ok(var) = std::env::var("RUST_LOG") {
@@ -693,10 +685,9 @@ async fn main() -> Result<ExitCode> {
 async fn entry(opts: Opts) -> Result<ExitCode> {
     let term = Arc::new(AtomicBool::new(false));
 
-    let action = opts.action.unwrap_or_default();
-    let shared = action.shared();
+    let shared = opts.action.shared();
 
-    if action.needs_ctrlc_handler() {
+    if opts.action.needs_ctrlc_handler() {
         ctrlc::try_set_handler({
             let term = term.clone();
 
@@ -706,7 +697,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         })?;
     }
 
-    let repo_opts = action.repo();
+    let repo_opts = opts.action.repo();
 
     let (root, current_path) = match &shared.root {
         Some(root) => {
@@ -771,7 +762,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     }
 
     if env.github_tokens.is_empty() {
-        if action.requires_token() {
+        if opts.action.requires_token() {
             tracing::warn!("No .github-token or --token argument found");
         } else {
             tracing::trace!("No .github-token or --token argument found, heavy rate limiting will apply and unless specified some actions will not work")
@@ -893,11 +884,11 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         env: &env,
     };
 
-    match &action {
-        Action::Check(opts) => {
+    match &opts.action {
+        Command::Check(opts) => {
             cli::check::entry(&mut cx, &opts.action).await?;
         }
-        Action::Paths(..) => {
+        Command::Paths(..) => {
             println!("Root: {}", paths.root.display());
 
             if let Some(current) = paths.current {
@@ -914,66 +905,63 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
 
             return Ok(ExitCode::SUCCESS);
         }
-        Action::Changes(shared) => {
+        Command::Changes(shared) => {
             cli::changes::entry(&mut cx, shared, &changes_path)?;
             return Ok(ExitCode::SUCCESS);
         }
-        Action::Update(shared) => {
+        Command::Update(shared) => {
             cli::update::entry(&mut cx, shared).await?;
             return Ok(ExitCode::SUCCESS);
         }
-        Action::Define(opts) => {
+        Command::Define(opts) => {
             cli::define::entry(&mut cx, &opts.action)?;
             return Ok(ExitCode::SUCCESS);
         }
-        Action::Login(opts) => {
+        Command::Login(opts) => {
             cli::login::entry(&mut cx, &opts.action)?;
             return Ok(ExitCode::SUCCESS);
         }
-        Action::Set(opts) => {
+        Command::Set(opts) => {
             cli::set::entry(&mut cx, &opts.action)?;
         }
-        Action::Run(opts) => {
+        Command::Run(opts) => {
             cli::run::entry(&mut cx, &opts.action)?;
         }
-        Action::Status(opts) => {
+        Command::Status(opts) => {
             cli::status::entry(&mut cx, &opts.action).await?;
         }
-        Action::Workflows(opts) => {
-            cli::workflows::entry(&mut cx, &opts.action).await?;
-        }
-        Action::Msrv(opts) => {
+        Command::Msrv(opts) => {
             cli::msrv::entry(&mut cx, &opts.action)?;
         }
-        Action::Version(opts) => {
+        Command::Version(opts) => {
             cli::version::entry(&mut cx, &opts.action)?;
         }
-        Action::Publish(opts) => {
+        Command::Publish(opts) => {
             cli::publish::entry(&mut cx, &opts.action)?;
         }
-        Action::Upgrade(opts) => {
+        Command::Upgrade(opts) => {
             cli::upgrade::entry(&mut cx, &opts.action)?;
         }
-        Action::Msi(opts) => {
+        Command::Msi(opts) => {
             cli::msi::entry(&mut cx, &opts.action)?;
         }
-        Action::Rpm(opts) => {
+        Command::Rpm(opts) => {
             cli::rpm::entry(&mut cx, &opts.action)?;
         }
-        Action::Deb(opts) => {
+        Command::Deb(opts) => {
             cli::deb::entry(&mut cx, &opts.action)?;
         }
-        Action::Zip(opts) => {
+        Command::Zip(opts) => {
             cli::compress::entry(&mut cx, cli::compress::Kind::Zip, &opts.action)?;
         }
-        Action::Gzip(opts) => {
+        Command::Gzip(opts) => {
             cli::compress::entry(&mut cx, cli::compress::Kind::Gzip, &opts.action)?;
         }
-        Action::GithubRelease(opts) => {
-            cli::github_release::entry(&mut cx, &opts.action).await?;
-        }
-        Action::GithubAction(opts) => {
+        Command::GithubAction(opts) => {
             cli::github_action::entry(&mut cx, &opts.action)?;
+        }
+        Command::Github(opts) => {
+            cli::gh::entry(&mut cx, &opts.action).await?;
         }
     }
 
