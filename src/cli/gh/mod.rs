@@ -2,49 +2,31 @@ mod release;
 mod status;
 mod workflows;
 
-use core::fmt;
-
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
-use crate::ctxt::Ctxt;
-use crate::Repo;
+use crate::cli::{WithRepos, PARALLELISM};
 
-use super::{with_repos_async, PARALLELISM};
-
-trait WithRepos<'repo> {
-    async fn run<T>(
-        self,
-        what: impl fmt::Display,
-        hint: impl fmt::Display,
-        f: impl AsyncFn(&Ctxt<'repo>, &'repo Repo) -> Result<T>,
-        report: impl FnMut(T) -> Result<()>,
-    ) -> Result<()>;
-}
-
-struct WithParallelism<'a, 'repo> {
-    cx: &'a mut Ctxt<'repo>,
+#[derive(Debug, Parser)]
+struct SharedOpts {
+    /// The number of repositories to read in parallel.
+    #[arg(long, default_value = PARALLELISM, value_name = "count")]
     parallelism: usize,
 }
 
-impl<'repo> WithRepos<'repo> for WithParallelism<'_, 'repo> {
-    #[inline]
-    async fn run<T>(
-        self,
-        what: impl fmt::Display,
-        hint: impl fmt::Display,
-        f: impl AsyncFn(&Ctxt<'repo>, &'repo Repo) -> Result<T>,
-        report: impl FnMut(T) -> Result<()>,
-    ) -> Result<()> {
-        with_repos_async(self.cx, what, hint, self.parallelism, f, report).await
-    }
+#[derive(Debug, Parser)]
+struct InnerOpts<T>
+where
+    T: Args,
+{
+    #[command(flatten)]
+    shared: SharedOpts,
+    #[command(flatten)]
+    inner: T,
 }
 
 #[derive(Debug, Parser)]
 pub(crate) struct Opts {
-    /// The number of repositories to read in parallel.
-    #[arg(long, default_value = PARALLELISM, value_name = "count")]
-    parallelism: usize,
     /// Command to use.
     #[command(subcommand, name = "action")]
     command: Command,
@@ -53,30 +35,37 @@ pub(crate) struct Opts {
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Get the build status of workflows.
-    Status(self::status::Opts),
+    Status(InnerOpts<self::status::Opts>),
     /// Modify workflows.
-    Workflows(self::workflows::Opts),
+    Workflows(InnerOpts<self::workflows::Opts>),
     /// Build a release and upload files.
-    Release(self::release::Opts),
+    Release(InnerOpts<self::release::Opts>),
 }
 
-pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    let client = cx.octokit()?;
+impl Command {
+    fn shared(&self) -> &SharedOpts {
+        match self {
+            Command::Status(opts) => &opts.shared,
+            Command::Workflows(opts) => &opts.shared,
+            Command::Release(opts) => &opts.shared,
+        }
+    }
+}
 
-    let with_repos = WithParallelism {
-        cx,
-        parallelism: opts.parallelism,
-    };
+pub(crate) async fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
+    let client = with_repos.cx().octokit()?;
+
+    let with_repos = with_repos.with_parallelism(opts.command.shared().parallelism);
 
     match &opts.command {
         Command::Status(opts) => {
-            self::status::entry(opts, with_repos, &client).await?;
+            self::status::entry(&opts.inner, with_repos, &client).await?;
         }
         Command::Workflows(opts) => {
-            self::workflows::entry(opts, with_repos, &client).await?;
+            self::workflows::entry(&opts.inner, with_repos, &client).await?;
         }
         Command::Release(opts) => {
-            self::release::entry(opts, with_repos, &client).await?;
+            self::release::entry(&opts.inner, with_repos, &client).await?;
         }
     }
 

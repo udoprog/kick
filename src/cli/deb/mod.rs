@@ -4,6 +4,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use relative_path::RelativePath;
 
+use crate::cli::WithRepos;
 use crate::config::deb_depends;
 use crate::config::VersionRequirement;
 use crate::ctxt::Ctxt;
@@ -13,7 +14,6 @@ use crate::packaging::InstallFile;
 use crate::release::ReleaseOpts;
 
 use super::output::OutputOpts;
-use super::with_repos;
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -23,13 +23,10 @@ pub(crate) struct Opts {
     output: OutputOpts,
 }
 
-pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    with_repos(
-        cx,
-        "build .deb",
-        format_args!("deb: {:?}", opts),
-        |cx, repo| deb(cx, repo, opts),
-    )?;
+pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
+    with_repos.run("build .deb", format_args!("deb: {:?}", opts), |cx, repo| {
+        deb(cx, repo, opts)
+    })?;
 
     Ok(())
 }

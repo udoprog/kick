@@ -7,10 +7,9 @@ use clap::Parser;
 
 use crate::cargo::Dependency;
 use crate::changes::{Change, NoVerify};
+use crate::cli::WithRepos;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
-
-use super::with_repos;
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -28,9 +27,8 @@ pub(crate) struct Opts {
     cargo_publish: Vec<OsString>,
 }
 
-pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    with_repos(
-        cx,
+pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
+    with_repos.run(
         "cargo publish",
         format_args!("publish: {opts:?}"),
         |cx, repo| publish(cx, opts, repo),

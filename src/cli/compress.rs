@@ -9,13 +9,13 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use time::OffsetDateTime;
 
+use crate::cli::WithRepos;
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::model::Repo;
 use crate::release::ReleaseOpts;
 
 use super::output::OutputOpts;
-use super::with_repos;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Kind {
@@ -50,9 +50,8 @@ pub(crate) struct Opts {
     path: Vec<String>,
 }
 
-pub(crate) fn entry(cx: &mut Ctxt<'_>, ty: Kind, opts: &Opts) -> Result<()> {
-    with_repos(
-        cx,
+pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, ty: Kind, opts: &Opts) -> Result<()> {
+    with_repos.run(
         format!("compress {}", ty.extension()),
         format_args!("compress: {opts:?}"),
         |cx, repo| compress(cx, ty, opts, repo),

@@ -368,7 +368,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
-use clap::{Args, FromArgMatches, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 use config::{Config, Distribution, Os};
 use directories::ProjectDirs;
@@ -619,7 +619,7 @@ impl RepoOptions {
 #[command(version = None)]
 struct SharedAction<A>
 where
-    A: FromArgMatches + Args,
+    A: Args,
 {
     #[command(flatten)]
     action: A,
@@ -881,9 +881,11 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         env: &env,
     };
 
+    let with_repos = cli::WithReposImpl::new(&mut cx);
+
     match &opts.action {
         Command::Check(opts) => {
-            cli::check::entry(&mut cx, &opts.action).await?;
+            cli::check::entry(with_repos, &opts.action).await?;
         }
         Command::Paths(..) => {
             println!("Root: {}", paths.root.display());
@@ -911,7 +913,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             return Ok(ExitCode::SUCCESS);
         }
         Command::Define(opts) => {
-            cli::define::entry(&mut cx, &opts.action)?;
+            cli::define::entry(with_repos, &opts.action)?;
             return Ok(ExitCode::SUCCESS);
         }
         Command::Login(opts) => {
@@ -922,40 +924,40 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             cli::set::entry(&mut cx, &opts.action)?;
         }
         Command::Run(opts) => {
-            cli::run::entry(&mut cx, &opts.action)?;
+            cli::run::entry(with_repos, &opts.action)?;
         }
         Command::Msrv(opts) => {
-            cli::msrv::entry(&mut cx, &opts.action)?;
+            cli::msrv::entry(with_repos, &opts.action)?;
         }
         Command::Version(opts) => {
-            cli::version::entry(&mut cx, &opts.action)?;
+            cli::version::entry(with_repos, &opts.action)?;
         }
         Command::Publish(opts) => {
-            cli::publish::entry(&mut cx, &opts.action)?;
+            cli::publish::entry(with_repos, &opts.action)?;
         }
         Command::Upgrade(opts) => {
-            cli::upgrade::entry(&mut cx, &opts.action)?;
+            cli::upgrade::entry(with_repos, &opts.action)?;
         }
         Command::Msi(opts) => {
-            cli::msi::entry(&mut cx, &opts.action)?;
+            cli::msi::entry(with_repos, &opts.action)?;
         }
         Command::Rpm(opts) => {
-            cli::rpm::entry(&mut cx, &opts.action)?;
+            cli::rpm::entry(with_repos, &opts.action)?;
         }
         Command::Deb(opts) => {
-            cli::deb::entry(&mut cx, &opts.action)?;
+            cli::deb::entry(with_repos, &opts.action)?;
         }
         Command::Zip(opts) => {
-            cli::compress::entry(&mut cx, cli::compress::Kind::Zip, &opts.action)?;
+            cli::compress::entry(with_repos, cli::compress::Kind::Zip, &opts.action)?;
         }
         Command::Gzip(opts) => {
-            cli::compress::entry(&mut cx, cli::compress::Kind::Gzip, &opts.action)?;
+            cli::compress::entry(with_repos, cli::compress::Kind::Gzip, &opts.action)?;
         }
         Command::GithubAction(opts) => {
-            cli::github_action::entry(&mut cx, &opts.action)?;
+            cli::github_action::entry(with_repos, &opts.action)?;
         }
         Command::Github(opts) => {
-            cli::gh::entry(&mut cx, &opts.action).await?;
+            cli::gh::entry(with_repos, &opts.action).await?;
         }
     }
 

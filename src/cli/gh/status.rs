@@ -6,12 +6,11 @@ use chrono::{DateTime, Local, TimeZone};
 use clap::Parser;
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
+use crate::cli::WithReposAsync;
 use crate::ctxt::Ctxt;
 use crate::model::{Repo, RepoPath};
 use crate::octokit;
 use crate::once::Once;
-
-use super::WithRepos;
 
 #[derive(Debug, Default, Parser)]
 pub(super) struct Opts {
@@ -22,13 +21,13 @@ pub(super) struct Opts {
 
 pub(super) async fn entry(
     opts: &Opts,
-    with_repos: impl WithRepos<'_>,
+    with_repos: impl WithReposAsync<'_>,
     client: &octokit::Client,
 ) -> Result<()> {
     let today = Once::new(Local::now);
 
     with_repos
-        .run(
+        .run_async(
             "Github API (status)",
             format_args!("Github API (status): {opts:?}"),
             async |cx, repo| do_status(cx, repo, opts, client).await,

@@ -9,7 +9,7 @@ use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::rstr::{RStr, RString};
 
-use super::with_repos;
+use crate::cli::WithRepos;
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -23,15 +23,12 @@ pub(crate) struct Opts {
     input: Vec<String>,
 }
 
-pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
+pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
     let mut o = StandardStream::stdout(ColorChoice::Auto);
 
-    with_repos(
-        cx,
-        "run action",
-        format_args!("for: {opts:?}"),
-        |cx, repo| action(&mut o, cx, repo, opts),
-    )?;
+    with_repos.run("run action", format_args!("for: {opts:?}"), |cx, repo| {
+        action(&mut o, cx, repo, opts)
+    })?;
 
     Ok(())
 }

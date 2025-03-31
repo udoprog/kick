@@ -10,11 +10,10 @@ use clap::Parser;
 use crate::cargo::rust_version::NO_PUBLISH_VERSION_OMIT;
 use crate::cargo::{self, RustVersion};
 use crate::changes::Change;
+use crate::cli::WithRepos;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::process::Command;
-
-use super::with_repos;
 
 /// Oldest version where rust-version was introduced.
 const RUST_VERSION_SUPPORTED: RustVersion = RustVersion::new(1, 56);
@@ -74,13 +73,10 @@ pub(crate) struct Opts {
     command: Vec<String>,
 }
 
-pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    with_repos(
-        cx,
-        "find msrv",
-        format_args!("msrv: {opts:?}"),
-        |cx, repo| msrv(cx, repo, opts),
-    )?;
+pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
+    with_repos.run("find msrv", format_args!("msrv: {opts:?}"), |cx, repo| {
+        msrv(cx, repo, opts)
+    })?;
 
     Ok(())
 }

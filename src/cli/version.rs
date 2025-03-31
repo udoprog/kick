@@ -7,10 +7,9 @@ use toml_edit::{Formatted, Item, TableLike, Value};
 
 use crate::cargo;
 use crate::changes::Change;
+use crate::cli::WithRepos;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
-
-use super::with_repos;
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -40,7 +39,7 @@ pub(crate) struct Opts {
     filter: Vec<String>,
 }
 
-pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
+pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
     let mut version_set = VersionSet {
         major: opts.major,
         minor: opts.minor,
@@ -73,8 +72,7 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
         .map(|s| s.as_str())
         .collect::<HashSet<_>>();
 
-    with_repos(
-        cx,
+    with_repos.run(
         "bump version",
         format_args!("version: {opts:?}"),
         |cx, repo| version(cx, opts, repo, &version_set, &filter),

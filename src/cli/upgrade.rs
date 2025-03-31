@@ -1,11 +1,10 @@
 use anyhow::{bail, Result};
 use clap::Parser;
 
+use crate::cli::WithRepos;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::process::Command;
-
-use super::with_repos;
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -20,13 +19,10 @@ pub(crate) struct Opts {
     extra: Vec<String>,
 }
 
-pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    with_repos(
-        cx,
-        "upgrade",
-        format_args!("upgrade: {opts:?}"),
-        |cx, repo| upgrade(cx, opts, repo),
-    )?;
+pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
+    with_repos.run("upgrade", format_args!("upgrade: {opts:?}"), |cx, repo| {
+        upgrade(cx, opts, repo)
+    })?;
 
     Ok(())
 }

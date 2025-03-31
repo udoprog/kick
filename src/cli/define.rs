@@ -8,11 +8,10 @@ use std::{ffi::OsString, fmt};
 use anyhow::{ensure, Context, Result};
 use clap::{Parser, ValueEnum};
 
+use crate::cli::WithRepos;
 use crate::ctxt::Ctxt;
 use crate::release::ReleaseOpts;
 use crate::Repo;
-
-use super::with_repos;
 
 #[derive(Default, Debug, Clone, Copy, ValueEnum)]
 enum Format {
@@ -101,9 +100,8 @@ pub(crate) struct Opts {
     github_action: bool,
 }
 
-pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    with_repos(
-        cx,
+pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
+    with_repos.run(
         "publish github release",
         format_args!("github-release: {opts:?}"),
         |cx, repo| define(cx, repo, opts),

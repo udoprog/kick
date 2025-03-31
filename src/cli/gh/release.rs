@@ -6,13 +6,12 @@ use clap::Parser;
 use relative_path::RelativePathBuf;
 use tokio::fs::File;
 
+use crate::cli::WithReposAsync;
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::model::Repo;
 use crate::octokit;
 use crate::release::ReleaseOpts;
-
-use super::WithRepos;
 
 #[derive(Default, Debug, Clone, Parser)]
 pub(super) struct Opts {
@@ -49,7 +48,7 @@ pub(super) struct Opts {
 
 pub(super) async fn entry(
     opts: &Opts,
-    with_repos: impl WithRepos<'_>,
+    with_repos: impl WithReposAsync<'_>,
     client: &octokit::Client,
 ) -> Result<()> {
     let sha_from_env = if opts.github_action {
@@ -80,7 +79,7 @@ pub(super) async fn entry(
     };
 
     with_repos
-        .run(
+        .run_async(
             "Github API (release)",
             format_args!("Github API (release): {opts:?}"),
             async |cx, repo| run(cx, repo, opts, client, env_sha).await,

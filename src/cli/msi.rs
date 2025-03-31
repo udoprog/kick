@@ -4,12 +4,11 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use relative_path::RelativePathBuf;
 
+use crate::cli::WithRepos;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::release::ReleaseOpts;
 use crate::wix::Wix;
-
-use super::with_repos;
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -20,8 +19,8 @@ pub(crate) struct Opts {
     output: Option<RelativePathBuf>,
 }
 
-pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
-    with_repos(cx, "build .msi", format!("msi: {opts:?}"), |cx, repo| {
+pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
+    with_repos.run("build .msi", format!("msi: {opts:?}"), |cx, repo| {
         msi(cx, repo, opts)
     })?;
 

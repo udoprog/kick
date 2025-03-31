@@ -5,12 +5,11 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use termcolor::{ColorChoice, StandardStream};
 
+use crate::cli::WithRepos;
 use crate::commands::{Batch, BatchOptions, Session};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::release::{Date, ReleaseOpts, Version};
-
-use super::with_repos;
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -64,20 +63,17 @@ pub(crate) struct Opts {
     release: ReleaseOpts,
 }
 
-pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
+pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
     let today = Date::today()?;
-    let version = opts.release.try_env_argument(cx.env, today)?;
+    let version = opts.release.try_env_argument(with_repos.cx().env, today)?;
     let version_env = opts.version_env.as_deref().unwrap_or("KICK_VERSION");
     let version = version.as_ref().map(|version| (version_env, version));
 
     let mut o = StandardStream::stdout(ColorChoice::Auto);
 
-    with_repos(
-        cx,
-        "run commands",
-        format_args!("for: {opts:?}"),
-        |cx, repo| run(&mut o, cx, repo, opts, version),
-    )?;
+    with_repos.run("run commands", format_args!("for: {opts:?}"), |cx, repo| {
+        run(&mut o, cx, repo, opts, version)
+    })?;
 
     Ok(())
 }

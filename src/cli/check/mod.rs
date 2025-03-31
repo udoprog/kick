@@ -12,7 +12,7 @@ use crate::ctxt::Ctxt;
 use crate::model::{Repo, UpdateParams};
 use crate::urls::{UrlError, Urls};
 
-use super::with_repos;
+use crate::cli::WithRepos;
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -22,10 +22,10 @@ pub(crate) struct Opts {
     url_checks: bool,
 }
 
-pub(crate) async fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
+pub(crate) async fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
     let mut urls = Urls::default();
 
-    with_repos(cx, "check", format_args!("check: {opts:?}"), |cx, repo| {
+    with_repos.run("check", format_args!("check: {opts:?}"), |cx, repo| {
         check(cx, repo, &mut urls)
     })?;
 
