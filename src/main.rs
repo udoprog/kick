@@ -409,7 +409,7 @@ enum Command {
     /// Review or apply staged changes.
     Changes(SharedOptions),
     /// List paths used by kick.
-    Paths(SharedOptions),
+    Info(SharedOptions),
     /// Update Kick itself.
     Update(SharedOptions),
     /// Collect and define release variables.
@@ -455,7 +455,7 @@ impl Command {
         match self {
             Command::Check(action) => &action.shared,
             Command::Changes(shared) => shared,
-            Command::Paths(shared) => shared,
+            Command::Info(shared) => shared,
             Command::Update(shared) => shared,
             Command::Define(action) => &action.shared,
             Command::Login(action) => &action.shared,
@@ -479,7 +479,7 @@ impl Command {
         match self {
             Command::Check(action) => Some(&action.repo),
             Command::Changes(..) => None,
-            Command::Paths(..) => None,
+            Command::Info(..) => None,
             Command::Update(..) => None,
             Command::Define(..) => None,
             Command::Login(..) => None,
@@ -869,7 +869,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         term,
         system: &system,
         git_credentials: &git_credentials,
-        current_os: os,
+        os,
         dist,
         paths,
         config: &config,
@@ -887,18 +887,20 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         Command::Check(opts) => {
             cli::check::entry(with_repos, &opts.action).await?;
         }
-        Command::Paths(..) => {
-            println!("Root: {}", paths.root.display());
+        Command::Info(..) => {
+            println!("Os: {}", cx.os);
+            println!("Dist: {}", cx.dist);
+            println!("Root: {}", cx.paths.root.display());
 
-            if let Some(current) = paths.current {
+            if let Some(current) = cx.paths.current {
                 println!("Current: {current}");
             }
 
-            if let Some(config) = paths.config {
+            if let Some(config) = cx.paths.config {
                 println!("Config: {}", config.display());
             }
 
-            if let Some(cache) = paths.cache {
+            if let Some(cache) = cx.paths.cache {
                 println!("Cache: {}", cache.display());
             }
 

@@ -69,7 +69,7 @@ impl Env {
 
             runner_os = c.os();
         } else {
-            runner_os = &batch.cx.current_os;
+            runner_os = &batch.cx.os;
         }
 
         tree.insert(["runner", "os"], runner_os.as_tree_value());

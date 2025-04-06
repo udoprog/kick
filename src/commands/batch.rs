@@ -19,6 +19,7 @@ use crate::process::{Command, OsArg};
 use crate::rstr::{RStr, RString};
 use crate::shell::Shell;
 use crate::workflows::{Matrix, Step};
+use crate::Distribution;
 
 use super::{
     ActionConfig, BatchConfig, Env, Run, RunKind, RunOn, Schedule, ScheduleBasicCommand,
@@ -73,7 +74,7 @@ impl Batch {
 
         Ok(Self {
             run_on: RunOn::Same,
-            os: batch.cx.current_os.clone(),
+            os: batch.cx.os.clone(),
             commands: vec![u],
             matrix: None,
         })
@@ -183,9 +184,17 @@ impl Batch {
                         .map(|(k, v)| (k.clone(), OsArg::from(v))),
                 );
 
+                let mut skipped = run.skipped.as_deref();
+
                 match run_on {
                     RunOn::Same => {
-                        (run_command, paths, script_file) = setup_same(c, path, &run)?;
+                        let skip;
+
+                        (skip, run_command, paths, script_file) = setup_same(c, path, &run)?;
+
+                        if skip && skipped.is_none() {
+                            skipped = Some("incompatible with distro");
+                        }
 
                         for (key, value) in env {
                             run_command.env(key, value);
@@ -333,7 +342,7 @@ impl Batch {
                     line.write(&c.colors.title, format_args!("{name}"))?;
                 }
 
-                if let Some(skipped) = &run.skipped {
+                if let Some(skipped) = skipped {
                     line.write(&c.colors.skip_cond, format_args!("(skipped: {skipped})"))?;
                 }
 
@@ -348,7 +357,7 @@ impl Batch {
 
                 line.finish()?;
 
-                if run.skipped.is_none() && (c.verbose >= 1 || run.name.is_none()) {
+                if c.verbose >= 1 || run.name.is_none() {
                     match shell {
                         Shell::Bash => {
                             if c.verbose >= 2 {
@@ -418,7 +427,7 @@ impl Batch {
                     }
                 }
 
-                if run.skipped.is_none() && !c.dry_run {
+                if skipped.is_none() && !c.dry_run {
                     truncate(run.files())?;
 
                     make_dirs(
@@ -454,7 +463,7 @@ impl Batch {
                         if let Ok(contents) = fs::read(path_file) {
                             new_paths = parse_lines(&contents)?;
 
-                            if c.cx.current_os == Os::Windows && matches!(run_on, RunOn::Wsl(..)) {
+                            if c.cx.os == Os::Windows && matches!(run_on, RunOn::Wsl(..)) {
                                 for path in &mut new_paths {
                                     *path = translate_path_to_windows(path)?;
                                 }
@@ -653,43 +662,74 @@ impl ScriptFile {
     }
 }
 
+fn as_same_dist_specific(c: &BatchConfig<'_, '_>, command: &str) -> Option<Vec<Distribution>> {
+    if c.cx.os != Os::Linux {
+        return None;
+    }
+
+    let mut it = command
+        .split_whitespace()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .skip_while(|s| s.starts_with('-'));
+
+    let head = it.next()?;
+
+    let command = if head == "sudo" { it.next()? } else { head };
+
+    match command {
+        "apt" => Some(vec![Distribution::Debian, Distribution::Ubuntu]),
+        "dnf" => Some(vec![Distribution::Fedora]),
+        "yum" => Some(vec![Distribution::Fedora]),
+        _ => None,
+    }
+}
+
 fn setup_same<'a>(
     c: &BatchConfig<'_, 'a>,
     path: &Path,
     run: &Run,
-) -> Result<(Command, &'a [PathBuf], Option<ScriptFile>)> {
-    match &run.run {
-        RunKind::Shell { script, shell } => match shell {
-            Shell::Powershell => {
-                let Some(powershell) = c.cx.system.powershell.first() else {
-                    bail!("PowerShell not available");
-                };
+) -> Result<(bool, Command, &'a [PathBuf], Option<ScriptFile>)> {
+    let mut skip = false;
 
-                let mut c = powershell.command_in(path);
-                c.arg("-Command");
-                c.arg(script);
-                Ok((c, &[], None))
+    match &run.run {
+        RunKind::Shell { script, shell } => {
+            if let Some(dist) = as_same_dist_specific(c, script.to_exposed().as_ref()) {
+                skip = !dist.contains(&c.cx.dist);
             }
-            Shell::Bash => {
-                let Some(bash) = c.cx.system.bash.first() else {
-                    if let Os::Windows = &c.cx.current_os {
-                        tracing::warn!("{WINDOWS_BASH_MESSAGE}");
+
+            match shell {
+                Shell::Powershell => {
+                    let Some(powershell) = c.cx.system.powershell.first() else {
+                        bail!("PowerShell not available");
                     };
 
-                    bail!("Bash is not available");
-                };
+                    let mut c = powershell.command_in(path);
+                    c.arg("-Command");
+                    c.arg(script);
+                    Ok((skip, c, &[], None))
+                }
+                Shell::Bash => {
+                    let Some(bash) = c.cx.system.bash.first() else {
+                        if let Os::Windows = &c.cx.os {
+                            tracing::warn!("{WINDOWS_BASH_MESSAGE}");
+                        };
 
-                let mut c = bash.command_in(path);
-                c.args(["-i"]);
-                let script_file = ScriptFile::inline(None, true, script.clone(), "bash");
-                Ok((c, &bash.paths, Some(script_file)))
+                        bail!("Bash is not available");
+                    };
+
+                    let mut c = bash.command_in(path);
+                    c.args(["-i"]);
+                    let script_file = ScriptFile::inline(None, true, script.clone(), "bash");
+                    Ok((skip, c, &bash.paths, Some(script_file)))
+                }
             }
-        },
+        }
         RunKind::Command { command, args } => {
             let mut c = Command::new(command);
             c.args(args.as_ref());
             c.current_dir(path);
-            Ok((c, &[], None))
+            Ok((skip, c, &[], None))
         }
         RunKind::Node {
             node_version,
@@ -699,7 +739,7 @@ fn setup_same<'a>(
             let mut c = Command::new(&node.path);
             c.arg(script_file);
             c.current_dir(path);
-            Ok((c, &[], None))
+            Ok((skip, c, &[], None))
         }
     }
 }

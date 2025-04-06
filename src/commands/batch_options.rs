@@ -66,12 +66,12 @@ impl BatchOptions {
     ) -> Result<BatchConfig<'a, 'cx>> {
         let repo_path = cx.to_path(repo.path());
 
-        let shell = self.shell.unwrap_or_else(|| cx.current_os.shell());
+        let shell = self.shell.unwrap_or_else(|| cx.os.shell());
 
         let mut c = BatchConfig::new(cx, repo_path, shell);
 
         for &run_on in &self.run_on {
-            c.add_run_on(run_on.to_run_on(), run_on.to_os(&cx.current_os))?;
+            c.add_run_on(run_on.to_run_on(), run_on.to_os(&cx.os))?;
         }
 
         if self.exposed {

@@ -129,7 +129,7 @@ fn run(
     let mut batches = Vec::new();
 
     if let Some(command) = &opts.command {
-        batches.push(Batch::command(cx.current_os.clone(), command, &opts.args));
+        batches.push(Batch::command(cx.os.clone(), command, &opts.args));
     }
 
     if opts.workflow.is_some() || opts.job.is_some() || opts.list_jobs {
@@ -171,7 +171,7 @@ fn run(
                     }
 
                     for matrix in job.matrices() {
-                        match matrix.build(None, opts.same_os, &cx.current_os) {
+                        match matrix.build(None, opts.same_os, &cx.os) {
                             Ok(batch) => {
                                 batches.push(batch);
                             }

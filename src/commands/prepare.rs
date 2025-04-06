@@ -218,7 +218,7 @@ impl Session {
 
     /// Prepare the same distro.
     fn prepare_same(&mut self, config: &BatchConfig, suggestions: &mut Remediations) -> Result<()> {
-        let os = &config.cx.current_os;
+        let os = &config.cx.os;
         let dist = &config.cx.dist;
 
         match os {

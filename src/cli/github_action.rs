@@ -49,7 +49,7 @@ fn action(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Re
         inputs.insert(key.to_string(), RString::from(value));
     }
 
-    let action = ActionConfig::new(&cx.current_os, id)
+    let action = ActionConfig::new(&cx.os, id)
         .with_inputs(inputs)
         .repo_from_name();
 

@@ -214,7 +214,7 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                 rustup.stdout(Stdio::null()).stderr(Stdio::null());
             }
 
-            tracing::info!("{}", rustup.display_with(cx.current_os.shell()));
+            tracing::info!("{}", rustup.display_with(cx.os.shell()));
 
             let status = rustup.status().context("Command through `rustup run`")?;
 
@@ -230,7 +230,7 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
             tracing::info!("Rust {version}: failed");
 
             for (status, failure) in failures {
-                tracing::warn!("{status}: {}", failure.display_with(cx.current_os.shell()));
+                tracing::warn!("{status}: {}", failure.display_with(cx.os.shell()));
             }
 
             candidates.fail();
