@@ -1,16 +1,19 @@
 use termcolor::{Color, ColorSpec};
 
 /// System colors.
-pub(super) struct Colors {
-    pub(super) skip_cond: ColorSpec,
-    pub(super) title: ColorSpec,
-    pub(super) matrix: ColorSpec,
-    pub(super) warn: ColorSpec,
+pub(crate) struct Colors {
+    pub(crate) skip_cond: ColorSpec,
+    pub(crate) title: ColorSpec,
+    pub(crate) matrix: ColorSpec,
+    pub(crate) warn: ColorSpec,
+    pub(crate) red: ColorSpec,
+    pub(crate) green: ColorSpec,
+    pub(crate) dim: ColorSpec,
 }
 
 impl Colors {
     /// Construct colors system.
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let mut skip_cond = ColorSpec::new();
         skip_cond.set_fg(Some(Color::Red));
         skip_cond.set_bold(true);
@@ -25,11 +28,22 @@ impl Colors {
         let mut warn = ColorSpec::new();
         warn.set_fg(Some(Color::Yellow));
 
+        let mut red = ColorSpec::new();
+        red.set_fg(Some(Color::Red));
+
+        let mut green = ColorSpec::new();
+        green.set_fg(Some(Color::Green));
+
+        let dim = ColorSpec::new();
+
         Self {
             skip_cond,
             title,
             matrix,
             warn,
+            red,
+            green,
+            dim,
         }
     }
 }

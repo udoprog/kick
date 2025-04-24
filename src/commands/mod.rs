@@ -20,7 +20,7 @@ mod batch_options;
 pub(crate) use self::batch_options::BatchOptions;
 
 mod colors;
-use self::colors::Colors;
+pub(crate) use self::colors::Colors;
 
 mod env;
 use self::env::Env;

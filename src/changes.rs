@@ -13,11 +13,14 @@ use musli::{Decode, Encode};
 use nondestructive::yaml;
 use relative_path::RelativePathBuf;
 use semver::Version;
+use similar::{ChangeTag, TextDiff};
+use termcolor::WriteColor;
 
 use crate::cargo::Manifest;
 use crate::cargo::RustVersion;
 use crate::cli::check::cargo::CargoKey;
 use crate::cli::check::ci::ActionExpected;
+use crate::commands::Colors;
 use crate::config::Replaced;
 use crate::ctxt::Ctxt;
 use crate::edits::{self, Edits};
@@ -28,7 +31,7 @@ use crate::process::Command;
 const ENCODING: Encoding = Encoding::new();
 
 /// Save changes to the given path.
-pub(crate) fn load_changes(path: &Path) -> Result<Option<Vec<Change>>> {
+pub(crate) fn load_changes(path: &Path) -> Result<Option<Vec<ChangeWrapper>>> {
     use std::io::Read;
 
     use flate2::read::GzDecoder;
@@ -46,7 +49,7 @@ pub(crate) fn load_changes(path: &Path) -> Result<Option<Vec<Change>>> {
 
     let cx = musli::context::new().with_trace().with_type();
 
-    let value: Vec<Change> = match ENCODING.from_slice_with(&cx, &buf) {
+    let value: Vec<ChangeWrapper> = match ENCODING.from_slice_with(&cx, &buf) {
         Ok(value) => value,
         Err(..) => {
             bail!("{}", cx.report())
@@ -57,25 +60,27 @@ pub(crate) fn load_changes(path: &Path) -> Result<Option<Vec<Change>>> {
 }
 
 /// Save changes to the given path.
-pub(crate) fn save_changes(cx: &Ctxt<'_>, path: &Path) -> Result<()> {
+pub(crate) fn save_changes(changes: &[ChangeWrapper], path: &Path) -> Result<()> {
     use flate2::write::GzEncoder;
     use flate2::Compression;
 
-    let changes = cx.changes().iter().cloned().collect::<Vec<_>>();
     let f = fs::File::create(path)?;
     let mut w = GzEncoder::new(f, Compression::default());
-    ENCODING.to_writer(&mut w, &changes)?;
+    ENCODING.to_writer(&mut w, changes)?;
     let mut f = w.finish()?;
     f.flush()?;
     Ok(())
 }
 
 /// Report a warning.
-pub(crate) fn report(cx: &Ctxt<'_>, warning: &Warning) -> Result<()> {
+pub(crate) fn report<W>(o: &mut W, cx: &Ctxt<'_>, warning: &Warning) -> Result<()>
+where
+    W: ?Sized + WriteColor,
+{
     match warning {
         Warning::MissingReadme { path } => {
             let path = cx.to_path(path);
-            println!("{}: Missing README", path.display());
+            writeln!(o, "{}: Missing README", path.display())?;
         }
         Warning::WrongWorkflowName {
             path,
@@ -83,10 +88,11 @@ pub(crate) fn report(cx: &Ctxt<'_>, warning: &Warning) -> Result<()> {
             expected,
         } => {
             let path = cx.to_path(path);
-            println!(
+            writeln!(
+                o,
                 "{}: Wrong workflow name: {actual} (actual) != {expected} (expected)",
                 path.display()
-            );
+            )?;
         }
         Warning::ToplevelHeadings {
             path,
@@ -96,11 +102,12 @@ pub(crate) fn report(cx: &Ctxt<'_>, warning: &Warning) -> Result<()> {
         } => {
             let (line, column, string) = temporary_line_fix(file, range.start, *line_offset)?;
             let path = cx.to_path(path);
-            println!(
+            writeln!(
+                o,
                 "{}:{line}:{column}: doc comment has toplevel headings",
                 path.display()
-            );
-            println!("{string}");
+            )?;
+            writeln!(o, "{string}")?;
         }
         Warning::MissingPreceedingBr {
             path,
@@ -110,27 +117,28 @@ pub(crate) fn report(cx: &Ctxt<'_>, warning: &Warning) -> Result<()> {
         } => {
             let (line, column, string) = temporary_line_fix(file, range.start, *line_offset)?;
             let path = cx.to_path(path);
-            println!(
+            writeln!(
+                o,
                 "{}:{line}:{column}: missing preceeding <br>",
                 path.display()
-            );
-            println!("{string}");
+            )?;
+            writeln!(o, "{string}")?;
         }
         Warning::MissingFeature { path, feature } => {
             let path = cx.to_path(path);
-            println!("{}: missing features `{feature}`", path.display());
+            writeln!(o, "{}: missing features `{feature}`", path.display())?;
         }
         Warning::NoFeatures { path } => {
             let path = cx.to_path(path);
-            println!("{}: trying featured build (--all-features, --no-default-features), but no features present", path.display());
+            writeln!(o,"{}: trying featured build (--all-features, --no-default-features), but no features present", path.display())?;
         }
         Warning::MissingEmptyFeatures { path } => {
             let path = cx.to_path(path);
-            println!("{}: missing empty features build", path.display());
+            writeln!(o, "{}: missing empty features build", path.display())?;
         }
         Warning::MissingAllFeatures { path } => {
             let path = cx.to_path(path);
-            println!("{}: missing all features build", path.display());
+            writeln!(o, "{}: missing all features build", path.display())?;
         }
         Warning::ActionMissingKey {
             path,
@@ -140,25 +148,30 @@ pub(crate) fn report(cx: &Ctxt<'_>, warning: &Warning) -> Result<()> {
             actual,
         } => {
             let path = cx.to_path(path);
-            println!(
+            writeln!(
+                o,
                 "{}: {key}: action missing key, expected {expected}",
                 path.display()
-            );
+            )?;
 
             match actual {
                 Some(value) => {
-                    println!("  actual:");
+                    writeln!(o, "  actual:")?;
                     let value = doc.value(*value);
-                    print!("{value}");
+                    write!(o, "{value}")?;
                 }
                 None => {
-                    println!("  actual: *missing value*");
+                    writeln!(o, "  actual: *missing value*")?;
                 }
             }
         }
         Warning::ActionExpectedEmptyMapping { path, key } => {
             let path = cx.to_path(path);
-            println!("{}: {key}: action expected empty mapping", path.display());
+            writeln!(
+                o,
+                "{}: {key}: action expected empty mapping",
+                path.display()
+            )?;
         }
     }
 
@@ -166,11 +179,16 @@ pub(crate) fn report(cx: &Ctxt<'_>, warning: &Warning) -> Result<()> {
 }
 
 /// Report and apply a asingle change.
-pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
+pub(crate) fn apply<W>(o: &mut W, cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()>
+where
+    W: ?Sized + WriteColor,
+{
+    let col = Colors::new();
+
     match change {
         Change::MissingWorkflow { id, path, repo } => {
             let path = cx.to_path(path);
-            println!("{}: Missing workflow", path.display());
+            writeln!(o, "{}: Missing workflow", path.display())?;
 
             if save {
                 if let Some(parent) = path.parent() {
@@ -184,7 +202,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                 let params = cx.repo_params(&primary_package, repo)?;
 
                 let Some(string) = cx.config.workflow(repo, id, params)? else {
-                    println!("  workflows.{id}: Missing workflow template!");
+                    writeln!(o, "  workflows.{id}: Missing workflow template!")?;
                     return Ok(());
                 };
 
@@ -211,7 +229,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                             key,
                             value,
                         } => {
-                            println!("{}: {reason}", path.display());
+                            writeln!(o, "{}: {reason}", path.display())?;
 
                             if save {
                                 let mut mapping = doc.value_mut(*at);
@@ -228,7 +246,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                             }
                         }
                         edits::Change::Set { at, reason, value } => {
-                            println!("{}: {reason}", path.display());
+                            writeln!(o, "{}: {reason}", path.display())?;
 
                             if save {
                                 value.replace(&mut doc, *at);
@@ -240,7 +258,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                             reason,
                             key,
                         } => {
-                            println!("{}: {reason}", path.display());
+                            writeln!(o, "{}: {reason}", path.display())?;
 
                             if save {
                                 if let Some(mut m) = doc.value_mut(*mapping).into_mapping_mut() {
@@ -256,7 +274,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
                 }
 
                 if edited {
-                    println!("{}: Fixing", path.display());
+                    writeln!(o, "{}: Fixing", path.display())?;
                     fs::write(&path, doc.to_string())?;
                 }
             }
@@ -264,7 +282,7 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
             for change in errors {
                 match change {
                     WorkflowError::Error { name, reason } => {
-                        println!("{}: {name}: {reason}", path.display());
+                        writeln!(o, "{}: {name}: {reason}", path.display())?;
                     }
                 }
             }
@@ -274,26 +292,14 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
             lib: new_file,
         } => {
             let path = cx.to_path(path);
-
-            if save {
-                println!("{}: Fixing", path.display());
-                fs::write(path, new_file.as_str())?;
-            } else {
-                println!("{}: Needs update", path.display());
-            }
+            write_to(o, &col, &path, new_file, save)?;
         }
         Change::UpdateReadme {
             path,
             readme: new_file,
         } => {
             let path = cx.to_path(path);
-
-            if save {
-                println!("{}: Fixing", path.display());
-                fs::write(path, new_file.as_str())?;
-            } else {
-                println!("{}: Needs update", path.display());
-            }
+            write_to(o, &col, &path, new_file, save)?;
         }
         Change::CargoTomlIssues {
             path,
@@ -302,17 +308,17 @@ pub(crate) fn apply(cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()> {
         } => {
             let path = cx.to_path(path);
 
-            println!("{}:", path.display());
+            writeln!(o, "{}:", path.display())?;
 
             for issue in issues {
-                println!("  {issue}");
+                writeln!(o, "  {issue}")?;
             }
 
             if let Some(modified_cargo) = modified_cargo {
                 if save {
                     modified_cargo.save_to(path)?;
                 } else {
-                    println!("Would save {}", path.display());
+                    writeln!(o, "Would save {}", path.display())?;
                 }
             }
         }
@@ -597,6 +603,15 @@ pub(crate) enum NoVerify {
 
 /// A single change.
 #[derive(Clone, Encode, Decode)]
+pub(crate) struct ChangeWrapper {
+    /// The kind of change.
+    pub(crate) change: Change,
+    /// Whether the change has been applied or not.
+    pub(crate) written: bool,
+}
+
+/// A change to be applied.
+#[derive(Clone, Encode, Decode)]
 pub(crate) enum Change {
     MissingWorkflow {
         id: String,
@@ -663,4 +678,122 @@ pub(crate) enum Change {
         /// Extra arguments.
         args: Vec<OsString>,
     },
+}
+
+impl fmt::Display for Change {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Change::MissingWorkflow { id, path, .. } => {
+                write!(f, "Missing workflow `{id}` in `{path}`")
+            }
+            Change::BadWorkflow { path, .. } => {
+                write!(f, "Bad workflow `{path}`")
+            }
+            Change::UpdateLib { path, .. } => {
+                write!(f, "Update lib `{path}`")
+            }
+            Change::UpdateReadme { path, .. } => {
+                write!(f, "Update readme `{path}`")
+            }
+            Change::CargoTomlIssues { path, issues, .. } => {
+                write!(f, "{path}: {}", issues.len())
+            }
+            Change::SetRustVersion { repo, version } => {
+                write!(f, "{}: Set rust version to {version}", repo.path())
+            }
+            Change::RemoveRustVersion { repo, version } => {
+                write!(f, "{}: Remove rust version {version}", repo.path())
+            }
+            Change::SavePackage { manifest } => {
+                write!(f, "Save package `{}`", manifest.path())
+            }
+            Change::Replace { replaced } => {
+                write!(f, "Replace `{}`", replaced.path().display())
+            }
+            Change::ReleaseCommit { path, version } => {
+                write!(f, "{path}: Release commit `{version}`")
+            }
+            Change::Publish { name, .. } => {
+                write!(f, "Publish `{name}`")
+            }
+        }
+    }
+}
+
+/// Write a file.
+pub(crate) fn write_to<W>(
+    o: &mut W,
+    col: &Colors,
+    path: &Path,
+    new_file: &File,
+    save: bool,
+) -> Result<()>
+where
+    W: ?Sized + WriteColor,
+{
+    let current = match fs::read_to_string(path) {
+        Ok(current) => current,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).context(path.display().to_string())?,
+    };
+
+    writeln!(o, "{}:", path.display())?;
+    diff(o, current.as_str(), new_file.as_str(), col)?;
+
+    if save {
+        fs::write(path, new_file.as_str()).with_context(|| path.display().to_string())?;
+    }
+
+    Ok(())
+}
+
+fn diff<W>(o: &mut W, source: &str, val: &str, col: &Colors) -> Result<()>
+where
+    W: ?Sized + WriteColor,
+{
+    let diff = TextDiff::from_lines(source, val);
+
+    for (idx, group) in diff.grouped_ops(3).iter().enumerate() {
+        if idx > 0 {
+            writeln!(o, "{:-^1$}", "-", 80)?;
+        }
+
+        for op in group {
+            for change in diff.iter_inline_changes(op) {
+                let (sign, color) = match change.tag() {
+                    ChangeTag::Delete => ("-", &col.red),
+                    ChangeTag::Insert => ("+", &col.green),
+                    ChangeTag::Equal => (" ", &col.dim),
+                };
+
+                o.set_color(color)?;
+
+                write!(o, "{}", Line(change.old_index()))?;
+                write!(o, "{sign}")?;
+
+                for (_, value) in change.iter_strings_lossy() {
+                    write!(o, "{value}")?;
+                }
+
+                o.reset()?;
+
+                if change.missing_newline() {
+                    writeln!(o)?;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+struct Line(Option<usize>);
+
+impl fmt::Display for Line {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self.0 {
+            None => write!(f, "    "),
+            Some(idx) => write!(f, "{:<4}", idx + 1),
+        }
+    }
 }

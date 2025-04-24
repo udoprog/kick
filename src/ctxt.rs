@@ -1,4 +1,4 @@
-use std::cell::{Ref, RefCell};
+use std::cell::{Ref, RefCell, RefMut};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -11,7 +11,7 @@ use relative_path::RelativePath;
 
 use super::system::{Git, System};
 use crate::cargo::{self, Package, RustVersion};
-use crate::changes::{Change, Warning};
+use crate::changes::{Change, ChangeWrapper, Warning};
 use crate::config::{Config, Distribution, Os};
 use crate::env::{Env, SecretString};
 use crate::model::{RenderRustVersions, Repo, RepoParams, RepoRef, State};
@@ -79,7 +79,7 @@ pub(crate) struct Ctxt<'a> {
     pub(crate) repos: &'a [Repo],
     pub(crate) rustc_version: Option<RustVersion>,
     pub(crate) warnings: RefCell<Vec<Warning>>,
-    pub(crate) changes: RefCell<Vec<Change>>,
+    pub(crate) changes: RefCell<Vec<ChangeWrapper>>,
     pub(crate) sets: &'a mut RepoSets,
     pub(crate) env: &'a Env,
 }
@@ -187,7 +187,10 @@ impl<'a> Ctxt<'a> {
 
     /// Push a change.
     pub(crate) fn change(&self, change: Change) {
-        self.changes.borrow_mut().push(change);
+        self.changes.borrow_mut().push(ChangeWrapper {
+            change,
+            written: false,
+        });
     }
 
     /// Get a list of warnings.
@@ -196,13 +199,18 @@ impl<'a> Ctxt<'a> {
     }
 
     /// Get a list of proposed changes.
-    pub(crate) fn changes(&self) -> Ref<'_, [Change]> {
+    pub(crate) fn changes(&self) -> Ref<'_, [ChangeWrapper]> {
         Ref::map(self.changes.borrow(), Vec::as_slice)
     }
 
-    /// Check if there's a change we can save.
+    /// Get a list of proposed changes.
+    pub(crate) fn changes_mut(&self) -> RefMut<'_, [ChangeWrapper]> {
+        RefMut::map(self.changes.borrow_mut(), Vec::as_mut_slice)
+    }
+
+    /// Check if there's changes to save.
     pub(crate) fn can_save(&self) -> bool {
-        !self.changes.borrow().is_empty()
+        self.changes.borrow().iter().any(|c| !c.written)
     }
 }
 

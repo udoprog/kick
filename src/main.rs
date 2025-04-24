@@ -376,6 +376,7 @@ use env::SecretString;
 use model::State;
 use relative_path::{RelativePath, RelativePathBuf};
 use repo_sets::RepoSet;
+use termcolor::{ColorChoice, StandardStream};
 
 use crate::ctxt::Paths;
 use crate::env::Env;
@@ -906,9 +907,8 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
 
             return Ok(ExitCode::SUCCESS);
         }
-        Command::Changes(shared) => {
-            cli::changes::entry(&mut cx, shared, &changes_path)?;
-            return Ok(ExitCode::SUCCESS);
+        Command::Changes(..) => {
+            cli::changes::entry(&cx, &changes_path)?;
         }
         Command::Update(shared) => {
             cli::update::entry(&mut cx, shared).await?;
@@ -963,22 +963,46 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         }
     }
 
+    let mut o = StandardStream::stdout(ColorChoice::Auto);
+
     for warning in cx.warnings().iter() {
-        crate::changes::report(&cx, warning)?;
+        changes::report(&mut o, &cx, warning)?;
     }
 
-    for change in cx.changes().iter() {
-        crate::changes::apply(&cx, change, shared.save)?;
+    for change in cx.changes_mut().iter_mut() {
+        if change.written {
+            continue;
+        }
+
+        match changes::apply(&mut o, &cx, &change.change, shared.save) {
+            Ok(()) => {
+                if shared.save {
+                    change.written = true;
+                }
+            }
+            Err(error) => {
+                tracing::error!("Failed to apply change: {error}");
+
+                for cause in error.chain().skip(1) {
+                    tracing::error!("Caused by: {cause}");
+                }
+            }
+        }
     }
 
-    if cx.can_save() && !shared.save {
-        tracing::warn!("Not writing changes since `--save` was not specified");
+    if cx.can_save() {
         tracing::info!(
             "Writing commit to {}, use `kick changes` to review it later",
             changes_path.display()
         );
-        changes::save_changes(&cx, &changes_path)
+        changes::save_changes(&cx.changes(), &changes_path)
             .with_context(|| anyhow!("{}", changes_path.display()))?;
+    } else {
+        match std::fs::remove_file(&changes_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => Err(error).context(changes_path.display().to_string())?,
+        }
     }
 
     let outcome = cx.outcome();

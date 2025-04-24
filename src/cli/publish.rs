@@ -193,18 +193,22 @@ struct Dep<'a> {
 }
 
 impl<'a> Dep<'a> {
+    #[inline]
     fn runtime(dep: Dependency<'a>) -> Result<Self> {
         Self::with_kind(DepKind::Runtime, dep)
     }
 
+    #[inline]
     fn dev(dep: Dependency<'a>) -> Result<Self> {
         Self::with_kind(DepKind::Dev, dep)
     }
 
+    #[inline]
     fn build(dep: Dependency<'a>) -> Result<Self> {
         Self::with_kind(DepKind::Build, dep)
     }
 
+    #[inline]
     fn with_kind(kind: DepKind, dep: Dependency<'a>) -> Result<Self> {
         Ok(Self {
             name: *dep.package()?,
@@ -214,6 +218,7 @@ impl<'a> Dep<'a> {
 }
 
 impl fmt::Display for Dep<'_> {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.name)?;
 

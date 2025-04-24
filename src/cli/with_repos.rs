@@ -77,7 +77,7 @@ where
                     tracing::error!("{error}");
 
                     for cause in error.chain().skip(1) {
-                        tracing::error!("Caused by: {}", cause);
+                        tracing::error!("Caused by: {cause}");
                     }
 
                     repo.set_error();
@@ -136,7 +136,7 @@ where
             tracing::error!("{error}");
 
             for cause in error.chain().skip(1) {
-                tracing::error!("Caused by: {}", cause);
+                tracing::error!("Caused by: {cause}");
             }
 
             repo.set_error();
