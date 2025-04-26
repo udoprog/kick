@@ -59,7 +59,7 @@ xz2 = "0.1.7"
 zip = "2.6.1"
 
 [dependencies.gix]
-version = "0.71.0"
+version = "0.72.1"
 features = [
     "blocking-http-transport-reqwest",
     "blocking-http-transport-reqwest-rust-tls-trust-dns",

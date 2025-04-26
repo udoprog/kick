@@ -225,7 +225,7 @@ impl<'repo> ActionContext<'repo> {
 
                             let meta = f.metadata()?;
                             let mut perm = meta.permissions();
-                            perm.set_mode(mode.0 as u32);
+                            perm.set_mode(mode.value() as u32);
 
                             f.set_permissions(perm).with_context(|| {
                                 anyhow!("Failed to set permissions on file: {}", path.display())
