@@ -24,7 +24,7 @@ chrono = { version = "0.4.24", features = ["serde"] }
 clap = { version = "4.2.2", features = ["derive", "wrap_help"] }
 ctrlc = "3.4.5"
 directories = "6.0.0"
-elf = "0.7.4"
+elf = "0.8.0"
 flate2 = "1.0.25"
 futures-core = "0.3.31"
 futures-util = { version = "0.3.31", default-features = false }
@@ -35,7 +35,7 @@ nondestructive = { version = "0.0.26", features = ["serde-edits"] }
 pulldown-cmark = "0.13.0"
 rand = "0.9.0"
 regex = "1.7.3"
-relative-path = { version = "1.8.0", features = ["serde"] }
+relative-path = { version = "2.0.1", features = ["serde"] }
 reqwest = { version = "0.12.5", features = ["json", "stream"] }
 rpm = "0.16.0"
 semver = { version = "1.0.17", features = ["serde"] }
@@ -56,7 +56,7 @@ tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 unicycle = "0.10.2"
 url = { version = "2.3.1", features = ["serde"] }
 xz2 = "0.1.7"
-zip = "2.6.1"
+zip = "3.0.0"
 
 [dependencies.gix]
 version = "0.72.1"
