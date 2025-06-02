@@ -209,8 +209,8 @@ impl<T> PackageValue<T> {
     }
 
     /// Convert into its inner value.
-    pub(crate) fn into_value(value: PackageValue<T>) -> T {
-        value.value
+    pub(crate) fn into_value(self) -> T {
+        self.value
     }
 }
 

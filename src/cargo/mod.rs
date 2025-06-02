@@ -139,7 +139,7 @@ impl Manifest {
         Some(WorkspaceTable::new(doc))
     }
 
-    /// Get package configuration.
+    /// Access `[package]` section.
     pub(crate) fn as_package(&self) -> Option<Package<'_>> {
         let doc = self.doc.get("package")?.as_table()?;
         Some(Package::new(doc, self))
