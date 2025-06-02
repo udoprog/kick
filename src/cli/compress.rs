@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::env::consts::{self, EXE_EXTENSION};
+use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Cursor, Write};
 #[cfg(unix)]
@@ -13,7 +15,7 @@ use crate::cli::WithRepos;
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::model::Repo;
-use crate::release::ReleaseOpts;
+use crate::release::{ReleaseOpts, Version};
 
 use super::output::OutputOpts;
 
@@ -38,11 +40,29 @@ impl Kind {
 pub(crate) struct Opts {
     #[clap(flatten)]
     release: ReleaseOpts,
+    /// The architecture to append to the archive.
+    ///
+    /// If not specified, defaults to `std::env::consts::ARCH`,
+    #[arg(long, value_name = "os")]
+    arch: Option<String>,
     /// The operating system to append to the archive.
     ///
     /// If not specified, defaults to `std::env::consts::OS`,
     #[arg(long, value_name = "os")]
     os: Option<String>,
+    /// The name format to use for the archive
+    ///
+    /// If unspecified, the name will be `{project}-{release}-{arch}-{os}`.
+    #[arg(long, value_name = "name")]
+    name: Option<String>,
+    /// Exclude the default bianries from the archive.
+    #[arg(long)]
+    no_bin: bool,
+    /// Binaries to append to the archive as they are named in the workspace.
+    ///
+    /// By default, all binaries from the primary package will be included.
+    #[arg(long, value_name = "bin")]
+    bin: Vec<String>,
     #[clap(flatten)]
     output: OutputOpts,
     /// Append the given extra files to the archive.
@@ -65,16 +85,19 @@ fn compress(cx: &Ctxt<'_>, ty: Kind, opts: &Opts, repo: &Repo) -> Result<()> {
     let workspace = repo.workspace(cx)?;
 
     let release = opts.release.version(cx, repo)?;
-
     let package = workspace.primary_package()?;
     let name = package.name()?;
 
-    let arch = consts::ARCH;
+    let os = &opts.os.as_deref().unwrap_or(consts::OS);
+    let arch = opts.arch.as_deref().unwrap_or(consts::ARCH);
 
-    let os = match &opts.os {
-        Some(os) => os,
-        None => consts::OS,
-    };
+    let name_template = Template::parse(
+        opts.name
+            .as_deref()
+            .unwrap_or("{project}-{release}-{arch}-{os}"),
+    )?;
+    let variables = variables(name, release, os, arch);
+    let archive_name = name_template.render(&variables)?;
 
     let root = cx.to_path(repo.path());
 
@@ -92,15 +115,19 @@ fn compress(cx: &Ctxt<'_>, ty: Kind, opts: &Opts, repo: &Repo) -> Result<()> {
         }
     };
 
-    let binary_path = root
-        .join("target")
-        .join("release")
-        .join(name)
-        .with_extension(EXE_EXTENSION);
-
     let mut out = Vec::new();
 
-    out.push(binary_path);
+    let release_dir = root.join("target").join("release");
+
+    if opts.bin.is_empty() && !opts.no_bin {
+        let binary_path = release_dir.join(name).with_extension(EXE_EXTENSION);
+        out.push(binary_path);
+    } else {
+        for name in &opts.bin {
+            let binary_path = release_dir.join(name).with_extension(EXE_EXTENSION);
+            out.push(binary_path);
+        }
+    }
 
     for pattern in &opts.path {
         let glob = Glob::new(&root, &pattern);
@@ -118,7 +145,9 @@ fn compress(cx: &Ctxt<'_>, ty: Kind, opts: &Opts, repo: &Repo) -> Result<()> {
 
     let contents = archive.finish()?;
     let output = opts.output.make_directory(cx, repo, ty.extension());
-    let mut f = output.create_file(format!("{name}-{release}-{arch}-{os}.{}", ty.extension()))?;
+
+    let mut f = output.create_file(format!("{archive_name}.{}", ty.extension()))?;
+
     f.write_all(&contents)
         .with_context(|| anyhow!("Writing contents to {}", f.path().display()))?;
     Ok(())
@@ -250,5 +279,115 @@ impl Archive for ZipArchive {
         };
 
         Ok(zip.finish()?.into_inner())
+    }
+}
+
+enum Part<'a> {
+    Literal(&'a str),
+    Variable(&'a str),
+}
+
+enum Variable<'a> {
+    Str(&'a str),
+    Version(Version<'a>),
+}
+
+impl fmt::Display for Variable<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Variable::Str(s) => f.write_str(s),
+            Variable::Version(v) => write!(f, "{v}"),
+        }
+    }
+}
+
+fn variables<'a>(
+    project: &'a str,
+    release: Version<'a>,
+    os: &'a str,
+    arch: &'a str,
+) -> HashMap<&'a str, Variable<'a>> {
+    let mut vars = HashMap::new();
+    vars.insert("project", Variable::Str(project));
+    vars.insert("release", Variable::Version(release));
+    vars.insert("os", Variable::Str(os));
+    vars.insert("arch", Variable::Str(arch));
+    vars
+}
+
+struct Template<'a> {
+    parts: Vec<Part<'a>>,
+}
+
+impl<'a> Template<'a> {
+    /// Parse a template of `{part}` separated by literal components.
+    fn parse(input: &'a str) -> Result<Self> {
+        let mut parts = Vec::new();
+        let mut remaining = input;
+
+        while let Some(open) = remaining.find('{') {
+            // Add literal part before the '{'
+            if open > 0 {
+                parts.push(Part::Literal(
+                    remaining.get(..open).context("Invalid input")?,
+                ));
+            }
+
+            // Advance past the '{'
+            remaining = remaining.get(open + 1..).context("Invalid input")?;
+
+            // Find closing brace
+            let Some(close) = remaining.find('}') else {
+                bail!(
+                    "Unclosed variable at position {}",
+                    input.len() - remaining.len()
+                );
+            };
+
+            // Extract variable name
+            let name = remaining.get(..close).context("Invalid input")?;
+
+            if name.is_empty() {
+                bail!(
+                    "Empty variable name at position {}",
+                    input.len() - remaining.len() - 1
+                );
+            }
+
+            parts.push(Part::Variable(name));
+
+            // Advance past the closing brace
+            remaining = &remaining[close + 1..];
+        }
+
+        // Add remaining literal part if any
+        if !remaining.is_empty() {
+            parts.push(Part::Literal(remaining));
+        }
+
+        Ok(Self { parts })
+    }
+
+    fn render(&self, variables: &HashMap<&str, Variable<'_>>) -> Result<String> {
+        use std::fmt::Write;
+
+        let mut s = String::new();
+
+        for part in &self.parts {
+            match part {
+                Part::Literal(value) => {
+                    s.push_str(value);
+                }
+                Part::Variable(var) => {
+                    let Some(value) = variables.get(var) else {
+                        bail!("Missing variable: {var}");
+                    };
+
+                    write!(s, "{value}").context("Rendering template")?;
+                }
+            }
+        }
+
+        Ok(s)
     }
 }
