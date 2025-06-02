@@ -218,45 +218,37 @@ pub(crate) struct Fragment<'a> {
 }
 
 impl<'a> Fragment<'a> {
-    pub(crate) fn parse(string: &'a str) -> Fragment<'a> {
-        let mut literal = true;
+    pub(crate) fn parse(mut string: &'a str) -> Fragment<'a> {
         let mut parts = Vec::new();
-        let mut start = None;
+        // Prevent to wildcards in a row.
+        let mut star = true;
 
-        for (n, c) in string.char_indices() {
-            match c {
-                '*' => {
-                    if let Some(s) = start.take() {
-                        parts.push(Part::Literal(&string[s..n]));
-                    }
-
-                    if mem::take(&mut literal) {
-                        parts.push(Part::Star);
-                    }
-                }
-                _ => {
-                    if start.is_none() {
-                        start = Some(n);
-                    }
-
-                    literal = true;
-                }
+        while let Some(n) = string.find('*') {
+            if n > 0 {
+                parts.push(Part::Literal(&string[..n]));
+                star = true;
             }
+
+            if mem::take(&mut star) {
+                parts.push(Part::Star);
+            }
+
+            string = &string[n + '*'.len_utf8()..];
         }
 
-        if let Some(s) = start {
-            parts.push(Part::Literal(&string[s..]));
+        if !string.is_empty() {
+            parts.push(Part::Literal(string));
         }
 
         Fragment {
-            parts: parts.into(),
+            parts: parts.into_boxed_slice(),
         }
     }
 
     /// Test if the given string matches the current fragment.
     pub(crate) fn is_match(&self, string: &str) -> bool {
         let mut backtrack = VecDeque::new();
-        backtrack.push_back((self.parts.as_ref(), string));
+        backtrack.push_back((self.as_parts(), string));
 
         while let Some((mut parts, mut string)) = backtrack.pop_front() {
             while let Some(part) = parts.first() {
@@ -307,9 +299,14 @@ impl<'a> Fragment<'a> {
         false
     }
 
+    /// Get parts of the fragment.
+    fn as_parts(&self) -> &[Part<'a>] {
+        &self.parts
+    }
+
     /// Treat the fragment as a single normal component.
     fn as_literal(&self) -> Option<&'a str> {
-        if let [Part::Literal(one)] = self.parts.as_ref() {
+        if let [Part::Literal(one)] = self.as_parts() {
             Some(one)
         } else {
             None

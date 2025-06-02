@@ -354,6 +354,7 @@ mod repo_sets;
 mod rstr;
 mod shell;
 mod system;
+mod template;
 mod templates;
 mod urls;
 mod wix;

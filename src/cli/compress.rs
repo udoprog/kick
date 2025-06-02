@@ -15,7 +15,8 @@ use crate::cli::WithRepos;
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::model::Repo;
-use crate::release::{ReleaseOpts, Version};
+use crate::release::ReleaseOpts;
+use crate::template::{Template, Variable};
 
 use super::output::OutputOpts;
 
@@ -91,13 +92,17 @@ fn compress(cx: &Ctxt<'_>, ty: Kind, opts: &Opts, repo: &Repo) -> Result<()> {
     let os = &opts.os.as_deref().unwrap_or(consts::OS);
     let arch = opts.arch.as_deref().unwrap_or(consts::ARCH);
 
-    let name_template = Template::parse(
-        opts.name
-            .as_deref()
-            .unwrap_or("{project}-{release}-{arch}-{os}"),
-    )?;
-    let variables = variables(name, release, os, arch);
-    let archive_name = name_template.render(&variables)?;
+    let name_template = opts
+        .name
+        .as_deref()
+        .unwrap_or("{project}-{release}-{arch}-{os}");
+    let name_template = Template::parse(name_template)
+        .with_context(|| anyhow!("While parsing `{name_template}`"))?;
+
+    let variables = variables(name, &release, os, arch);
+    let archive_name = name_template
+        .render(&variables)
+        .context("While rendering name template")?;
 
     let root = cx.to_path(repo.path());
 
@@ -133,7 +138,7 @@ fn compress(cx: &Ctxt<'_>, ty: Kind, opts: &Opts, repo: &Repo) -> Result<()> {
         let glob = Glob::new(&root, &pattern);
 
         for path in glob.matcher() {
-            let path = path.with_context(|| anyhow!("Glob failed: {}", pattern))?;
+            let path = path.with_context(|| anyhow!("Glob `{pattern}` failed"))?;
             out.push(path.to_path(&root));
         }
     }
@@ -282,112 +287,16 @@ impl Archive for ZipArchive {
     }
 }
 
-enum Part<'a> {
-    Literal(&'a str),
-    Variable(&'a str),
-}
-
-enum Variable<'a> {
-    Str(&'a str),
-    Version(Version<'a>),
-}
-
-impl fmt::Display for Variable<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Variable::Str(s) => f.write_str(s),
-            Variable::Version(v) => write!(f, "{v}"),
-        }
-    }
-}
-
 fn variables<'a>(
     project: &'a str,
-    release: Version<'a>,
+    release: &'a dyn fmt::Display,
     os: &'a str,
     arch: &'a str,
 ) -> HashMap<&'a str, Variable<'a>> {
     let mut vars = HashMap::new();
     vars.insert("project", Variable::Str(project));
-    vars.insert("release", Variable::Version(release));
+    vars.insert("release", Variable::Display(release));
     vars.insert("os", Variable::Str(os));
     vars.insert("arch", Variable::Str(arch));
     vars
-}
-
-struct Template<'a> {
-    parts: Vec<Part<'a>>,
-}
-
-impl<'a> Template<'a> {
-    /// Parse a template of `{part}` separated by literal components.
-    fn parse(input: &'a str) -> Result<Self> {
-        let mut parts = Vec::new();
-        let mut remaining = input;
-
-        while let Some(open) = remaining.find('{') {
-            // Add literal part before the '{'
-            if open > 0 {
-                parts.push(Part::Literal(
-                    remaining.get(..open).context("Invalid input")?,
-                ));
-            }
-
-            // Advance past the '{'
-            remaining = remaining.get(open + 1..).context("Invalid input")?;
-
-            // Find closing brace
-            let Some(close) = remaining.find('}') else {
-                bail!(
-                    "Unclosed variable at position {}",
-                    input.len() - remaining.len()
-                );
-            };
-
-            // Extract variable name
-            let name = remaining.get(..close).context("Invalid input")?;
-
-            if name.is_empty() {
-                bail!(
-                    "Empty variable name at position {}",
-                    input.len() - remaining.len() - 1
-                );
-            }
-
-            parts.push(Part::Variable(name));
-
-            // Advance past the closing brace
-            remaining = &remaining[close + 1..];
-        }
-
-        // Add remaining literal part if any
-        if !remaining.is_empty() {
-            parts.push(Part::Literal(remaining));
-        }
-
-        Ok(Self { parts })
-    }
-
-    fn render(&self, variables: &HashMap<&str, Variable<'_>>) -> Result<String> {
-        use std::fmt::Write;
-
-        let mut s = String::new();
-
-        for part in &self.parts {
-            match part {
-                Part::Literal(value) => {
-                    s.push_str(value);
-                }
-                Part::Variable(var) => {
-                    let Some(value) = variables.get(var) else {
-                        bail!("Missing variable: {var}");
-                    };
-
-                    write!(s, "{value}").context("Rendering template")?;
-                }
-            }
-        }
-
-        Ok(s)
-    }
 }

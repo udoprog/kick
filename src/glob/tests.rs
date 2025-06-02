@@ -16,4 +16,7 @@ fn test_fragment() {
     let fragment = Fragment::parse("abc*");
     assert!(fragment.is_match("abcdef"));
     assert!(!fragment.is_match("leadingabc"));
+
+    let fragment = Fragment::parse("*def");
+    assert!(fragment.is_match("abcdef"));
 }
