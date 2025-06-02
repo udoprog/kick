@@ -47,19 +47,21 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
     let mut deps = HashMap::<_, Vec<_>>::new();
     let mut pending = HashSet::new();
 
-    for package in workspace.packages() {
+    for manifest in workspace.packages() {
+        let Some(package) = manifest.as_package() else {
+            continue;
+        };
+
         if !package.is_publish() {
             continue;
         }
 
         pending.insert(package.name()?);
-        packages.push(package);
+        packages.push((manifest, package));
     }
 
-    for package in &packages {
+    for &(m, package) in &packages {
         let from = package.name()?;
-
-        let m = package.manifest();
 
         let a = m
             .dependencies(workspace)
@@ -105,7 +107,7 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
     'outer: while !pending.is_empty() {
         let start = pending.len();
 
-        for package in &packages {
+        for &(manifest, package) in &packages {
             let name = package.name()?;
 
             if !pending.contains(name) {
@@ -126,7 +128,7 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
 
             tracing::trace!("Adding: {name}");
             pending.remove(name);
-            ordered.push(package);
+            ordered.push((manifest, package));
         }
 
         if start != pending.len() {
@@ -149,13 +151,13 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
         // helpful error message.
         let ordered = ordered
             .iter()
-            .map(|p| p.name())
+            .map(|(_, p)| p.name())
             .collect::<Result<Vec<_>>>()?;
 
         bail!("Failed to order packages for publishing:\nPending: {pending:?}\nOrdered: {ordered:?}\nDependencies: {deps:?}");
     }
 
-    for package in ordered.into_iter() {
+    for (manifest, package) in ordered.into_iter() {
         let name = package.name()?;
 
         if skip.contains(name) {
@@ -170,7 +172,7 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
 
         cx.change(Change::Publish {
             name: name.to_owned(),
-            manifest_dir: package.manifest().dir().to_owned(),
+            manifest_dir: manifest.dir().to_owned(),
             dry_run: opts.dry_run,
             no_verify,
             args: opts.cargo_publish.clone(),

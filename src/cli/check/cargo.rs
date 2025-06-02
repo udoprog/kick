@@ -5,7 +5,7 @@ use musli::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 
 use crate::cargo::rust_version::NO_PUBLISH_VERSION_OMIT;
-use crate::cargo::{self, Package, RustVersion};
+use crate::cargo::{self, Manifest, RustVersion};
 use crate::changes::{CargoIssue, Change};
 use crate::ctxt::Ctxt;
 use crate::model::UpdateParams;
@@ -59,11 +59,12 @@ cargo_keys! {
 pub(crate) fn work_cargo_toml(
     cx: &Ctxt<'_>,
     crates: &Crates,
-    package: &Package,
+    manifest: &Manifest,
     update: &UpdateParams<'_>,
     rust_version: Option<RustVersion>,
 ) -> Result<()> {
-    let mut modified_manifest = package.manifest().clone();
+    let mut modified_manifest = manifest.clone();
+    let package = modified_manifest.ensure_package_mut()?;
     let mut issues = Vec::new();
     let mut changed = false;
 
@@ -71,12 +72,12 @@ pub(crate) fn work_cargo_toml(
         ($get:ident, $insert:ident, $missing:ident, $wrong:ident) => {
             match (package.$get(), &update.$get) {
                 (None, Some(update)) => {
-                    modified_manifest.$insert(update.clone())?;
+                    package.$insert(update.clone())?;
                     issues.push(CargoIssue::$missing);
                     changed = true;
                 }
                 (Some(value), Some(update)) if value != *update => {
-                    modified_manifest.$insert(update.clone())?;
+                    package.$insert(update.clone())?;
                     issues.push(CargoIssue::$wrong);
                     changed = true;
                 }
@@ -136,7 +137,7 @@ pub(crate) fn work_cargo_toml(
             if categories != sorted {
                 issues.push(CargoIssue::PackageCategoriesNotSorted);
                 changed = true;
-                modified_manifest.insert_categories(sorted)?;
+                package.insert_categories(sorted)?;
             }
         } else {
             issues.push(CargoIssue::PackageCategories);
@@ -153,7 +154,7 @@ pub(crate) fn work_cargo_toml(
             if keywords != sorted {
                 issues.push(CargoIssue::PackageKeywordsNotSorted);
                 changed = true;
-                modified_manifest.insert_keywords(sorted)?;
+                package.insert_keywords(sorted)?;
             }
         } else {
             issues.push(CargoIssue::PackageKeywords);
@@ -166,14 +167,14 @@ pub(crate) fn work_cargo_toml(
         {
             issues.push(CargoIssue::PackageAuthorsEmpty);
             changed = true;
-            modified_manifest.insert_authors(update.authors.to_vec())?;
+            package.insert_authors(update.authors.to_vec())?;
         }
     } else {
         if matches!(rust_version, Some(rust_version) if rust_version >= NO_PUBLISH_VERSION_OMIT) {
             if package.version().filter(|d| !d.is_empty()).is_some() {
                 issues.push(CargoIssue::NoPublishVersion);
                 changed = true;
-                modified_manifest.remove_version();
+                modified_manifest.ensure_package_mut()?.remove_version();
             }
         }
     }
@@ -197,10 +198,10 @@ pub(crate) fn work_cargo_toml(
     }
 
     {
-        let package = modified_manifest.ensure_package()?;
+        let package = modified_manifest.ensure_package_mut()?;
         let mut keys = Vec::new();
 
-        for (key, _) in package.iter() {
+        for (key, _) in package.as_table().iter() {
             if let Some(key) = cargo_key(key) {
                 keys.push(key);
             }
@@ -214,14 +215,14 @@ pub(crate) fn work_cargo_toml(
                 actual: keys,
                 expected: sorted_keys,
             });
-            modified_manifest.sort_package_keys()?;
+            package.sort_package_keys()?;
             changed = true;
         }
     }
 
     if !issues.is_empty() {
         cx.change(Change::CargoTomlIssues {
-            path: package.manifest().path().to_owned(),
+            path: manifest.path().to_owned(),
             cargo: changed.then_some(modified_manifest),
             issues,
         });

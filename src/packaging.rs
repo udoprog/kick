@@ -15,7 +15,8 @@ pub(crate) fn install_files<'a>(cx: &Ctxt<'a>, repo: &Repo) -> Result<Vec<Instal
 
     let mut files = Vec::new();
 
-    let package = workspace.primary_package()?;
+    let manifest = workspace.primary_package()?;
+    let package = manifest.ensure_package()?;
     let name = package.name()?;
 
     let mut buf = RelativePathBuf::from(repo.path());

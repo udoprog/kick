@@ -4,7 +4,7 @@ mod dependencies;
 pub(crate) use self::dependency::Dependency;
 mod dependency;
 
-pub(crate) use self::package_manifest::{Package, PackageMut};
+pub(crate) use self::package_manifest::Package;
 mod package_manifest;
 
 pub(crate) use self::workspace_table::WorkspaceTable;
@@ -26,7 +26,7 @@ use std::path::Path;
 use anyhow::{anyhow, Context, Result};
 use musli::{Decode, Encode};
 use relative_path::{RelativePath, RelativePathBuf};
-use toml_edit::{Array, DocumentMut, Formatted, Item, Key, Table, TableLike, Value};
+use toml_edit::{DocumentMut, Item, Table, TableLike};
 
 use crate::ctxt::Paths;
 use crate::workspace::Crates;
@@ -54,43 +54,6 @@ pub(crate) fn open(paths: Paths<'_>, manifest_path: &RelativePath) -> Result<Opt
             .with_context(|| anyhow!("{}", manifest_path))?,
         path: manifest_path.into(),
     }))
-}
-
-macro_rules! insert_field {
-    ($insert:ident, $field:literal) => {
-        pub(crate) fn $insert<S>(&mut self, value: S) -> Result<()>
-        where
-            S: AsRef<str>,
-        {
-            let package = self.ensure_package_mut()?;
-            package.doc.insert(
-                $field,
-                Item::Value(Value::String(Formatted::new(value.as_ref().to_owned()))),
-            );
-            Ok(())
-        }
-    };
-}
-
-macro_rules! insert_list {
-    ($insert:ident, $name:literal) => {
-        pub(crate) fn $insert<I>(&mut self, iter: I) -> Result<()>
-        where
-            I: IntoIterator,
-            I::Item: AsRef<str>,
-        {
-            let package = self.ensure_package_mut()?;
-
-            let mut array = Array::new();
-
-            for keyword in iter {
-                array.push(keyword.as_ref().to_owned());
-            }
-
-            package.doc.insert($name, Item::Value(Value::Array(array)));
-            Ok(())
-        }
-    };
 }
 
 /// A parsed `Cargo.toml`.
@@ -140,102 +103,15 @@ impl Manifest {
     }
 
     /// Access `[package]` section.
-    pub(crate) fn as_package(&self) -> Option<Package<'_>> {
+    pub(crate) fn as_package(&self) -> Option<&Package> {
         let doc = self.doc.get("package")?.as_table()?;
-        Some(Package::new(doc, self))
+        Some(Package::new(doc))
     }
 
     /// Access `[package]` section mutably.
-    pub(crate) fn as_package_mut(&mut self) -> Option<PackageMut<'_>> {
+    pub(crate) fn as_package_mut(&mut self) -> Option<&mut Package> {
         let doc = self.doc.get_mut("package")?.as_table_mut()?;
-        Some(PackageMut::new(doc))
-    }
-
-    /// Insert authors.
-    pub(crate) fn insert_authors(&mut self, authors: Vec<String>) -> Result<()> {
-        let package = self.ensure_package_mut()?;
-        let mut array = Array::new();
-
-        for author in authors {
-            array.push(author);
-        }
-
-        package
-            .doc
-            .insert("authors", Item::Value(Value::Array(array)));
-        Ok(())
-    }
-
-    /// Remove version.
-    pub(crate) fn remove_version(&mut self) -> bool {
-        if let Some(package) = self.doc.get_mut("package") {
-            if let Some(table) = package.as_table_like_mut() {
-                return table.remove("version").is_some();
-            }
-        }
-
-        false
-    }
-
-    /// Remove rust-version.
-    pub(crate) fn remove_rust_version(&mut self) -> bool {
-        let Some(table) = self
-            .doc
-            .get_mut("package")
-            .and_then(Item::as_table_like_mut)
-        else {
-            return false;
-        };
-
-        table.remove("rust-version").is_some()
-    }
-
-    /// Set rust-version of the manifest.
-    pub(crate) fn set_rust_version(&mut self, version: &RustVersion) -> bool {
-        let Some(table) = self
-            .doc
-            .get_mut("package")
-            .and_then(Item::as_table_like_mut)
-        else {
-            return false;
-        };
-
-        let version = version.to_string();
-
-        if table.get("rust-version").and_then(Item::as_str) == Some(&version) {
-            return false;
-        }
-
-        table.insert(
-            "rust-version",
-            Item::Value(Value::String(Formatted::new(version))),
-        );
-        true
-    }
-
-    /// Sort package keys.
-    pub(crate) fn sort_package_keys(&mut self) -> Result<()> {
-        use crate::cli::check::cargo::CargoKey;
-
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-        enum SortKey<'a> {
-            CargoKey(CargoKey),
-            Other(&'a Key),
-        }
-
-        let package = self.ensure_package_mut()?;
-
-        package.doc.sort_values_by(|a, _, b, _| {
-            let a = crate::cli::check::cargo::cargo_key(a.to_string().trim())
-                .map(SortKey::CargoKey)
-                .unwrap_or(SortKey::Other(a));
-            let b = crate::cli::check::cargo::cargo_key(b.to_string().trim())
-                .map(SortKey::CargoKey)
-                .unwrap_or(SortKey::Other(b));
-            a.cmp(&b)
-        });
-
-        Ok(())
+        Some(Package::new_mut(doc))
     }
 
     /// Save to the given path.
@@ -277,11 +153,8 @@ impl Manifest {
     }
 
     /// Access `[package]` section.
-    pub(crate) fn ensure_package(&self) -> Result<&Table> {
-        self.doc
-            .get("package")
-            .and_then(|table| table.as_table())
-            .ok_or_else(|| anyhow!("missing `[package]`"))
+    pub(crate) fn ensure_package(&self) -> Result<&Package> {
+        self.as_package().context("missing `[package]`")
     }
 
     /// Access `[lib]` section.
@@ -290,17 +163,9 @@ impl Manifest {
     }
 
     /// Access `[package]` section mutably.
-    fn ensure_package_mut(&mut self) -> Result<PackageMut<'_>> {
-        self.as_package_mut()
-            .ok_or_else(|| anyhow!("missing `[package]`"))
+    pub(crate) fn ensure_package_mut(&mut self) -> Result<&mut Package> {
+        self.as_package_mut().context("missing `[package]`")
     }
-
-    insert_field!(insert_version, "version");
-    insert_field!(insert_license, "license");
-    insert_field!(insert_readme, "readme");
-    insert_field!(insert_repository, "repository");
-    insert_field!(insert_homepage, "homepage");
-    insert_field!(insert_documentation, "documentation");
 
     /// Access dependencies.
     pub(crate) fn dependencies<'a>(&'a self, crates: &'a Crates) -> Option<Dependencies<'a>> {
@@ -359,9 +224,6 @@ impl Manifest {
 
         removed
     }
-
-    insert_list!(insert_keywords, "keywords");
-    insert_list!(insert_categories, "categories");
 
     fn for_each_target_mut(&mut self, mut f: impl FnMut(&mut dyn TableLike)) {
         let Some(target) = self.doc.get_mut("target") else {

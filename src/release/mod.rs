@@ -125,7 +125,7 @@ impl ReleaseOpts {
             return Ok(None);
         };
 
-        let package = workspace.primary_package()?;
+        let package = workspace.primary_package()?.ensure_package()?;
 
         let Some(version) = package.version() else {
             return Ok(None);

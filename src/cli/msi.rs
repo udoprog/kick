@@ -33,7 +33,7 @@ fn msi(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     let root = cx.to_path(repo.path());
     let workspace = repo.workspace(cx)?;
 
-    let package = workspace.primary_package()?;
+    let package = workspace.primary_package()?.ensure_package()?;
     let name = package.name()?;
 
     let binary_path = root

@@ -178,7 +178,9 @@ fn version(
                 }
 
                 if package.version() != Some(version_string.as_str()) {
-                    modified.insert_version(&version_string)?;
+                    modified
+                        .ensure_package_mut()?
+                        .insert_version(&version_string)?;
                     changed_manifest = true;
                 }
             }
@@ -217,14 +219,15 @@ fn version(
     }
 
     if opts.commit {
-        let primary = workspace.primary_package()?;
+        let manifest = workspace.primary_package()?;
+        let primary = manifest.ensure_package()?;
 
         let version = versions
             .get(primary.name()?)
-            .context("missing version for primary manifest")?;
+            .context("Missing version for primary package")?;
 
         cx.change(Change::ReleaseCommit {
-            path: primary.manifest().dir().to_owned(),
+            path: manifest.dir().to_owned(),
             version: version.clone(),
         });
     }

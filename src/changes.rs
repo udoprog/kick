@@ -198,8 +198,8 @@ where
                 }
 
                 let workspace = repo.require_workspace(cx)?;
-                let primary_package = workspace.primary_package()?;
-                let params = cx.repo_params(&primary_package, repo)?;
+                let primary_package = workspace.primary_package()?.ensure_package()?;
+                let params = cx.repo_params(primary_package, repo)?;
 
                 let Some(string) = cx.config.workflow(repo, id, params)? else {
                     writeln!(o, "  workflows.{id}: Missing workflow template!")?;
@@ -337,21 +337,28 @@ where
 
             let workspace = repo.require_workspace(cx)?;
 
-            for package in workspace.packages() {
+            for manifest in workspace.packages() {
+                let Some(package) = manifest.as_package() else {
+                    continue;
+                };
+
                 if !package.is_publish() {
                     continue;
                 }
 
-                let mut manifest = package.manifest().clone();
+                let mut manifest = manifest.clone();
+                let package = manifest.ensure_package_mut()?;
 
                 if package.rust_version() != Some(*version) {
                     if save {
+                        package.sort_package_keys()?;
+                        package.set_rust_version(version);
+
                         tracing::info!(
                             "Saving {} with rust-version = \"{version}\"",
                             manifest.path()
                         );
-                        manifest.set_rust_version(version);
-                        manifest.sort_package_keys()?;
+
                         manifest.save_to(cx.to_path(manifest.path()))?;
                     } else {
                         tracing::info!(
@@ -377,10 +384,14 @@ where
 
             let workspace = repo.require_workspace(cx)?;
 
-            for package in workspace.packages() {
-                let mut manifest = package.manifest().clone();
+            for manifest in workspace.packages() {
+                let mut manifest = manifest.clone();
 
-                if manifest.remove_rust_version() {
+                let Some(package) = manifest.as_package_mut() else {
+                    continue;
+                };
+
+                if package.remove_rust_version() {
                     if save {
                         tracing::info!(
                             "Saving {} without rust-version (target version outdates rust-version)",
@@ -389,7 +400,7 @@ where
                         manifest.save_to(cx.to_path(manifest.path()))?;
                     } else {
                         tracing::info!(
-                            "Woudl save {} without rust-version (target version outdates rust-version)",
+                            "Would save {} without rust-version (target version outdates rust-version)",
                             manifest.path()
                         );
                     }

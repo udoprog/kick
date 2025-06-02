@@ -6,7 +6,7 @@ use anyhow::{anyhow, Result};
 use nondestructive::yaml::{self, Id};
 
 use crate::actions::{self, Actions};
-use crate::cargo::{Package, RustVersion};
+use crate::cargo::{Manifest, RustVersion};
 use crate::changes::{Change, Warning, WorkflowError};
 use crate::config::{WorkflowConfig, WorkflowFeature};
 use crate::ctxt::Ctxt;
@@ -21,7 +21,7 @@ pub(crate) struct Ci<'a> {
     workflows: &'a WorkflowManifests<'a, 'a>,
     actions: Actions<'a>,
     repo: &'a Repo,
-    package: &'a Package<'a>,
+    package: &'a Manifest,
     crates: &'a Crates,
     edits: edits::Edits,
     errors: Vec<WorkflowError>,
@@ -67,7 +67,7 @@ enum CargoFeatures {
 }
 
 /// Build ci change.
-pub(crate) fn build(cx: &Ctxt<'_>, package: &Package, repo: &Repo, crates: &Crates) -> Result<()> {
+pub(crate) fn build(cx: &Ctxt<'_>, package: &Manifest, repo: &Repo, crates: &Crates) -> Result<()> {
     let mut actions = Actions::default();
 
     for latest in cx.config.action_latest(repo) {
@@ -288,7 +288,7 @@ fn check_uses_rust_version(
                 return Ok(());
             };
 
-            let Some(rust_version) = ci.package.rust_version() else {
+            let Some(rust_version) = ci.package.ensure_package()?.rust_version() else {
                 return Ok(());
             };
 
@@ -308,7 +308,7 @@ fn check_uses_rust_version(
 }
 
 fn check_if_rust_version(ci: &mut Ci<'_>, at: Id, value: &str) -> Result<()> {
-    let Some(rust_version) = ci.package.rust_version() else {
+    let Some(rust_version) = ci.package.ensure_package()?.rust_version() else {
         return Ok(());
     };
 
@@ -340,7 +340,7 @@ fn check_if_rust_version(ci: &mut Ci<'_>, at: Id, value: &str) -> Result<()> {
 
 /// Check that the correct rust-version is used in a job.
 fn check_strategy_rust_version(ci: &mut Ci, job: &Job) {
-    let Some(rust_version) = ci.package.rust_version() else {
+    let Some(rust_version) = ci.package.as_package().and_then(|p| p.rust_version()) else {
         return;
     };
 
@@ -440,7 +440,7 @@ fn verify_single_project_build(
     job: &Job,
 ) -> Result<()> {
     let mut cargo_combos = Vec::new();
-    let features = ci.package.manifest().features(ci.crates)?;
+    let features = ci.package.features(ci.crates)?;
 
     for (_, step) in &job.matrices {
         for step in &step.steps {

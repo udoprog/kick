@@ -56,11 +56,12 @@ pub(crate) async fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts)
 #[tracing::instrument(skip_all)]
 fn check(cx: &Ctxt<'_>, repo: &Repo, urls: &mut Urls) -> Result<()> {
     let crates = repo.workspace(cx)?;
-    let primary_crate = crates.primary_package()?;
-    let primary_crate_params = cx.repo_params(&primary_crate, repo)?;
+    let primary_manifest = crates.primary_package()?;
+    let primary_package = primary_manifest.ensure_package()?;
+    let primary_params = cx.repo_params(primary_package, repo)?;
 
     let documentation = match &cx.config.documentation(repo) {
-        Some(documentation) => Some(documentation.render(&primary_crate_params)?),
+        Some(documentation) => Some(documentation.render(&primary_params)?),
         None => None,
     };
 
@@ -75,13 +76,13 @@ fn check(cx: &Ctxt<'_>, repo: &Repo, urls: &mut Urls) -> Result<()> {
         authors: cx.config.authors(repo),
     };
 
-    for package in crates.packages() {
-        let rust_version = primary_crate.rust_version();
-        cargo::work_cargo_toml(cx, crates, &package, &update_params, rust_version)?;
+    for manifest in crates.packages() {
+        let rust_version = primary_package.rust_version();
+        cargo::work_cargo_toml(cx, crates, manifest, &update_params, rust_version)?;
     }
 
     if cx.config.is_enabled(repo, "ci") {
-        ci::build(cx, &primary_crate, repo, crates).context("ci change")?;
+        ci::build(cx, primary_manifest, repo, crates).context("ci change")?;
     }
 
     if cx.config.is_enabled(repo, "readme") {
@@ -89,28 +90,32 @@ fn check(cx: &Ctxt<'_>, repo: &Repo, urls: &mut Urls) -> Result<()> {
             cx,
             repo.path(),
             repo,
-            primary_crate.manifest(),
-            &primary_crate_params,
+            primary_manifest,
+            &primary_params,
             urls,
             true,
             false,
         )?;
 
-        for package in crates.packages() {
+        for manifest in crates.packages() {
+            let Some(package) = manifest.as_package() else {
+                continue;
+            };
+
             if !package.is_publish() {
                 continue;
             }
 
-            let params = cx.repo_params(&package, repo)?;
+            let params = cx.repo_params(package, repo)?;
 
             readme::build(
                 cx,
-                package.manifest().dir(),
+                manifest.dir(),
                 repo,
-                package.manifest(),
+                manifest,
                 &params,
                 urls,
-                package.manifest().dir() != repo.path(),
+                manifest.dir() != repo.path(),
                 true,
             )?;
         }

@@ -85,7 +85,7 @@ fn compress(cx: &Ctxt<'_>, ty: Kind, opts: &Opts, repo: &Repo) -> Result<()> {
     let workspace = repo.workspace(cx)?;
 
     let release = opts.release.version(cx, repo)?;
-    let package = workspace.primary_package()?;
+    let package = workspace.primary_package()?.ensure_package()?;
     let name = package.name()?;
 
     let os = &opts.os.as_deref().unwrap_or(consts::OS);

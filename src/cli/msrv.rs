@@ -84,7 +84,8 @@ pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Re
 #[tracing::instrument(skip_all)]
 fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     let crates = repo.workspace(cx)?;
-    let primary = crates.primary_package()?;
+    let manifest = crates.primary_package()?;
+    let primary = manifest.ensure_package()?;
 
     let current_dir = cx.to_path(repo.path());
     let rust_version = primary.rust_version();
@@ -100,7 +101,7 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
         .unwrap_or(LATEST)
         .max(earliest);
 
-    let cargo_lock = cx.to_path(primary.manifest().dir().join("Cargo.lock"));
+    let cargo_lock = cx.to_path(manifest.dir().join("Cargo.lock"));
     let cargo_lock_original = cargo_lock.with_extension("lock.original");
 
     tracing::info!("Testing Rust {earliest}-{latest}");
@@ -110,12 +111,16 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
     let mut packages = Vec::new();
 
-    for p in crates.packages() {
+    for manifest in crates.packages() {
+        let Some(p) = manifest.as_package() else {
+            continue;
+        };
+
         if !p.is_publish() && !opts.include_no_publish {
             continue;
         }
 
-        packages.push(p);
+        packages.push((manifest, p));
     }
 
     while let Some(version) = candidates.current() {
@@ -158,21 +163,21 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                 save |= manifest.remove_all(cargo::DEV_DEPENDENCIES);
             }
 
-            if version < RUST_VERSION_SUPPORTED {
-                tracing::debug!("{}: Removing rust-version (since rust-version=\"{version}\" is less than {RUST_VERSION_SUPPORTED})", manifest_path.display());
-                save |= manifest.remove_rust_version();
-            } else {
-                tracing::debug!(
-                    "{}: Setting rust-version=\"{version}\"",
-                    manifest_path.display()
-                );
-                save |= manifest.set_rust_version(&version);
-            }
-
-            if let Some(mut package) = manifest.as_package_mut() {
+            if let Some(package) = manifest.as_package_mut() {
                 if !package.is_publish() && version < NO_PUBLISH_VERSION_OMIT {
                     tracing::debug!("{}: Setting version = \"0.0.0\" (since publish = false and rust-version=\"{version}\" is less than {NO_PUBLISH_VERSION_OMIT})", manifest_path.display());
                     save |= package.set_version("0.0.0");
+                }
+
+                if version < RUST_VERSION_SUPPORTED {
+                    tracing::debug!("{}: Removing rust-version (since rust-version=\"{version}\" is less than {RUST_VERSION_SUPPORTED})", manifest_path.display());
+                    save |= package.remove_rust_version();
+                } else {
+                    tracing::debug!(
+                        "{}: Setting rust-version=\"{version}\"",
+                        manifest_path.display()
+                    );
+                    save |= package.set_rust_version(&version);
                 }
             }
 
@@ -195,8 +200,8 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
         let mut failures = Vec::new();
 
-        for p in &packages {
-            let manifest_path = cx.to_path(p.manifest().path());
+        for &(manifest, _) in &packages {
+            let manifest_path = cx.to_path(manifest.path());
 
             let mut rustup = Command::new("rustup");
             rustup.args(["run", &version_string, "--"]);

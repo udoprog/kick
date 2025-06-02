@@ -41,7 +41,7 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     let release = opts.release.version(cx, repo)?;
     let workspace = repo.workspace(cx)?;
 
-    let package = workspace.primary_package()?;
+    let package = workspace.primary_package()?.ensure_package()?;
     let name = package.name()?;
     let license = package.license().context("Missing license")?;
     let description = package.description().context("Missing description")?;

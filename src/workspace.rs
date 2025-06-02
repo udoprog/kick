@@ -4,7 +4,7 @@ use std::ops::Deref;
 use anyhow::{anyhow, Context, Result};
 use relative_path::{RelativePath, RelativePathBuf};
 
-use crate::cargo::{self, Manifest, Package, WorkspaceTable};
+use crate::cargo::{self, Manifest, WorkspaceTable};
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::model::RepoRef;
@@ -131,38 +131,30 @@ impl Crates {
     }
 
     /// Iterate over manifest packages.
-    pub(crate) fn packages(&self) -> impl Iterator<Item = Package<'_>> {
-        self.packages
-            .iter()
-            .flat_map(|&i| self.manifests.get(i)?.as_package())
+    pub(crate) fn packages(&self) -> impl Iterator<Item = &Manifest> {
+        self.packages.iter().flat_map(|&i| self.manifests.get(i))
     }
 
     /// Find the primary crate in the workspace.
-    pub(crate) fn primary_package(&self) -> Result<Package<'_>> {
+    pub(crate) fn primary_package(&self) -> Result<&Manifest> {
         // Single package, easy to determine primary package.
         if let &[index] = &self.packages[..] {
-            let package = self
-                .manifests
-                .get(index)
-                .context("missing package")?
-                .as_package()
-                .context("not a package")?;
+            let manifest = self.manifests.get(index).context("missing package")?;
 
-            return Ok(package);
+            return Ok(manifest);
         }
 
         // Find a package which matches the name of the project.
         if let Some(name) = &self.primary_package {
             for &index in &self.packages {
-                let package = self
-                    .manifests
-                    .get(index)
-                    .context("missing package")?
-                    .as_package()
-                    .context("not a package")?;
+                let manifest = self.manifests.get(index).context("missing package")?;
+
+                let Some(package) = manifest.as_package() else {
+                    continue;
+                };
 
                 if package.name()? == name.as_ref() {
-                    return Ok(package);
+                    return Ok(manifest);
                 }
             }
         }
