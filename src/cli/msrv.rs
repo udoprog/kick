@@ -22,7 +22,7 @@ const EARLIEST: RustVersion = RUST_VERSION_SUPPORTED;
 /// Final fallback version to use if *nothing* else can be figured out.
 const LATEST: RustVersion = RustVersion::new(1, 68);
 /// Default command to build.
-const DEFAULT_COMMAND: [&str; 2] = ["cargo", "build"];
+const DEFAULT_COMMAND: &[&str] = &["cargo", "build", "--all-features"];
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -66,9 +66,9 @@ pub(crate) struct Opts {
     /// Command to test with.
     ///
     /// This is run through `rustup run <version> <command>`, the default
-    /// command is `cargo build`. The command will be run with the argument
-    /// `--manifest-path <path>`, which will be the path to the `Cargo.toml` of
-    /// the package being built.
+    /// command is `cargo build --all-features`. The command will be run with
+    /// the argument `--manifest-path <path>`, which will be the path to the
+    /// `Cargo.toml` of the package being built.
     #[arg(value_name = "command")]
     command: Vec<String>,
 }
@@ -209,7 +209,7 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
             if !opts.command.is_empty() {
                 rustup.args(&opts.command[..]);
             } else {
-                rustup.args(DEFAULT_COMMAND);
+                rustup.args(DEFAULT_COMMAND.iter().copied());
             }
 
             rustup.args([OsStr::new("--manifest-path"), manifest_path.as_os_str()]);
