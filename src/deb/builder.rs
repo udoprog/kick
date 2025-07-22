@@ -132,7 +132,7 @@ impl ControlBuilder {
         }
 
         let installed_size = files.iter().map(|f| f.contents.len()).sum::<usize>();
-        writeln!(o, "Installed-Size: {}", installed_size)?;
+        writeln!(o, "Installed-Size: {installed_size}")?;
 
         match &self.depends[..] {
             [] => {}
@@ -327,7 +327,7 @@ impl fmt::Display for DependsBuilder {
         write!(f, "{}", self.name)?;
 
         if let Some(version) = &self.version {
-            write!(f, " ({})", version)?;
+            write!(f, " ({version})")?;
         }
 
         Ok(())

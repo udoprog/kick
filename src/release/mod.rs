@@ -433,7 +433,7 @@ impl<'a> Version<'a> {
                 999
             };
 
-            Ok(format!("0.0.{}", pre))
+            Ok(format!("0.0.{pre}"))
         }
 
         match &self.kind {
@@ -471,7 +471,7 @@ impl fmt::Display for Version<'_> {
         }
 
         for additional in &self.append {
-            write!(f, ".{}", additional)?;
+            write!(f, ".{additional}")?;
         }
 
         Ok(())
@@ -577,7 +577,7 @@ where
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for name in self.iter {
-            write!(f, ".{}", name)?;
+            write!(f, ".{name}")?;
         }
 
         Ok(())

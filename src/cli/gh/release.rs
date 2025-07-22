@@ -134,7 +134,7 @@ async fn run(
     if cx.env.github_tag() == Some(name.as_str()) {
         tracing::info!("Not updating '{name}' which is being built through GITHUB_REF");
     } else {
-        let r#ref = format!("tags/{}", name);
+        let r#ref = format!("tags/{name}");
 
         let existing = client
             .git_ref_get(path.owner, path.name, &r#ref)
@@ -144,7 +144,7 @@ async fn run(
         if let Some(existing) = existing {
             if existing.object.sha != sha {
                 tracing::info!("Updating tag '{}' (sha: {sha})", name);
-                let r#ref = format!("tags/{}", name);
+                let r#ref = format!("tags/{name}");
 
                 client
                     .git_ref_update(path.owner, path.name, &r#ref, sha, true)
@@ -153,7 +153,7 @@ async fn run(
             }
         } else {
             tracing::info!("Creating tag '{}' (sha: {sha})", name);
-            let r#ref = format!("refs/tags/{}", name);
+            let r#ref = format!("refs/tags/{name}");
 
             client
                 .git_ref_create(path.owner, path.name, &r#ref, sha)

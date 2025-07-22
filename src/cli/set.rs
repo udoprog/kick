@@ -18,7 +18,7 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
         set.insert(repo);
     }
 
-    let hint = format!("built set: {:?}", opts);
+    let hint = format!("built set: {opts:?}");
     cx.sets.save(&opts.set, set, &hint);
     Ok(())
 }

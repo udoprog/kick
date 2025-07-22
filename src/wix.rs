@@ -89,11 +89,11 @@ impl Wix {
 
         let status = command
             .arg(format!("-dRoot={}", root.display()))
-            .arg(format!("-dVersion={}", file_version))
-            .arg(format!("-dPlatform={}", platform))
-            .arg(format!("-dWin64={}", win64))
-            .arg(format!("-dProgramFilesFolder={}", program_files_folder))
-            .arg(format!("-dBinaryName={}", binary_name))
+            .arg(format!("-dVersion={file_version}"))
+            .arg(format!("-dPlatform={platform}"))
+            .arg(format!("-dWin64={win64}"))
+            .arg(format!("-dProgramFilesFolder={program_files_folder}"))
+            .arg(format!("-dBinaryName={binary_name}"))
             .arg(format!("-dBinaryPath={}", binary_path.display()))
             .args(["-ext", "WixUtilExtension"])
             .arg("-o")

@@ -65,7 +65,7 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                 pkg = pkg
                     .with_file(
                         &path,
-                        rpm::FileOptions::new(format!("/usr/bin/{}", name))
+                        rpm::FileOptions::new(format!("/usr/bin/{name}"))
                             .mode(rpm::FileMode::Regular { permissions: 0o755 }),
                     )
                     .with_context(|| anyhow!("Adding binary: {}", path.display()))?;

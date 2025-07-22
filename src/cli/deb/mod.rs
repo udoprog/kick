@@ -24,7 +24,7 @@ pub(crate) struct Opts {
 }
 
 pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
-    with_repos.run("build .deb", format_args!("deb: {:?}", opts), |cx, repo| {
+    with_repos.run("build .deb", format_args!("deb: {opts:?}"), |cx, repo| {
         deb(cx, repo, opts)
     })?;
 

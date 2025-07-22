@@ -241,6 +241,6 @@ impl fmt::Display for Dep<'_> {
 impl fmt::Debug for Dep<'_> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Dep({})", self)
+        write!(f, "Dep({self})")
     }
 }
