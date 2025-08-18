@@ -6,7 +6,7 @@ use anyhow::{bail, Result};
 use clap::Parser;
 
 use crate::cargo::Dependency;
-use crate::changes::{Change, NoVerify};
+use crate::changes::{AllowDirty, Change, NoVerify};
 use crate::cli::WithRepos;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
@@ -17,6 +17,14 @@ pub(crate) struct Opts {
     /// `--no-verify` to cargo publish.
     #[arg(long = "no-verify", value_name = "crate")]
     no_verify: Vec<String>,
+    /// Provide a list of crates which we do not verify locally by adding
+    /// `--allow-dirty` to cargo publish.
+    #[arg(long = "allow-dirty", value_name = "crate")]
+    allow_dirty: Vec<String>,
+    /// Provide a list of crates which we remove [dev-dependencies] from since
+    /// it contributes to circular dependencies during publishing.
+    #[arg(long = "remove-dev", value_name = "crate")]
+    remove_dev: Vec<String>,
     /// Skip publishing a crate.
     #[arg(long = "skip", value_name = "crate")]
     skip: Vec<String>,
@@ -41,6 +49,8 @@ pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Re
 fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
     let workspace = repo.workspace(cx)?;
     let no_verify = opts.no_verify.iter().cloned().collect::<HashSet<_>>();
+    let allow_dirty = opts.allow_dirty.iter().cloned().collect::<HashSet<_>>();
+    let remove_dev = opts.remove_dev.iter().cloned().collect::<HashSet<_>>();
     let skip = opts.skip.iter().cloned().collect::<HashSet<_>>();
 
     let mut packages = Vec::new();
@@ -170,11 +180,21 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
             _ => None,
         };
 
+        let remove_dev = remove_dev.contains(name);
+
+        let allow_dirty = match (remove_dev, allow_dirty.contains(name)) {
+            (true, _) => Some(AllowDirty::DevDependency),
+            (_, true) => Some(AllowDirty::Argument),
+            _ => None,
+        };
+
         cx.change(Change::Publish {
             name: name.to_owned(),
             manifest_dir: manifest.dir().to_owned(),
             dry_run: opts.dry_run,
             no_verify,
+            allow_dirty,
+            remove_dev,
             args: opts.cargo_publish.clone(),
         });
     }

@@ -49,9 +49,7 @@ pub(crate) fn open(paths: Paths<'_>, manifest_path: &RelativePath) -> Result<Opt
     };
 
     Ok(Some(Manifest {
-        doc: input
-            .parse()
-            .with_context(|| anyhow!("{}", manifest_path))?,
+        doc: input.parse().with_context(|| anyhow!("{manifest_path}"))?,
         path: manifest_path.into(),
     }))
 }

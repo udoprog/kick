@@ -1,10 +1,8 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 
 use crate::cargo::rust_version::NO_PUBLISH_VERSION_OMIT;
@@ -14,6 +12,8 @@ use crate::cli::WithRepos;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::process::Command;
+use crate::restore::Restore;
+use crate::utils::move_paths;
 
 /// Oldest version where rust-version was introduced.
 const RUST_VERSION_SUPPORTED: RustVersion = RustVersion::new(1, 56);
@@ -185,17 +185,13 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                 move_paths(&manifest_path, &original_path)?;
                 tracing::debug!("Saving {}", manifest.path());
                 manifest.save_to(&manifest_path)?;
-                restore
-                    .paths
-                    .push((original_path.to_owned(), manifest_path));
+                restore.insert(&original_path, manifest_path);
             }
         }
 
         if !opts.keep_cargo_lock && cargo_lock.is_file() {
             move_paths(&cargo_lock, &cargo_lock_original)?;
-            restore
-                .paths
-                .push((cargo_lock_original.clone(), cargo_lock.clone()));
+            restore.insert(&cargo_lock_original, &cargo_lock);
         }
 
         let mut failures = Vec::new();
@@ -279,17 +275,6 @@ fn parse_minor_version(
     })
 }
 
-fn move_paths(from: &Path, to: &Path) -> Result<()> {
-    tracing::debug!("moving {} -> {}", from.display(), to.display());
-
-    if to.exists() {
-        let _ = fs::remove_file(to).with_context(|| anyhow!("{}", to.display()));
-    }
-
-    fs::rename(from, to).with_context(|| anyhow!("{} -> {}", from.display(), to.display()))?;
-    Ok(())
-}
-
 struct Bisect {
     versions: HashMap<u64, bool>,
     earliest: u64,
@@ -340,25 +325,4 @@ impl Bisect {
 
 fn midpoint(start: u64, end: u64) -> u64 {
     (start + (end - start) / 2).clamp(start, end)
-}
-
-#[derive(Default)]
-struct Restore {
-    paths: Vec<(PathBuf, PathBuf)>,
-}
-
-impl Restore {
-    fn restore(&mut self) {
-        for (from, to) in self.paths.drain(..) {
-            if let Err(error) = move_paths(&from, &to) {
-                tracing::error!("Failed to restore {}: {}", from.display(), error);
-            }
-        }
-    }
-}
-
-impl Drop for Restore {
-    fn drop(&mut self) {
-        self.restore();
-    }
 }

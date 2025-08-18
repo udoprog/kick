@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use musli::storage::Encoding;
 use musli::{Decode, Encode};
 use nondestructive::yaml;
@@ -27,6 +27,7 @@ use crate::edits::{self, Edits};
 use crate::file::{File, LineColumn};
 use crate::model::RepoRef;
 use crate::process::Command;
+use crate::restore::Restore;
 
 const ENCODING: Encoding = Encoding::new();
 
@@ -454,6 +455,8 @@ where
             manifest_dir,
             args,
             no_verify,
+            allow_dirty,
+            remove_dev,
         } => {
             if save {
                 tracing::info!("{}: publishing: {}", manifest_dir, name);
@@ -465,16 +468,50 @@ where
                     command.arg("--no-verify");
                 }
 
+                if allow_dirty.is_some() {
+                    command.arg("--allow-dirty");
+                }
+
                 if *dry_run {
                     command.arg("--dry-run");
                 }
 
+                let mut restore = Restore::default();
+
+                if *remove_dev {
+                    let cargo_toml = manifest_dir.join("Cargo.toml");
+                    let cargo_toml_keep = manifest_dir.join("Cargo.toml.keep");
+
+                    let mut manifest = crate::cargo::open(cx.paths, manifest_dir)?
+                        .with_context(|| anyhow!("Missing {cargo_toml}"))?;
+
+                    if manifest.remove(crate::cargo::DEV_DEPENDENCIES) {
+                        let cargo_toml = cx.to_path(cargo_toml);
+                        let cargo_toml_keep = cx.to_path(cargo_toml_keep);
+
+                        if let Err(e) = fs::rename(&cargo_toml, &cargo_toml_keep) {
+                            return Err(e).context(anyhow!(
+                                "Failed to rename {} to {}",
+                                cargo_toml.display(),
+                                cargo_toml_keep.display()
+                            ));
+                        }
+
+                        manifest.save_to(&cargo_toml)?;
+                        restore.insert(cargo_toml_keep, cargo_toml);
+                    }
+                }
+
+                let path = cx.to_path(manifest_dir);
+
                 command
                     .args(&args[..])
                     .stdin(Stdio::null())
-                    .current_dir(cx.to_path(manifest_dir));
+                    .current_dir(&path);
 
                 let status = command.status()?;
+
+                restore.restore();
 
                 if !status.success() {
                     bail!("{}: failed to publish: {status}", manifest_dir);
@@ -482,13 +519,33 @@ where
 
                 tracing::info!("{status}");
             } else {
-                let no_verify = match no_verify {
-                    Some(NoVerify::Argument) => " with `--no-verify` due to argument",
-                    Some(NoVerify::Circular) => " with `--no-verify` due to circular dependency",
-                    None => "",
-                };
+                tracing::info!("{manifest_dir}: would publish: {name}");
 
-                tracing::info!("{manifest_dir}: would publish: {name}{no_verify}");
+                if let Some(no_verify) = no_verify {
+                    match no_verify {
+                        NoVerify::Argument => {
+                            tracing::info!("{manifest_dir}: With `--no-verify` due to argument.");
+                        }
+                        NoVerify::Circular => {
+                            tracing::info!(
+                                "{manifest_dir}: With `--no-verify` due to circular dependency."
+                            );
+                        }
+                    };
+                }
+
+                if let Some(allow_dirty) = allow_dirty {
+                    match allow_dirty {
+                        AllowDirty::DevDependency => {
+                            tracing::info!(
+                                "{manifest_dir}: With `--allow-dirty` due to `--remove-dev`."
+                            );
+                        }
+                        AllowDirty::Argument => {
+                            tracing::info!("{manifest_dir}: With `--allow-dirty` due to argument.");
+                        }
+                    }
+                }
             }
         }
     };
@@ -612,6 +669,12 @@ pub(crate) enum NoVerify {
     Circular,
 }
 
+#[derive(Clone, Encode, Decode)]
+pub(crate) enum AllowDirty {
+    DevDependency,
+    Argument,
+}
+
 /// A single change.
 #[derive(Clone, Encode, Decode)]
 pub(crate) struct ChangeWrapper {
@@ -686,6 +749,10 @@ pub(crate) enum Change {
         dry_run: bool,
         /// Whether `--no-verify` should be passed and the cause fo passing it.
         no_verify: Option<NoVerify>,
+        /// Whether `--allow-dirty` should be passed.
+        allow_dirty: Option<AllowDirty>,
+        /// Whether dev dependencies should be removed.
+        remove_dev: bool,
         /// Extra arguments.
         args: Vec<OsString>,
     },
