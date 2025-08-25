@@ -482,7 +482,7 @@ where
                     let cargo_toml = manifest_dir.join("Cargo.toml");
                     let cargo_toml_keep = manifest_dir.join("Cargo.toml.keep");
 
-                    let mut manifest = crate::cargo::open(cx.paths, manifest_dir)?
+                    let mut manifest = crate::cargo::open(cx.paths, &cargo_toml)?
                         .with_context(|| anyhow!("Missing {cargo_toml}"))?;
 
                     if manifest.remove(crate::cargo::DEV_DEPENDENCIES) {
