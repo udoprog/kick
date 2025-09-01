@@ -6,14 +6,14 @@ use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fmt;
 
-use anyhow::{bail, ensure, Result};
+use anyhow::{Result, bail, ensure};
 use chrono::{Datelike, Utc};
 use clap::Parser;
 use serde::Serialize;
 
+use crate::Repo;
 use crate::ctxt::Ctxt;
 use crate::env::Env;
-use crate::Repo;
 
 /// The base year. Cannot perform releases prior to this year.
 const BASE_YEAR: u32 = 2000;
@@ -80,7 +80,9 @@ impl ReleaseOpts {
         };
 
         let Some(version) = self.try_project(cx, repo, today)? else {
-            bail!("Could not determine version, this can be done through --version, KICK_VERSION, or a project configuration like Cargo.toml");
+            bail!(
+                "Could not determine version, this can be done through --version, KICK_VERSION, or a project configuration like Cargo.toml"
+            );
         };
 
         Ok(version)

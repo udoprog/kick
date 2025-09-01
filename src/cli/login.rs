@@ -4,9 +4,9 @@ use std::io::{BufRead, Write};
 use anyhow::{Context, Result};
 use clap::Parser;
 
+use crate::GITHUB_TOKEN;
 use crate::ctxt::Ctxt;
 use crate::env::GithubTokenSource;
-use crate::GITHUB_TOKEN;
 
 const URL: &str = "https://github.com/settings/personal-access-tokens";
 

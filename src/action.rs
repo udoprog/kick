@@ -6,10 +6,10 @@ use std::path::Path;
 use std::rc::Rc;
 use std::str::{self, FromStr};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use bstr::ByteSlice;
-use gix::objs::tree::EntryMode;
 use gix::objs::Kind;
+use gix::objs::tree::EntryMode;
 use gix::{Id, ObjectId, Repository};
 use nondestructive::yaml;
 use relative_path::{RelativePath, RelativePathBuf};

@@ -1,9 +1,9 @@
+use Syntax::{Eof, Whitespace};
 use anyhow::Result;
 use syntree::{Builder, Error};
-use Syntax::{Eof, Whitespace};
 
-use super::lexer::{Lexer, Token};
 use super::Syntax;
+use super::lexer::{Lexer, Token};
 
 /// Parser and lexer baked into one.
 pub(crate) struct Parser<'a> {

@@ -2,7 +2,7 @@ use std::fmt;
 use std::io::{Cursor, Write};
 use std::time::SystemTime;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use relative_path::{RelativePath, RelativePathBuf};
 
 use super::Architecture;

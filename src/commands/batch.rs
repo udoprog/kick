@@ -9,17 +9,17 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::str;
 
-use anyhow::{anyhow, bail, ensure, Context, Result};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use relative_path::{Component, RelativePath};
 use termcolor::{ColorSpec, WriteColor};
 
+use crate::Distribution;
 use crate::config::Os;
 use crate::once::Once;
 use crate::process::{Command, OsArg};
 use crate::rstr::{RStr, RString};
 use crate::shell::Shell;
 use crate::workflows::{Matrix, Step};
-use crate::Distribution;
 
 use super::{
     ActionConfig, BatchConfig, Env, Run, RunKind, RunOn, Schedule, ScheduleBasicCommand,
@@ -862,11 +862,7 @@ fn translate_path_to_windows(path: &str) -> Result<String> {
 }
 
 fn pluralize<T>(len: usize, singular: T, plural: T) -> T {
-    if len == 1 {
-        singular
-    } else {
-        plural
-    }
+    if len == 1 { singular } else { plural }
 }
 
 struct Line<'a, O>

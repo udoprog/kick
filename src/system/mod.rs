@@ -14,7 +14,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 
 pub(crate) use self::dnf::Dnf;
 pub(crate) use self::generic::Generic;
@@ -80,25 +80,28 @@ impl System {
 
     /// Enumerate all tools.
     pub(crate) fn tools(&self) -> impl Iterator<Item = (&'static str, &Path, Option<String>)> + '_ {
-        let it = self.git.iter().map(|c| ("git", c.path.as_path(), None));
-        let it = it.chain(self.wsl.iter().map(|c| ("wsl", c.path.as_path(), None)));
-        let it = it.chain(
-            self.powershell
-                .iter()
-                .map(|c| ("powershell", c.path.as_path(), None)),
-        );
-        let it = it.chain(self.bash.iter().map(|c| ("bash", c.path.as_path(), None)));
-        let it = it.chain(
-            self.podman
-                .iter()
-                .map(|c| ("podman", c.path.as_path(), None)),
-        );
-        let it = it.chain(
-            self.node
-                .iter()
-                .map(|c| ("node", c.path.as_path(), Some(c.version.to_string()))),
-        );
-        it
+        let a = self.git.iter().map(|c| ("git", c.path.as_path(), None));
+
+        let b = self.wsl.iter().map(|c| ("wsl", c.path.as_path(), None));
+
+        let c = self
+            .powershell
+            .iter()
+            .map(|c| ("powershell", c.path.as_path(), None));
+
+        let d = self.bash.iter().map(|c| ("bash", c.path.as_path(), None));
+
+        let e = self
+            .podman
+            .iter()
+            .map(|c| ("podman", c.path.as_path(), None));
+
+        let f = self
+            .node
+            .iter()
+            .map(|c| ("node", c.path.as_path(), Some(c.version.to_string())));
+
+        a.chain(b).chain(c).chain(d).chain(e).chain(f)
     }
 
     #[cfg(windows)]

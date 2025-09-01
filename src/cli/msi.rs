@@ -1,6 +1,6 @@
 use std::env::consts::{self, EXE_EXTENSION};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::Parser;
 use relative_path::RelativePathBuf;
 

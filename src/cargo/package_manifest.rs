@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use toml_edit::{Array, Formatted, Item, Key, Table, Value};
 
 use crate::cargo::RustVersion;

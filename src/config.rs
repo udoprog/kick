@@ -8,19 +8,19 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::str::{self, FromStr};
 
-use anyhow::{anyhow, bail, Context, Error, Result};
+use anyhow::{Context, Error, Result, anyhow, bail};
 use musli::{Decode, Encode};
 use relative_path::{RelativePath, RelativePathBuf};
 use semver::Version;
 use tempfile::NamedTempFile;
 
+use crate::KICK_TOML;
 use crate::ctxt::Paths;
 use crate::glob::Glob;
 use crate::keys::Keys;
 use crate::model::{Repo, RepoParams, RepoRef};
 use crate::shell::Shell;
 use crate::templates::{Template, Templating};
-use crate::KICK_TOML;
 
 /// Default job name.
 const DEFAULT_CI_NAME: &str = "CI";

@@ -1,7 +1,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::ops::Deref;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use relative_path::{RelativePath, RelativePathBuf};
 
 use crate::cargo::{self, Manifest, WorkspaceTable};

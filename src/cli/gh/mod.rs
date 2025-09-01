@@ -5,7 +5,7 @@ mod workflows;
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
-use crate::cli::{WithRepos, PARALLELISM};
+use crate::cli::{PARALLELISM, WithRepos};
 
 #[derive(Debug, Parser)]
 struct SharedOpts {

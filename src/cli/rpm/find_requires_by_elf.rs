@@ -5,10 +5,10 @@ use std::process::Stdio;
 
 use anyhow::{Context, Result};
 use bstr::{BStr, ByteSlice};
+use elf::ElfStream;
 use elf::abi::{EM_ALPHA, SHT_GNU_HASH, SHT_HASH};
 use elf::endian::AnyEndian;
 use elf::file::Class;
-use elf::ElfStream;
 
 use crate::process::Command;
 

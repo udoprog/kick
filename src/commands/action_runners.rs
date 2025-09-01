@@ -3,14 +3,14 @@ use std::path::Path;
 use std::rc::Rc;
 use std::str;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use crate::action::ActionKind;
 use crate::rstr::rformat;
 
 use super::{
-    build_steps, ActionConfig, BatchConfig, Env, Schedule, ScheduleGroup, ScheduleNodeAction,
-    ScheduleOutputs,
+    ActionConfig, BatchConfig, Env, Schedule, ScheduleGroup, ScheduleNodeAction, ScheduleOutputs,
+    build_steps,
 };
 
 #[derive(Debug)]

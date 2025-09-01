@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::str;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use crate::config::{Distribution, Os};
 use crate::ctxt::Ctxt;

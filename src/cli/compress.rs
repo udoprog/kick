@@ -7,7 +7,7 @@ use std::io::{self, Cursor, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
 use time::OffsetDateTime;
 

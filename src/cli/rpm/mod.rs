@@ -7,12 +7,12 @@ use std::fs::File;
 use std::io::{BufWriter, Write as _};
 use std::path::Path;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use relative_path::RelativePath;
 
 use crate::cli::WithRepos;
-use crate::config::{rpm_requires, PackageFile, VersionConstraint, VersionRequirement};
+use crate::config::{PackageFile, VersionConstraint, VersionRequirement, rpm_requires};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::packaging::InstallFile;

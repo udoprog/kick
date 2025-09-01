@@ -1,7 +1,7 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
-use crate::ctxt::Ctxt;
 use crate::SharedOptions;
+use crate::ctxt::Ctxt;
 
 pub(crate) async fn entry(cx: &mut Ctxt<'_>, _: &SharedOptions) -> Result<()> {
     let client = cx.octokit()?;

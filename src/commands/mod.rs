@@ -39,8 +39,8 @@ use self::run::{Run, RunKind};
 
 mod schedule;
 use self::schedule::{
-    build_steps, Schedule, ScheduleBasicCommand, ScheduleGroup, ScheduleNodeAction,
-    ScheduleOutputs, ScheduleUse,
+    Schedule, ScheduleBasicCommand, ScheduleGroup, ScheduleNodeAction, ScheduleOutputs,
+    ScheduleUse, build_steps,
 };
 
 mod scheduler;

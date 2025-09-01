@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use musli::storage::Encoding;
 use musli::{Decode, Encode};
 use nondestructive::yaml;
@@ -62,8 +62,8 @@ pub(crate) fn load_changes(path: &Path) -> Result<Option<Vec<ChangeWrapper>>> {
 
 /// Save changes to the given path.
 pub(crate) fn save_changes(changes: &[ChangeWrapper], path: &Path) -> Result<()> {
-    use flate2::write::GzEncoder;
     use flate2::Compression;
+    use flate2::write::GzEncoder;
 
     let f = fs::File::create(path)?;
     let mut w = GzEncoder::new(f, Compression::default());
@@ -131,7 +131,11 @@ where
         }
         Warning::NoFeatures { path } => {
             let path = cx.to_path(path);
-            writeln!(o,"{}: trying featured build (--all-features, --no-default-features), but no features present", path.display())?;
+            writeln!(
+                o,
+                "{}: trying featured build (--all-features, --no-default-features), but no features present",
+                path.display()
+            )?;
         }
         Warning::MissingEmptyFeatures { path } => {
             let path = cx.to_path(path);

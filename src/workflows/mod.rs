@@ -18,7 +18,7 @@ use std::mem::take;
 use std::rc::Rc;
 use std::str;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use bstr::ByteSlice;
 use nondestructive::yaml;
 use relative_path::{RelativePath, RelativePathBuf};

@@ -1,7 +1,7 @@
 use std::env::consts::EXE_EXTENSION;
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use relative_path::{RelativePath, RelativePathBuf};
 
 use crate::config::PackageFile;

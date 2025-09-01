@@ -2,7 +2,7 @@ use std::io;
 use std::ops::Range;
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use pulldown_cmark::{Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd};
 use relative_path::RelativePath;
 use reqwest::Url;

@@ -5,7 +5,7 @@ use std::path::Path;
 use std::rc::Rc;
 use std::str;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use bstr::BString;
 use gix::ObjectId;
 use relative_path::RelativePathBuf;

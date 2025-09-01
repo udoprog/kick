@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::mem::take;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use nondestructive::yaml::{self, Id};
 
 use crate::actions::{self, Actions};

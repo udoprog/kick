@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::process::Stdio;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 
 use crate::cargo::rust_version::NO_PUBLISH_VERSION_OMIT;
@@ -165,12 +165,18 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
             if let Some(package) = manifest.as_package_mut() {
                 if !package.is_publish() && version < NO_PUBLISH_VERSION_OMIT {
-                    tracing::debug!("{}: Setting version = \"0.0.0\" (since publish = false and rust-version=\"{version}\" is less than {NO_PUBLISH_VERSION_OMIT})", manifest_path.display());
+                    tracing::debug!(
+                        "{}: Setting version = \"0.0.0\" (since publish = false and rust-version=\"{version}\" is less than {NO_PUBLISH_VERSION_OMIT})",
+                        manifest_path.display()
+                    );
                     save |= package.set_version("0.0.0");
                 }
 
                 if version < RUST_VERSION_SUPPORTED {
-                    tracing::debug!("{}: Removing rust-version (since rust-version=\"{version}\" is less than {RUST_VERSION_SUPPORTED})", manifest_path.display());
+                    tracing::debug!(
+                        "{}: Removing rust-version (since rust-version=\"{version}\" is less than {RUST_VERSION_SUPPORTED})",
+                        manifest_path.display()
+                    );
                     save |= package.remove_rust_version();
                 } else {
                     tracing::debug!(

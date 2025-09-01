@@ -1,7 +1,7 @@
 use relative_path::RelativePath;
 use toml_edit::{Item, Table};
 
-use crate::cargo::{DependenciesTable, BUILD_DEPENDENCIES, DEPENDENCIES, DEV_DEPENDENCIES};
+use crate::cargo::{BUILD_DEPENDENCIES, DEPENDENCIES, DEV_DEPENDENCIES, DependenciesTable};
 
 /// Represents the `[workspace]` section of a manifest.
 #[repr(transparent)]

@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use anyhow::{bail, ensure, Result};
+use anyhow::{Result, bail, ensure};
 use clap::Parser;
 
 use crate::cli::WithReposAsync;

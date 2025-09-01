@@ -1,6 +1,6 @@
 use std::fmt;
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use termcolor::WriteColor;
 
 use crate::process::Command;

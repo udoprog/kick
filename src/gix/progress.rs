@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use gix::progress::prodash::progress::Step;
 use gix::progress::{AtomicStep, Id, MessageLevel, StepShared, Unit};

@@ -1,12 +1,12 @@
 use std::fs;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use relative_path::RelativePath;
 
 use crate::cli::WithRepos;
-use crate::config::deb_depends;
 use crate::config::VersionRequirement;
+use crate::config::deb_depends;
 use crate::ctxt::Ctxt;
 use crate::deb;
 use crate::model::Repo;

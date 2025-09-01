@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::io::Write;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::Parser;
 use termcolor::{ColorChoice, StandardStream};
 

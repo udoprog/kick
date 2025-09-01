@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::str;
 
-use anyhow::{bail, ensure, Context, Result};
-use base64::engine::general_purpose::STANDARD_NO_PAD;
+use anyhow::{Context, Result, bail, ensure};
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD_NO_PAD;
 use bstr::ByteSlice;
 use reqwest::Url;
 

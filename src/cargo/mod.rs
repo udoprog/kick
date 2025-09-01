@@ -23,7 +23,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use musli::{Decode, Encode};
 use relative_path::{RelativePath, RelativePathBuf};
 use toml_edit::{DocumentMut, Item, Table, TableLike};

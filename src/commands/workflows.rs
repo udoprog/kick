@@ -1,13 +1,13 @@
 use std::rc::Rc;
 use std::str;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use crate::config::{Distribution, Os};
 use crate::rstr::RStr;
 use crate::workflows::{Job, Matrix, Steps, WorkflowManifest};
 
-use super::{build_steps, Batch, BatchConfig, RunOn};
+use super::{Batch, BatchConfig, RunOn, build_steps};
 
 /// A collection of loaded workflows.
 pub(crate) struct LoadedWorkflow<'a, 'cx> {

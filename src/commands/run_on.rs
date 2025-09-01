@@ -1,6 +1,6 @@
 use crate::config::{Distribution, Os};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use super::BatchConfig;
 

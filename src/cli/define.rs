@@ -5,13 +5,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::{ffi::OsString, fmt};
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use clap::{Parser, ValueEnum};
 
+use crate::Repo;
 use crate::cli::WithRepos;
 use crate::ctxt::Ctxt;
 use crate::release::ReleaseOpts;
-use crate::Repo;
 
 #[derive(Default, Debug, Clone, Copy, ValueEnum)]
 enum Format {

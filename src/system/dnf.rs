@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::process::Stdio;
 
 use anyhow::{Context, Result};
-use bstr::io::BufReadExt;
 use bstr::ByteSlice;
+use bstr::io::BufReadExt;
 
 use crate::process::Command;
 

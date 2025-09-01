@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::str;
 
-use anyhow::{bail, ensure, Result};
+use anyhow::{Result, bail, ensure};
 
 use crate::config::{Distribution, Os};
 use crate::process::Command;

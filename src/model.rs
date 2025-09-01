@@ -7,7 +7,7 @@ use std::ops::Deref;
 use std::path::Path;
 use std::rc::Rc;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use musli::{Decode, Encode};
 use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Deserialize, Serialize, Serializer};

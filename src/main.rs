@@ -367,10 +367,10 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::{Args, Parser, Subcommand};
 
 use config::{Config, Distribution, Os};
@@ -766,7 +766,9 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         if opts.action.requires_token() {
             tracing::warn!("No .github-token or --token argument found");
         } else {
-            tracing::trace!("No .github-token or --token argument found, heavy rate limiting will apply and unless specified some actions will not work")
+            tracing::trace!(
+                "No .github-token or --token argument found, heavy rate limiting will apply and unless specified some actions will not work"
+            )
         }
     }
 

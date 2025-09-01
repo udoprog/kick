@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use relative_path::{RelativePath, RelativePathBuf};
-use reqwest::{header, StatusCode};
+use reqwest::{StatusCode, header};
 use tokio::sync::mpsc::Sender;
 use url::Url;
 

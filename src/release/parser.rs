@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::str;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use super::{Date, SemanticVersion, Tag, Tail, Version, VersionKind};
 

@@ -1,13 +1,13 @@
 use std::marker::PhantomData;
 use std::pin::pin;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures_core::Stream;
 use reqwest::header::HeaderMap;
-use reqwest::{header, Method, Response, StatusCode};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use reqwest::{Method, Response, StatusCode, header};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use url::Url;
 

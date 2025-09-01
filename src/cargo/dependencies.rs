@@ -33,7 +33,7 @@ impl<'a> Dependencies<'a> {
     }
 
     /// Iterate over dependencies.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = Dependency<'a>> + 'a {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = Dependency<'a>> + 'a + use<'a> {
         let mut iter = self.doc.iter();
         let workspace = self.crates;
         let accessor = self.accessor;

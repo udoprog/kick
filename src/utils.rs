@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 
 /// Move a path from one location to another.
 pub(crate) fn move_paths(from: &Path, to: &Path) -> Result<()> {

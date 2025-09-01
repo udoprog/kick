@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
 use std::rc::Rc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use termcolor::WriteColor;
 
 use crate::config::Os;

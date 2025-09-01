@@ -149,7 +149,7 @@ impl<'a> Parser<'a> {
                 return Err(ParseError::ExpectedSlice {
                     expected: Box::from("submodule"),
                     actual: Box::from(actual),
-                })
+                });
             }
         }
 

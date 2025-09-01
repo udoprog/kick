@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, ChildStdout, ExitStatus, Output, Stdio};
 use std::rc::Rc;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 
 use crate::rstr::{RStr, RString};
 use crate::shell::Shell;

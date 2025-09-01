@@ -120,7 +120,7 @@ impl<'a> Lexer<'a> {
                 return Token {
                     len: 0,
                     syntax: Syntax::Eof,
-                }
+                };
             }
             (c, _, _) if c.is_whitespace() => {
                 self.consume_while(char::is_whitespace);
