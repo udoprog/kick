@@ -191,25 +191,39 @@ fn version(
             }
         }
 
-        for key in cargo::DEPS {
-            if let Some(deps) = modified.get_mut(key).and_then(|d| d.as_table_like_mut()) {
-                if modify_dependencies(deps, &old_versions, &new_versions)? {
-                    changed_manifest = true;
+        let mut handle_table_like = |table: &mut dyn TableLike| -> Result<()> {
+            if let Some(target) = table.get_mut(cargo::TARGET)
+                && let Some(targets) = target.as_table_like_mut()
+            {
+                for (_, table) in targets.iter_mut() {
+                    for key in cargo::DEPS {
+                        if let Some(deps) = table.get_mut(key).and_then(|d| d.as_table_like_mut()) {
+                            if modify_dependencies(deps, &old_versions, &new_versions)? {
+                                changed_manifest = true;
+                            }
+                        }
+                    }
                 }
             }
-        }
 
-        if let Some(workspace) = modified
-            .get_mut(cargo::WORKSPACE)
-            .and_then(|d| d.as_table_like_mut())
-        {
             for key in cargo::DEPS {
-                if let Some(deps) = workspace.get_mut(key).and_then(|d| d.as_table_like_mut()) {
+                if let Some(deps) = table.get_mut(key).and_then(|d| d.as_table_like_mut()) {
                     if modify_dependencies(deps, &old_versions, &new_versions)? {
                         changed_manifest = true;
                     }
                 }
             }
+
+            Ok(())
+        };
+
+        handle_table_like(modified.as_table_like_mut())?;
+
+        if let Some(workspace) = modified
+            .get_mut(cargo::WORKSPACE)
+            .and_then(|d| d.as_table_like_mut())
+        {
+            handle_table_like(workspace)?;
         }
 
         if changed_manifest {

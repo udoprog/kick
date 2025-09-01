@@ -41,6 +41,8 @@ pub(crate) const DEV_DEPENDENCIES: &str = "dev-dependencies";
 pub(crate) const BUILD_DEPENDENCIES: &str = "build-dependencies";
 /// Various kinds of dependencies sections.
 pub(crate) const DEPS: [&str; 3] = [DEPENDENCIES, DEV_DEPENDENCIES, BUILD_DEPENDENCIES];
+/// The "target" field.
+pub(crate) const TARGET: &str = "target";
 
 /// Open a `Cargo.toml`.
 pub(crate) fn open(paths: Paths<'_>, manifest_path: &RelativePath) -> Result<Option<Manifest>> {
@@ -201,6 +203,11 @@ impl Manifest {
             crates,
             WorkspaceTable::build_dependencies,
         ))
+    }
+
+    /// Get the document as a [`TableLike`].
+    pub(crate) fn as_table_like_mut(&mut self) -> &mut dyn TableLike {
+        self.doc.as_table_mut()
     }
 
     /// Get the given key.
