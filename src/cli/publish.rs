@@ -32,7 +32,11 @@ pub(crate) struct Opts {
     #[arg(long)]
     dry_run: bool,
     /// Options passed to `cargo publish`.
+    #[arg(long = "option", short = 'O')]
     cargo_publish: Vec<OsString>,
+    /// List of crates to consider when publishing.
+    #[arg(value_name = "crate")]
+    crates: Vec<String>,
 }
 
 pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
@@ -52,25 +56,38 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
     let allow_dirty = opts.allow_dirty.iter().cloned().collect::<HashSet<_>>();
     let remove_dev = opts.remove_dev.iter().cloned().collect::<HashSet<_>>();
     let skip = opts.skip.iter().cloned().collect::<HashSet<_>>();
+    let filter = opts.crates.iter().cloned().collect::<HashSet<_>>();
 
-    let mut packages = Vec::new();
+    let filter = |name: &str| {
+        if skip.contains(name) {
+            return false;
+        }
+
+        if filter.is_empty() {
+            return true;
+        }
+
+        filter.contains(name)
+    };
+
+    let mut candidates = Vec::new();
     let mut deps = HashMap::<_, Vec<_>>::new();
     let mut pending = HashSet::new();
 
     for manifest in workspace.packages() {
-        let Some(package) = manifest.as_package() else {
+        let Some(p) = manifest.as_package() else {
             continue;
         };
 
-        if !package.is_publish() {
+        if !p.is_publish() {
             continue;
         }
 
-        pending.insert(package.name()?);
-        packages.push((manifest, package));
+        pending.insert(p.name()?);
+        candidates.push((manifest, p));
     }
 
-    for &(m, package) in &packages {
+    for &(m, package) in &candidates {
         let from = package.name()?;
 
         let a = m
@@ -117,7 +134,7 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
     'outer: while !pending.is_empty() {
         let start = pending.len();
 
-        for &(manifest, package) in &packages {
+        for &(manifest, package) in &candidates {
             let name = package.name()?;
 
             if !pending.contains(name) {
@@ -167,10 +184,10 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
         bail!("Failed to order packages for publishing:\nPending: {pending:?}\nOrdered: {ordered:?}\nDependencies: {deps:?}");
     }
 
-    for (manifest, package) in ordered.into_iter() {
-        let name = package.name()?;
+    for (manifest, p) in ordered.into_iter() {
+        let name = p.name()?;
 
-        if skip.contains(name) {
+        if filter(name) {
             continue;
         }
 

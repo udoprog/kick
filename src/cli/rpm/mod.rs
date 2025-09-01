@@ -49,7 +49,7 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     let version = release.to_string();
 
     let mut pkg = rpm::PackageBuilder::new(name, &version, license, ARCH, description)
-        .compression(rpm::CompressionType::Gzip);
+        .using_config(rpm::BuildConfig::v4().compression(rpm::CompressionType::Gzip));
 
     let mut requires = BTreeSet::new();
 

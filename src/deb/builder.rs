@@ -179,7 +179,7 @@ impl ControlBuilder {
     }
 
     fn build(self, files: &[FileBuilder]) -> Result<Vec<u8>> {
-        let compression = xz2::write::XzEncoder::new(Vec::new(), 9);
+        let compression = liblzma::write::XzEncoder::new(Vec::new(), 9);
         let mut builder = tar::Builder::new(compression);
 
         let control = self.control(files)?;
@@ -225,7 +225,7 @@ impl DataBuilder {
     }
 
     fn build(self) -> Result<Vec<u8>> {
-        let compression = xz2::write::XzEncoder::new(Vec::new(), 9);
+        let compression = liblzma::write::XzEncoder::new(Vec::new(), 9);
         let mut builder = tar::Builder::new(compression);
 
         for file in &self.files {

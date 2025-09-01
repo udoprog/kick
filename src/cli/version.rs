@@ -91,7 +91,8 @@ fn version(
 ) -> Result<()> {
     let workspace = repo.workspace(cx)?;
 
-    let mut versions = HashMap::new();
+    let mut old_versions = HashMap::new();
+    let mut new_versions = HashMap::new();
 
     for manifest in workspace.manifests() {
         let Some(package) = manifest.as_package() else {
@@ -113,6 +114,10 @@ fn version(
         } else {
             None
         };
+
+        if let Some(version) = &current_version {
+            old_versions.insert(name.to_string(), version.clone());
+        }
 
         if version_set.is_bump() {
             if let Some(from) = &current_version {
@@ -143,13 +148,13 @@ fn version(
                     "Bump version"
                 );
 
-                versions.insert(name.to_string(), to);
+                new_versions.insert(name.to_string(), to);
             }
         }
 
         if let Some(version) = version_set.crates.get(name).or(version_set.base.as_ref()) {
             tracing::info!(?name, version = ?version.to_string(), ?name, "Set version");
-            versions.insert(name.to_string(), version.clone());
+            new_versions.insert(name.to_string(), version.clone());
         }
     }
 
@@ -161,7 +166,7 @@ fn version(
         if let Some(package) = manifest.as_package() {
             let name = package.name()?;
 
-            if let Some(version) = versions.get(name) {
+            if let Some(version) = new_versions.get(name) {
                 let root = cx.to_path(modified.dir());
                 let version_string = version.to_string();
 
@@ -188,7 +193,7 @@ fn version(
 
         for key in cargo::DEPS {
             if let Some(deps) = modified.get_mut(key).and_then(|d| d.as_table_like_mut()) {
-                if modify_dependencies(deps, &versions)? {
+                if modify_dependencies(deps, &old_versions, &new_versions)? {
                     changed_manifest = true;
                 }
             }
@@ -200,7 +205,7 @@ fn version(
         {
             for key in cargo::DEPS {
                 if let Some(deps) = workspace.get_mut(key).and_then(|d| d.as_table_like_mut()) {
-                    if modify_dependencies(deps, &versions)? {
+                    if modify_dependencies(deps, &old_versions, &new_versions)? {
                         changed_manifest = true;
                     }
                 }
@@ -222,7 +227,7 @@ fn version(
         let manifest = workspace.primary_package()?;
         let primary = manifest.ensure_package()?;
 
-        let version = versions
+        let version = new_versions
             .get(primary.name()?)
             .context("Missing version for primary package")?;
 
@@ -266,14 +271,17 @@ fn package_name<'a>(key: &'a str, dep: &'a Item) -> &'a str {
 /// Modify dependencies in place.
 fn modify_dependencies(
     deps: &mut dyn TableLike,
-    versions: &HashMap<String, Version>,
+    old: &HashMap<String, Version>,
+    new: &HashMap<String, Version>,
 ) -> Result<bool> {
     let mut changed = false;
 
     for (key, dep) in deps.iter_mut() {
         let name = package_name(key.get(), dep);
 
-        let (Some(version), Some(existing)) = (versions.get(name), find_version_mut(dep)) else {
+        let (Some(old), Some(new), Some(existing)) =
+            (old.get(name), new.get(name), find_version_mut(dep))
+        else {
             continue;
         };
 
@@ -282,7 +290,7 @@ fn modify_dependencies(
             .context("found version was not a string")?
             .to_owned();
 
-        let new = modify_version_req(&existing_string, version)?;
+        let new = modify_version_req(&existing_string, old, new)?;
 
         if existing_string != new {
             *existing = Value::String(Formatted::new(new));
@@ -313,18 +321,26 @@ fn find_version_mut(item: &mut Item) -> Option<&mut Value> {
 }
 
 /// Parse and return a modified version requirement.
-fn modify_version_req(req: &str, version: &Version) -> Result<String> {
+fn modify_version_req(req: &str, old: &Version, new: &Version) -> Result<String> {
     let mut req = VersionReq::parse(req)?;
 
     if let [Comparator { op: Op::Caret, .. }] = &req.comparators[..] {
-        return Ok(version.to_string());
+        return Ok(new.to_string());
     }
 
-    for comparator in &mut req.comparators {
-        comparator.major = version.major;
-        comparator.minor = Some(version.minor);
-        comparator.patch = Some(version.patch);
-        comparator.pre = version.pre.clone();
+    for c in &mut req.comparators {
+        if !(c.major == old.major
+            && c.minor == Some(old.minor)
+            && c.patch == Some(old.patch)
+            && c.pre == old.pre)
+        {
+            continue;
+        }
+
+        c.major = new.major;
+        c.minor = Some(new.minor);
+        c.patch = Some(new.patch);
+        c.pre = new.pre.clone();
     }
 
     Ok(req.to_string())

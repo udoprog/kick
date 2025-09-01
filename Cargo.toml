@@ -29,15 +29,15 @@ flate2 = "1.0.25"
 futures-core = "0.3.31"
 futures-util = { version = "0.3.31", default-features = false }
 handlebars = "6.2.0"
-md5 = "0.7.0"
-musli = { version = "0.0.134", features = ["serde", "storage"] }
+md5 = "0.8.0"
+musli = { version = "0.0.145", features = ["serde", "storage"] }
 nondestructive = { version = "0.0.26", features = ["serde-edits"] }
 pulldown-cmark = "0.13.0"
 rand = "0.9.0"
 regex = "1.7.3"
 relative-path = { version = "2.0.1", features = ["serde"] }
 reqwest = { version = "0.12.5", features = ["json", "stream"] }
-rpm = "0.16.0"
+rpm = "0.18.0"
 semver = { version = "1.0.17", features = ["serde"] }
 serde = { version = "1.0.160", features = ["derive", "rc"] }
 serde_json = "1.0.96"
@@ -49,17 +49,17 @@ termcolor = "1.4.1"
 thiserror = "2.0.9"
 time = "0.3.30"
 tokio = { version = "1.27.0", features = ["full"] }
-toml = { version = "0.8.19", features = ["preserve_order"] }
-toml_edit = { version = "0.22.22", features = ["serde"] }
+toml = { version = "0.9.5", features = ["preserve_order"] }
+toml_edit = { version = "0.23.0", features = ["serde"] }
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 unicycle = "0.10.2"
 url = { version = "2.3.1", features = ["serde"] }
-xz2 = "0.1.7"
-zip = "3.0.0"
+liblzma = "0.4.4"
+zip = "4.6.0"
 
 [dependencies.gix]
-version = "0.72.1"
+version = "0.73.0"
 features = [
     "blocking-http-transport-reqwest",
     "blocking-http-transport-reqwest-rust-tls-trust-dns",
