@@ -189,7 +189,7 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
     for (manifest, p) in ordered.into_iter() {
         let name = p.name()?;
 
-        if filter(name) {
+        if !filter(name) {
             continue;
         }
 
