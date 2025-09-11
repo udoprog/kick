@@ -81,6 +81,11 @@ pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Re
     Ok(())
 }
 
+struct VersionChange {
+    old: Version,
+    new: Version,
+}
+
 #[tracing::instrument(skip_all)]
 fn version(
     cx: &Ctxt<'_>,
@@ -91,8 +96,7 @@ fn version(
 ) -> Result<()> {
     let workspace = repo.workspace(cx)?;
 
-    let mut old_versions = HashMap::new();
-    let mut new_versions = HashMap::new();
+    let mut versions = HashMap::new();
 
     for manifest in workspace.manifests() {
         let Some(package) = manifest.as_package() else {
@@ -114,10 +118,6 @@ fn version(
         } else {
             None
         };
-
-        if let Some(version) = &current_version {
-            old_versions.insert(name.to_string(), version.clone());
-        }
 
         if version_set.is_bump() {
             if let Some(from) = &current_version {
@@ -148,13 +148,28 @@ fn version(
                     "Bump version"
                 );
 
-                new_versions.insert(name.to_string(), to);
+                versions.insert(
+                    name.to_string(),
+                    VersionChange {
+                        old: from.clone(),
+                        new: to,
+                    },
+                );
+
+                continue;
             }
         }
 
         if let Some(version) = version_set.crates.get(name).or(version_set.base.as_ref()) {
             tracing::info!(?name, version = ?version.to_string(), ?name, "Set version");
-            new_versions.insert(name.to_string(), version.clone());
+
+            versions.insert(
+                name.to_string(),
+                VersionChange {
+                    old: version.clone(),
+                    new: version.clone(),
+                },
+            );
         }
     }
 
@@ -166,7 +181,7 @@ fn version(
         if let Some(package) = manifest.as_package() {
             let name = package.name()?;
 
-            if let Some(version) = new_versions.get(name) {
+            if let Some(VersionChange { new: version, .. }) = versions.get(name) {
                 let root = cx.to_path(modified.dir());
                 let version_string = version.to_string();
 
@@ -198,7 +213,7 @@ fn version(
                 for (_, table) in targets.iter_mut() {
                     for key in cargo::DEPS {
                         if let Some(deps) = table.get_mut(key).and_then(|d| d.as_table_like_mut()) {
-                            if modify_dependencies(deps, &old_versions, &new_versions)? {
+                            if modify_dependencies(deps, &versions)? {
                                 changed_manifest = true;
                             }
                         }
@@ -208,7 +223,7 @@ fn version(
 
             for key in cargo::DEPS {
                 if let Some(deps) = table.get_mut(key).and_then(|d| d.as_table_like_mut()) {
-                    if modify_dependencies(deps, &old_versions, &new_versions)? {
+                    if modify_dependencies(deps, &versions)? {
                         changed_manifest = true;
                     }
                 }
@@ -241,13 +256,15 @@ fn version(
         let manifest = workspace.primary_package()?;
         let primary = manifest.ensure_package()?;
 
-        let version = new_versions
+        let version = versions
             .get(primary.name()?)
-            .context("Missing version for primary package")?;
+            .context("Missing version for primary package")?
+            .new
+            .clone();
 
         cx.change(Change::ReleaseCommit {
             path: manifest.dir().to_owned(),
-            version: version.clone(),
+            version,
         });
     }
 
@@ -285,16 +302,15 @@ fn package_name<'a>(key: &'a str, dep: &'a Item) -> &'a str {
 /// Modify dependencies in place.
 fn modify_dependencies(
     deps: &mut dyn TableLike,
-    old: &HashMap<String, Version>,
-    new: &HashMap<String, Version>,
+    versions: &HashMap<String, VersionChange>,
 ) -> Result<bool> {
     let mut changed = false;
 
     for (key, dep) in deps.iter_mut() {
         let name = package_name(key.get(), dep);
 
-        let (Some(old), Some(new), Some(existing)) =
-            (old.get(name), new.get(name), find_version_mut(dep))
+        let (Some(VersionChange { old, new }), Some(existing)) =
+            (versions.get(name), find_version_mut(dep))
         else {
             continue;
         };
