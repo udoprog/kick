@@ -30,7 +30,7 @@ futures-core = "0.3.31"
 futures-util = { version = "0.3.31", default-features = false }
 handlebars = "6.2.0"
 md5 = "0.8.0"
-musli = { version = "0.0.146", features = ["serde", "storage"] }
+musli = { version = "0.0.149", features = ["serde", "storage"] }
 nondestructive = { version = "0.0.26", features = ["serde-edits"] }
 pulldown-cmark = "0.13.0"
 rand = "0.9.0"
