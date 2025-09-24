@@ -119,45 +119,45 @@ fn version(
             None
         };
 
-        if version_set.is_bump() {
-            if let Some(from) = &current_version {
-                let mut to = from.clone();
+        if version_set.is_bump()
+            && let Some(from) = &current_version
+        {
+            let mut to = from.clone();
 
-                if version_set.major {
-                    to.major += 1;
-                    to.minor = 0;
-                    to.patch = 0;
-                    to.pre = Prerelease::default();
-                } else if version_set.minor {
-                    to.minor += 1;
-                    to.patch = 0;
-                    to.pre = Prerelease::default();
-                } else if version_set.patch {
-                    to.patch += 1;
-                    to.pre = Prerelease::default();
-                }
-
-                if let Some(pre) = &version_set.pre {
-                    to.pre = pre.clone();
-                }
-
-                tracing::trace!(
-                    name,
-                    from = from.to_string(),
-                    to = to.to_string(),
-                    "Bump version"
-                );
-
-                versions.insert(
-                    name.to_string(),
-                    VersionChange {
-                        old: from.clone(),
-                        new: to,
-                    },
-                );
-
-                continue;
+            if version_set.major {
+                to.major += 1;
+                to.minor = 0;
+                to.patch = 0;
+                to.pre = Prerelease::default();
+            } else if version_set.minor {
+                to.minor += 1;
+                to.patch = 0;
+                to.pre = Prerelease::default();
+            } else if version_set.patch {
+                to.patch += 1;
+                to.pre = Prerelease::default();
             }
+
+            if let Some(pre) = &version_set.pre {
+                to.pre = pre.clone();
+            }
+
+            tracing::trace!(
+                name,
+                from = from.to_string(),
+                to = to.to_string(),
+                "Bump version"
+            );
+
+            versions.insert(
+                name.to_string(),
+                VersionChange {
+                    old: from.clone(),
+                    new: to,
+                },
+            );
+
+            continue;
         }
 
         if let Some(version) = version_set.crates.get(name).or(version_set.base.as_ref()) {
@@ -212,20 +212,20 @@ fn version(
             {
                 for (_, table) in targets.iter_mut() {
                     for key in cargo::DEPS {
-                        if let Some(deps) = table.get_mut(key).and_then(|d| d.as_table_like_mut()) {
-                            if modify_dependencies(deps, &versions)? {
-                                changed_manifest = true;
-                            }
+                        if let Some(deps) = table.get_mut(key).and_then(|d| d.as_table_like_mut())
+                            && modify_dependencies(deps, &versions)?
+                        {
+                            changed_manifest = true;
                         }
                     }
                 }
             }
 
             for key in cargo::DEPS {
-                if let Some(deps) = table.get_mut(key).and_then(|d| d.as_table_like_mut()) {
-                    if modify_dependencies(deps, &versions)? {
-                        changed_manifest = true;
-                    }
+                if let Some(deps) = table.get_mut(key).and_then(|d| d.as_table_like_mut())
+                    && modify_dependencies(deps, &versions)?
+                {
+                    changed_manifest = true;
                 }
             }
 
@@ -290,10 +290,10 @@ impl VersionSet {
 
 /// Extract package name.
 fn package_name<'a>(key: &'a str, dep: &'a Item) -> &'a str {
-    if let Some(Item::Value(value)) = dep.get("package") {
-        if let Some(value) = value.as_str() {
-            return value;
-        }
+    if let Some(Item::Value(value)) = dep.get("package")
+        && let Some(value) = value.as_str()
+    {
+        return value;
     }
 
     key

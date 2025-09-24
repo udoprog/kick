@@ -67,11 +67,11 @@ impl Wix {
         let binary_name = binary_name.as_ref();
         let binary_path = binary_path.as_ref();
 
-        if let Some(parent) = target_wixobj.parent() {
-            if !parent.is_dir() {
-                fs::create_dir_all(parent)
-                    .with_context(|| format!("Failed to create: {}", parent.display()))?;
-            }
+        if let Some(parent) = target_wixobj.parent()
+            && !parent.is_dir()
+        {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create: {}", parent.display()))?;
         }
 
         if target_wixobj.is_file() {
@@ -119,11 +119,11 @@ impl Wix {
 
         let installer_path = installer_path.as_ref();
 
-        if let Some(parent) = installer_path.parent() {
-            if !parent.is_dir() {
-                fs::create_dir_all(parent)
-                    .with_context(|| format!("Failed to create: {}", parent.display()))?;
-            }
+        if let Some(parent) = installer_path.parent()
+            && !parent.is_dir()
+        {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create: {}", parent.display()))?;
         }
 
         if installer_path.is_file() {

@@ -407,10 +407,10 @@ pub(crate) fn build_matrices(
                 }
             }
 
-            if let Some(value) = value_as_string(eval, value)? {
-                if filter(key, &value) {
-                    values.push((value, id));
-                }
+            if let Some(value) = value_as_string(eval, value)?
+                && filter(key, &value)
+            {
+                values.push((value, id));
             }
 
             if !values.is_empty() {
@@ -534,10 +534,10 @@ impl WorkflowManifest<'_, '_> {
 
         let mut tree = Tree::new();
 
-        if let Some(auth) = self.cx.github_auth() {
-            if let Some(owned) = RString::redacted(auth.as_secret()) {
-                tree.insert_prefix(["secrets"], vec![("GITHUB_TOKEN".to_owned(), owned)]);
-            }
+        if let Some(auth) = self.cx.github_auth()
+            && let Some(owned) = RString::redacted(auth.as_secret())
+        {
+            tree.insert_prefix(["secrets"], vec![("GITHUB_TOKEN".to_owned(), owned)]);
         }
 
         let new_env = extract_env(Eval::new(&tree), &mapping)?;
@@ -837,13 +837,13 @@ impl Eval {
                 let mut it = rest.chars();
 
                 loop {
-                    if level == 2 {
-                        if let Some(o) = it.as_str().strip_prefix("}}") {
-                            current = o;
-                            found = true;
-                            break 'expr &rest[..e];
-                        };
-                    }
+                    if level == 2
+                        && let Some(o) = it.as_str().strip_prefix("}}")
+                    {
+                        current = o;
+                        found = true;
+                        break 'expr &rest[..e];
+                    };
 
                     let Some(c) = it.next() else {
                         break;

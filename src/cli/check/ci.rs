@@ -134,14 +134,14 @@ fn validate_workflow(
         .and_then(|m| m.get("name")?.as_str())
         .ok_or_else(|| anyhow!("{}: missing .name", w.path))?;
 
-    if let Some(expected) = &config.name {
-        if name != expected {
-            cx.warning(Warning::WrongWorkflowName {
-                path: w.path.clone(),
-                actual: name.to_owned(),
-                expected: expected.clone(),
-            });
-        }
+    if let Some(expected) = &config.name
+        && name != expected
+    {
+        cx.warning(Warning::WrongWorkflowName {
+            path: w.path.clone(),
+            actual: name.to_owned(),
+            expected: expected.clone(),
+        });
     }
 
     validate_jobs(cx, ci, w, config)?;
@@ -222,14 +222,14 @@ fn check_action(
         return Ok(());
     };
 
-    if let Some(expected) = ci.actions.get_latest(base) {
-        if expected != version {
-            ci.edits.set(
-                at,
-                format!("Outdated action: got `{version}` but expected `{expected}`"),
-                format_args!("{base}@{expected}"),
-            );
-        }
+    if let Some(expected) = ci.actions.get_latest(base)
+        && expected != version
+    {
+        ci.edits.set(
+            at,
+            format!("Outdated action: got `{version}` but expected `{expected}`"),
+            format_args!("{base}@{expected}"),
+        );
     }
 
     if ci.actions.is_denied(base) {
@@ -419,13 +419,13 @@ fn validate_on(
         ));
     }
 
-    if let Some(m) = m.get("pull_request").and_then(|v| v.as_mapping()) {
-        if !m.is_empty() {
-            cx.warning(Warning::ActionExpectedEmptyMapping {
-                path: w.path.clone(),
-                key: Box::from("on.pull_request"),
-            });
-        }
+    if let Some(m) = m.get("pull_request").and_then(|v| v.as_mapping())
+        && !m.is_empty()
+    {
+        cx.warning(Warning::ActionExpectedEmptyMapping {
+            path: w.path.clone(),
+            key: Box::from("on.pull_request"),
+        });
     }
 
     if !edits.is_empty() {

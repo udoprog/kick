@@ -158,16 +158,16 @@ fn accept_lib(lib: &[u8]) -> bool {
         return true;
     }
 
-    if let Some((head, _)) = lib.split_once_str("-") {
-        if matches!(head, b"ld" | b"ld64") {
-            return false;
-        }
+    if let Some((head, _)) = lib.split_once_str("-")
+        && matches!(head, b"ld" | b"ld64")
+    {
+        return false;
     }
 
-    if let Some((head, _)) = lib.split_once_str(".") {
-        if matches!(head, b"ld" | b"ld64") {
-            return false;
-        }
+    if let Some((head, _)) = lib.split_once_str(".")
+        && matches!(head, b"ld" | b"ld64")
+    {
+        return false;
     }
 
     true

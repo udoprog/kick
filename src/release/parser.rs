@@ -485,10 +485,10 @@ impl<'vars, 'a, 'b> Parser<'vars, 'a, 'b> {
             })
         };
 
-        if let Some((_, prefix)) = prefix.take() {
-            if let Outcome::Some(release) = &mut release {
-                release.prefix = Some(prefix);
-            }
+        if let Some((_, prefix)) = prefix.take()
+            && let Outcome::Some(release) = &mut release
+        {
+            release.prefix = Some(prefix);
         }
 
         loop {

@@ -1123,10 +1123,10 @@ fn filter_repos(
 ) -> Result<()> {
     // Test if repo should be skipped.
     let should_disable = |repo: &Repo| -> bool {
-        if let Some(set) = set {
-            if !set.contains(repo.path()) {
-                return true;
-            }
+        if let Some(set) = set
+            && !set.contains(repo.path())
+        {
+            return true;
         }
 
         if filters.is_empty() {

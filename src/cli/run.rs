@@ -143,10 +143,10 @@ fn run(
                     for matrix in job.matrices() {
                         write!(o, "  Job: {}", job.id())?;
 
-                        if let Some(name) = matrix.name() {
-                            if name.to_exposed().as_ref() != job.id() {
-                                write!(o, " ({name})")?;
-                            }
+                        if let Some(name) = matrix.name()
+                            && name.to_exposed().as_ref() != job.id()
+                        {
+                            write!(o, " ({name})")?;
                         }
 
                         if matrix.matrix().is_empty() {

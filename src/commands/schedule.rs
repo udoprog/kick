@@ -237,10 +237,10 @@ impl ScheduleRun {
 
         let mut skipped = None;
 
-        if let Some(condition) = &self.step.condition {
-            if !eval.test(condition)? {
-                skipped = Some(condition.clone());
-            }
+        if let Some(condition) = &self.step.condition
+            && !eval.test(condition)?
+        {
+            skipped = Some(condition.clone());
         }
 
         let script = eval.eval(&self.script)?;
@@ -328,10 +328,10 @@ impl ScheduleUse {
 
         let mut skipped = None;
 
-        if let Some(condition) = &self.step.condition {
-            if eval.test(condition)? {
-                skipped = Some(condition.clone());
-            }
+        if let Some(condition) = &self.step.condition
+            && eval.test(condition)?
+        {
+            skipped = Some(condition.clone());
         }
 
         let with = self

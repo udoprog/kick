@@ -34,10 +34,10 @@ impl<'a> ActionConfig<'a> {
     /// Get the repo from the name of the name of the action, if it matches the
     /// pattern `<user>/<repo>@<version>`.
     pub(crate) fn repo_from_name(mut self) -> Self {
-        if let Some((repo, _)) = self.action_name.split_once('@') {
-            if repo.find('/').is_some() {
-                self.repo = Some(repo);
-            }
+        if let Some((repo, _)) = self.action_name.split_once('@')
+            && repo.find('/').is_some()
+        {
+            self.repo = Some(repo);
         }
 
         self

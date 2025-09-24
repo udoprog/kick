@@ -128,16 +128,16 @@ fn define(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     let env_path;
 
     let output = 'out: {
-        if let Some(env) = output_from_env {
-            if let Some(path) = env::var_os(env).map(PathBuf::from) {
-                ensure!(
-                    opts.output.is_none(),
-                    "Cannot use --output and --output-from-env together"
-                );
+        if let Some(env) = output_from_env
+            && let Some(path) = env::var_os(env).map(PathBuf::from)
+        {
+            ensure!(
+                opts.output.is_none(),
+                "Cannot use --output and --output-from-env together"
+            );
 
-                env_path = path;
-                break 'out Some((Name::Env(env), env_path.as_path()));
-            }
+            env_path = path;
+            break 'out Some((Name::Env(env), env_path.as_path()));
         }
 
         opts.output.as_deref().map(|path| (Name::Path(path), path))

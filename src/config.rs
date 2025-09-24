@@ -289,10 +289,10 @@ impl Replacement {
                 let mut ranges = Vec::new();
 
                 for cap in self.pattern.captures_iter(&content) {
-                    if let Some(m) = cap.name(group) {
-                        if m.as_bytes() != replacement.as_bytes() {
-                            ranges.push(m.range());
-                        }
+                    if let Some(m) = cap.name(group)
+                        && m.as_bytes() != replacement.as_bytes()
+                    {
+                        ranges.push(m.range());
                     }
                 }
 

@@ -196,10 +196,10 @@ where
             writeln!(o, "{}: Missing workflow", path.display())?;
 
             if save {
-                if let Some(parent) = path.parent() {
-                    if !parent.is_dir() {
-                        fs::create_dir_all(parent)?;
-                    }
+                if let Some(parent) = path.parent()
+                    && !parent.is_dir()
+                {
+                    fs::create_dir_all(parent)?;
                 }
 
                 let workspace = repo.require_workspace(cx)?;
@@ -265,14 +265,13 @@ where
                         } => {
                             writeln!(o, "{}: {reason}", path.display())?;
 
-                            if save {
-                                if let Some(mut m) = doc.value_mut(*mapping).into_mapping_mut() {
-                                    if !m.remove(key) {
-                                        bail!("{}: failed to remove key `{key}`", path.display());
-                                    }
-
-                                    edited = true;
+                            if save && let Some(mut m) = doc.value_mut(*mapping).into_mapping_mut()
+                            {
+                                if !m.remove(key) {
+                                    bail!("{}: failed to remove key `{key}`", path.display());
                                 }
+
+                                edited = true;
                             }
                         }
                     }

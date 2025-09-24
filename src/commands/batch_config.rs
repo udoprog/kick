@@ -99,10 +99,10 @@ impl<'a, 'cx> BatchConfig<'a, 'cx> {
 
     /// Add a run on.
     pub(crate) fn add_run_on(&mut self, run_on: RunOn, os: Os) -> Result<()> {
-        if let RunOn::Wsl(..) = run_on {
-            if self.cx.system.wsl.is_empty() {
-                bail!("WSL is not available");
-            }
+        if let RunOn::Wsl(..) = run_on
+            && self.cx.system.wsl.is_empty()
+        {
+            bail!("WSL is not available");
         }
 
         self.run_on.push((run_on, os));

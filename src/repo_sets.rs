@@ -54,11 +54,11 @@ impl RepoSets {
             };
 
             let (id, date, path) = 'out: {
-                if let Some((id, tail)) = name.rsplit_once('-') {
-                    if let Ok(date) = NaiveDateTime::parse_from_str(tail, DATE_FORMAT) {
-                        let base = path.with_file_name(id);
-                        break 'out (id, Some(date), base);
-                    }
+                if let Some((id, tail)) = name.rsplit_once('-')
+                    && let Ok(date) = NaiveDateTime::parse_from_str(tail, DATE_FORMAT)
+                {
+                    let base = path.with_file_name(id);
+                    break 'out (id, Some(date), base);
                 }
 
                 (name, None, path.clone())

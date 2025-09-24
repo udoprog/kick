@@ -170,12 +170,11 @@ impl ReleaseOpts {
             version.prefix = None;
         }
 
-        if self.full_version {
-            if let VersionKind::SemanticVersion(version) = &mut version.kind {
-                if version.patch.is_none() {
-                    version.patch = Some(0);
-                }
-            }
+        if self.full_version
+            && let VersionKind::SemanticVersion(version) = &mut version.kind
+            && version.patch.is_none()
+        {
+            version.patch = Some(0);
         }
 
         for append in &self.append {
@@ -313,10 +312,10 @@ pub(super) struct Version<'a> {
 impl<'a> Version<'a> {
     /// Check if release is a pre-release.
     pub(crate) fn is_pre(&self) -> bool {
-        if let Some(first) = self.names.first() {
-            if first.is_pre() {
-                return true;
-            }
+        if let Some(first) = self.names.first()
+            && first.is_pre()
+        {
+            return true;
         }
 
         matches!(&self.kind, VersionKind::Name(name) if name.is_pre())

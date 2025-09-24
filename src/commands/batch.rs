@@ -200,10 +200,10 @@ impl Batch {
                             run_command.env(key, value);
                         }
 
-                        if let Some(script) = &script_file {
-                            if let ScriptFileKind::Inline { contents, .. } = &script.kind {
-                                script_source = Some((Cow::Borrowed(contents.as_ref()), c.shell));
-                            }
+                        if let Some(script) = &script_file
+                            && let ScriptFileKind::Inline { contents, .. } = &script.kind
+                        {
+                            script_source = Some((Cow::Borrowed(contents.as_ref()), c.shell));
                         }
                     }
                     RunOn::Wsl(dist) => {
@@ -417,13 +417,13 @@ impl Batch {
                         }
                     }
 
-                    if c.verbose >= 2 {
-                        if let Some((source, shell)) = &script_source {
-                            o.set_color(&c.colors.title)?;
-                            writeln!(o, "# {shell} script:")?;
-                            o.reset()?;
-                            writeln!(o, "{source}")?;
-                        }
+                    if c.verbose >= 2
+                        && let Some((source, shell)) = &script_source
+                    {
+                        o.set_color(&c.colors.title)?;
+                        writeln!(o, "# {shell} script:")?;
+                        o.reset()?;
+                        writeln!(o, "{source}")?;
                     }
                 }
 
@@ -453,28 +453,28 @@ impl Batch {
                     let mut new_paths = Vec::new();
                     let mut new_outputs = Vec::new();
 
-                    if let Some(env_file) = &run.env_file {
-                        if let Ok(contents) = fs::read(env_file) {
-                            new_env = parse_key_values(&contents)?;
-                        }
+                    if let Some(env_file) = &run.env_file
+                        && let Ok(contents) = fs::read(env_file)
+                    {
+                        new_env = parse_key_values(&contents)?;
                     }
 
-                    if let Some(path_file) = &run.path_file {
-                        if let Ok(contents) = fs::read(path_file) {
-                            new_paths = parse_lines(&contents)?;
+                    if let Some(path_file) = &run.path_file
+                        && let Ok(contents) = fs::read(path_file)
+                    {
+                        new_paths = parse_lines(&contents)?;
 
-                            if c.cx.os == Os::Windows && matches!(run_on, RunOn::Wsl(..)) {
-                                for path in &mut new_paths {
-                                    *path = translate_path_to_windows(path)?;
-                                }
+                        if c.cx.os == Os::Windows && matches!(run_on, RunOn::Wsl(..)) {
+                            for path in &mut new_paths {
+                                *path = translate_path_to_windows(path)?;
                             }
                         }
                     }
 
-                    if let Some(output_file) = &run.output_file {
-                        if let Ok(contents) = fs::read(output_file) {
-                            new_outputs = parse_key_values(&contents)?;
-                        }
+                    if let Some(output_file) = &run.output_file
+                        && let Ok(contents) = fs::read(output_file)
+                    {
+                        new_outputs = parse_key_values(&contents)?;
                     }
 
                     tracing::debug!(?new_env, ?new_paths, ?new_outputs);

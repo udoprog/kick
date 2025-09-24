@@ -184,15 +184,15 @@ async fn run(
         None
     };
 
-    if opts.delete {
-        if let Some(release) = release.take() {
-            tracing::info!("Deleting release '{name}' (id: {})", release.id);
+    if opts.delete
+        && let Some(release) = release.take()
+    {
+        tracing::info!("Deleting release '{name}' (id: {})", release.id);
 
-            client
-                .delete_release(path.owner, path.name, release.id)
-                .await
-                .with_context(|| anyhow!("Deleting release '{name}'"))?;
-        }
+        client
+            .delete_release(path.owner, path.name, release.id)
+            .await
+            .with_context(|| anyhow!("Deleting release '{name}'"))?;
     }
 
     let release = if let Some(release) = release {

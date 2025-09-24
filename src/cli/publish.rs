@@ -142,11 +142,11 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
                 continue;
             }
 
-            if let Some(deps) = deps.get(name) {
-                if !deps.is_empty() {
-                    tracing::trace!("Has dependencies: {deps:?}");
-                    continue;
-                }
+            if let Some(deps) = deps.get(name)
+                && !deps.is_empty()
+            {
+                tracing::trace!("Has dependencies: {deps:?}");
+                continue;
             }
 
             for (_, deps) in deps.iter_mut() {

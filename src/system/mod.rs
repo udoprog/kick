@@ -157,16 +157,16 @@ impl System {
 
                 let mut ignored = false;
 
-                if cfg!(windows) {
-                    if let Some(reason) = test_windows_ignored(path, allow) {
-                        // Non-existant files will be I/O ignored, avoid
-                        // spamming log entries for it.
-                        if reason != IgnoreReason::Io {
-                            tracing::debug!(path = ?path.display(), "Ignored: {reason}");
-                        }
-
-                        ignored = true;
+                if cfg!(windows)
+                    && let Some(reason) = test_windows_ignored(path, allow)
+                {
+                    // Non-existant files will be I/O ignored, avoid
+                    // spamming log entries for it.
+                    if reason != IgnoreReason::Io {
+                        tracing::debug!(path = ?path.display(), "Ignored: {reason}");
                     }
+
+                    ignored = true;
                 }
 
                 if !ignored {
@@ -326,12 +326,11 @@ impl fmt::Display for IgnoreReason {
 
 /// Test if the path should be ignored through the policy.
 fn test_windows_ignored(path: &Path, allow: Allow) -> Option<IgnoreReason> {
-    if allow != Allow::System32 {
-        if let Some(dir) = path.parent().and_then(|p| p.file_name()) {
-            if dir.eq_ignore_ascii_case("System32") {
-                return Some(IgnoreReason::System32);
-            }
-        }
+    if allow != Allow::System32
+        && let Some(dir) = path.parent().and_then(|p| p.file_name())
+        && dir.eq_ignore_ascii_case("System32")
+    {
+        return Some(IgnoreReason::System32);
     }
 
     let Ok(m) = fs::metadata(path) else {
