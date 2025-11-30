@@ -46,8 +46,30 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
     let package = workspace.primary_package()?.ensure_package()?;
     let name = package.name()?;
-    let license = package.license().unwrap_or(DEFAULT_LICENSE);
-    let description = package.description().unwrap_or(DEFAULT_DESCRIPTION);
+
+    let license = match package.license() {
+        Some(lic) => lic,
+        None => {
+            tracing::warn!(
+                "Package {} has no license specified, defaulting to {}",
+                name,
+                DEFAULT_LICENSE
+            );
+            DEFAULT_LICENSE
+        }
+    };
+
+    let description = match package.description() {
+        Some(desc) => desc,
+        None => {
+            tracing::warn!(
+                "Package {} has no description specified, defaulting to {}",
+                name,
+                DEFAULT_DESCRIPTION
+            );
+            DEFAULT_DESCRIPTION
+        }
+    };
 
     let version = release.to_string();
 
