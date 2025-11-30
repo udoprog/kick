@@ -20,6 +20,9 @@ use crate::release::ReleaseOpts;
 
 use super::output::OutputOpts;
 
+const DEFAULT_LICENSE: &str = "MIT OR Apache-2.0";
+const DEFAULT_DESCRIPTION: &str = "No Description";
+
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     #[clap(flatten)]
@@ -43,8 +46,8 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
     let package = workspace.primary_package()?.ensure_package()?;
     let name = package.name()?;
-    let license = package.license().context("Missing license")?;
-    let description = package.description().context("Missing description")?;
+    let license = package.license().unwrap_or(DEFAULT_LICENSE);
+    let description = package.description().unwrap_or(DEFAULT_DESCRIPTION);
 
     let version = release.to_string();
 
