@@ -16,21 +16,18 @@ pub(crate) struct Opts {
     /// An explicit version override.
     #[arg(long, name = "[<crate>=]version")]
     r#override: Vec<String>,
-    /// Perform a major version bump. This will remove any existing pre-release setting.
+    /// Perform a major version bump.
     #[arg(long)]
     major: bool,
-    /// Perform a minor version bump. This will remove any existing pre-release setting.
+    /// Perform a minor version bump.
     #[arg(long)]
     minor: bool,
-    /// Perform a patch bump. This will remove any existing pre-release setting.
+    /// Perform a patch bump.
     #[arg(long)]
     patch: bool,
     /// Set a prerelease string.
     #[arg(long, value_name = "pre")]
     pre: Option<String>,
-    /// Use the existing crate version just so that we can perform all checks.
-    #[arg(long = "existing")]
-    existing: bool,
     /// Make a commit with the current version with the message `Release <version>`.
     #[arg(long)]
     commit: bool,
@@ -51,7 +48,6 @@ pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Re
             Some(..) => Some(Prerelease::EMPTY),
             _ => None,
         },
-        existing: opts.existing,
         ..VersionSet::default()
     };
 
@@ -62,7 +58,7 @@ pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Re
                 .crates
                 .insert(id.to_string(), Version::parse(version)?);
         } else {
-            version_set.base = Some(Version::parse(version)?);
+            version_set.any = Some(Version::parse(version)?);
         }
     }
 
@@ -160,7 +156,7 @@ fn version(
             continue;
         }
 
-        if let Some(version) = version_set.crates.get(name).or(version_set.base.as_ref()) {
+        if let Some(version) = version_set.crates.get(name).or(version_set.any.as_ref()) {
             tracing::info!(?name, version = ?version.to_string(), ?name, "Set version");
 
             versions.insert(
@@ -273,18 +269,17 @@ fn version(
 
 #[derive(Debug, Default)]
 struct VersionSet {
-    base: Option<Version>,
+    any: Option<Version>,
     crates: HashMap<String, Version>,
     major: bool,
     minor: bool,
     patch: bool,
     pre: Option<Prerelease>,
-    existing: bool,
 }
 
 impl VersionSet {
     fn is_bump(&self) -> bool {
-        self.major || self.minor || self.patch || self.pre.is_some() || self.existing
+        self.major || self.minor || self.patch || self.pre.is_some()
     }
 }
 
