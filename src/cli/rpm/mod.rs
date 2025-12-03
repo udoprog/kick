@@ -21,7 +21,6 @@ use crate::release::ReleaseOpts;
 use super::output::OutputOpts;
 
 const DEFAULT_LICENSE: &str = "MIT OR Apache-2.0";
-const DEFAULT_DESCRIPTION: &str = "No Description";
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -50,24 +49,19 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     let license = match package.license() {
         Some(lic) => lic,
         None => {
-            tracing::warn!(
-                "Package {} has no license specified, defaulting to {}",
-                name,
-                DEFAULT_LICENSE
-            );
+            tracing::warn!("{name} no package.license: using '{}'", DEFAULT_LICENSE);
             DEFAULT_LICENSE
         }
     };
 
+    let default_description;
+
     let description = match package.description() {
         Some(desc) => desc,
         None => {
-            tracing::warn!(
-                "Package {} has no description specified, defaulting to {}",
-                name,
-                DEFAULT_DESCRIPTION
-            );
-            DEFAULT_DESCRIPTION
+            default_description = format!("No description for Rust package '{name}'");
+            tracing::warn!("{name} no package.description: using '{default_description}'",);
+            default_description.as_str()
         }
     };
 

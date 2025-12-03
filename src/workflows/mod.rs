@@ -1015,7 +1015,13 @@ fn list_workflow_ids(cx: &Ctxt<'_>, path: &RelativePath) -> Result<BTreeSet<Stri
 
     let path = cx.to_path(path);
 
-    for e in fs::read_dir(&path).with_context(|| path.display().to_string())? {
+    let read_dir = match fs::read_dir(&path) {
+        Ok(read_dir) => read_dir,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(ids),
+        Err(e) => return Err(e).context(path.display().to_string()),
+    };
+
+    for e in read_dir {
         let entry = e.with_context(|| path.display().to_string())?;
         let path = entry.path();
 
