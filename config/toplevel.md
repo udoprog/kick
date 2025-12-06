@@ -18,6 +18,7 @@ This is primarily used to figure out which is the primary crate in a workspace.
 ```toml
 [repo."repos/OxidizeBot"]
 name = "oxidize"
+url = "https://github.com/udoprog/OxidizeBot"
 ```
 
 <br>

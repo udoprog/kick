@@ -12,43 +12,88 @@ building it to do everything I need when managing my own projects to ensure
 that they all have a valid configuration, up-to-date dependencies and a
 consistent README style.
 
-Repositories to check are detected through two mechanism:
-* If a `.gitmodules` file is present either in the current directory or the
-  one where `Kick.toml` is found, this is used to detect repositories to
-  manage.
-* If a `.git` folder is present, `git remote get-url origin` is used to
-  determine its name and repo.
-
-So the intent is primarily to use this separate from the projects being
-managed, by adding each project as a submodule like so.
-
-```bash
-git submodule add https://github.com/udoprog/OxidizeBot repos/OxidizeBot
-```
-
-> **Note:** For an example of this setup, see [my `projects` repo].
-
-Kick can also be used without configuration in any standalone repository.
-This is really all you need to get started, I frequently make use of `kick`
-commands in regular repositories.
-
-[my `projects` repo]: https://github.com/udoprog/projects
-
 <br>
 
 ## Overview
 
 This is an overview of the sections in the README:
 
-* [Configuration][config]
+* [The `Kick.toml` configuration][config]
 * [Tour of commands](#tour-of-commands)
-* [Run Github Workflows](#run-github-workflows)
-* [Github Actions](#github-actions)
+* [Run Github Workflows locally](#run-github-workflows-locally)
+* [Maintaining Github Actions](#github-actions)
 * [Staged changes](#staged-changes)
-* [Repo sets](#repo-sets)
-* [Packaging actions](#packaging-actions)
-* [Version specification](#version-specification)
-* [Defining variables for Github Actions](#defining-variables-for-github-actions)
+* [Running commands over repo sets](#repo-sets)
+* [Easily package your project](#packaging)
+* [Flexible version specifications](#version-specification)
+* [Integrating with Github Actions](#integrating-with-github-actions)
+
+<br>
+
+## Introduction
+
+Kick can also be used *without* configuration in any standalone repository.
+This is really all you need to get started, I frequently make use of `kick`
+commands in regular repositories. The only pre-requisite is that there is a
+`.git` repo with an `origin` specified:
+
+```sh
+$> kick check
+README.md:
+31   > Note that kick uses a nondestructive approach, so running any command like
+32   > `kick check` is completely safe. To apply any proposed changes they can
+33   > either be reviewed later with `kick changes` or applied directly by
+34  -> specifying `--save`.
+    +> specifying `--save`. See [Staged changes](#staged-changes) for more.
+35
+36   The other alternative is to run kick over a collection of repositories. To
+37   add a repo to kick you can add the following to a `Kick.toml` file:
+2025-12-06T06:50:42.488966Z  INFO kick: Writing to changes.gz, use `kick changes` to review it later
+```
+
+> Note that kick uses a nondestructive approach, so running any command like
+> `kick check` is completely safe. To apply any proposed changes they can
+> either be reviewed later with `kick changes` or applied directly by
+> specifying `--save`. See [Staged changes](#staged-changes) for more.
+
+The other alternative is to run kick over a collection of repositories. To
+add a repo to kick you can add the following to a `Kick.toml` file:
+
+```toml
+[repo."repos/OxidizeBot"]
+url = "https://github.com/udoprog/OxidizeBot"
+```
+
+This can also be added as a git submodule, note that the important part is
+what's in the `.gitmodules` file:
+
+```bash
+git submodule add https://github.com/udoprog/OxidizeBot repos/OxidizeBot
+```
+
+Once this is done, kick can run any command over a collection of repos:
+
+```sh
+$> kick gh status
+repos/anything: https://github.com/udoprog/anything
+  Workflow `ci` (success):
+    git: *2ab2ad7 (main)
+    time: 2025-11-28
+repos/async-fuse: https://github.com/udoprog/async-fuse
+  Workflow `ci` (success):
+    git: *4062549 (main)
+    time: 2025-11-29
+repos/argwerk: https://github.com/udoprog/argwerk
+  Workflow `ci` (success):
+    git: *4b6377c (main)
+    time: 2025-11-27
+```
+
+If you want a complete example of this setup, see [my `projects` repo]. For
+documentation on how kick can be further configured, see the [configuration
+documentation][config].
+
+[my `projects` repo]: https://github.com/udoprog/projects
 
 <br>
 
@@ -84,7 +129,7 @@ And much much more!
 
 <br>
 
-## Run Github Workflows
+## Run Github Workflows locally
 
 ![Matrix and WSL integration](https://raw.githubusercontent.com/udoprog/kick/main/images/wsl.png)
 
@@ -102,7 +147,7 @@ Supported integrations are:
 
 <br>
 
-## Github Actions
+## Maintaining Github Actions
 
 Kick shines the brightest when used in combination with Github Actions. To
 facilitate this, the Kick repo can be used in a job directly:
@@ -138,7 +183,7 @@ apply`.
 repos/kick/README.md: Needs update
 repos/kick/src/main.rs: Needs update
 2023-04-13T15:05:34.162247Z  WARN kick: Not writing changes since `--save` was not specified
-2023-04-13T15:05:34.162252Z  INFO kick: Writing commit to ../changes.gz, use `kick changes` to review it later
+2023-04-13T15:05:34.162252Z  INFO kick: Writing to changes.gz, use `kick changes` to review it later
 ```
 
 Applying the staged changes:
@@ -187,7 +232,7 @@ repos/kick
 
 <br>
 
-## Packaging actions
+## Packaging
 
 The following actions are packaging actions:
 * `zip` - Build .zip archives.
@@ -295,7 +340,7 @@ specification][wobbly-versions].
 
 <br>
 
-## Defining variables for Github Actions
+## Integrating with Github Actions
 
 Sometimes you want to export information from Kick so that it can be used in
 other Github Actions, most commonly this involves the resolved version from
