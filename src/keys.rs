@@ -1,37 +1,34 @@
-use std::fmt::{self, Write};
+use core::cell::RefCell;
+use core::fmt::{self, Write};
 
 #[derive(Default, Clone)]
 pub struct Keys {
-    parts: Vec<Part>,
+    parts: RefCell<Vec<Part>>,
 }
 
 impl Keys {
-    pub(crate) fn field(&mut self, key: &str) {
-        self.parts.push(Part::Field(key.to_owned()));
+    pub(crate) fn field(&self, key: &str) {
+        self.parts.borrow_mut().push(Part::Field(key.to_owned()));
     }
 
-    pub(crate) fn index(&mut self, index: usize) {
-        self.parts.push(Part::Index(index));
+    pub(crate) fn index(&self, index: usize) {
+        self.parts.borrow_mut().push(Part::Index(index));
     }
 
-    pub(crate) fn pop(&mut self) {
-        self.parts.pop();
+    pub(crate) fn pop(&self) {
+        self.parts.borrow_mut().pop();
     }
 }
 
 impl fmt::Display for Keys {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.parts.is_empty() {
+        let parts = self.parts.borrow();
+
+        if parts.is_empty() {
             return write!(f, ".");
         }
 
-        let mut it = self.parts.iter();
-
-        if let Some(p) = it.next() {
-            write!(f, "{p}")?;
-        }
-
-        for p in it {
+        for p in parts.iter() {
             if let Part::Field(..) = p {
                 f.write_char('.')?;
             }
