@@ -10,7 +10,10 @@ Give your projects a good 🦶!
 This is what I'd like to call an omnibus project management tool. I'm
 building it to do everything I need when managing my own projects to ensure
 that they all have a valid configuration, up-to-date dependencies and a
-consistent README style.
+consistent style.
+
+Even though it's a bit opinionated `kick` also happens to be highly
+configurable, so you might want to try it out!
 
 <br>
 
