@@ -42,7 +42,7 @@ where
 
                 let span = ::tracing::info_span!(
                     "repo",
-                    source = repo.source().to_string(),
+                    sources = repo.sources().to_string(),
                     path = cx.to_path(repo.path()).display().to_string()
                 );
 
@@ -123,7 +123,7 @@ where
 
         let span = tracing::info_span!(
             "repo",
-            source = repo.source().to_string(),
+            sources = repo.sources().to_string(),
             path = cx.to_path(repo.path()).display().to_string()
         );
         let _span = span.enter();

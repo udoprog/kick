@@ -1,4 +1,5 @@
 use std::cell::{Cell, UnsafeCell};
+use std::collections::BTreeSet;
 use std::env;
 use std::fmt;
 use std::fs;
@@ -98,12 +99,32 @@ impl Serialize for RepoPath<'_> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+/// Information about a repository.
+#[derive(Default)]
+pub(crate) struct RepoInfo {
+    /// Sources for this module.
+    pub(crate) sources: BTreeSet<RepoSource>,
+    /// URLs for this module.
+    pub(crate) urls: BTreeSet<Url>,
+}
+
+impl RepoInfo {
+    fn new(source: RepoSource, url: Url) -> Self {
+        Self {
+            sources: BTreeSet::from([source]),
+            urls: BTreeSet::from([url]),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Encode, Decode)]
 pub(crate) enum RepoSource {
     /// Module loaded from a .gitmodules file.
     Gitmodules,
-    /// Module loaded from .git
+    /// Module loaded from local .git
     Git,
+    /// Module loaded from configuration.
+    Config(#[musli(with = musli::serde)] RelativePathBuf),
 }
 
 impl fmt::Display for RepoSource {
@@ -111,6 +132,7 @@ impl fmt::Display for RepoSource {
         match self {
             RepoSource::Gitmodules => write!(f, ".gitmodules"),
             RepoSource::Git => write!(f, "git repo"),
+            RepoSource::Config(path) => write!(f, "configuration ({path})"),
         }
     }
 }
@@ -195,8 +217,8 @@ pub(crate) enum State {
 }
 
 struct RepoInner {
-    /// Source of module.
-    source: RepoSource,
+    /// Sources of module.
+    sources: BTreeSet<RepoSource>,
     /// Interior module stuff.
     symbolic: RepoRef,
     /// Running the repo operation errored.
@@ -216,7 +238,7 @@ pub(crate) struct Repo {
 impl fmt::Debug for Repo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Repo")
-            .field("source", &self.inner.source)
+            .field("sources", &self.inner.sources)
             .field("symbolic", &self.inner.symbolic)
             .field("state", &self.inner.state)
             .field("init", &self.inner.init)
@@ -226,10 +248,14 @@ impl fmt::Debug for Repo {
 }
 
 impl Repo {
-    pub(crate) fn new(source: RepoSource, path: RelativePathBuf, url: Url) -> Self {
+    pub(crate) fn new(
+        sources: impl IntoIterator<Item = RepoSource>,
+        path: RelativePathBuf,
+        url: Url,
+    ) -> Self {
         Self {
             inner: Rc::new(RepoInner {
-                source,
+                sources: sources.into_iter().collect(),
                 symbolic: RepoRef { path, url },
                 state: Cell::new(State::Pending),
                 init: Cell::new(false),
@@ -263,9 +289,28 @@ impl Repo {
         self.inner.state.get()
     }
 
-    /// Get the source of a module.
-    pub(crate) fn source(&self) -> &RepoSource {
-        &self.inner.source
+    /// Get the sources of a module.
+    pub(crate) fn sources(&self) -> impl fmt::Display + '_ {
+        struct DisplaySources<'a>(&'a BTreeSet<RepoSource>);
+
+        impl fmt::Display for DisplaySources<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let mut first = true;
+
+                for source in self.0 {
+                    if !first {
+                        write!(f, ", ")?;
+                    }
+
+                    write!(f, "{source}")?;
+                    first = false;
+                }
+
+                Ok(())
+            }
+        }
+
+        DisplaySources(&self.inner.sources)
     }
 
     /// Get the inner workspace.
@@ -275,14 +320,14 @@ impl Repo {
     }
 
     /// Try to get a workspace, if one is present in the module.
-    #[tracing::instrument(skip_all, fields(source = ?self.inner.source, module = self.path().as_str()))]
+    #[tracing::instrument(skip_all, fields(sources = ?self.inner.sources, module = self.path().as_str()))]
     pub(crate) fn try_workspace(&self, cx: &Ctxt<'_>) -> Result<Option<&'_ Crates>> {
         self.init_workspace(cx)?;
         Ok(self.get_workspace())
     }
 
     /// Try to get a workspace, if one is present in the module.
-    #[tracing::instrument(skip_all, fields(source = ?self.inner.source, module = self.path().as_str()))]
+    #[tracing::instrument(skip_all, fields(sources = ?self.inner.sources, module = self.path().as_str()))]
     pub(crate) fn workspace(&self, cx: &Ctxt<'_>) -> Result<&'_ Crates> {
         self.init_workspace(cx)?;
 
@@ -322,41 +367,37 @@ impl Deref for Repo {
 }
 
 /// Load git modules.
-pub(crate) fn load_gitmodules(root: &Path) -> Result<Option<Vec<Repo>>> {
+pub(crate) fn load_gitmodules(root: &Path) -> Result<Vec<(RelativePathBuf, RepoInfo)>> {
     let path = root.join(".gitmodules");
 
     match fs::read(&path) {
-        Ok(buf) => Ok(Some(
-            parse_git_modules(&buf).with_context(|| path.display().to_string())?,
-        )),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Ok(buf) => Ok(parse_git_modules(&buf).with_context(|| path.display().to_string())?),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(e).context(path.display().to_string()),
     }
 }
 
 #[tracing::instrument(skip_all, fields(root = ?root.display()))]
-pub(crate) fn load_from_git(root: &Path, git: Option<&Git>) -> Result<Vec<Repo>> {
+pub(crate) fn load_from_git(
+    root: &Path,
+    git: Option<&Git>,
+) -> Result<Option<(RelativePathBuf, Url)>> {
     tracing::trace!("Trying to load from git");
-
-    let mut out = Vec::new();
-
-    let Some(git) = git else {
-        bail!("No working git command available");
-    };
 
     let git_path = root.join(".git");
 
     if git_path.exists() {
+        let git = git.context("no working git command available")?;
         tracing::trace!("Using repository: {}", root.display());
-        out.push(from_git(git, root).with_context(|| root.display().to_string())?);
-        return Ok(out);
+        return Ok(Some(
+            from_git(git, root).with_context(|| root.display().to_string())?,
+        ));
     }
 
     match url_from_github_action() {
         Ok(url) => {
             tracing::trace!("Using GitHub Actions URL: {url}");
-            out.push(Repo::new(RepoSource::Git, RelativePathBuf::from("."), url));
-            return Ok(out);
+            return Ok(Some((RelativePathBuf::from("."), url)));
         }
         Err(error) => {
             tracing::trace!("Could not build repo from GitHub Actions");
@@ -367,11 +408,13 @@ pub(crate) fn load_from_git(root: &Path, git: Option<&Git>) -> Result<Vec<Repo>>
         }
     }
 
-    Ok(out)
+    Ok(None)
 }
 
 /// Parse a git module.
-pub(crate) fn parse_git_module(parser: &mut gitmodules::Parser<'_>) -> Result<Option<Repo>> {
+pub(crate) fn parse_git_module(
+    parser: &mut gitmodules::Parser<'_>,
+) -> Result<Option<(RelativePathBuf, RepoInfo)>> {
     let mut parsed_path = None;
     let mut parsed_url = None;
 
@@ -407,7 +450,7 @@ pub(crate) fn parse_git_module(parser: &mut gitmodules::Parser<'_>) -> Result<Op
         return Ok(None);
     };
 
-    Ok(Some(Repo::new(RepoSource::Gitmodules, path, url)))
+    Ok(Some((path, RepoInfo::new(RepoSource::Gitmodules, url))))
 }
 
 fn parse_remote(remote: &str) -> Result<Url> {
@@ -425,7 +468,7 @@ fn parse_remote(remote: &str) -> Result<Url> {
 }
 
 /// Parse gitmodules from the given input.
-pub(crate) fn parse_git_modules(input: &[u8]) -> Result<Vec<Repo>> {
+pub(crate) fn parse_git_modules(input: &[u8]) -> Result<Vec<(RelativePathBuf, RepoInfo)>> {
     let mut parser = gitmodules::Parser::new(input);
 
     let mut modules = Vec::new();
@@ -438,12 +481,12 @@ pub(crate) fn parse_git_modules(input: &[u8]) -> Result<Vec<Repo>> {
 }
 
 /// Process module information from a git repository.
-fn from_git<P>(git: &Git, root: P) -> Result<Repo>
+fn from_git<P>(git: &Git, root: P) -> Result<(RelativePathBuf, Url)>
 where
     P: AsRef<Path>,
 {
     let url = git.get_url(root, "origin")?;
-    Ok(Repo::new(RepoSource::Git, RelativePathBuf::from("."), url))
+    Ok((RelativePathBuf::from("."), url))
 }
 
 fn url_from_github_action() -> Result<Url> {

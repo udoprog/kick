@@ -364,7 +364,7 @@ mod workflows;
 mod workspace;
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -383,6 +383,7 @@ use termcolor::{ColorChoice, StandardStream};
 
 use crate::ctxt::Paths;
 use crate::env::Env;
+use crate::model::{RepoSource, load_from_git};
 use crate::{glob::Fragment, model::Repo};
 
 /// The version of kick in use.
@@ -775,17 +776,12 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     env.update_from_env();
 
     let templating = templates::Templating::new()?;
-    let gitmodules_repos = model::load_gitmodules(&root)?;
+    let extra_repos = model::load_gitmodules(&root)?;
 
     let defaults = config::defaults();
 
-    let config = config::load(
-        paths,
-        &templating,
-        gitmodules_repos.as_deref().unwrap_or_default(),
-        &defaults,
-    )
-    .context("Loading kick configuration")?;
+    let config = config::load(paths, &templating, extra_repos, &defaults)
+        .context("Loading kick configuration")?;
 
     let os = match std::env::consts::OS {
         "linux" => Os::Linux,
@@ -820,10 +816,20 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         tracing::debug!("Os: {os}, Dist: {dist}");
     }
 
-    let (repos, from_gitmodules) = match gitmodules_repos {
-        Some(repos) => (repos, true),
-        None => (model::load_from_git(&root, system.git.first())?, false),
-    };
+    let mut from_group = true;
+    let mut repos = Vec::new();
+
+    for (path, config) in config.repos.iter() {
+        let Some(url) = config.urls.iter().next() else {
+            continue;
+        };
+
+        repos.push(Repo::new(
+            [RepoSource::Config(path.clone())],
+            path.to_owned(),
+            url.clone(),
+        ));
+    }
 
     tracing::trace!(
         modules = repos
@@ -833,6 +839,14 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             .join(", "),
         "loaded modules"
     );
+
+    if repos.is_empty() {
+        from_group = false;
+
+        if let Some((path, url)) = load_from_git(&root, system.git.first())? {
+            repos.push(Repo::new(BTreeSet::from([RepoSource::Git]), path, url));
+        }
+    }
 
     let mut sets = repo_sets::RepoSets::new(root.join("sets"))?;
 
@@ -1026,7 +1040,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         }
     }
 
-    if from_gitmodules && !in_repo_path {
+    if from_group && !in_repo_path {
         sets.commit()?;
     }
 

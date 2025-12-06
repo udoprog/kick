@@ -13,12 +13,13 @@ use musli::{Decode, Encode};
 use relative_path::{RelativePath, RelativePathBuf};
 use semver::Version;
 use tempfile::NamedTempFile;
+use url::Url;
 
 use crate::KICK_TOML;
 use crate::ctxt::Paths;
 use crate::glob::Glob;
 use crate::keys::Keys;
-use crate::model::{Repo, RepoParams, RepoRef};
+use crate::model::{Repo, RepoInfo, RepoParams, RepoRef, RepoSource};
 use crate::shell::Shell;
 use crate::templates::{Template, Templating};
 
@@ -424,8 +425,12 @@ impl fmt::Display for Distribution {
 
 #[derive(Default, Debug)]
 pub(crate) struct RepoConfig {
+    /// Sources for this repo.
+    pub(crate) sources: BTreeSet<RepoSource>,
     /// Override crate to use.
     pub(crate) name: Option<String>,
+    /// URLs to use.
+    pub(crate) urls: BTreeSet<Url>,
     /// Supported operating system.
     pub(crate) os: BTreeSet<Os>,
     /// Name of the repo branch.
@@ -965,6 +970,10 @@ impl<'a> ConfigCtxt<'a> {
         self.templating.compile(source.as_ref())
     }
 
+    fn url(&mut self, value: impl AsRef<str>) -> Result<Url> {
+        Ok(value.as_ref().parse()?)
+    }
+
     fn string(&mut self, value: toml::Value) -> Result<String> {
         match value {
             toml::Value::String(string) => Ok(string),
@@ -1188,7 +1197,9 @@ impl<'a> ConfigCtxt<'a> {
         })?;
 
         Ok(RepoConfig {
+            sources: BTreeSet::from_iter([RepoSource::Config(cx.cx.current.to_owned())]),
             name: cx.as_string("name")?,
+            urls: BTreeSet::from_iter(cx.in_string("url", Self::url)?),
             os,
             branch: cx.as_string("branch")?,
             filesystem_workflows: HashSet::new(),
@@ -1228,8 +1239,16 @@ impl<'a> ConfigCtxt<'a> {
 
         if !config.is_empty() {
             let keys = config.into_iter().map(|(key, _)| key).collect::<Vec<_>>();
-            let keys = keys.join(", ");
-            bail!("{}: got unsupported keys `{keys}`", self.keys);
+
+            match &keys[..] {
+                [key] => {
+                    bail!("{}: got unsupported key `{}`", self.keys, key);
+                }
+                _ => {
+                    let keys = keys.join(", ");
+                    bail!("{}: got unsupported keys `{keys}`", self.keys);
+                }
+            }
         }
 
         Ok(out)
@@ -1433,51 +1452,57 @@ impl<'a> TableContext<'a, '_> {
 pub(crate) fn load<'a>(
     paths: Paths<'a>,
     templating: &Templating,
-    repos: &[Repo],
+    extra_repos: impl IntoIterator<Item = (RelativePathBuf, RepoInfo)>,
     defaults: &'a toml::Table,
 ) -> Result<Config<'a>> {
+    fn from_config(c: &RepoConfig) -> RepoInfo {
+        let mut repo = RepoInfo::default();
+        repo.urls.extend(c.urls.clone());
+        repo.sources.extend(c.sources.iter().cloned());
+        repo
+    }
+
     let mut cx = ConfigCtxt::new(paths, RelativePath::new(""), templating);
 
-    let Some(config) = cx.kick_config()? else {
-        tracing::trace!(
-            "{}: Missing configuration file",
-            paths.to_path(cx.kick_path).display()
-        );
+    let (base, mut repos) = match cx.kick_config()? {
+        Some(config) => match load_base(&mut cx, config) {
+            Ok(output) => output,
+            Err(error) => return Err(cx.context(error)),
+        },
+        None => {
+            tracing::trace!(
+                "{}: Missing configuration file",
+                paths.to_path(cx.kick_path).display()
+            );
 
-        return Ok(Config {
-            base: RepoConfig::default(),
-            repos: HashMap::new(),
-            defaults,
-        });
+            (RepoConfig::default(), HashMap::new())
+        }
     };
 
-    load_merged(&mut cx, templating, repos, config, defaults)
-}
+    let mut infos = BTreeMap::from_iter(
+        repos
+            .iter()
+            .map(|(path, config)| (path.to_owned(), from_config(config))),
+    );
 
-/// Load merged configuration with base and repo-specific configurations loaded
-/// recursively.
-fn load_merged<'a>(
-    cx: &mut ConfigCtxt<'_>,
-    templating: &Templating,
-    inputs: &[Repo],
-    config: toml::Value,
-    defaults: &'a toml::Table,
-) -> Result<Config<'a>> {
-    let (base, mut repos) = match load_base(cx, config) {
-        Ok(output) => output,
-        Err(error) => return Err(cx.context(error)),
-    };
+    for (path, info) in extra_repos {
+        let to = infos.entry(path).or_default();
+        to.urls.extend(info.urls);
+        to.sources.extend(info.sources);
+    }
 
-    for repo in inputs {
-        let config = load_repo(cx.paths, cx.current, repo, templating)
-            .with_context(|| anyhow!("In repo {}", cx.paths.to_path(repo.path()).display()))?;
+    for (path, info) in infos {
+        let updates = load_repo(cx.paths, cx.current, &path, templating)
+            .with_context(|| anyhow!("In repo {}", cx.paths.to_path(&path).display()))?;
 
-        let Some(config) = config else {
-            continue;
-        };
+        let config = repos.entry(path).or_default();
 
-        let original = repos.entry(RelativePathBuf::from(repo.path())).or_default();
-        original.merge_with(config);
+        if let Some(updates) = updates {
+            config.merge_with(updates);
+        }
+
+        config.sources.extend(info.sources);
+        config.urls.extend(info.urls);
     }
 
     Ok(Config {
@@ -1507,10 +1532,10 @@ fn load_base(
 fn load_repo(
     paths: Paths<'_>,
     current: &RelativePath,
-    repo: &Repo,
+    path: &RelativePath,
     templating: &Templating,
 ) -> Result<Option<RepoConfig>> {
-    let current = current.join(repo.path());
+    let current = current.join(path);
     let mut cx = ConfigCtxt::new(paths, &current, templating);
 
     let Some(config) = cx.kick_config()? else {
