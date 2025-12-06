@@ -924,33 +924,32 @@ impl<'a> Cx<'a> {
 
     /// Load the kick config.
     fn config(&self) -> Result<Option<toml::Value>, ErrorMarker> {
-        let string = match self.paths.read_to_string(&self.config_path) {
-            Ok(string) => string,
-            Err(err) => return self.capture(err),
-        };
-
-        let Some(string) = string else {
+        let Some(string) = self
+            .paths
+            .read_to_string(&self.config_path)
+            .map_err(self.map())?
+        else {
             return Ok(None);
         };
 
-        match toml::from_str(&string) {
-            Ok(config) => Ok(Some(config)),
-            Err(err) => self.capture(err),
-        }
+        toml::from_str(&string).map_err(self.map())
     }
 
-    #[track_caller]
-    fn report(&self, error: impl fmt::Display) {
+    fn map<E>(&self) -> impl FnOnce(E) -> ErrorMarker
+    where
+        E: fmt::Display,
+    {
+        move |error| self.capture(error)
+    }
+
+    fn capture(&self, error: impl fmt::Display) -> ErrorMarker {
         self.errors.borrow_mut().push(anyhow!(
             "{path}: {}: {error}",
             self.keys,
             path = self.paths.to_path(&self.config_path).display()
         ));
-    }
 
-    fn capture<O>(&self, error: impl fmt::Display) -> Result<O, ErrorMarker> {
-        self.report(error);
-        Err(ErrorMarker)
+        ErrorMarker
     }
 
     /// Visit the given key, extracting it from the specified table.
@@ -961,7 +960,7 @@ impl<'a> Cx<'a> {
         f: impl FnOnce(&Self, toml::Value) -> Result<O, ErrorMarker>,
     ) -> Result<O, ErrorMarker> {
         let Some(value) = table.remove(key) else {
-            return self.capture(format_args!("missing required key `{key}`"));
+            return Err(self.capture(format_args!("missing required key `{key}`")));
         };
 
         self.keys.field(key);
@@ -992,11 +991,7 @@ impl<'a> Cx<'a> {
         O: FromStr<Err: fmt::Display>,
     {
         let value = self.string(value)?;
-
-        match O::from_str(&value) {
-            Ok(feature) => Ok(feature),
-            Err(e) => self.capture(e),
-        }
+        O::from_str(value.as_str()).map_err(self.map())
     }
 
     /// Compile a template from a path.
@@ -1004,9 +999,11 @@ impl<'a> Cx<'a> {
         let path = self.relative_path(value)?;
         let path = self.current.join(path).to_path(self.paths.root);
 
-        let template = match fs::read_to_string(&path).with_context(|| path.display().to_string()) {
+        let template = match fs::read_to_string(&path) {
             Ok(template) => template,
-            Err(err) => return self.capture(err),
+            Err(err) => {
+                return Err(self.capture(format_args!("reading {}: {}", path.display(), err)));
+            }
         };
 
         self.compile_str(template)
@@ -1022,14 +1019,14 @@ impl<'a> Cx<'a> {
     fn compile_str(&self, source: impl AsRef<str>) -> Result<Template, ErrorMarker> {
         match self.templating.compile(source.as_ref()) {
             Ok(template) => Ok(template),
-            Err(err) => self.capture(err),
+            Err(err) => Err(self.capture(err)),
         }
     }
 
     fn string(&self, value: toml::Value) -> Result<String, ErrorMarker> {
         match value {
             toml::Value::String(string) => Ok(string),
-            other => self.capture(format_args!("expected string, got {}", other.type_str())),
+            other => Err(self.capture(format_args!("expected string, got {}", other.type_str()))),
         }
     }
 
@@ -1037,7 +1034,7 @@ impl<'a> Cx<'a> {
         let path = RelativePathBuf::from(self.string(value)?);
 
         if path.as_str().starts_with('/') {
-            return self.capture(format_args!("path must be relative, but got {path}"));
+            return Err(self.capture(format_args!("path must be relative, but got {path}")));
         }
 
         Ok(path)
@@ -1046,14 +1043,14 @@ impl<'a> Cx<'a> {
     fn boolean(&self, value: toml::Value) -> Result<bool, ErrorMarker> {
         match value {
             toml::Value::Boolean(value) => Ok(value),
-            other => self.capture(format_args!("expected boolean, got {}", other.type_str())),
+            other => Err(self.capture(format_args!("expected boolean, got {}", other.type_str()))),
         }
     }
 
     fn table(&self, value: toml::Value) -> Result<toml::Table, ErrorMarker> {
         match value {
             toml::Value::Table(table) => Ok(table),
-            other => self.capture(format_args!("expected table, got {}", other.type_str())),
+            other => Err(self.capture(format_args!("expected table, got {}", other.type_str()))),
         }
     }
 
@@ -1063,45 +1060,79 @@ impl<'a> Cx<'a> {
         key: &str,
         map: Option<(&str, &str)>,
         mut f: impl FnMut(&Self, toml::Value) -> Result<O, ErrorMarker>,
-    ) -> B
+    ) -> Result<B, ErrorMarker>
     where
         B: FromIterator<O>,
     {
         let result = self.in_key(table, key, move |cx, value| match (value, map) {
             (toml::Value::Array(array), _) => {
+                let mut error = false;
+
                 let it = array.into_iter().enumerate().flat_map(|(index, item)| {
                     cx.keys.index(index);
-                    let out = f(cx, item).ok();
+
+                    let out = match f(cx, item) {
+                        Ok(out) => Some(out),
+                        Err(ErrorMarker) => {
+                            error = true;
+                            None
+                        }
+                    };
+
                     cx.keys.pop();
                     out
                 });
 
-                Ok(it.collect())
+                let out = B::from_iter(it);
+
+                if error {
+                    return Err(ErrorMarker);
+                }
+
+                Ok(out)
             }
             (toml::Value::Table(table), Some((key, value))) => {
+                let mut error = false;
+
                 let it = table.into_iter().enumerate().flat_map(|(index, (k, v))| {
                     let mut table = toml::Table::with_capacity(2);
                     table.insert(key.to_owned(), toml::Value::String(k));
                     table.insert(value.to_owned(), v);
 
                     cx.keys.index(index);
-                    let out = f(cx, toml::Value::Table(table)).ok();
+
+                    let out = match f(cx, toml::Value::Table(table)) {
+                        Ok(out) => Some(out),
+                        Err(ErrorMarker) => {
+                            error = true;
+                            None
+                        }
+                    };
+
                     cx.keys.pop();
                     out
                 });
 
-                Ok(it.collect())
+                let out = B::from_iter(it);
+
+                if error {
+                    return Err(ErrorMarker);
+                }
+
+                Ok(out)
             }
-            (other, Some((key, value))) => self.capture(format_args!(
+            (other, Some((key, value))) => Err(self.capture(format_args!(
                 "expected array or map {{{key} => {value}}}, got {}",
                 other.type_str()
-            )),
-            (other, None) => self.capture(format_args!("expected array, got {}", other.type_str())),
-        });
+            ))),
+            (other, None) => {
+                Err(self.capture(format_args!("expected array, got {}", other.type_str())))
+            }
+        })?;
 
         match result {
-            Ok(Some(result)) => result,
-            _ => B::from_iter(iter::empty()),
+            Some(result) => Ok(result),
+            None => Ok(B::from_iter(iter::empty())),
         }
     }
 
@@ -1110,27 +1141,40 @@ impl<'a> Cx<'a> {
         table: &mut toml::Table,
         key: &str,
         mut f: impl FnMut(&Self, String, toml::Value) -> Result<(K, V), ErrorMarker>,
-    ) -> O
+    ) -> Result<O, ErrorMarker>
     where
         K: Eq + Hash,
         O: FromIterator<(K, V)>,
     {
         let out = self.in_key(table, key, move |cx, value| {
             let table = cx.table(value)?;
+            let mut error = false;
 
             let data = O::from_iter(table.into_iter().flat_map(|(key, item)| {
                 cx.keys.field(&key);
-                let out = f(cx, key, item).ok();
+
+                let out = match f(cx, key, item) {
+                    Ok(out) => Some(out),
+                    Err(ErrorMarker) => {
+                        error = true;
+                        None
+                    }
+                };
+
                 cx.keys.pop();
                 out
             }));
 
+            if error {
+                return Err(ErrorMarker);
+            }
+
             Ok(data)
-        });
+        })?;
 
         match out {
-            Ok(Some(out)) => out,
-            _ => O::from_iter(iter::empty()),
+            Some(out) => Ok(out),
+            _ => Ok(O::from_iter(iter::empty())),
         }
     }
 
@@ -1156,7 +1200,7 @@ impl<'a> Cx<'a> {
         f: impl FnOnce(&Self, toml::Value) -> Result<O, ErrorMarker>,
     ) -> Result<O, ErrorMarker> {
         let Some(value) = table.remove(key) else {
-            return self.capture(format_args!("missing required key `{key}`"));
+            return Err(self.capture(format_args!("missing required key `{key}`")));
         };
 
         self.keys.field(key);
@@ -1178,7 +1222,7 @@ impl<'a> Cx<'a> {
         Ok(PartialWorkflowConfig {
             name: name?,
             template: template?,
-            features,
+            features: features?,
             branch: branch?,
             disable: disable?,
         })
@@ -1188,14 +1232,15 @@ impl<'a> Cx<'a> {
         let name = self.in_key(table, "name", Self::string);
         let url = self.in_key(table, "url", Self::parse);
 
-        let os = self.in_array(table, "os", None, |cx, item| {
-            match cx.string(item)?.as_str() {
-                "windows" => Ok(Os::Windows),
-                "linux" => Ok(Os::Linux),
-                "macos" => Ok(Os::Mac),
-                other => cx.capture(format_args!("unknown os: {other}")),
-            }
-        });
+        let os: std::result::Result<_, ErrorMarker> =
+            self.in_array(table, "os", None, |cx, item| {
+                match cx.string(item)?.as_str() {
+                    "windows" => Ok(Os::Windows),
+                    "linux" => Ok(Os::Linux),
+                    "macos" => Ok(Os::Mac),
+                    other => Err(cx.capture(format_args!("unknown os: {other}"))),
+                }
+            });
 
         let branch = self.in_key(table, "branch", Self::string);
         let workflows = self.in_table(table, "workflows", |cx, id, value| {
@@ -1258,7 +1303,7 @@ impl<'a> Cx<'a> {
 
                 Ok(Replacement {
                     package_name: package_name?,
-                    paths,
+                    paths: paths?,
                     pattern: pattern?,
                 })
             })
@@ -1278,22 +1323,22 @@ impl<'a> Cx<'a> {
             sources: BTreeSet::from_iter([RepoSource::Config(self.current.to_owned())]),
             name: name?,
             urls: BTreeSet::from_iter(url?),
-            os,
+            os: os?,
             branch: branch?,
             filesystem_workflows: HashSet::new(),
-            workflows,
+            workflows: workflows?,
             license: license?,
-            authors,
+            authors: authors?,
             documentation: documentation?,
             lib: lib?,
             readme: readme?,
-            badges,
+            badges: badges?,
             cargo_toml: cargo_toml?,
-            disabled,
-            lib_badges,
-            readme_badges,
+            disabled: disabled?,
+            lib_badges: lib_badges?,
+            readme_badges: readme_badges?,
             variables: variables?.unwrap_or_default(),
-            version,
+            version: version?,
             upgrade: upgrade?.unwrap_or_default(),
             package: package?.unwrap_or_default(),
             actions: actions?.unwrap_or_default(),
@@ -1316,7 +1361,7 @@ impl<'a> Cx<'a> {
             };
 
             let keys = keys.join(", ");
-            return self.capture(format_args!("got unsupported {what}: {keys}"));
+            return Err(self.capture(format_args!("got unsupported {what}: {keys}")));
         }
 
         out
@@ -1333,7 +1378,7 @@ impl<'a> Cx<'a> {
     fn upgrade(&self, value: toml::Value) -> Result<Upgrade, ErrorMarker> {
         self.with_table(value, |cx, table| {
             let exclude = cx.in_array(table, "exclude", None, Self::string);
-            Ok(Upgrade { exclude })
+            Ok(Upgrade { exclude: exclude? })
         })
     }
 
@@ -1347,7 +1392,9 @@ impl<'a> Cx<'a> {
 
                 match u16::from_str_radix(&string, 8) {
                     Ok(mode) => Ok(mode),
-                    Err(err) => cx.capture(format_args!("invalid file mode `{string}`: {err}")),
+                    Err(err) => {
+                        Err(cx.capture(format_args!("invalid file mode `{string}`: {err}")))
+                    }
                 }
             });
 
@@ -1392,7 +1439,9 @@ impl<'a> Cx<'a> {
                 Self::rpm_require,
             );
 
-            Ok(RpmPackage { requires })
+            Ok(RpmPackage {
+                requires: requires?,
+            })
         })
     }
 
@@ -1405,7 +1454,7 @@ impl<'a> Cx<'a> {
                 Self::deb_dependency,
             );
 
-            Ok(DebPackage { depends })
+            Ok(DebPackage { depends: depends? })
         })
     }
 
@@ -1416,7 +1465,7 @@ impl<'a> Cx<'a> {
             let deb = cx.in_key(table, "deb", Self::deb);
 
             Ok(Package {
-                files,
+                files: files?,
                 rpm: rpm?.unwrap_or_default(),
                 deb: deb?.unwrap_or_default(),
             })
@@ -1458,7 +1507,10 @@ impl<'a> Cx<'a> {
                 Self::latest_action,
             );
 
-            Ok(Actions { deny, latest })
+            Ok(Actions {
+                deny: deny?,
+                latest: latest?,
+            })
         })
     }
 }
@@ -1558,7 +1610,7 @@ fn load_base(
             Ok((RelativePathBuf::from(id), cx.repo(value)?))
         });
 
-        Ok((base?, repos))
+        Ok((base?, repos?))
     })
 }
 
