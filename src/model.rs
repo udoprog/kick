@@ -132,7 +132,7 @@ impl fmt::Display for RepoSource {
         match self {
             RepoSource::Gitmodules => write!(f, ".gitmodules"),
             RepoSource::Git => write!(f, "git repo"),
-            RepoSource::Config(path) => write!(f, "configuration ({path})"),
+            RepoSource::Config(path) => write!(f, "{path}"),
         }
     }
 }

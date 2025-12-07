@@ -6,7 +6,7 @@ use std::process::{ExitCode, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use relative_path::RelativePath;
 
 use super::system::{Git, System};
@@ -135,14 +135,6 @@ impl<'a> Ctxt<'a> {
         P: AsRef<RelativePath>,
     {
         self.paths.to_path(path)
-    }
-
-    /// Construct a reporting context for the given repo.
-    pub(crate) fn context<'ctx>(
-        &'ctx self,
-        repo: &'ctx RepoRef,
-    ) -> impl Fn() -> anyhow::Error + 'ctx {
-        move || anyhow!("Error in repo {}", self.to_path(repo.path()).display())
     }
 
     /// Get repo parameters for the given package.

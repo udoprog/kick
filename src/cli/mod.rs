@@ -17,6 +17,7 @@ pub(crate) mod publish;
 pub(crate) mod rpm;
 pub(crate) mod run;
 pub(crate) mod set;
+pub(crate) mod sync;
 pub(crate) mod update;
 pub(crate) mod upgrade;
 pub(crate) mod version;

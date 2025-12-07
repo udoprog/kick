@@ -1,9 +1,9 @@
 use std::env;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
+use std::fmt;
 use std::fs::OpenOptions;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::{ffi::OsString, fmt};
 
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, ValueEnum};

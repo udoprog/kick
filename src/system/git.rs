@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -13,6 +13,13 @@ use reqwest::Url;
 use crate::env::SecretString;
 use crate::process::{Command, OsArg};
 
+/// The outcome of a merge operation.
+pub(crate) struct MergeOutcome {
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+    pub(crate) success: bool,
+}
+
 #[derive(Debug)]
 pub(crate) struct Git {
     pub(crate) path: PathBuf,
@@ -24,14 +31,53 @@ impl Git {
         Self { path }
     }
 
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
+    pub(crate) fn fetch(
+        &self,
+        dir: impl AsRef<Path>,
+        remote: impl AsRef<str>,
+        revspec: impl AsRef<str>,
+    ) -> Result<bool> {
+        let output = Command::new(&self.path)
+            .args(["fetch", remote.as_ref(), revspec.as_ref()])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .current_dir(dir)
+            .output()?;
+
+        if !output.status.success() {
+            return Ok(true);
+        }
+
+        Ok(!output.stdout.is_empty())
+    }
+
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
+    pub(crate) fn merge_fast_forward(
+        &self,
+        dir: impl AsRef<Path>,
+        revspec: impl AsRef<str>,
+    ) -> Result<MergeOutcome> {
+        let output = Command::new(&self.path)
+            .args(["merge", "--ff-only", revspec.as_ref()])
+            .stdin(Stdio::null())
+            .current_dir(dir)
+            .output()?;
+
+        Ok(MergeOutcome {
+            stdout: String::from_utf8(output.stdout)?,
+            stderr: String::from_utf8(output.stderr)?,
+            success: output.status.success(),
+        })
+    }
+
     /// Make a commit.
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
-    pub(crate) fn add<P, A>(&self, dir: &P, args: A) -> Result<()>
-    where
-        P: ?Sized + AsRef<Path>,
-        A: IntoIterator,
-        A::Item: Into<OsArg>,
-    {
+    pub(crate) fn add(
+        &self,
+        dir: impl AsRef<Path>,
+        args: impl IntoIterator<Item: Into<OsArg>>,
+    ) -> Result<()> {
         let status = Command::new(&self.path)
             .arg("add")
             .args(args)
@@ -47,11 +93,7 @@ impl Git {
 
     /// Make a commit.
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
-    pub(crate) fn commit<P, M>(&self, dir: &P, message: M) -> Result<()>
-    where
-        P: ?Sized + AsRef<Path>,
-        M: Display,
-    {
+    pub(crate) fn commit(&self, dir: impl AsRef<Path>, message: impl fmt::Display) -> Result<()> {
         let status = Command::new(&self.path)
             .args(["commit", "-m"])
             .arg(message.to_string())
@@ -67,11 +109,7 @@ impl Git {
 
     /// Make a tag.
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
-    pub(crate) fn tag<P, M>(&self, dir: &P, tag: M) -> Result<()>
-    where
-        P: ?Sized + AsRef<Path>,
-        M: Display,
-    {
+    pub(crate) fn tag(&self, dir: impl AsRef<Path>, tag: impl fmt::Display) -> Result<()> {
         let status = Command::new(&self.path)
             .args(["tag"])
             .arg(tag.to_string())
@@ -86,10 +124,7 @@ impl Git {
     }
 
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
-    pub(crate) fn is_cached<P>(&self, dir: &P) -> Result<bool>
-    where
-        P: ?Sized + AsRef<Path>,
-    {
+    pub(crate) fn is_cached(&self, dir: impl AsRef<Path>) -> Result<bool> {
         let status = Command::new(&self.path)
             .args(["diff", "--cached", "--exit-code", "--quiet"])
             .stdin(Stdio::null())
@@ -102,10 +137,7 @@ impl Git {
     }
 
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
-    pub(crate) fn is_dirty<P>(&self, dir: &P) -> Result<bool>
-    where
-        P: ?Sized + AsRef<Path>,
-    {
+    pub(crate) fn is_dirty(&self, dir: impl AsRef<Path>) -> Result<bool> {
         let output = Command::new(&self.path)
             .args(["status", "--short"])
             .stdin(Stdio::null())
@@ -120,10 +152,7 @@ impl Git {
         Ok(!output.stdout.is_empty())
     }
 
-    fn remote_update<P>(&self, dir: P) -> Result<()>
-    where
-        P: AsRef<Path>,
-    {
+    fn remote_update(&self, dir: impl AsRef<Path>) -> Result<()> {
         tracing::info!("Updating remote");
 
         let status = Command::new(&self.path)
@@ -136,10 +165,7 @@ impl Git {
         Ok(())
     }
 
-    pub(crate) fn remote_branch<P>(&self, dir: P) -> Result<(String, String)>
-    where
-        P: AsRef<Path>,
-    {
+    pub(crate) fn remote_branch(&self, dir: impl AsRef<Path>) -> Result<(String, String)> {
         let output = Command::new(&self.path)
             .args(["status", "-sb"])
             .stdin(Stdio::null())
@@ -173,10 +199,7 @@ impl Git {
 
     /// Test if the local branch is outdated.
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path, ?fetch))]
-    pub(crate) fn is_outdated<P>(&self, dir: P, fetch: bool) -> Result<bool>
-    where
-        P: AsRef<Path>,
-    {
+    pub(crate) fn is_outdated(&self, dir: impl AsRef<Path>, fetch: bool) -> Result<bool> {
         let dir = dir.as_ref();
 
         if fetch {
@@ -198,10 +221,7 @@ impl Git {
 
     /// Parse a commit.
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
-    pub(crate) fn rev_parse<P>(&self, dir: P, rev: &str) -> Result<String>
-    where
-        P: AsRef<Path>,
-    {
+    pub(crate) fn rev_parse(&self, dir: impl AsRef<Path>, rev: &str) -> Result<String> {
         let output = Command::new(&self.path)
             .args(["rev-parse", rev])
             .stdin(Stdio::null())
@@ -216,12 +236,13 @@ impl Git {
 
     /// Get HEAD commit.
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path, ?fetch))]
-    pub(crate) fn describe_tags<P>(&self, dir: &P, fetch: bool) -> Result<Option<DescribeTags>>
-    where
-        P: ?Sized + AsRef<Path>,
-    {
+    pub(crate) fn describe_tags(
+        &self,
+        dir: impl AsRef<Path>,
+        fetch: bool,
+    ) -> Result<Option<DescribeTags>> {
         if fetch {
-            self.remote_update(dir)?;
+            self.remote_update(dir.as_ref())?;
         }
 
         let output = Command::new(&self.path)
@@ -255,10 +276,7 @@ impl Git {
     }
 
     /// Get remote url.
-    pub(crate) fn get_url<P>(&self, dir: P, remote: &str) -> Result<Url>
-    where
-        P: AsRef<Path>,
-    {
+    pub(crate) fn get_url(&self, dir: impl AsRef<Path>, remote: &str) -> Result<Url> {
         let output = Command::new(&self.path)
             .args(["remote", "get-url", remote])
             .current_dir(dir)

@@ -657,6 +657,12 @@ pub(crate) struct Config<'a> {
 }
 
 impl Config<'_> {
+    /// Get the branch for the given repo.
+    pub(crate) fn branch(&self, repo: &Repo) -> Option<&str> {
+        let branch = self.get_all(repo, |c| c.branch.as_ref()).last()?;
+        Some(branch)
+    }
+
     /// A workflow configuration.
     pub(crate) fn workflows(&self, repo: &RepoRef) -> Result<BTreeMap<String, WorkflowConfig>> {
         let ids = self.get_all(repo, |c| {

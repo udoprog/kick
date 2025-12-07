@@ -3,24 +3,21 @@ use core::fmt;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures_util::stream::StreamExt;
 use tracing::Instrument;
 
 pub(super) const PARALLELISM: &str = "8";
 
 /// Run over repos asynchronously with a final report on successful run.
-async fn with_repos_async<'repo, T, F>(
+async fn with_repos_async<'repo, T>(
     cx: &mut Ctxt<'repo>,
     what: impl fmt::Display,
     hint: impl fmt::Display,
     parallelism: usize,
-    f: F,
+    f: impl AsyncFn(&Ctxt<'repo>, &'repo Repo) -> Result<T>,
     mut report_fn: impl FnMut(T) -> Result<()>,
-) -> Result<()>
-where
-    F: AsyncFn(&Ctxt<'repo>, &'repo Repo) -> Result<T>,
-{
+) -> Result<()> {
     let mut good = crate::repo_sets::RepoSet::default();
     let mut bad = crate::repo_sets::RepoSet::default();
 
@@ -68,7 +65,7 @@ where
                 Err(error) => Err(error),
             };
 
-            match result.with_context(cx.context(repo)) {
+            match result {
                 Ok(()) => {
                     repo.set_success();
                     good.insert(repo);
@@ -98,15 +95,12 @@ where
 }
 
 /// Run over repos.
-fn with_repos<'repo, T, F>(
+fn with_repos<'repo, T>(
     cx: &mut Ctxt<'repo>,
     what: impl fmt::Display,
     hint: impl fmt::Display,
-    mut f: F,
-) -> Result<()>
-where
-    F: FnMut(&Ctxt<'repo>, &'repo Repo) -> Result<T>,
-{
+    mut f: impl FnMut(&Ctxt<'repo>, &'repo Repo) -> Result<T>,
+) -> Result<()> {
     let mut good = crate::repo_sets::RepoSet::default();
     let mut bad = crate::repo_sets::RepoSet::default();
 
@@ -132,7 +126,7 @@ where
 
         tracing::trace!("Running `{what}`");
 
-        if let Err(error) = ::anyhow::Context::with_context(result, cx.context(repo)) {
+        if let Err(error) = result {
             tracing::error!("{error}");
 
             for cause in error.chain().skip(1) {

@@ -497,6 +497,8 @@ enum Command {
     /// Interact with the github API parameterized over repositories.
     #[command(name = "gh")]
     Github(SharedAction<cli::gh::Opts>),
+    /// Synchronize repositories.
+    Sync(SharedAction<cli::sync::Opts>),
 }
 
 impl Command {
@@ -525,6 +527,7 @@ impl Command {
             Command::Zip(action) => &action.shared,
             Command::Gzip(action) => &action.shared,
             Command::GithubAction(action) => &action.shared,
+            Command::Sync(action) => &action.shared,
         }
     }
 
@@ -549,6 +552,7 @@ impl Command {
             Command::Zip(action) => Some(&action.repo),
             Command::Gzip(action) => Some(&action.repo),
             Command::GithubAction(action) => Some(&action.repo),
+            Command::Sync(action) => Some(&action.repo),
         }
     }
 
@@ -1028,6 +1032,9 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         Command::Github(opts) => {
             cli::gh::entry(with_repos, &opts.action).await?;
         }
+        Command::Sync(opts) => {
+            cli::sync::entry(with_repos, &opts.action)?;
+        }
     }
 
     let mut o = StandardStream::stdout(ColorChoice::Auto);
@@ -1224,10 +1231,10 @@ fn filter_repos(
 
         if repo_opts.needs_git() {
             let git = git.context("no working git command found")?;
-            let repo_path = paths.to_path(repo.path());
+            let path = paths.to_path(repo.path());
 
-            let cached = git.is_cached(&repo_path)?;
-            let dirty = git.is_dirty(&repo_path)?;
+            let cached = git.is_cached(&path)?;
+            let dirty = git.is_dirty(&path)?;
 
             let span = tracing::trace_span!("git", ?cached, ?dirty, repo = repo.path().to_string());
             let _enter = span.enter();
@@ -1248,15 +1255,13 @@ fn filter_repos(
                     break 'outcome true;
                 }
 
-                if repo_opts.outdated
-                    && (!dirty && !git.is_outdated(&repo_path, repo_opts.fetch)?)
-                {
+                if repo_opts.outdated && (!dirty && !git.is_outdated(&path, repo_opts.fetch)?) {
                     tracing::trace!("Directory is not outdated");
                     break 'outcome true;
                 }
 
                 if repo_opts.unreleased {
-                    if let Some(describe) = git.describe_tags(&repo_path, repo_opts.fetch)? {
+                    if let Some(describe) = git.describe_tags(&path, repo_opts.fetch)? {
                         if describe.offset.is_none() {
                             tracing::trace!("No offset detected (tag: {})", describe.tag);
                             break 'outcome true;
