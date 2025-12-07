@@ -93,7 +93,7 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     let opts_earliest = parse_minor_version(cx, opts.earliest.as_deref(), rust_version.as_ref())?;
     let opts_latest = parse_minor_version(cx, opts.latest.as_deref(), rust_version.as_ref())?;
 
-    let earliest = opts_earliest.unwrap_or(EARLIEST);
+    let earliest = opts_earliest.or(rust_version).unwrap_or(EARLIEST);
 
     let latest = opts_latest
         .or(cx.rustc_version)
