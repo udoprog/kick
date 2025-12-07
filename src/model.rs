@@ -148,17 +148,32 @@ pub(crate) struct RepoRef {
 }
 
 impl RepoRef {
-    /// Get path of module.
     pub(crate) fn path(&self) -> &RelativePath {
         &self.path
     }
 
-    /// Get URL of module.
     pub(crate) fn url(&self) -> &Url {
         &self.url
     }
 
-    /// Repo name.
+    pub(crate) fn push_url(&self) -> Option<String> {
+        match self.url.host_str() {
+            Some("github.com") => self.github_push_url(),
+            _ => None,
+        }
+    }
+
+    fn github_push_url(&self) -> Option<String> {
+        if !matches!(self.url.scheme(), "https" | "http") {
+            return None;
+        }
+
+        Some(format!(
+            "git@github.com:{}.git",
+            self.url.path().trim_matches('/')
+        ))
+    }
+
     pub(crate) fn repo(&self) -> Option<RepoPath<'_>> {
         let Some("github.com") = self.url.domain() else {
             return None;

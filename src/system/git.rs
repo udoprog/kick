@@ -53,6 +53,20 @@ impl Git {
     }
 
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
+    pub(crate) fn force_checkout(&self, dir: impl AsRef<Path>, rev: impl AsRef<str>) -> Result<()> {
+        let status = Command::new(&self.path)
+            .args(["checkout", "--force", rev.as_ref()])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .stdout(Stdio::null())
+            .current_dir(dir)
+            .status()?;
+
+        ensure!(status.success(), status);
+        Ok(())
+    }
+
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
     pub(crate) fn merge_fast_forward(
         &self,
         dir: impl AsRef<Path>,
@@ -82,7 +96,7 @@ impl Git {
             .arg("add")
             .args(args)
             .stdin(Stdio::null())
-            .stdout(Stdio::inherit())
+            .stdout(Stdio::null())
             .stderr(Stdio::null())
             .current_dir(dir)
             .status()?;
@@ -98,7 +112,7 @@ impl Git {
             .args(["commit", "-m"])
             .arg(message.to_string())
             .stdin(Stdio::null())
-            .stdout(Stdio::inherit())
+            .stdout(Stdio::null())
             .stderr(Stdio::null())
             .current_dir(dir)
             .status()?;
@@ -114,7 +128,7 @@ impl Git {
             .args(["tag"])
             .arg(tag.to_string())
             .stdin(Stdio::null())
-            .stdout(Stdio::inherit())
+            .stdout(Stdio::null())
             .stderr(Stdio::null())
             .current_dir(dir)
             .status()?;
@@ -219,11 +233,78 @@ impl Git {
         Ok(!status.success())
     }
 
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
+    pub(crate) fn init(&self, dir: impl AsRef<Path>) -> Result<()> {
+        let status = Command::new(&self.path)
+            .args(["init"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .current_dir(dir)
+            .status()?;
+
+        ensure!(status.success(), status);
+        Ok(())
+    }
+
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
+    pub(crate) fn remote_add(
+        &self,
+        dir: impl AsRef<Path>,
+        name: impl AsRef<str>,
+        url: impl AsRef<str>,
+    ) -> Result<()> {
+        let status = Command::new(&self.path)
+            .args(["remote", "add", name.as_ref(), url.as_ref()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .current_dir(dir)
+            .status()?;
+
+        ensure!(status.success(), status);
+        Ok(())
+    }
+
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
+    pub(crate) fn remote_get_push_url(&self, dir: impl AsRef<Path>, name: &str) -> Result<String> {
+        let output = Command::new(&self.path)
+            .args(["remote", "get-url", "--push", name])
+            .current_dir(dir.as_ref())
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .stdout(Stdio::piped())
+            .output()?;
+
+        ensure!(output.status.success(), output.status);
+        let url = String::from_utf8(output.stdout)?;
+        Ok(url.trim().to_owned())
+    }
+
+    #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
+    pub(crate) fn remote_set_push_url(
+        &self,
+        dir: impl AsRef<Path>,
+        name: impl AsRef<str>,
+        url: impl AsRef<str>,
+    ) -> Result<()> {
+        let status = Command::new(&self.path)
+            .args(["remote", "set-url", "--push", name.as_ref(), url.as_ref()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .current_dir(dir)
+            .status()?;
+
+        ensure!(status.success(), status);
+        Ok(())
+    }
+
     /// Parse a commit.
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
-    pub(crate) fn rev_parse(&self, dir: impl AsRef<Path>, rev: &str) -> Result<String> {
+    pub(crate) fn rev_parse(&self, dir: impl AsRef<Path>, rev: impl AsRef<str>) -> Result<String> {
         let output = Command::new(&self.path)
-            .args(["rev-parse", rev])
+            .args(["rev-parse", rev.as_ref()])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

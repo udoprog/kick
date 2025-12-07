@@ -1,3 +1,7 @@
+use core::str::FromStr;
+
+use std::fs;
+
 use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 
@@ -12,8 +16,26 @@ enum Kind {
     Git,
 }
 
+impl FromStr for Kind {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "git" => Ok(Kind::Git),
+            _ => bail!("unknown repository kind: {s}"),
+        }
+    }
+}
+
 #[derive(Default, Debug, Clone, Parser)]
-pub(crate) struct Opts {}
+pub(crate) struct Opts {
+    /// If there is no repository present, initialize one with the given kind.
+    ///
+    /// This is a destructive operation that will overwrite existing files
+    /// inside of any existing directories.
+    #[clap(long, num_args = 0..=1, default_missing_value = "git")]
+    init: Option<Kind>,
+}
 
 pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
     with_repos.run(
@@ -25,7 +47,7 @@ pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Re
     Ok(())
 }
 
-fn sync(cx: &Ctxt<'_>, repo: &Repo, _: &Opts) -> Result<()> {
+fn sync(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     let mut path = cx.to_path(repo.path());
 
     let kind = 'kind: {
@@ -36,6 +58,34 @@ fn sync(cx: &Ctxt<'_>, repo: &Repo, _: &Opts) -> Result<()> {
 
             if exists {
                 break 'kind kind;
+            }
+        }
+
+        if let Some(kind) = opts.init {
+            if !path.is_dir() {
+                tracing::info!("creating directory at {}", path.display());
+                fs::create_dir_all(&path).with_context(|| path.display().to_string())?;
+            }
+
+            match kind {
+                Kind::Git => {
+                    let branch = cx.config.branch(repo).context("no branch configured")?;
+
+                    let git = cx.require_git()?;
+                    git.init(&path)?;
+                    git.remote_add(&path, "origin", repo.url())?;
+                    git.fetch(&path, "origin", branch)?;
+                    git.force_checkout(&path, branch)?;
+
+                    if let Some(push_url) = repo.push_url()
+                        && git.remote_get_push_url(&path, "origin")? != push_url
+                    {
+                        git.remote_set_push_url(&path, "origin", push_url)?;
+                    }
+
+                    tracing::info!("initialized git repository at {}", path.display());
+                    return Ok(());
+                }
             }
         }
 
@@ -67,6 +117,12 @@ fn sync(cx: &Ctxt<'_>, repo: &Repo, _: &Opts) -> Result<()> {
                 }
 
                 bail!("fast-forward merge failed");
+            }
+
+            if let Some(push_url) = repo.push_url()
+                && git.remote_get_push_url(&path, "origin")? != push_url
+            {
+                git.remote_set_push_url(&path, "origin", push_url)?;
             }
 
             tracing::info!(?branch, ?rev, "synchronized repo");
