@@ -23,7 +23,7 @@ pub(crate) struct Opts {
     input: Vec<String>,
 }
 
-pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
+pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
     let mut o = StandardStream::stdout(ColorChoice::Auto);
 
     with_repos.run("run action", format_args!("for: {opts:?}"), |cx, repo| {

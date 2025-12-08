@@ -22,7 +22,7 @@ pub(crate) struct Opts {
     url_checks: bool,
 }
 
-pub(crate) async fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
+pub(crate) async fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
     let mut urls = Urls::default();
 
     with_repos.run("check", format_args!("check: {opts:?}"), |cx, repo| {

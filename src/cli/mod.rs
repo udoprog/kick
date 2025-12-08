@@ -1,6 +1,5 @@
 mod with_repos;
-pub(crate) use self::with_repos::WithReposImpl;
-use self::with_repos::{PARALLELISM, WithRepos, WithReposAsync};
+pub(crate) use self::with_repos::WithRepos;
 
 pub(crate) mod changes;
 pub(crate) mod check;

@@ -19,7 +19,7 @@ pub(crate) struct Opts {
     output: Option<RelativePathBuf>,
 }
 
-pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
+pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
     with_repos.run("build .msi", format_args!("msi: {opts:?}"), |cx, repo| {
         msi(cx, repo, opts)
     })?;

@@ -6,7 +6,7 @@ use clap::Parser;
 use relative_path::RelativePathBuf;
 use tokio::fs::File;
 
-use crate::cli::WithReposAsync;
+use crate::cli::WithRepos;
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::model::Repo;
@@ -48,7 +48,7 @@ pub(super) struct Opts {
 
 pub(super) async fn entry(
     opts: &Opts,
-    with_repos: impl WithReposAsync<'_>,
+    with_repos: &mut WithRepos<'_>,
     client: &octokit::Client,
 ) -> Result<()> {
     let sha_from_env = if opts.github_action {

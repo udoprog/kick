@@ -429,6 +429,7 @@ use relative_path::{RelativePath, RelativePathBuf};
 use repo_sets::RepoSet;
 use termcolor::{ColorChoice, StandardStream};
 
+use crate::cli::WithRepos;
 use crate::ctxt::Paths;
 use crate::env::Env;
 use crate::model::{RepoSource, load_from_git};
@@ -450,6 +451,9 @@ const KICK_TOML: &str = "Kick.toml";
 
 /// Name of the github token file.
 const GITHUB_TOKEN: &str = ".github-token";
+
+/// Default parallelism to use.
+const PARALLELISM: &str = "8";
 
 /// User agent to use for http requests.
 static USER_AGENT: reqwest::header::HeaderValue =
@@ -596,6 +600,9 @@ struct SharedOptions {
     /// List all found system tools.
     #[arg(long)]
     list_tools: bool,
+    /// The number of operations to do in parallel if applicable.
+    #[arg(long, default_value = PARALLELISM, value_name = "count")]
+    parallelism: usize,
 }
 
 impl SharedOptions {
@@ -937,7 +944,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         None => None,
     };
 
-    let mut cx = ctxt::Ctxt {
+    let cx = ctxt::Ctxt {
         term,
         system: &system,
         git_credentials: &git_credentials,
@@ -953,89 +960,91 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         env: &env,
     };
 
-    let with_repos = cli::WithReposImpl::new(&mut cx);
+    let mut with_repos = WithRepos::new(cx, shared.parallelism);
 
     match &opts.action {
         Command::Check(opts) => {
-            cli::check::entry(with_repos, &opts.action).await?;
+            cli::check::entry(&mut with_repos, &opts.action).await?;
         }
         Command::Info(..) => {
-            println!("Os: {}", cx.os);
-            println!("Dist: {}", cx.dist);
-            println!("Root: {}", cx.paths.root.display());
+            println!("Os: {}", with_repos.cx.os);
+            println!("Dist: {}", with_repos.cx.dist);
+            println!("Root: {}", with_repos.cx.paths.root.display());
 
-            if let Some(current) = cx.paths.current {
+            if let Some(current) = with_repos.cx.paths.current {
                 println!("Current: {current}");
             }
 
-            if let Some(config) = cx.paths.config {
+            if let Some(config) = with_repos.cx.paths.config {
                 println!("Config: {}", config.display());
             }
 
-            if let Some(cache) = cx.paths.cache {
+            if let Some(cache) = with_repos.cx.paths.cache {
                 println!("Cache: {}", cache.display());
             }
 
             return Ok(ExitCode::SUCCESS);
         }
         Command::Changes(..) => {
-            cli::changes::entry(&cx, &changes_path)?;
+            cli::changes::entry(&with_repos.cx, &changes_path)?;
         }
         Command::Update(shared) => {
-            cli::update::entry(&mut cx, shared).await?;
+            cli::update::entry(&mut with_repos.cx, shared).await?;
             return Ok(ExitCode::SUCCESS);
         }
         Command::Define(opts) => {
-            cli::define::entry(with_repos, &opts.action)?;
+            cli::define::entry(&mut with_repos, &opts.action)?;
             return Ok(ExitCode::SUCCESS);
         }
         Command::Login(opts) => {
-            cli::login::entry(&mut cx, &opts.action)?;
+            cli::login::entry(&mut with_repos.cx, &opts.action)?;
             return Ok(ExitCode::SUCCESS);
         }
         Command::Set(opts) => {
-            cli::set::entry(&mut cx, &opts.action)?;
+            cli::set::entry(&mut with_repos.cx, &opts.action)?;
         }
         Command::Run(opts) => {
-            cli::run::entry(with_repos, &opts.action)?;
+            cli::run::entry(&mut with_repos, &opts.action)?;
         }
         Command::Msrv(opts) => {
-            cli::msrv::entry(with_repos, &opts.action)?;
+            cli::msrv::entry(&mut with_repos, &opts.action)?;
         }
         Command::Version(opts) => {
-            cli::version::entry(with_repos, &opts.action)?;
+            cli::version::entry(&mut with_repos, &opts.action)?;
         }
         Command::Publish(opts) => {
-            cli::publish::entry(with_repos, &opts.action)?;
+            cli::publish::entry(&mut with_repos, &opts.action)?;
         }
         Command::Upgrade(opts) => {
-            cli::upgrade::entry(with_repos, &opts.action)?;
+            cli::upgrade::entry(&mut with_repos, &opts.action)?;
         }
         Command::Msi(opts) => {
-            cli::msi::entry(with_repos, &opts.action)?;
+            cli::msi::entry(&mut with_repos, &opts.action)?;
         }
         Command::Rpm(opts) => {
-            cli::rpm::entry(with_repos, &opts.action)?;
+            cli::rpm::entry(&mut with_repos, &opts.action)?;
         }
         Command::Deb(opts) => {
-            cli::deb::entry(with_repos, &opts.action)?;
+            cli::deb::entry(&mut with_repos, &opts.action)?;
         }
         Command::Zip(opts) => {
-            cli::compress::entry(with_repos, cli::compress::Kind::Zip, &opts.action)?;
+            cli::compress::entry(&mut with_repos, cli::compress::Kind::Zip, &opts.action)?;
         }
         Command::Gzip(opts) => {
-            cli::compress::entry(with_repos, cli::compress::Kind::Gzip, &opts.action)?;
+            cli::compress::entry(&mut with_repos, cli::compress::Kind::Gzip, &opts.action)?;
         }
         Command::GithubAction(opts) => {
-            cli::github_action::entry(with_repos, &opts.action)?;
+            cli::github_action::entry(&mut with_repos, &opts.action)?;
         }
         Command::Github(opts) => {
-            cli::gh::entry(with_repos, &opts.action).await?;
+            cli::gh::entry(&mut with_repos, &opts.action).await?;
         }
         Command::Sync(opts) => {
-            cli::sync::entry(with_repos, &opts.action)?;
+            cli::sync::entry(&mut with_repos, &opts.action)?;
         }
     }
+
+    let cx = with_repos.into_cx();
 
     let mut o = StandardStream::stdout(ColorChoice::Auto);
 

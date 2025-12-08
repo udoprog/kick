@@ -39,7 +39,7 @@ pub(crate) struct Opts {
     crates: Vec<String>,
 }
 
-pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
+pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
     with_repos.run(
         "cargo publish",
         format_args!("publish: {opts:?}"),

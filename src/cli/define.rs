@@ -100,7 +100,7 @@ pub(crate) struct Opts {
     github_action: bool,
 }
 
-pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
+pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
     with_repos.run(
         "publish github release",
         format_args!("github-release: {opts:?}"),

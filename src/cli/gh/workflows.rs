@@ -3,7 +3,7 @@ use std::io::Write;
 use anyhow::{Result, bail, ensure};
 use clap::Parser;
 
-use crate::cli::WithReposAsync;
+use crate::cli::WithRepos;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::octokit;
@@ -23,7 +23,7 @@ pub(super) struct Opts {
 
 pub(super) async fn entry(
     opts: &Opts,
-    with_repos: impl WithReposAsync<'_>,
+    with_repos: &mut WithRepos<'_>,
     client: &octokit::Client,
 ) -> Result<()> {
     with_repos

@@ -23,7 +23,7 @@ pub(crate) struct Opts {
     output: OutputOpts,
 }
 
-pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
+pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
     with_repos.run("build .deb", format_args!("deb: {opts:?}"), |cx, repo| {
         deb(cx, repo, opts)
     })?;

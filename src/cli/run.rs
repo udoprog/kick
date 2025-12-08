@@ -63,7 +63,7 @@ pub(crate) struct Opts {
     release: ReleaseOpts,
 }
 
-pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
+pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
     let today = Date::today()?;
     let version = opts.release.try_env_argument(with_repos.cx().env, today)?;
     let version_env = opts.version_env.as_deref().unwrap_or("KICK_VERSION");

@@ -73,7 +73,7 @@ pub(crate) struct Opts {
     command: Vec<String>,
 }
 
-pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
+pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
     with_repos.run("find msrv", format_args!("msrv: {opts:?}"), |cx, repo| {
         msrv(cx, repo, opts)
     })?;

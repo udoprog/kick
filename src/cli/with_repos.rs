@@ -7,8 +7,6 @@ use anyhow::Result;
 use futures_util::stream::StreamExt;
 use tracing::Instrument;
 
-pub(super) const PARALLELISM: &str = "8";
-
 /// Run over repos asynchronously with a final report on successful run.
 async fn with_repos_async<'repo, T>(
     cx: &mut Ctxt<'repo>,
@@ -152,83 +150,47 @@ fn with_repos<'repo, T>(
     Ok(())
 }
 
-pub(crate) trait WithRepos<'repo> {
-    fn cx(&self) -> &Ctxt<'repo>;
-
-    fn run(
-        self,
-        what: impl fmt::Display,
-        hint: impl fmt::Display,
-        f: impl FnMut(&Ctxt<'repo>, &'repo Repo) -> Result<()>,
-    ) -> Result<()>;
-
-    fn with_parallelism(self, parallelism: usize) -> impl WithReposAsync<'repo>;
-}
-
-pub(crate) trait WithReposAsync<'repo> {
-    async fn run_async<T>(
-        self,
-        what: impl fmt::Display,
-        hint: impl fmt::Display,
-        f: impl AsyncFn(&Ctxt<'repo>, &'repo Repo) -> Result<T>,
-        report: impl FnMut(T) -> Result<()>,
-    ) -> Result<()>;
-}
-
-pub(crate) struct WithReposImpl<'a, 'repo> {
-    cx: &'a mut Ctxt<'repo>,
-}
-
-impl<'a, 'repo> WithReposImpl<'a, 'repo> {
-    #[inline]
-    pub(crate) fn new(cx: &'a mut Ctxt<'repo>) -> Self {
-        Self { cx }
-    }
-}
-
-impl<'repo> WithRepos<'repo> for WithReposImpl<'_, 'repo> {
-    #[inline]
-    fn cx(&self) -> &Ctxt<'repo> {
-        self.cx
-    }
-
-    #[inline]
-    fn run(
-        self,
-        what: impl fmt::Display,
-        hint: impl fmt::Display,
-        f: impl FnMut(&Ctxt<'repo>, &'repo Repo) -> Result<()>,
-    ) -> Result<()> {
-        with_repos(self.cx, what, hint, f)
-    }
-
-    #[inline]
-    fn with_parallelism(self, parallelism: usize) -> impl WithReposAsync<'repo> {
-        WithReposAsyncImpl::new(self.cx, parallelism)
-    }
-}
-
-struct WithReposAsyncImpl<'a, 'repo> {
-    cx: &'a mut Ctxt<'repo>,
+pub(crate) struct WithRepos<'repo> {
+    pub(crate) cx: Ctxt<'repo>,
     parallelism: usize,
 }
 
-impl<'a, 'repo> WithReposAsyncImpl<'a, 'repo> {
+impl<'repo> WithRepos<'repo> {
     #[inline]
-    fn new(cx: &'a mut Ctxt<'repo>, parallelism: usize) -> Self {
+    pub(crate) fn new(cx: Ctxt<'repo>, parallelism: usize) -> Self {
         Self { cx, parallelism }
     }
 }
 
-impl<'repo> WithReposAsync<'repo> for WithReposAsyncImpl<'_, 'repo> {
+impl<'repo> WithRepos<'repo> {
     #[inline]
-    async fn run_async<T>(
-        self,
+    pub(crate) fn cx(&self) -> &Ctxt<'repo> {
+        &self.cx
+    }
+
+    #[inline]
+    pub(crate) fn into_cx(self) -> Ctxt<'repo> {
+        self.cx
+    }
+
+    #[inline]
+    pub(crate) fn run(
+        &mut self,
+        what: impl fmt::Display,
+        hint: impl fmt::Display,
+        f: impl FnMut(&Ctxt<'repo>, &'repo Repo) -> Result<()>,
+    ) -> Result<()> {
+        with_repos(&mut self.cx, what, hint, f)
+    }
+
+    #[inline]
+    pub(crate) async fn run_async<T>(
+        &mut self,
         what: impl fmt::Display,
         hint: impl fmt::Display,
         f: impl AsyncFn(&Ctxt<'repo>, &'repo Repo) -> Result<T>,
         report: impl FnMut(T) -> Result<()>,
     ) -> Result<()> {
-        with_repos_async(self.cx, what, hint, self.parallelism, f, report).await
+        with_repos_async(&mut self.cx, what, hint, self.parallelism, f, report).await
     }
 }

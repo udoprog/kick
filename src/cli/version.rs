@@ -36,7 +36,7 @@ pub(crate) struct Opts {
     filter: Vec<String>,
 }
 
-pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
+pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
     let mut version_set = VersionSet {
         major: opts.major,
         minor: opts.minor,

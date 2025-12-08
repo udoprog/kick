@@ -37,7 +37,7 @@ pub(crate) struct Opts {
     init: Option<Kind>,
 }
 
-pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, opts: &Opts) -> Result<()> {
+pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
     with_repos.run(
         "synchronize repos",
         format_args!("sync: {opts:?}"),

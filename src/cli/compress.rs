@@ -71,7 +71,7 @@ pub(crate) struct Opts {
     path: Vec<String>,
 }
 
-pub(crate) fn entry<'repo>(with_repos: impl WithRepos<'repo>, ty: Kind, opts: &Opts) -> Result<()> {
+pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, ty: Kind, opts: &Opts) -> Result<()> {
     with_repos.run(
         format!("compress {}", ty.extension()),
         format_args!("compress: {opts:?}"),
