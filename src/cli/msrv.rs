@@ -73,16 +73,21 @@ pub(crate) struct Opts {
     command: Vec<String>,
 }
 
-pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
-    with_repos.run("find msrv", format_args!("msrv: {opts:?}"), |cx, repo| {
-        msrv(cx, repo, opts)
-    })?;
+pub(crate) async fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
+    with_repos
+        .run_async(
+            "find msrv",
+            format_args!("msrv: {opts:?}"),
+            async |cx, repo| msrv(cx, repo, opts).await,
+            |_| Ok(()),
+        )
+        .await?;
 
     Ok(())
 }
 
 #[tracing::instrument(skip_all)]
-fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
+async fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     let crates = repo.workspace(cx)?;
     let manifest = crates.primary_package()?;
     let primary = manifest.ensure_package()?;
@@ -129,7 +134,8 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
         let output = Command::new("rustup")
             .args(["run", &version_string, "rustc", "--version"])
             .stdout(Stdio::null())
-            .output()?;
+            .output()
+            .await?;
 
         if !output.status.success() {
             tracing::info!("Installing rust {version}");
@@ -142,7 +148,8 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                     "minimal",
                     &version_string,
                 ])
-                .status()?;
+                .status()
+                .await?;
 
             if !status.success() {
                 bail!("Failed to install Rust {version}");
@@ -223,7 +230,10 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
             tracing::info!("{}", rustup.display_with(cx.os.shell()));
 
-            let status = rustup.status().context("Command through `rustup run`")?;
+            let status = rustup
+                .status()
+                .await
+                .context("Command through `rustup run`")?;
 
             if !status.success() {
                 failures.push((status, rustup));

@@ -9,6 +9,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD_NO_PAD;
 use bstr::ByteSlice;
 use reqwest::Url;
+use tokio::io::AsyncWriteExt;
 
 use crate::env::SecretString;
 use crate::process::{Command, OsArg};
@@ -32,7 +33,7 @@ impl Git {
     }
 
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
-    pub(crate) fn fetch(
+    pub(crate) async fn fetch(
         &self,
         dir: impl AsRef<Path>,
         remote: impl AsRef<str>,
@@ -43,7 +44,8 @@ impl Git {
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .current_dir(dir)
-            .output()?;
+            .output()
+            .await?;
 
         if !output.status.success() {
             return Ok(true);
@@ -53,21 +55,26 @@ impl Git {
     }
 
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
-    pub(crate) fn force_checkout(&self, dir: impl AsRef<Path>, rev: impl AsRef<str>) -> Result<()> {
+    pub(crate) async fn force_checkout(
+        &self,
+        dir: impl AsRef<Path>,
+        rev: impl AsRef<str>,
+    ) -> Result<()> {
         let status = Command::new(&self.path)
             .args(["checkout", "--force", rev.as_ref()])
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .stdout(Stdio::null())
             .current_dir(dir)
-            .status()?;
+            .status()
+            .await?;
 
         ensure!(status.success(), status);
         Ok(())
     }
 
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
-    pub(crate) fn merge_fast_forward(
+    pub(crate) async fn merge_fast_forward(
         &self,
         dir: impl AsRef<Path>,
         revspec: impl AsRef<str>,
@@ -76,7 +83,8 @@ impl Git {
             .args(["merge", "--ff-only", revspec.as_ref()])
             .stdin(Stdio::null())
             .current_dir(dir)
-            .output()?;
+            .output()
+            .await?;
 
         Ok(MergeOutcome {
             stdout: String::from_utf8(output.stdout)?,
@@ -87,7 +95,7 @@ impl Git {
 
     /// Make a commit.
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
-    pub(crate) fn add(
+    pub(crate) async fn add(
         &self,
         dir: impl AsRef<Path>,
         args: impl IntoIterator<Item: Into<OsArg>>,
@@ -99,7 +107,8 @@ impl Git {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .current_dir(dir)
-            .status()?;
+            .status()
+            .await?;
 
         ensure!(status.success(), status);
         Ok(())
@@ -107,7 +116,11 @@ impl Git {
 
     /// Make a commit.
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
-    pub(crate) fn commit(&self, dir: impl AsRef<Path>, message: impl fmt::Display) -> Result<()> {
+    pub(crate) async fn commit(
+        &self,
+        dir: impl AsRef<Path>,
+        message: impl fmt::Display,
+    ) -> Result<()> {
         let status = Command::new(&self.path)
             .args(["commit", "-m"])
             .arg(message.to_string())
@@ -115,7 +128,8 @@ impl Git {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .current_dir(dir)
-            .status()?;
+            .status()
+            .await?;
 
         ensure!(status.success(), status);
         Ok(())
@@ -123,7 +137,7 @@ impl Git {
 
     /// Make a tag.
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
-    pub(crate) fn tag(&self, dir: impl AsRef<Path>, tag: impl fmt::Display) -> Result<()> {
+    pub(crate) async fn tag(&self, dir: impl AsRef<Path>, tag: impl fmt::Display) -> Result<()> {
         let status = Command::new(&self.path)
             .args(["tag"])
             .arg(tag.to_string())
@@ -131,33 +145,36 @@ impl Git {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .current_dir(dir)
-            .status()?;
+            .status()
+            .await?;
 
         ensure!(status.success(), status);
         Ok(())
     }
 
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
-    pub(crate) fn is_cached(&self, dir: impl AsRef<Path>) -> Result<bool> {
+    pub(crate) async fn is_cached(&self, dir: impl AsRef<Path>) -> Result<bool> {
         let status = Command::new(&self.path)
             .args(["diff", "--cached", "--exit-code", "--quiet"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .current_dir(dir)
-            .status()?;
+            .status()
+            .await?;
 
         Ok(!status.success())
     }
 
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
-    pub(crate) fn is_dirty(&self, dir: impl AsRef<Path>) -> Result<bool> {
+    pub(crate) async fn is_dirty(&self, dir: impl AsRef<Path>) -> Result<bool> {
         let output = Command::new(&self.path)
             .args(["status", "--short"])
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .current_dir(dir)
-            .output()?;
+            .output()
+            .await?;
 
         if !output.status.success() {
             return Ok(true);
@@ -166,27 +183,29 @@ impl Git {
         Ok(!output.stdout.is_empty())
     }
 
-    fn remote_update(&self, dir: impl AsRef<Path>) -> Result<()> {
+    async fn remote_update(&self, dir: impl AsRef<Path>) -> Result<()> {
         tracing::info!("Updating remote");
 
         let status = Command::new(&self.path)
             .args(["remote", "update"])
             .stdin(Stdio::null())
             .current_dir(dir)
-            .status()?;
+            .status()
+            .await?;
 
         ensure!(status.success(), status);
         Ok(())
     }
 
-    pub(crate) fn remote_branch(&self, dir: impl AsRef<Path>) -> Result<(String, String)> {
+    pub(crate) async fn remote_branch(&self, dir: impl AsRef<Path>) -> Result<(String, String)> {
         let output = Command::new(&self.path)
             .args(["status", "-sb"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .current_dir(dir)
-            .output()?;
+            .output()
+            .await?;
 
         ensure!(output.status.success(), output.status);
 
@@ -213,14 +232,14 @@ impl Git {
 
     /// Test if the local branch is outdated.
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path, ?fetch))]
-    pub(crate) fn is_outdated(&self, dir: impl AsRef<Path>, fetch: bool) -> Result<bool> {
+    pub(crate) async fn is_outdated(&self, dir: impl AsRef<Path>, fetch: bool) -> Result<bool> {
         let dir = dir.as_ref();
 
         if fetch {
-            self.remote_update(dir)?;
+            self.remote_update(dir).await?;
         }
 
-        let (local, remote) = self.remote_branch(dir)?;
+        let (local, remote) = self.remote_branch(dir).await?;
 
         let status = Command::new(&self.path)
             .args(["diff", "--quiet", &local, &remote])
@@ -228,27 +247,29 @@ impl Git {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .current_dir(dir)
-            .status()?;
+            .status()
+            .await?;
 
         Ok(!status.success())
     }
 
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
-    pub(crate) fn init(&self, dir: impl AsRef<Path>) -> Result<()> {
+    pub(crate) async fn init(&self, dir: impl AsRef<Path>) -> Result<()> {
         let status = Command::new(&self.path)
             .args(["init"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .current_dir(dir)
-            .status()?;
+            .status()
+            .await?;
 
         ensure!(status.success(), status);
         Ok(())
     }
 
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
-    pub(crate) fn remote_add(
+    pub(crate) async fn remote_add(
         &self,
         dir: impl AsRef<Path>,
         name: impl AsRef<str>,
@@ -260,21 +281,27 @@ impl Git {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .current_dir(dir)
-            .status()?;
+            .status()
+            .await?;
 
         ensure!(status.success(), status);
         Ok(())
     }
 
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
-    pub(crate) fn remote_get_push_url(&self, dir: impl AsRef<Path>, name: &str) -> Result<String> {
+    pub(crate) async fn remote_get_push_url(
+        &self,
+        dir: impl AsRef<Path>,
+        name: &str,
+    ) -> Result<String> {
         let output = Command::new(&self.path)
             .args(["remote", "get-url", "--push", name])
             .current_dir(dir.as_ref())
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .stdout(Stdio::piped())
-            .output()?;
+            .output()
+            .await?;
 
         ensure!(output.status.success(), output.status);
         let url = String::from_utf8(output.stdout)?;
@@ -282,7 +309,7 @@ impl Git {
     }
 
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
-    pub(crate) fn remote_set_push_url(
+    pub(crate) async fn remote_set_push_url(
         &self,
         dir: impl AsRef<Path>,
         name: impl AsRef<str>,
@@ -294,7 +321,8 @@ impl Git {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .current_dir(dir)
-            .status()?;
+            .status()
+            .await?;
 
         ensure!(status.success(), status);
         Ok(())
@@ -302,14 +330,19 @@ impl Git {
 
     /// Parse a commit.
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path))]
-    pub(crate) fn rev_parse(&self, dir: impl AsRef<Path>, rev: impl AsRef<str>) -> Result<String> {
+    pub(crate) async fn rev_parse(
+        &self,
+        dir: impl AsRef<Path>,
+        rev: impl AsRef<str>,
+    ) -> Result<String> {
         let output = Command::new(&self.path)
             .args(["rev-parse", rev.as_ref()])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .current_dir(dir)
-            .output()?;
+            .output()
+            .await?;
 
         ensure!(output.status.success(), output.status);
         Ok(str::from_utf8(&output.stdout)?.trim().to_owned())
@@ -317,13 +350,13 @@ impl Git {
 
     /// Get HEAD commit.
     #[tracing::instrument(skip_all, fields(dir = ?dir.as_ref(), command = ?self.path, ?fetch))]
-    pub(crate) fn describe_tags(
+    pub(crate) async fn describe_tags(
         &self,
         dir: impl AsRef<Path>,
         fetch: bool,
     ) -> Result<Option<DescribeTags>> {
         if fetch {
-            self.remote_update(dir.as_ref())?;
+            self.remote_update(dir.as_ref()).await?;
         }
 
         let output = Command::new(&self.path)
@@ -332,7 +365,8 @@ impl Git {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .current_dir(dir)
-            .output()?;
+            .output()
+            .await?;
 
         if !output.status.success() {
             return Ok(None);
@@ -357,12 +391,13 @@ impl Git {
     }
 
     /// Get remote url.
-    pub(crate) fn get_url(&self, dir: impl AsRef<Path>, remote: &str) -> Result<Url> {
+    pub(crate) async fn get_url(&self, dir: impl AsRef<Path>, remote: &str) -> Result<Url> {
         let output = Command::new(&self.path)
             .args(["remote", "get-url", remote])
             .current_dir(dir)
             .stdout(Stdio::piped())
-            .output()?;
+            .output()
+            .await?;
 
         ensure!(output.status.success(), output.status);
         let url = String::from_utf8(output.stdout)?;
@@ -370,7 +405,7 @@ impl Git {
     }
 
     /// Get credentials.
-    pub(crate) fn get_credentials(&self, host: &str, protocol: &str) -> Result<Credentials> {
+    pub(crate) async fn get_credentials(&self, host: &str, protocol: &str) -> Result<Credentials> {
         let mut child = Command::new(&self.path)
             .args(["credential-manager-core", "get"])
             .stdin(Stdio::piped())
@@ -378,12 +413,15 @@ impl Git {
             .stderr(Stdio::piped())
             .spawn()?;
 
-        let mut stdin = child.stdin()?;
+        let mut line = Vec::new();
+        write!(line, "host={host}\nprotocol={protocol}\n")?;
 
-        write!(stdin, "host={host}\nprotocol={protocol}\n")?;
+        let mut stdin = child.stdin()?;
+        stdin.write_all(&line).await?;
+        stdin.flush().await?;
         drop(stdin);
 
-        let output = child.wait_with_output()?;
+        let output = child.wait_with_output().await?;
         ensure!(output.status.success(), output.status);
 
         let mut username = None;

@@ -19,16 +19,21 @@ pub(crate) struct Opts {
     extra: Vec<String>,
 }
 
-pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
-    with_repos.run("upgrade", format_args!("upgrade: {opts:?}"), |cx, repo| {
-        upgrade(cx, opts, repo)
-    })?;
+pub(crate) async fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
+    with_repos
+        .run_async(
+            "upgrade",
+            format_args!("upgrade: {opts:?}"),
+            async |cx, repo| upgrade(cx, opts, repo).await,
+            |_| Ok(()),
+        )
+        .await?;
 
     Ok(())
 }
 
 #[tracing::instrument(skip_all)]
-fn upgrade(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
+async fn upgrade(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
     let current_dir = cx.to_path(repo.path());
     let upgrade = cx.config.upgrade(repo);
 
@@ -49,7 +54,7 @@ fn upgrade(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
 
     command.current_dir(&current_dir);
 
-    if !command.status()?.success() {
+    if !command.status().await?.success() {
         bail!("Command failed");
     }
 

@@ -152,7 +152,7 @@ impl Scheduler {
         }
     }
 
-    pub(super) fn advance<O>(
+    pub(super) async fn advance<O>(
         &mut self,
         o: &mut O,
         batch: &BatchConfig<'_, '_>,
@@ -167,7 +167,7 @@ impl Scheduler {
 
             // This will take care to synchronize any actions which are needed
             // to advance the scheduler.
-            let remediations = session.prepare(batch, Eval::empty())?;
+            let remediations = session.prepare(batch, Eval::empty()).await?;
 
             if !remediations.is_empty() {
                 if !batch.fix {
@@ -175,7 +175,7 @@ impl Scheduler {
                     bail!("Failed to prepare commands, use `--fix` to try and fix the system");
                 }
 
-                remediations.apply(o, batch)?;
+                remediations.apply(o, batch).await?;
             }
 
             match schedule {

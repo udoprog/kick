@@ -1,5 +1,4 @@
 use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::Stdio;
 
@@ -9,17 +8,15 @@ use elf::ElfStream;
 use elf::abi::{EM_ALPHA, SHT_GNU_HASH, SHT_HASH};
 use elf::endian::AnyEndian;
 use elf::file::Class;
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::process::Command;
 
-pub(crate) fn find<P>(exe: P) -> Result<Vec<String>>
-where
-    P: AsRef<Path>,
-{
+pub(crate) async fn find(exe: impl AsRef<Path>) -> Result<Vec<String>> {
     let exe = exe.as_ref();
     let header = elf_header(exe)?;
 
-    let mut requires = find_requires_by_ldd(exe, header.marker())?;
+    let mut requires = find_requires_by_ldd(exe, header.marker()).await?;
 
     if header.sht_gnu_hash && !header.sht_hash {
         requires.push("rtld(GNU_HASH)".to_string());
@@ -70,7 +67,7 @@ impl ElfHeader {
     }
 }
 
-fn find_requires_by_ldd(path: &Path, marker: &[u8]) -> Result<Vec<String>> {
+async fn find_requires_by_ldd(path: &Path, marker: &[u8]) -> Result<Vec<String>> {
     enum State {
         Initial,
         Header,
@@ -93,7 +90,7 @@ fn find_requires_by_ldd(path: &Path, marker: &[u8]) -> Result<Vec<String>> {
     loop {
         line.clear();
 
-        let n = stdout.read_until(b'\n', &mut line)?;
+        let n = stdout.read_until(b'\n', &mut line).await?;
 
         if n == 0 {
             break;

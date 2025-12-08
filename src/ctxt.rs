@@ -207,13 +207,14 @@ impl<'a> Ctxt<'a> {
 }
 
 /// Minor version from rustc.
-pub(crate) fn rustc_version() -> Option<RustVersion> {
+pub(crate) async fn rustc_version() -> Option<RustVersion> {
     let output = Command::new("rustc")
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
+        .await
         .ok()?;
 
     let output = String::from_utf8(output.stdout).ok()?;

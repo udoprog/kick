@@ -97,7 +97,7 @@ impl Batch {
     }
 
     /// Commit a batch.
-    pub(crate) fn commit<O>(
+    pub(crate) async fn commit<O>(
         self,
         o: &mut O,
         c: &BatchConfig<'_, '_>,
@@ -151,7 +151,7 @@ impl Batch {
                 scheduler.push_back(run.clone());
             }
 
-            while let Some(run) = scheduler.advance(o, c, session, &os)? {
+            while let Some(run) = scheduler.advance(o, c, session, &os).await? {
                 let modified;
 
                 let path = match &run.working_directory {
@@ -445,7 +445,7 @@ impl Batch {
                         session.remove_path(&p);
                     }
 
-                    let status = run_command.status()?;
+                    let status = run_command.status().await?;
 
                     ensure!(status.success(), status);
 

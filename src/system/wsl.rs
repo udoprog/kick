@@ -34,10 +34,11 @@ impl Wsl {
     }
 
     /// List all WSL distributions.
-    pub(crate) fn list(&self) -> Result<Vec<String>> {
+    pub(crate) async fn list(&self) -> Result<Vec<String>> {
         let output = Command::new(&self.path)
             .args(["--list", "--quiet"])
-            .output()?;
+            .output()
+            .await?;
 
         ensure!(output.status.success(), output.status);
 

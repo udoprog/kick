@@ -27,17 +27,18 @@ impl Remediations {
     }
 
     /// Apply remediations.
-    pub(crate) fn apply<O>(self, o: &mut O, c: &BatchConfig<'_, '_>) -> Result<()>
-    where
-        O: ?Sized + WriteColor,
-    {
+    pub(crate) async fn apply(
+        self,
+        o: &mut (impl ?Sized + WriteColor),
+        c: &BatchConfig<'_, '_>,
+    ) -> Result<()> {
         for remediation in self.remediations {
             match remediation {
                 Remediation::Command { mut command, .. } => {
                     o.set_color(&c.colors.title)?;
                     writeln!(o, "Running: {}", command.display_with(c.shell))?;
                     o.reset()?;
-                    let status = command.status()?;
+                    let status = command.status().await?;
                     ensure!(status.success(), status);
                 }
             }

@@ -3,10 +3,11 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
-use std::process::{ChildStdin, ChildStdout, ExitStatus, Output, Stdio};
+use std::process::{ExitStatus, Output, Stdio};
 use std::rc::Rc;
 
 use anyhow::{Context, Result, anyhow};
+use tokio::process::{self, ChildStdin, ChildStdout};
 
 use crate::rstr::{RStr, RString};
 use crate::shell::Shell;
@@ -156,10 +157,7 @@ pub(crate) struct Command {
 }
 
 impl Command {
-    pub(crate) fn new<S>(command: S) -> Self
-    where
-        S: Into<OsArg>,
-    {
+    pub(crate) fn new(command: impl Into<OsArg>) -> Self {
         Self {
             command: command.into(),
             args: Vec::new(),
@@ -173,19 +171,13 @@ impl Command {
     }
 
     /// Add an argument to the command.
-    pub(crate) fn arg<S>(&mut self, arg: S) -> &mut Self
-    where
-        S: Into<OsArg>,
-    {
+    pub(crate) fn arg(&mut self, arg: impl Into<OsArg>) -> &mut Self {
         self.args.push(arg.into());
         self
     }
 
     /// Add arguments to the command.
-    pub(crate) fn args<I>(&mut self, args: I) -> &mut Self
-    where
-        I: IntoIterator<Item: Into<OsArg>>,
-    {
+    pub(crate) fn args(&mut self, args: impl IntoIterator<Item: Into<OsArg>>) -> &mut Self {
         for arg in args {
             self.args.push(arg.into());
         }
@@ -194,28 +186,18 @@ impl Command {
     }
 
     /// Add an environment variable to the command.
-    pub(crate) fn env<K, V>(&mut self, key: K, value: V) -> &mut Self
-    where
-        K: AsRef<OsStr>,
-        V: Into<OsArg>,
-    {
+    pub(crate) fn env(&mut self, key: impl AsRef<OsStr>, value: impl Into<OsArg>) -> &mut Self {
         self.env.push((key.as_ref().to_owned(), value.into()));
         self
     }
 
     /// Mark an environment variable to be removed.
-    pub(crate) fn env_remove<K>(&mut self, key: K) -> &mut Self
-    where
-        K: AsRef<OsStr>,
-    {
+    pub(crate) fn env_remove(&mut self, key: impl AsRef<OsStr>) -> &mut Self {
         self.env_remove.push(key.as_ref().to_owned());
         self
     }
 
-    pub(crate) fn current_dir<P>(&mut self, dir: P) -> &mut Self
-    where
-        P: AsRef<Path>,
-    {
+    pub(crate) fn current_dir(&mut self, dir: impl AsRef<Path>) -> &mut Self {
         self.current_dir = Some(dir.as_ref().to_owned());
         self
     }
@@ -229,49 +211,40 @@ impl Command {
     }
 
     #[tracing::instrument(skip_all, fields(command = self.display().to_string(), current_dir = ?self.current_dir_repr()))]
-    pub(crate) fn status(&mut self) -> Result<ExitStatus> {
+    pub(crate) async fn status(&mut self) -> Result<ExitStatus> {
         let mut command = self.command();
-        let result = command.status();
+        let result = command.status().await;
         let status = result.with_context(|| anyhow!("Executing `{}`", self.display()))?;
         tracing::trace!(status = status.to_string());
         Ok(status)
     }
 
     #[tracing::instrument(skip_all, fields(command = self.display().to_string(), current_dir = ?self.current_dir_repr()))]
-    pub(crate) fn output(&mut self) -> Result<Output> {
+    pub(crate) async fn output(&mut self) -> Result<Output> {
         let mut command = self.command();
-        let output = command.output();
+        let output = command.output().await;
         let output = output.with_context(|| anyhow!("Executing `{}`", self.display()))?;
         tracing::trace!(status = output.status.to_string());
         Ok(output)
     }
 
-    pub(crate) fn stdin<T>(&mut self, stdin: T) -> &mut Self
-    where
-        T: Into<Stdio>,
-    {
+    pub(crate) fn stdin(&mut self, stdin: impl Into<Stdio>) -> &mut Self {
         self.stdin = Some(stdin.into());
         self
     }
 
-    pub(crate) fn stdout<T>(&mut self, stdout: T) -> &mut Self
-    where
-        T: Into<Stdio>,
-    {
+    pub(crate) fn stdout(&mut self, stdout: impl Into<Stdio>) -> &mut Self {
         self.stdout = Some(stdout.into());
         self
     }
 
-    pub(crate) fn stderr<T>(&mut self, stderr: T) -> &mut Self
-    where
-        T: Into<Stdio>,
-    {
+    pub(crate) fn stderr(&mut self, stderr: impl Into<Stdio>) -> &mut Self {
         self.stderr = Some(stderr.into());
         self
     }
 
-    fn command(&mut self) -> std::process::Command {
-        let mut command = std::process::Command::new(self.command.to_os_str());
+    fn command(&mut self) -> process::Command {
+        let mut command = process::Command::new(self.command.to_os_str());
 
         for arg in &self.args {
             command.arg(arg.to_os_str());
@@ -336,7 +309,7 @@ impl fmt::Debug for Command {
 }
 
 pub(crate) struct Child {
-    child: std::process::Child,
+    child: process::Child,
 }
 
 impl Child {
@@ -348,8 +321,8 @@ impl Child {
         self.child.stdout.take().context("Missing stdout")
     }
 
-    pub(crate) fn wait_with_output(self) -> Result<Output> {
-        let output = self.child.wait_with_output()?;
+    pub(crate) async fn wait_with_output(self) -> Result<Output> {
+        let output = self.child.wait_with_output().await?;
         tracing::trace!(?output.status);
         Ok(output)
     }

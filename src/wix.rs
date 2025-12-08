@@ -52,7 +52,7 @@ impl Wix {
         })
     }
 
-    pub(crate) fn build(
+    pub(crate) async fn build(
         &self,
         source: impl AsRef<Path>,
         target_wixobj: impl AsRef<Path>,
@@ -99,14 +99,15 @@ impl Wix {
             .arg("-o")
             .arg(target_wixobj)
             .arg(source)
-            .status()?;
+            .status()
+            .await?;
 
         ensure!(status.success(), "Failed to build: {}", source.display());
         Ok(())
     }
 
     /// Link the current project.
-    pub(crate) fn link(
+    pub(crate) async fn link(
         &self,
         target_wixobj: impl AsRef<Path>,
         installer_path: impl AsRef<Path>,
@@ -141,7 +142,8 @@ impl Wix {
             .arg(target_wixobj)
             .arg("-out")
             .arg(installer_path)
-            .status()?;
+            .status()
+            .await?;
 
         ensure!(
             status.success(),

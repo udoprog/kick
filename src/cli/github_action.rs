@@ -23,18 +23,23 @@ pub(crate) struct Opts {
     input: Vec<String>,
 }
 
-pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
-    let mut o = StandardStream::stdout(ColorChoice::Auto);
-
-    with_repos.run("run action", format_args!("for: {opts:?}"), |cx, repo| {
-        action(&mut o, cx, repo, opts)
-    })?;
+pub(crate) async fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
+    with_repos
+        .run_async(
+            "run action",
+            format_args!("for: {opts:?}"),
+            async |cx, repo| action(cx, repo, opts).await,
+            |_| Ok(()),
+        )
+        .await?;
 
     Ok(())
 }
 
 #[tracing::instrument(skip_all)]
-fn action(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
+async fn action(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
+    let mut o = StandardStream::stdout(ColorChoice::Auto);
+
     let id = RStr::new(&opts.id);
 
     let c = opts.batch_opts.build(cx, repo)?;
@@ -56,6 +61,6 @@ fn action(o: &mut StandardStream, cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Re
     let batch = action.new_use_batch(&c, id)?;
 
     let mut session = Session::new(&c);
-    batch.commit(o, &c, &mut session)?;
+    batch.commit(&mut o, &c, &mut session).await?;
     Ok(())
 }

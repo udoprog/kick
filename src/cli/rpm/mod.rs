@@ -30,16 +30,21 @@ pub(crate) struct Opts {
     output: OutputOpts,
 }
 
-pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
-    with_repos.run("build .rpm", format_args!("rpm: {opts:?}"), |cx, repo| {
-        rpm(cx, repo, opts)
-    })?;
+pub(crate) async fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
+    with_repos
+        .run_async(
+            "build .rpm",
+            format_args!("rpm: {opts:?}"),
+            async |cx, repo| rpm(cx, repo, opts).await,
+            |_| Ok(()),
+        )
+        .await?;
 
     Ok(())
 }
 
 #[tracing::instrument(skip_all)]
-fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
+async fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     let release = opts.release.version(cx, repo)?;
     let workspace = repo.workspace(cx)?;
 
@@ -76,9 +81,9 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
         match install_file {
             InstallFile::Binary(name, path) => {
                 requires.extend(if find_requires::detect() {
-                    find_requires::find(&path)?
+                    find_requires::find(&path).await?
                 } else {
-                    find_requires_by_elf::find(&path)?
+                    find_requires_by_elf::find(&path).await?
                 });
 
                 pkg = pkg

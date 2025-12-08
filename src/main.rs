@@ -902,7 +902,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     if repos.is_empty() {
         from_group = false;
 
-        if let Some((path, url)) = load_from_git(&root, system.git.first())? {
+        if let Some((path, url)) = load_from_git(&root, system.git.first()).await? {
             repos.push(Repo::new(BTreeSet::from([RepoSource::Git]), path, url));
         }
     }
@@ -925,13 +925,14 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             &repos,
             &sets,
             in_repo_path,
-        )?;
+        )
+        .await?;
     }
 
     let changes_path = root.join("changes.gz");
 
     let git_credentials = match system.git.first() {
-        Some(git) => match git.get_credentials("github.com", "https") {
+        Some(git) => match git.get_credentials("github.com", "https").await {
             Ok(credentials) => {
                 tracing::trace!("Using git credentials for github.com");
                 Some(credentials)
@@ -953,7 +954,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         paths,
         config: &config,
         repos: &repos,
-        rustc_version: ctxt::rustc_version(),
+        rustc_version: ctxt::rustc_version().await,
         warnings: RefCell::new(Vec::new()),
         changes: RefCell::new(Vec::new()),
         sets: &mut sets,
@@ -1004,10 +1005,10 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             cli::set::entry(&mut with_repos.cx, &opts.action)?;
         }
         Command::Run(opts) => {
-            cli::run::entry(&mut with_repos, &opts.action)?;
+            cli::run::entry(&mut with_repos, &opts.action).await?;
         }
         Command::Msrv(opts) => {
-            cli::msrv::entry(&mut with_repos, &opts.action)?;
+            cli::msrv::entry(&mut with_repos, &opts.action).await?;
         }
         Command::Version(opts) => {
             cli::version::entry(&mut with_repos, &opts.action)?;
@@ -1016,13 +1017,13 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             cli::publish::entry(&mut with_repos, &opts.action)?;
         }
         Command::Upgrade(opts) => {
-            cli::upgrade::entry(&mut with_repos, &opts.action)?;
+            cli::upgrade::entry(&mut with_repos, &opts.action).await?;
         }
         Command::Msi(opts) => {
-            cli::msi::entry(&mut with_repos, &opts.action)?;
+            cli::msi::entry(&mut with_repos, &opts.action).await?;
         }
         Command::Rpm(opts) => {
-            cli::rpm::entry(&mut with_repos, &opts.action)?;
+            cli::rpm::entry(&mut with_repos, &opts.action).await?;
         }
         Command::Deb(opts) => {
             cli::deb::entry(&mut with_repos, &opts.action)?;
@@ -1034,13 +1035,13 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             cli::compress::entry(&mut with_repos, cli::compress::Kind::Gzip, &opts.action)?;
         }
         Command::GithubAction(opts) => {
-            cli::github_action::entry(&mut with_repos, &opts.action)?;
+            cli::github_action::entry(&mut with_repos, &opts.action).await?;
         }
         Command::Github(opts) => {
             cli::gh::entry(&mut with_repos, &opts.action).await?;
         }
         Command::Sync(opts) => {
-            cli::sync::entry(&mut with_repos, &opts.action)?;
+            cli::sync::entry(&mut with_repos, &opts.action).await?;
         }
     }
 
@@ -1057,7 +1058,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             continue;
         }
 
-        match changes::apply(&mut o, &cx, &change.change, shared.save) {
+        match changes::apply(&mut o, &cx, &change.change, shared.save).await {
             Ok(()) => {
                 if shared.save {
                     change.written = true;
@@ -1111,7 +1112,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     Ok(outcome)
 }
 
-fn apply_repo_options(
+async fn apply_repo_options(
     repo_opts: &RepoOptions,
     paths: Paths<'_>,
     config: &Config<'_>,
@@ -1182,14 +1183,15 @@ fn apply_repo_options(
         &filters,
         set.as_ref(),
         os,
-    )?;
+    )
+    .await?;
 
     Ok(())
 }
 
 /// Perform more advanced filtering over modules.
-fn filter_repos(
-    config: &Config,
+async fn filter_repos(
+    config: &Config<'_>,
     paths: Paths<'_>,
     in_current_path: Option<&RelativePath>,
     repo_opts: &RepoOptions,
@@ -1242,8 +1244,8 @@ fn filter_repos(
             let git = git.context("no working git command found")?;
             let path = paths.to_path(repo.path());
 
-            let cached = git.is_cached(&path)?;
-            let dirty = git.is_dirty(&path)?;
+            let cached = git.is_cached(&path).await?;
+            let dirty = git.is_dirty(&path).await?;
 
             let span = tracing::trace_span!("git", ?cached, ?dirty, repo = repo.path().to_string());
             let _enter = span.enter();
@@ -1264,13 +1266,15 @@ fn filter_repos(
                     break 'outcome true;
                 }
 
-                if repo_opts.outdated && (!dirty && !git.is_outdated(&path, repo_opts.fetch)?) {
+                if repo_opts.outdated
+                    && (!dirty && !git.is_outdated(&path, repo_opts.fetch).await?)
+                {
                     tracing::trace!("Directory is not outdated");
                     break 'outcome true;
                 }
 
                 if repo_opts.unreleased {
-                    if let Some(describe) = git.describe_tags(&path, repo_opts.fetch)? {
+                    if let Some(describe) = git.describe_tags(&path, repo_opts.fetch).await? {
                         if describe.offset.is_none() {
                             tracing::trace!("No offset detected (tag: {})", describe.tag);
                             break 'outcome true;

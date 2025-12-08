@@ -63,29 +63,33 @@ pub(crate) struct Opts {
     release: ReleaseOpts,
 }
 
-pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
+pub(crate) async fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
     let today = Date::today()?;
     let version = opts.release.try_env_argument(with_repos.cx().env, today)?;
     let version_env = opts.version_env.as_deref().unwrap_or("KICK_VERSION");
     let version = version.as_ref().map(|version| (version_env, version));
 
-    let mut o = StandardStream::stdout(ColorChoice::Auto);
-
-    with_repos.run("run commands", format_args!("for: {opts:?}"), |cx, repo| {
-        run(&mut o, cx, repo, opts, version)
-    })?;
+    with_repos
+        .run_async(
+            "run commands",
+            format_args!("for: {opts:?}"),
+            async |cx, repo| run(cx, repo, opts, version).await,
+            |_| Ok(()),
+        )
+        .await?;
 
     Ok(())
 }
 
 #[tracing::instrument(skip_all)]
-fn run(
-    o: &mut StandardStream,
+async fn run(
     cx: &Ctxt<'_>,
     repo: &Repo,
     opts: &Opts,
-    version: Option<(&str, &Version)>,
+    version: Option<(&str, &Version<'_>)>,
 ) -> Result<()> {
+    let mut o = StandardStream::stdout(ColorChoice::Auto);
+
     let mut c = opts.batch_opts.build(cx, repo)?;
 
     if let Some((env, version)) = version {
@@ -194,7 +198,7 @@ fn run(
     let mut session = Session::new(&c);
 
     for batch in batches {
-        batch.commit(o, &c, &mut session)?;
+        batch.commit(&mut o, &c, &mut session).await?;
     }
 
     Ok(())

@@ -393,7 +393,7 @@ pub(crate) fn load_gitmodules(root: &Path) -> Result<Vec<(RelativePathBuf, RepoI
 }
 
 #[tracing::instrument(skip_all, fields(root = ?root.display()))]
-pub(crate) fn load_from_git(
+pub(crate) async fn load_from_git(
     root: &Path,
     git: Option<&Git>,
 ) -> Result<Option<(RelativePathBuf, Url)>> {
@@ -405,7 +405,9 @@ pub(crate) fn load_from_git(
         let git = git.context("no working git command available")?;
         tracing::trace!("Using repository: {}", root.display());
         return Ok(Some(
-            from_git(git, root).with_context(|| root.display().to_string())?,
+            from_git(git, root)
+                .await
+                .with_context(|| root.display().to_string())?,
         ));
     }
 
@@ -496,11 +498,8 @@ pub(crate) fn parse_git_modules(input: &[u8]) -> Result<Vec<(RelativePathBuf, Re
 }
 
 /// Process module information from a git repository.
-fn from_git<P>(git: &Git, root: P) -> Result<(RelativePathBuf, Url)>
-where
-    P: AsRef<Path>,
-{
-    let url = git.get_url(root, "origin")?;
+async fn from_git(git: &Git, root: impl AsRef<Path>) -> Result<(RelativePathBuf, Url)> {
+    let url = git.get_url(root, "origin").await?;
     Ok((RelativePathBuf::from("."), url))
 }
 

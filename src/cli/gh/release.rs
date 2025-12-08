@@ -113,7 +113,7 @@ async fn run(
         None => {
             let git = cx.require_git()?;
             let dir = cx.to_path(repo.path());
-            git_sha = git.rev_parse(dir, "HEAD")?;
+            git_sha = git.rev_parse(dir, "HEAD").await?;
             tracing::info!("Using HEAD commit from git (sha: {git_sha})");
             &git_sha
         }

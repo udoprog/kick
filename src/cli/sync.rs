@@ -37,17 +37,20 @@ pub(crate) struct Opts {
     init: Option<Kind>,
 }
 
-pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
-    with_repos.run(
-        "synchronize repos",
-        format_args!("sync: {opts:?}"),
-        |cx, repo| sync(cx, repo, opts),
-    )?;
+pub(crate) async fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
+    with_repos
+        .run_async(
+            "synchronize repos",
+            format_args!("sync: {opts:?}"),
+            async |cx, repo| sync(cx, repo, opts).await,
+            |_| Ok(()),
+        )
+        .await?;
 
     Ok(())
 }
 
-fn sync(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
+async fn sync(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     let mut path = cx.to_path(repo.path());
 
     let kind = 'kind: {
@@ -72,15 +75,15 @@ fn sync(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                     let branch = cx.config.branch(repo).context("no branch configured")?;
 
                     let git = cx.require_git()?;
-                    git.init(&path)?;
-                    git.remote_add(&path, "origin", repo.url())?;
-                    git.fetch(&path, "origin", branch)?;
-                    git.force_checkout(&path, branch)?;
+                    git.init(&path).await?;
+                    git.remote_add(&path, "origin", repo.url()).await?;
+                    git.fetch(&path, "origin", branch).await?;
+                    git.force_checkout(&path, branch).await?;
 
                     if let Some(push_url) = repo.push_url()
-                        && git.remote_get_push_url(&path, "origin")? != push_url
+                        && git.remote_get_push_url(&path, "origin").await? != push_url
                     {
-                        git.remote_set_push_url(&path, "origin", push_url)?;
+                        git.remote_set_push_url(&path, "origin", push_url).await?;
                     }
 
                     tracing::info!("initialized git repository at {}", path.display());
@@ -101,12 +104,11 @@ fn sync(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     match kind {
         Kind::Git => {
             let git = cx.require_git()?;
-            ensure!(!git.is_dirty(&path)?, "repository is dirty");
+            ensure!(!git.is_dirty(&path).await?, "repository is dirty");
             let branch = cx.config.branch(repo).context("no branch configured")?;
-            git.fetch(&path, "origin", branch)?;
-            let rev = git.rev_parse(&path, "FETCH_HEAD")?;
-            let outcome = git.merge_fast_forward(&path, &rev)?;
-
+            git.fetch(&path, "origin", branch).await?;
+            let rev = git.rev_parse(&path, "FETCH_HEAD").await?;
+            let outcome = git.merge_fast_forward(&path, &rev).await?;
             if !outcome.success {
                 if !outcome.stdout.is_empty() {
                     tracing::error!("stdout:\n{}", outcome.stdout.trim());
@@ -120,9 +122,9 @@ fn sync(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
             }
 
             if let Some(push_url) = repo.push_url()
-                && git.remote_get_push_url(&path, "origin")? != push_url
+                && git.remote_get_push_url(&path, "origin").await? != push_url
             {
-                git.remote_set_push_url(&path, "origin", push_url)?;
+                git.remote_set_push_url(&path, "origin", push_url).await?;
             }
 
             tracing::info!(?branch, ?rev, "synchronized repo");

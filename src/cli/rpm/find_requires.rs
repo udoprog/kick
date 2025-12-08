@@ -1,11 +1,11 @@
 use std::borrow::Cow;
 use std::fs;
-use std::io::Write;
 use std::path::Path;
 use std::process::Stdio;
 
 use anyhow::Result;
 use bstr::ByteSlice;
+use tokio::io::AsyncWriteExt;
 
 use crate::process::Command;
 
@@ -31,10 +31,7 @@ pub(super) fn detect() -> bool {
     true
 }
 
-pub(super) fn find<P>(exe: P) -> Result<Vec<String>>
-where
-    P: AsRef<Path>,
-{
+pub(super) async fn find(exe: impl AsRef<Path>) -> Result<Vec<String>> {
     let exe = exe.as_ref();
     let mut set = Vec::new();
 
@@ -45,11 +42,12 @@ where
 
     let mut stdin = child.stdin()?;
     let executable = as_bytes(exe);
-    stdin.write_all(executable.as_ref())?;
-    stdin.write_all(b"\n")?;
+    stdin.write_all(executable.as_ref()).await?;
+    stdin.write_all(b"\n").await?;
+    stdin.flush().await?;
     drop(stdin);
 
-    let output = child.wait_with_output()?;
+    let output = child.wait_with_output().await?;
 
     for line in output.stdout.split(|&b| b == b'\n') {
         let line = line.trim();

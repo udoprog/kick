@@ -51,6 +51,7 @@ async fn do_status<'repo>(
         Some(git) => {
             let sha = git
                 .rev_parse(cx.to_path(repo.path()), "HEAD")
+                .await
                 .context("Getting head commit")?;
             Some(sha.trim().to_owned())
         }

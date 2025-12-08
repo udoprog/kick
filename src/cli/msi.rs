@@ -19,16 +19,21 @@ pub(crate) struct Opts {
     output: Option<RelativePathBuf>,
 }
 
-pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
-    with_repos.run("build .msi", format_args!("msi: {opts:?}"), |cx, repo| {
-        msi(cx, repo, opts)
-    })?;
+pub(crate) async fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
+    with_repos
+        .run_async(
+            "build .msi",
+            format_args!("msi: {opts:?}"),
+            async |cx, repo| msi(cx, repo, opts).await,
+            |_| Ok(()),
+        )
+        .await?;
 
     Ok(())
 }
 
 #[tracing::instrument(skip_all)]
-fn msi(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
+async fn msi(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     let release = opts.release.version(cx, repo)?;
     let root = cx.to_path(repo.path());
     let workspace = repo.workspace(cx)?;
@@ -68,14 +73,16 @@ fn msi(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     };
 
     let builder = Wix::find()?;
-    builder.build(
-        wsx_path,
-        &target_wixobj,
-        cx.to_path(repo.path()),
-        binary_name,
-        &binary_path,
-        release.msi_version()?,
-    )?;
-    builder.link(&target_wixobj, installer_path)?;
+    builder
+        .build(
+            wsx_path,
+            &target_wixobj,
+            cx.to_path(repo.path()),
+            binary_name,
+            &binary_path,
+            release.msi_version()?,
+        )
+        .await?;
+    builder.link(&target_wixobj, installer_path).await?;
     Ok(())
 }

@@ -19,14 +19,14 @@ impl Dnf {
     }
 
     /// Set up a command.
-    pub(crate) fn list_installed(&self) -> Result<Vec<String>> {
+    pub(crate) async fn list_installed(&self) -> Result<Vec<String>> {
         let mut out = Vec::new();
 
         let mut dnf = Command::new(&self.path);
         dnf.args(["list", "--installed"]);
         dnf.stdout(Stdio::piped());
 
-        let output = dnf.output()?.stdout;
+        let output = dnf.output().await?.stdout;
 
         for line in output.byte_lines().skip(1) {
             let mut line = line?;

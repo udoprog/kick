@@ -184,10 +184,12 @@ where
 }
 
 /// Report and apply a asingle change.
-pub(crate) fn apply<W>(o: &mut W, cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()>
-where
-    W: ?Sized + WriteColor,
-{
+pub(crate) async fn apply(
+    o: &mut (impl ?Sized + WriteColor),
+    cx: &Ctxt<'_>,
+    change: &Change,
+    save: bool,
+) -> Result<()> {
     let col = Colors::new();
 
     match change {
@@ -443,10 +445,10 @@ where
                 let version = version.to_string();
                 let path = cx.to_path(path);
                 tracing::info!("Making commit `Release {version}`");
-                git.add(&path, ["-u"])?;
-                git.commit(&path, format_args!("Release {version}"))?;
+                git.add(&path, ["-u"]).await?;
+                git.commit(&path, format_args!("Release {version}")).await?;
                 tracing::info!("Tagging `{version}`");
-                git.tag(&path, version)?;
+                git.tag(&path, version).await?;
             } else {
                 tracing::info!("Would make commit `Release {version}`");
                 tracing::info!("Would make tag `{version}`");
@@ -512,7 +514,7 @@ where
                     .stdin(Stdio::null())
                     .current_dir(&path);
 
-                let status = command.status()?;
+                let status = command.status().await?;
 
                 restore.restore();
 

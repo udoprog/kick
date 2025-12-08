@@ -77,7 +77,7 @@ impl Session {
     }
 
     /// Run all preparations.
-    pub(super) fn prepare(
+    pub(super) async fn prepare(
         &mut self,
         config: &BatchConfig<'_, '_>,
         eval: &Eval,
@@ -85,11 +85,11 @@ impl Session {
         let mut suggestions = Remediations::default();
 
         if !self.dists.is_empty() {
-            self.prepare_wsl(config, &mut suggestions)?;
+            self.prepare_wsl(config, &mut suggestions).await?;
         }
 
         if self.is_same && !self.is_same_prepare {
-            self.prepare_same(config, &mut suggestions)?;
+            self.prepare_same(config, &mut suggestions).await?;
             self.is_same_prepare = true;
         }
 
@@ -98,12 +98,16 @@ impl Session {
         Ok(suggestions)
     }
 
-    fn prepare_wsl(&mut self, config: &BatchConfig, suggestions: &mut Remediations) -> Result<()> {
+    async fn prepare_wsl(
+        &mut self,
+        config: &BatchConfig<'_, '_>,
+        suggestions: &mut Remediations,
+    ) -> Result<()> {
         let Some(wsl) = config.cx.system.wsl.first() else {
             bail!("WSL not available");
         };
 
-        let available = wsl.list()?;
+        let available = wsl.list().await?;
 
         let available = available
             .into_iter()
@@ -149,7 +153,8 @@ impl Session {
                     .args(["rustup", "--version"])
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
-                    .status()?;
+                    .status()
+                    .await?;
 
                 status.success()
             } else {
@@ -179,7 +184,8 @@ impl Session {
 
                         dpkg_query_list_installed(command, |package| {
                             wanted.remove(package);
-                        })?;
+                        })
+                        .await?;
                     }
 
                     let wants_node_js = wanted.remove("nodejs");
@@ -217,7 +223,11 @@ impl Session {
     }
 
     /// Prepare the same distro.
-    fn prepare_same(&mut self, config: &BatchConfig, suggestions: &mut Remediations) -> Result<()> {
+    async fn prepare_same(
+        &mut self,
+        config: &BatchConfig<'_, '_>,
+        suggestions: &mut Remediations,
+    ) -> Result<()> {
         let os = &config.cx.os;
         let dist = &config.cx.dist;
 
@@ -246,7 +256,8 @@ impl Session {
 
                         dpkg_query_list_installed(dpkg_query.command(), |package| {
                             wanted.remove(package);
-                        })?;
+                        })
+                        .await?;
 
                         if !wanted.is_empty() {
                             let packages = wanted.into_iter().collect::<Vec<_>>();
@@ -275,7 +286,7 @@ impl Session {
                             wanted.insert(package);
                         }
 
-                        for package in dnf.list_installed()? {
+                        for package in dnf.list_installed().await? {
                             wanted.remove(package.as_str());
                         }
 
@@ -324,11 +335,15 @@ impl Drop for Session {
     }
 }
 
-fn dpkg_query_list_installed(mut command: Command, mut visit: impl FnMut(&str)) -> Result<()> {
+async fn dpkg_query_list_installed(
+    mut command: Command,
+    mut visit: impl FnMut(&str),
+) -> Result<()> {
     let output = command
         .args(["-W", "-f", "\\${db:Status-Status} \\${Package}\n"])
         .stdout(Stdio::piped())
-        .output()?;
+        .output()
+        .await?;
 
     ensure!(
         output.status.success(),
