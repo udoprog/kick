@@ -3,7 +3,7 @@ use core::str::FromStr;
 
 use std::env::consts::EXE_EXTENSION;
 use std::fs::{self, Metadata};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use relative_path::{RelativePath, RelativePathBuf};
@@ -15,6 +15,72 @@ use crate::model::Repo;
 
 /// Filesystem mode for regular files.
 const REGULAR_FILE: u16 = 0o100000;
+
+/// Trait used for interacting with packagers.
+pub(crate) trait Packager {
+    /// Install a binary. Binaries are assumed to be files that should be
+    /// installed into the "default" binary location and have executable
+    /// permissions.
+    fn add_binary(&mut self, name: &str, path: &Path) -> Result<()>;
+
+    /// Install a single file.
+    fn add_file(&mut self, file: &PackageFile, source: &Path, dest: &RelativePath) -> Result<()>;
+}
+
+/// Construct a collection of files to install based on the repo configuration.
+pub(crate) fn install_files(packager: &mut dyn Packager, cx: &Ctxt<'_>, repo: &Repo) -> Result<()> {
+    let workspace = repo.workspace(cx)?;
+
+    if cx.config.package_binaries(repo) {
+        for manifest in workspace.packages() {
+            let package = manifest.ensure_package()?;
+
+            for binary in package.binaries() {
+                let mut buf = RelativePathBuf::from(repo.path());
+
+                buf.push("target");
+                buf.push("release");
+                buf.push(binary);
+                buf.set_extension(EXE_EXTENSION);
+
+                let path = cx.to_path(buf);
+
+                if path.is_file() {
+                    tracing::info!("Adding binary `{binary}`: {}", path.display());
+                    packager
+                        .add_binary(binary, &path)
+                        .with_context(|| path.display().to_string())?;
+                }
+            }
+        }
+    }
+
+    for file in cx.config.package_files(repo) {
+        let from = cx.to_path(repo.path());
+
+        let source = RelativePath::new(&file.source);
+        let glob = Glob::new(&from, source);
+        let dest = RelativePath::new(&file.dest);
+
+        for source in glob.matcher() {
+            let relative = source?;
+
+            let Some(file_name) = relative.file_name() else {
+                bail!("Missing file name: {relative}");
+            };
+
+            let path = cx.to_path(repo.path().join(&relative));
+            let dest = dest.join(file_name);
+
+            tracing::info!("Adding regular file {} to {dest}", path.display());
+            packager
+                .add_file(file, &path, &dest)
+                .with_context(|| path.display().to_string())?;
+        }
+    }
+
+    Ok(())
+}
 
 #[derive(Default, Clone, Copy)]
 pub(crate) struct Mode {
@@ -89,61 +155,4 @@ pub(crate) fn infer_mode(path: &Path) -> Result<(Mode, bool)> {
 fn infer_mode_inner(path: &Path) -> Result<(Mode, bool)> {
     let m = fs::metadata(path)?;
     infer_mode_from_meta(m, path)
-}
-
-/// Construct a collection of files to install based on the repo configuration.
-pub(crate) fn install_files<'a>(cx: &Ctxt<'a>, repo: &Repo) -> Result<Vec<InstallFile<'a>>> {
-    let workspace = repo.workspace(cx)?;
-
-    let mut files = Vec::new();
-
-    if cx.config.package_binaries(repo) {
-        for manifest in workspace.packages() {
-            let package = manifest.ensure_package()?;
-
-            for binary in package.binaries() {
-                let mut buf = RelativePathBuf::from(repo.path());
-
-                buf.push("target");
-                buf.push("release");
-                buf.push(binary);
-                buf.set_extension(EXE_EXTENSION);
-
-                let path = cx.to_path(buf);
-
-                if path.is_file() {
-                    files.push(InstallFile::Binary(binary.to_owned(), path));
-                }
-            }
-        }
-    }
-
-    for file in cx.config.package_files(repo) {
-        let from = cx.to_path(repo.path());
-
-        let source = RelativePath::new(&file.source);
-        let glob = Glob::new(&from, source);
-        let dest = RelativePath::new(&file.dest);
-
-        for source in glob.matcher() {
-            let relative = source?;
-
-            let Some(file_name) = relative.file_name() else {
-                bail!("Missing file name: {relative}");
-            };
-
-            let source = cx.to_path(repo.path().join(&relative));
-            let dest = dest.join(file_name);
-            files.push(InstallFile::File(file, source, dest));
-        }
-    }
-
-    Ok(files)
-}
-
-pub(crate) enum InstallFile<'a> {
-    /// Binary file to be installed.
-    Binary(String, PathBuf),
-    /// Install the specified file.
-    File(&'a PackageFile, PathBuf, RelativePathBuf),
 }

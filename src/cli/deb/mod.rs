@@ -1,17 +1,18 @@
 use std::fs;
+use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use relative_path::RelativePath;
 
 use crate::cli::WithRepos;
+use crate::config::PackageFile;
 use crate::config::VersionRequirement;
 use crate::config::deb_depends;
 use crate::ctxt::Ctxt;
 use crate::deb;
 use crate::model::Repo;
-use crate::packaging::InstallFile;
-use crate::packaging::Mode;
+use crate::packaging::{self, Mode, Packager};
 use crate::release::ReleaseOpts;
 
 use super::output::OutputOpts;
@@ -50,54 +51,11 @@ fn deb(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     let debian_version = release.debian_version()?;
     builder.version(&debian_version);
 
-    for install_file in crate::packaging::install_files(cx, repo)? {
-        match install_file {
-            InstallFile::Binary(name, source) => {
-                let meta = source.metadata().with_context(|| {
-                    anyhow!("Reading binary file metadata: {}", source.display())
-                })?;
+    let mut packager = DebianPackager {
+        builder: &mut builder,
+    };
 
-                let contents = fs::read(&source).with_context(|| {
-                    anyhow!("Reading binary file contents: {}", source.display())
-                })?;
-
-                let modified = meta.modified().with_context(|| {
-                    anyhow!("Reading binary file modified time: {}", source.display())
-                })?;
-
-                builder
-                    .insert_file(RelativePath::new("usr/bin").join(&name))
-                    .contents(contents)
-                    .mode(Mode::EXECUTABLE)
-                    .mtime(modified)?;
-            }
-            InstallFile::File(file, source, dest) => {
-                let meta = source.metadata().with_context(|| {
-                    anyhow!("Reading source file metadata: {}", source.display())
-                })?;
-
-                let contents = fs::read(&source).with_context(|| {
-                    anyhow!("Reading source file contents: {}", source.display())
-                })?;
-
-                let modified = meta.modified().with_context(|| {
-                    anyhow!("Reading source file modified time: {}", source.display())
-                })?;
-
-                let builder = builder
-                    .insert_file(dest)
-                    .contents(contents)
-                    .mtime(modified)?;
-
-                if let Some(mode) = file.mode {
-                    builder.mode(mode);
-                } else {
-                    let (mode, _) = crate::packaging::infer_mode(&source)?;
-                    builder.mode(mode);
-                }
-            }
-        }
-    }
+    packaging::install_files(&mut packager, cx, repo)?;
 
     for dep in cx.config.get_all(repo, deb_depends) {
         let builder = builder.insert_depends(&dep.package);
@@ -116,4 +74,45 @@ fn deb(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
         .write_to(&mut f)
         .with_context(|| anyhow!("Writing deb to {}", f.path().display()))?;
     Ok(())
+}
+
+struct DebianPackager<'a> {
+    builder: &'a mut deb::Builder,
+}
+
+impl Packager for DebianPackager<'_> {
+    fn add_binary(&mut self, name: &str, path: &Path) -> Result<()> {
+        let meta = path.metadata().context("reading metadata")?;
+        let mtime = meta.modified().context("reading modified time")?;
+        let contents = fs::read(path).context("reading contents of file")?;
+
+        self.builder
+            .insert_file(RelativePath::new("usr/bin").join(name))
+            .contents(contents)
+            .mode(Mode::EXECUTABLE)
+            .mtime(mtime)?;
+
+        Ok(())
+    }
+
+    fn add_file(&mut self, file: &PackageFile, path: &Path, dest: &RelativePath) -> Result<()> {
+        let meta = path.metadata().context("reading metadata")?;
+        let mtime = meta.modified().context("reading modified time")?;
+        let contents = fs::read(path).context("reading contents of file")?;
+
+        let mode = if let Some(mode) = file.mode {
+            mode
+        } else {
+            let (mode, _) = crate::packaging::infer_mode(path)?;
+            mode
+        };
+
+        self.builder
+            .insert_file(dest)
+            .contents(contents)
+            .mtime(mtime)?
+            .mode(mode);
+
+        Ok(())
+    }
 }

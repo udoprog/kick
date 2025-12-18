@@ -15,7 +15,7 @@ use crate::cli::WithRepos;
 use crate::config::{PackageFile, VersionConstraint, VersionRequirement, rpm_requires};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
-use crate::packaging::{InstallFile, Mode};
+use crate::packaging::{self, Mode, Packager};
 use crate::release::ReleaseOpts;
 
 use super::output::OutputOpts;
@@ -24,6 +24,9 @@ const DEFAULT_LICENSE: &str = "MIT OR Apache-2.0";
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
+    /// Use RPM format version 4 for improve compatibility with older systems.
+    #[clap(long)]
+    v4: bool,
     #[clap(flatten)]
     release: ReleaseOpts,
     #[clap(flatten)]
@@ -67,25 +70,27 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
     let version = release.to_string();
 
-    let build_config = rpm::BuildConfig::v6().compression(rpm::CompressionType::Gzip);
+    let build_config = if opts.v4 {
+        rpm::BuildConfig::v4()
+    } else {
+        rpm::BuildConfig::default()
+    };
 
-    let mut pkg = rpm::PackageBuilder::new(name, &version, license, ARCH, description)
+    let build_config = build_config.compression(rpm::CompressionType::Gzip);
+
+    let pkg = rpm::PackageBuilder::new(name, &version, license, ARCH, description)
         .using_config(build_config);
 
     let mut requires = BTreeSet::new();
 
-    for install_file in crate::packaging::install_files(cx, repo)? {
-        match install_file {
-            InstallFile::Binary(name, path) => {
-                pkg = add_binary(pkg, &name, &path, &mut requires)
-                    .with_context(|| path.display().to_string())?;
-            }
-            InstallFile::File(file, source, dest) => {
-                pkg = add_file(pkg, file, &source, &dest, &mut requires)
-                    .with_context(|| source.display().to_string())?;
-            }
-        }
-    }
+    let mut packager = RpmPackager {
+        pkg: Some(pkg),
+        requires: &mut requires,
+    };
+
+    packaging::install_files(&mut packager, cx, repo)?;
+
+    let mut pkg = packager.pkg.context("missing package")?;
 
     for require in cx.config.get_all(repo, rpm_requires) {
         let dep = match &require.version {
@@ -116,7 +121,7 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
     let pkg = pkg.build()?;
     let output = opts.output.make_directory(cx, repo, "rpm");
-    let output_path = output.make_path(format!("{name}-{release}-{ARCH}.rpm"))?;
+    let output_path = output.make_path(format_args!("{name}-{release}-{ARCH}.rpm"))?;
 
     let mut out = BufWriter::new(File::create(&output_path)?);
 
@@ -128,58 +133,54 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     Ok(())
 }
 
-fn add_binary(
-    pkg: rpm::PackageBuilder,
-    name: &str,
-    path: &Path,
-    requires: &mut BTreeSet<String>,
-) -> Result<rpm::PackageBuilder> {
-    tracing::info!("Adding binary `{name}` {} to usr/bin", path.display());
-
-    let pkg = pkg.with_file(
-        path,
-        rpm::FileOptions::new(format!("/usr/bin/{name}")).mode(rpm::FileMode::Regular {
-            permissions: Mode::EXECUTABLE.regular_file(),
-        }),
-    )?;
-
-    requires.extend(if find_requires::detect() {
-        find_requires::find(path)?
-    } else {
-        find_requires_by_elf::find(path)?
-    });
-
-    Ok(pkg)
+struct RpmPackager<'a> {
+    pkg: Option<rpm::PackageBuilder>,
+    requires: &'a mut BTreeSet<String>,
 }
 
-fn add_file(
-    pkg: rpm::PackageBuilder,
-    file: &PackageFile,
-    source: &Path,
-    dest: &RelativePath,
-    requires: &mut BTreeSet<String>,
-) -> Result<rpm::PackageBuilder> {
-    tracing::info!("Adding {} to {dest}", source.display());
+impl Packager for RpmPackager<'_> {
+    fn add_binary(&mut self, name: &str, path: &Path) -> Result<()> {
+        let options =
+            rpm::FileOptions::new(format!("/usr/bin/{name}")).mode(rpm::FileMode::Regular {
+                permissions: Mode::EXECUTABLE.regular_file(),
+            });
 
-    let mut options = rpm::FileOptions::new(format!("/{dest}"));
+        let pkg = self.pkg.take().context("missing package")?;
+        self.pkg = Some(pkg.with_file(path, options)?);
 
-    let is_exe = if let Some(mode) = file.mode {
-        options = options.mode(mode.regular_file());
-        mode.is_executable()
-    } else {
-        let (mode, is_exe) = crate::packaging::infer_mode(source)?;
-        options = options.mode(mode.regular_file());
-        is_exe
-    };
-
-    if is_exe {
-        requires.extend(if find_requires::detect() {
-            find_requires::find(source)?
+        self.requires.extend(if find_requires::detect() {
+            find_requires::find(path)?
         } else {
-            find_requires_by_elf::find(source)?
+            find_requires_by_elf::find(path)?
         });
+
+        Ok(())
     }
 
-    pkg.with_file(source, options)
-        .with_context(|| anyhow!("Adding file: {}", source.display()))
+    fn add_file(&mut self, file: &PackageFile, path: &Path, dest: &RelativePath) -> Result<()> {
+        let (mode, is_exe) = if let Some(mode) = file.mode {
+            (mode, mode.is_executable())
+        } else {
+            let (mode, is_exe) = packaging::infer_mode(path)?;
+            (mode, is_exe)
+        };
+
+        if is_exe {
+            self.requires.extend(if find_requires::detect() {
+                find_requires::find(path)?
+            } else {
+                find_requires_by_elf::find(path)?
+            });
+        }
+
+        let options = rpm::FileOptions::new(format!("/{dest}")).mode(mode.regular_file());
+
+        let pkg = self.pkg.take().context("missing package")?;
+        self.pkg = Some(
+            pkg.with_file(path, options)
+                .context("Adding file to rpm package")?,
+        );
+
+        Ok(())
+    }
 }
