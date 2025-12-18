@@ -17,13 +17,13 @@ use semver::Version;
 use tempfile::NamedTempFile;
 use url::Url;
 
-use crate::KICK_TOML;
 use crate::ctxt::Paths;
 use crate::glob::Glob;
 use crate::keys::Keys;
 use crate::model::{Repo, RepoInfo, RepoParams, RepoRef, RepoSource};
 use crate::shell::Shell;
 use crate::templates::{Template, Templating};
+use crate::{KICK_TOML, packaging};
 
 /// Default job name.
 const DEFAULT_CI_NAME: &str = "CI";
@@ -123,6 +123,8 @@ pub(crate) struct DebPackage {
 
 #[derive(Default, Debug, Clone)]
 pub(crate) struct Package {
+    /// Automatically include binaries.
+    pub(crate) binaries: Option<bool>,
     /// Packages to include in an rpm package.
     pub(crate) files: Vec<PackageFile>,
     /// Options specific to rpm packages.
@@ -177,7 +179,7 @@ pub(crate) struct PackageFile {
     /// Destination of an rpm file.
     pub(crate) dest: RelativePathBuf,
     /// The mode of a file.
-    pub(crate) mode: Option<u16>,
+    pub(crate) mode: Option<packaging::Mode>,
 }
 
 #[derive(Clone, Debug, Copy)]
@@ -763,6 +765,14 @@ impl Config<'_> {
         }
 
         variables
+    }
+
+    /// Check if we should automatically include binaries.
+    pub(crate) fn package_binaries(&self, repo: &RepoRef) -> bool {
+        self.repos(repo)
+            .flat_map(|r| r.package.binaries)
+            .next()
+            .unwrap_or(true)
     }
 
     /// Get all rpm files.
@@ -1392,17 +1402,7 @@ impl<'a> Cx<'a> {
         self.with_table(value, |cx, table| {
             let source = cx.require_key(table, "source", Self::relative_path);
             let dest = cx.require_key(table, "dest", Self::relative_path);
-
-            let mode = cx.in_key(table, "mode", |cx, string| {
-                let string = cx.string(string)?;
-
-                match u16::from_str_radix(&string, 8) {
-                    Ok(mode) => Ok(mode),
-                    Err(err) => {
-                        Err(cx.capture(format_args!("invalid file mode `{string}`: {err}")))
-                    }
-                }
-            });
+            let mode = cx.in_key(table, "mode", Self::parse);
 
             Ok(PackageFile {
                 source: source?,
@@ -1466,11 +1466,13 @@ impl<'a> Cx<'a> {
 
     fn package(&self, value: toml::Value) -> Result<Package, ErrorMarker> {
         self.with_table(value, |cx, table| {
+            let binaries = cx.in_key(table, "binaries", Self::boolean);
             let files = cx.in_array(table, "files", None, Self::package_file);
             let rpm = cx.in_key(table, "rpm", Self::rpm);
             let deb = cx.in_key(table, "deb", Self::deb);
 
             Ok(Package {
+                binaries: binaries?,
                 files: files?,
                 rpm: rpm?.unwrap_or_default(),
                 deb: deb?.unwrap_or_default(),

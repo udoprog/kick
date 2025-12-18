@@ -30,10 +30,7 @@ pub(crate) struct Paths<'a> {
 
 impl Paths<'_> {
     /// Get a repo path that is used as the base to other paths.
-    pub(crate) fn to_path<P>(self, path: P) -> PathBuf
-    where
-        P: AsRef<RelativePath>,
-    {
+    pub(crate) fn to_path(self, path: impl AsRef<RelativePath>) -> PathBuf {
         if self.root.components().eq([Component::CurDir]) {
             return PathBuf::from(path.as_ref().as_str());
         }
@@ -130,10 +127,7 @@ impl<'a> Ctxt<'a> {
     }
 
     /// Get a repo path that is used as the base to other paths.
-    pub(crate) fn to_path<P>(&self, path: P) -> PathBuf
-    where
-        P: AsRef<RelativePath>,
-    {
+    pub(crate) fn to_path(&self, path: impl AsRef<RelativePath>) -> PathBuf {
         self.paths.to_path(path)
     }
 

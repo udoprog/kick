@@ -12,10 +12,7 @@ use elf::file::Class;
 
 use crate::process::Command;
 
-pub(crate) fn find<P>(exe: P) -> Result<Vec<String>>
-where
-    P: AsRef<Path>,
-{
+pub(crate) fn find(exe: impl AsRef<Path>) -> Result<Vec<String>> {
     let exe = exe.as_ref();
     let header = elf_header(exe)?;
 

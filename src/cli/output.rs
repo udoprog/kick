@@ -52,10 +52,7 @@ impl OutputDirectory<'_> {
     ///
     /// After calling this function, the output directory is guaranteed to have
     /// been created.
-    pub(super) fn make_path<N>(&self, name: N) -> Result<PathBuf>
-    where
-        N: fmt::Display,
-    {
+    pub(super) fn make_path(&self, name: impl fmt::Display) -> Result<PathBuf> {
         let mut path = self.paths.to_path(&self.path);
 
         if !path.is_dir() {
@@ -70,11 +67,9 @@ impl OutputDirectory<'_> {
     }
 
     /// Create a file in the output directory.
-    pub(super) fn create_file<N>(&self, name: N) -> Result<CreatedFile>
-    where
-        N: fmt::Display,
-    {
+    pub(super) fn create_file(&self, name: impl fmt::Display) -> Result<CreatedFile> {
         let path = self.make_path(name)?;
+
         let file =
             File::create(&path).with_context(|| anyhow!("Creating file: {}", path.display()))?;
 

@@ -31,10 +31,7 @@ pub(super) fn detect() -> bool {
     true
 }
 
-pub(super) fn find<P>(exe: P) -> Result<Vec<String>>
-where
-    P: AsRef<Path>,
-{
+pub(super) fn find(exe: impl AsRef<Path>) -> Result<Vec<String>> {
     let exe = exe.as_ref();
     let mut set = Vec::new();
 

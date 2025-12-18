@@ -11,6 +11,7 @@ use crate::ctxt::Ctxt;
 use crate::deb;
 use crate::model::Repo;
 use crate::packaging::InstallFile;
+use crate::packaging::Mode;
 use crate::release::ReleaseOpts;
 
 use super::output::OutputOpts;
@@ -67,7 +68,7 @@ fn deb(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                 builder
                     .insert_file(RelativePath::new("usr/bin").join(&name))
                     .contents(contents)
-                    .mode(0o755)
+                    .mode(Mode::EXECUTABLE)
                     .mtime(modified)?;
             }
             InstallFile::File(file, source, dest) => {
@@ -89,7 +90,10 @@ fn deb(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                     .mtime(modified)?;
 
                 if let Some(mode) = file.mode {
-                    builder.mode(mode as u32);
+                    builder.mode(mode);
+                } else {
+                    let (mode, _) = crate::packaging::infer_mode(&source)?;
+                    builder.mode(mode);
                 }
             }
         }

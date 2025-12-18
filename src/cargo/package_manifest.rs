@@ -41,6 +41,7 @@ macro_rules! insert_list {
 macro_rules! package_field {
     ($($get:ident, $field:literal),* $(,)?) => {
         $(
+            #[inline]
             pub(crate) fn $get(&self) -> Option<&str> {
                 self.doc.get($field).and_then(Item::as_str)
             }
@@ -67,12 +68,20 @@ impl Package {
         unsafe { &mut *(doc as *mut _ as *mut Self) }
     }
 
+    /// Construct an iterator over potential binaries.
+    #[inline]
+    pub(crate) fn binaries(&self) -> impl Iterator<Item = &str> {
+        let name = self.doc.get("name");
+        name.and_then(Item::as_str).into_iter()
+    }
+
     #[inline]
     pub(crate) fn as_table(&self) -> &Table {
         &self.doc
     }
 
     /// Test if package should or should not be published.
+    #[inline]
     pub(crate) fn is_publish(&self) -> bool {
         self.doc
             .get("publish")
@@ -81,6 +90,7 @@ impl Package {
     }
 
     /// Get the name of the package.
+    #[inline]
     pub(crate) fn name(&self) -> Result<&str> {
         let name = self
             .doc
@@ -92,31 +102,37 @@ impl Package {
     }
 
     /// Get authors.
+    #[inline]
     pub(crate) fn authors(&self) -> Option<&Array> {
         self.doc.get("authors").and_then(Item::as_array)
     }
 
     /// Get categories.
+    #[inline]
     pub(crate) fn categories(&self) -> Option<&Array> {
         self.doc.get("categories").and_then(Item::as_array)
     }
 
     /// Get keywords.
+    #[inline]
     pub(crate) fn keywords(&self) -> Option<&Array> {
         self.doc.get("keywords").and_then(Item::as_array)
     }
 
     /// Get description.
+    #[inline]
     pub(crate) fn description(&self) -> Option<&str> {
         self.doc.get("description").and_then(Item::as_str)
     }
 
     /// Rust version.
+    #[inline]
     pub(crate) fn rust_version(&self) -> Option<RustVersion> {
         RustVersion::parse(self.doc.get("rust-version").and_then(Item::as_str)?)
     }
 
     /// Construct crate parameters.
+    #[inline]
     pub(crate) fn package_params<'p>(&'p self, repo: &'p RepoRef) -> Result<PackageParams<'p>> {
         Ok(PackageParams {
             name: self.name()?,

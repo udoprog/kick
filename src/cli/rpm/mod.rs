@@ -15,7 +15,7 @@ use crate::cli::WithRepos;
 use crate::config::{PackageFile, VersionConstraint, VersionRequirement, rpm_requires};
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
-use crate::packaging::InstallFile;
+use crate::packaging::{InstallFile, Mode};
 use crate::release::ReleaseOpts;
 
 use super::output::OutputOpts;
@@ -67,30 +67,22 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
     let version = release.to_string();
 
+    let build_config = rpm::BuildConfig::default().compression(rpm::CompressionType::Gzip);
+
     let mut pkg = rpm::PackageBuilder::new(name, &version, license, ARCH, description)
-        .using_config(rpm::BuildConfig::v4().compression(rpm::CompressionType::Gzip));
+        .using_config(build_config);
 
     let mut requires = BTreeSet::new();
 
     for install_file in crate::packaging::install_files(cx, repo)? {
         match install_file {
             InstallFile::Binary(name, path) => {
-                requires.extend(if find_requires::detect() {
-                    find_requires::find(&path)?
-                } else {
-                    find_requires_by_elf::find(&path)?
-                });
-
-                pkg = pkg
-                    .with_file(
-                        &path,
-                        rpm::FileOptions::new(format!("/usr/bin/{name}"))
-                            .mode(rpm::FileMode::Regular { permissions: 0o755 }),
-                    )
-                    .with_context(|| anyhow!("Adding binary: {}", path.display()))?;
+                pkg = add_binary(pkg, &name, &path, &mut requires)
+                    .with_context(|| path.display().to_string())?;
             }
             InstallFile::File(file, source, dest) => {
-                pkg = add_file(pkg, file, &source, &dest)?;
+                pkg = add_file(pkg, file, &source, &dest, &mut requires)
+                    .with_context(|| source.display().to_string())?;
             }
         }
     }
@@ -133,8 +125,31 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
     let mut out = out.into_inner()?;
     out.flush()?;
-    drop(out);
     Ok(())
+}
+
+fn add_binary(
+    pkg: rpm::PackageBuilder,
+    name: &str,
+    path: &Path,
+    requires: &mut BTreeSet<String>,
+) -> Result<rpm::PackageBuilder> {
+    tracing::info!("Adding binary `{name}` {} to usr/bin", path.display());
+
+    let pkg = pkg.with_file(
+        &path,
+        rpm::FileOptions::new(format!("/usr/bin/{name}")).mode(rpm::FileMode::Regular {
+            permissions: Mode::EXECUTABLE.regular_file(),
+        }),
+    )?;
+
+    requires.extend(if find_requires::detect() {
+        find_requires::find(&path)?
+    } else {
+        find_requires_by_elf::find(&path)?
+    });
+
+    Ok(pkg)
 }
 
 fn add_file(
@@ -142,13 +157,27 @@ fn add_file(
     file: &PackageFile,
     source: &Path,
     dest: &RelativePath,
+    requires: &mut BTreeSet<String>,
 ) -> Result<rpm::PackageBuilder> {
     tracing::info!("Adding {} to {dest}", source.display());
 
     let mut options = rpm::FileOptions::new(format!("/{dest}"));
 
-    if let Some(mode) = file.mode {
-        options = options.mode(mode);
+    let is_exe = if let Some(mode) = file.mode {
+        options = options.mode(mode.regular_file());
+        mode.is_executable()
+    } else {
+        let (mode, is_exe) = crate::packaging::infer_mode(source)?;
+        options = options.mode(mode.regular_file());
+        is_exe
+    };
+
+    if is_exe {
+        requires.extend(if find_requires::detect() {
+            find_requires::find(source)?
+        } else {
+            find_requires_by_elf::find(source)?
+        });
     }
 
     pkg.with_file(source, options)

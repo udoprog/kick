@@ -5,6 +5,8 @@ use std::time::SystemTime;
 use anyhow::{Context, Result, anyhow};
 use relative_path::{RelativePath, RelativePathBuf};
 
+use crate::packaging::Mode;
+
 use super::Architecture;
 
 /// Builder of a debian archive.
@@ -235,7 +237,7 @@ impl DataBuilder {
                 .with_context(|| anyhow!("Setting path {}", &file.path))?;
 
             header.set_size(file.contents.len() as u64);
-            header.set_mode(file.mode);
+            header.set_mode(file.mode.regular_file() as u32);
             header.set_mtime(file.mtime);
             header.set_uid(file.uid);
             header.set_gid(file.gid);
@@ -249,7 +251,7 @@ impl DataBuilder {
 
 pub(crate) struct FileBuilder {
     path: RelativePathBuf,
-    mode: u32,
+    mode: Mode,
     mtime: u64,
     contents: Vec<u8>,
     uid: u64,
@@ -263,7 +265,7 @@ impl FileBuilder {
     {
         Self {
             path: path.as_ref().to_owned(),
-            mode: 0o644,
+            mode: Mode::READ_WRITE,
             mtime: 0,
             contents: Vec::new(),
             uid: 0,
@@ -272,7 +274,7 @@ impl FileBuilder {
     }
 
     /// Set the mode of the file.
-    pub(crate) fn mode(&mut self, mode: u32) -> &mut Self {
+    pub(crate) fn mode(&mut self, mode: Mode) -> &mut Self {
         self.mode = mode;
         self
     }
