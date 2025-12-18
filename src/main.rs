@@ -387,6 +387,7 @@ mod edits;
 mod env;
 mod file;
 mod fs;
+mod git_cache;
 mod gitmodules;
 mod gix;
 mod glob;
@@ -433,8 +434,10 @@ use termcolor::{ColorChoice, StandardStream};
 use crate::cli::WithRepos;
 use crate::ctxt::Paths;
 use crate::env::Env;
+use crate::git_cache::GitCache;
+use crate::glob::Fragment;
+use crate::model::Repo;
 use crate::model::{RepoSource, load_from_git};
-use crate::{glob::Fragment, model::Repo};
 
 /// The version of kick in use.
 const VERSION: &str = const {
@@ -650,6 +653,8 @@ struct RepoOptions {
     /// are out-of-date with remote. @cached that have cached changes.
     /// @unreleased refers to repos that point to a revision which does not have
     /// a remote tag.
+    ///
+    ///
     #[arg(long)]
     set: Vec<SetOperations>,
     /// Save remaining or failed repos to the specified set.
@@ -1205,147 +1210,6 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     }
 
     Ok(outcome)
-}
-
-struct GitCache<'repo, 'a> {
-    repos: &'repo [Repo],
-    paths: Paths<'a>,
-    system: &'a system::System,
-    fetch: bool,
-    dirty_init: bool,
-    dirty: Vec<&'repo RelativePath>,
-    cached_init: bool,
-    cached: Vec<&'repo RelativePath>,
-    outdated_init: bool,
-    outdated: Vec<&'repo RelativePath>,
-    unreleased_init: bool,
-    unreleased: Vec<&'repo RelativePath>,
-}
-
-impl<'repo, 'a> GitCache<'repo, 'a> {
-    fn new(
-        repos: &'repo [Repo],
-        paths: Paths<'a>,
-        system: &'a system::System,
-        fetch: bool,
-    ) -> Self {
-        Self {
-            repos,
-            paths,
-            system,
-            fetch,
-            dirty_init: false,
-            dirty: Vec::new(),
-            cached_init: false,
-            cached: Vec::new(),
-            outdated_init: false,
-            outdated: Vec::new(),
-            unreleased_init: false,
-            unreleased: Vec::new(),
-        }
-    }
-
-    fn dirty_set(&mut self) -> Result<&[&'repo RelativePath]> {
-        if !self.dirty_init {
-            let git = self
-                .system
-                .git
-                .first()
-                .context("no working git command found")?;
-
-            for repo in self.repos {
-                let path = self.paths.to_path(repo.path());
-
-                if git.is_dirty(&path)? {
-                    self.dirty.push(repo.path());
-                }
-            }
-
-            self.dirty_init = true;
-        }
-
-        Ok(&self.dirty)
-    }
-
-    fn cached_set(&mut self) -> Result<&[&'repo RelativePath]> {
-        if !self.cached_init {
-            let git = self
-                .system
-                .git
-                .first()
-                .context("no working git command found")?;
-
-            for repo in self.repos {
-                let path = self.paths.to_path(repo.path());
-
-                if git.is_cached(&path)? {
-                    self.cached.push(repo.path());
-                }
-            }
-
-            self.cached_init = true;
-        }
-
-        Ok(&self.cached)
-    }
-
-    fn outdated_set(&mut self) -> Result<&[&'repo RelativePath]> {
-        if !self.outdated_init {
-            let git = self
-                .system
-                .git
-                .first()
-                .context("no working git command found")?;
-
-            for repo in self.repos {
-                let path = self.paths.to_path(repo.path());
-
-                if git.is_outdated(&path, self.fetch)? {
-                    self.outdated.push(repo.path());
-                }
-            }
-
-            self.outdated_init = true;
-        }
-
-        Ok(&self.outdated)
-    }
-
-    fn unreleased_set(&mut self) -> Result<&[&'repo RelativePath]> {
-        if !self.unreleased_init {
-            let git = self
-                .system
-                .git
-                .first()
-                .context("no working git command found")?;
-
-            for repo in self.repos {
-                let path = self.paths.to_path(repo.path());
-
-                let outcome = 'outcome: {
-                    let Some(describe) = git.describe_tags(&path, self.fetch)? else {
-                        tracing::trace!("No tags to describe");
-                        break 'outcome true;
-                    };
-
-                    if describe.offset.is_none() {
-                        tracing::trace!("No offset detected (tag: {})", describe.tag);
-                        break 'outcome true;
-                    }
-
-                    false
-                };
-
-                if outcome {
-                    self.unreleased.push(repo.path());
-                }
-            }
-
-            self.unreleased_init = true;
-        }
-
-        Ok(&self.unreleased)
-    }
 }
 
 enum LoadedPaths<'a, 'path> {
