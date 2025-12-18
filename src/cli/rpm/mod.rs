@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write as _};
 use std::path::Path;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
 use relative_path::RelativePath;
 
@@ -88,7 +88,11 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
         requires: &mut requires,
     };
 
-    packaging::install_files(&mut packager, cx, repo)?;
+    let n = packaging::install_files(&mut packager, cx, repo)?;
+
+    if n > 0 {
+        bail!("Stopping due to {n} error(s)");
+    };
 
     let mut pkg = packager.pkg.context("missing package")?;
 

@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 
+use anyhow::bail;
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use relative_path::RelativePath;
@@ -55,7 +56,11 @@ fn deb(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
         builder: &mut builder,
     };
 
-    packaging::install_files(&mut packager, cx, repo)?;
+    let n = packaging::install_files(&mut packager, cx, repo)?;
+
+    if n > 0 {
+        bail!("Stopping due to {n} error(s)");
+    };
 
     for dep in cx.config.get_all(repo, deb_depends) {
         let builder = builder.insert_depends(&dep.package);

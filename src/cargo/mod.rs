@@ -20,15 +20,16 @@ pub(crate) use self::rust_version::RustVersion;
 pub(crate) mod rust_version;
 
 use std::collections::HashSet;
-use std::fs;
 use std::path::Path;
+use std::{fs, io};
 
 use anyhow::{Context, Result, anyhow};
 use musli::{Decode, Encode};
 use relative_path::{RelativePath, RelativePathBuf};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
-use crate::ctxt::Paths;
+use crate::ctxt::{Ctxt, Paths};
+use crate::model::Repo;
 use crate::workspace::Crates;
 
 /// The "workspace" field.
@@ -56,6 +57,59 @@ pub(crate) fn open(paths: Paths<'_>, manifest_path: &RelativePath) -> Result<Opt
     }))
 }
 
+/// A binary defined in a cargo manifest.
+pub(crate) enum ManifestBinary {
+    /// An autobin directory which should be listed.
+    AutoBin(RelativePathBuf),
+    /// A single entry binary.
+    Entry(String),
+}
+
+impl ManifestBinary {
+    pub(crate) fn list(&self, cx: &Ctxt<'_>, repo: &Repo, names: &mut Vec<String>) -> Result<()> {
+        match self {
+            ManifestBinary::AutoBin(dir) => {
+                let dir = cx.to_path(repo.path().join(dir));
+
+                let entries = match fs::read_dir(&dir) {
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        return Err(e).with_context(|| dir.display().to_string());
+                    }
+                    Ok(entries) => entries,
+                };
+
+                for entry in entries {
+                    let entry = entry.with_context(|| anyhow!("listing: {}", dir.display()))?;
+
+                    let path = entry.path();
+
+                    if !path.is_file() {
+                        continue;
+                    }
+
+                    if !matches!(path.extension().and_then(|s| s.to_str()), Some("rs")) {
+                        continue;
+                    }
+
+                    let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
+                        continue;
+                    };
+
+                    names.push(name.to_owned());
+                }
+            }
+            ManifestBinary::Entry(name) => {
+                names.push(name.clone());
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// A parsed `Cargo.toml`.
 #[derive(Debug, Clone, Encode, Decode)]
 pub(crate) struct Manifest {
@@ -74,6 +128,20 @@ impl Manifest {
     /// Directory of manifest.
     pub(crate) fn dir(&self) -> &RelativePath {
         self.path.parent().unwrap_or(RelativePath::new("."))
+    }
+
+    /// List of binary candidates.
+    pub(crate) fn binaries(&self, binaries: &mut Vec<ManifestBinary>) -> Result<()> {
+        if let Some(package) = self.as_package() {
+            if package.is_autobin() {
+                binaries.push(ManifestBinary::AutoBin(self.dir().join("src").join("bin")));
+            }
+
+            let name = package.name()?;
+            binaries.push(ManifestBinary::Entry(name.to_owned()));
+        }
+
+        Ok(())
     }
 
     /// Find the location of the entrypoint `lib.rs`.

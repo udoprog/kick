@@ -28,27 +28,43 @@ pub(crate) trait Packager {
 }
 
 /// Construct a collection of files to install based on the repo configuration.
-pub(crate) fn install_files(packager: &mut dyn Packager, cx: &Ctxt<'_>, repo: &Repo) -> Result<()> {
+pub(crate) fn install_files(
+    packager: &mut dyn Packager,
+    cx: &Ctxt<'_>,
+    repo: &Repo,
+) -> Result<usize> {
     let workspace = repo.workspace(cx)?;
+
+    let mut binaries = Vec::new();
+    let mut names = Vec::new();
+    let mut errors = 0;
 
     if cx.config.package_binaries(repo) {
         for manifest in workspace.packages() {
-            let package = manifest.ensure_package()?;
+            manifest.binaries(&mut binaries)?;
 
-            for binary in package.binaries() {
-                let mut buf = RelativePathBuf::from(repo.path());
+            for binary in binaries.drain(..) {
+                binary.list(cx, repo, &mut names)?;
 
-                buf.push("target");
-                buf.push("release");
-                buf.push(binary);
-                buf.set_extension(EXE_EXTENSION);
+                for name in names.drain(..) {
+                    let mut b = RelativePathBuf::from(repo.path());
 
-                let path = cx.to_path(buf);
+                    b.push("target");
+                    b.push("release");
+                    b.push(&name);
+                    b.set_extension(EXE_EXTENSION);
 
-                if path.is_file() {
-                    tracing::info!("Adding binary `{binary}`: {}", path.display());
+                    let path = cx.to_path(b);
+
+                    if !path.is_file() {
+                        tracing::error!("Binary not found: {}", path.display());
+                        errors += 1;
+                        continue;
+                    }
+
+                    tracing::info!("Adding binary `{name}`: {}", path.display());
                     packager
-                        .add_binary(binary, &path)
+                        .add_binary(&name, &path)
                         .with_context(|| path.display().to_string())?;
                 }
             }
@@ -79,7 +95,7 @@ pub(crate) fn install_files(packager: &mut dyn Packager, cx: &Ctxt<'_>, repo: &R
         }
     }
 
-    Ok(())
+    Ok(errors)
 }
 
 #[derive(Default, Clone, Copy)]

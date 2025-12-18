@@ -38,9 +38,28 @@ macro_rules! insert_list {
     };
 }
 
-macro_rules! package_field {
-    ($($get:ident, $field:literal),* $(,)?) => {
+macro_rules! bool_field {
+    ($(
+        $(#[doc = $doc:literal])*
+        fn $get:ident($field:literal, $default:expr);
+    )*) => {
         $(
+            $(#[doc = $doc])*
+            #[inline]
+            pub(crate) fn $get(&self) -> bool {
+                self.doc.get($field).and_then(Item::as_bool).unwrap_or($default)
+            }
+        )*
+    };
+}
+
+macro_rules! string_field {
+    ($(
+        $(#[doc = $doc:literal])*
+        fn $get:ident($field:literal);
+    )*) => {
+        $(
+            $(#[doc = $doc])*
             #[inline]
             pub(crate) fn $get(&self) -> Option<&str> {
                 self.doc.get($field).and_then(Item::as_str)
@@ -68,25 +87,9 @@ impl Package {
         unsafe { &mut *(doc as *mut _ as *mut Self) }
     }
 
-    /// Construct an iterator over potential binaries.
-    #[inline]
-    pub(crate) fn binaries(&self) -> impl Iterator<Item = &str> {
-        let name = self.doc.get("name");
-        name.and_then(Item::as_str).into_iter()
-    }
-
     #[inline]
     pub(crate) fn as_table(&self) -> &Table {
         &self.doc
-    }
-
-    /// Test if package should or should not be published.
-    #[inline]
-    pub(crate) fn is_publish(&self) -> bool {
-        self.doc
-            .get("publish")
-            .and_then(Item::as_bool)
-            .unwrap_or(true)
     }
 
     /// Get the name of the package.
@@ -142,13 +145,26 @@ impl Package {
         })
     }
 
-    package_field! {
-        version, "version",
-        license, "license",
-        readme, "readme",
-        repository, "repository",
-        homepage, "homepage",
-        documentation, "documentation",
+    bool_field! {
+        /// Test if package is an autobin enabled.
+        fn is_autobin("autobin", true);
+        /// Test if package should or should not be published.
+        fn is_publish("publish", true);
+    }
+
+    string_field! {
+        /// Get the version field.
+        fn version("version");
+        /// Get the license field.
+        fn license("license");
+        /// Get the readme field.
+        fn readme("readme");
+        /// Get the repository field.
+        fn repository("repository");
+        /// Get the homepage field.
+        fn homepage("homepage");
+        /// Get the documentation field.
+        fn documentation("documentation");
     }
 
     insert_field!(insert_version, "version");
