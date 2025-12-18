@@ -67,7 +67,7 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
     let version = release.to_string();
 
-    let build_config = rpm::BuildConfig::default().compression(rpm::CompressionType::Gzip);
+    let build_config = rpm::BuildConfig::v6().compression(rpm::CompressionType::Gzip);
 
     let mut pkg = rpm::PackageBuilder::new(name, &version, license, ARCH, description)
         .using_config(build_config);
@@ -137,16 +137,16 @@ fn add_binary(
     tracing::info!("Adding binary `{name}` {} to usr/bin", path.display());
 
     let pkg = pkg.with_file(
-        &path,
+        path,
         rpm::FileOptions::new(format!("/usr/bin/{name}")).mode(rpm::FileMode::Regular {
             permissions: Mode::EXECUTABLE.regular_file(),
         }),
     )?;
 
     requires.extend(if find_requires::detect() {
-        find_requires::find(&path)?
+        find_requires::find(path)?
     } else {
-        find_requires_by_elf::find(&path)?
+        find_requires_by_elf::find(path)?
     });
 
     Ok(pkg)

@@ -203,6 +203,19 @@
 //! called `good` and `bad` depending on the outcome when performing the work
 //! over the repo.
 //!
+//! There are a number of special sets you can use:
+//! * `@all` - All repositories.
+//! * `@dirty` - Repositories with uncommitted changes.
+//! * `@outdated` - Repositories that are out-of-date with their remote.
+//! * `@cached` - Repositories with cached changes staged.
+//! * `@unreleased` - Repositories have checked out revisions which do not have
+//!   a corresponding remote tag.
+//!
+//! The `--set` parameter also supports simple set operations such as adding
+//! `+`, subtracting `-`, and difference `^`, and intersecting `&` between sets.
+//! Such as selecting all repos which *are not* outdated with `@all -
+//! @outdated`.
+//!
 //! If this is set during a run, it will store sets of repos, such as the set
 //! for which a command failed. This set can then later be re-used through the
 //! `--set <id>` switch.
@@ -644,7 +657,7 @@ struct RepoOptions {
     #[arg(long)]
     supported_os: bool,
     /// Load sets of repositories to operate on. These can take the operators +
-    /// to add, - to remove, and ^ to intersect.
+    /// to add, - to remove, ^ to get the difference, and & to intersect.
     ///
     /// This allows for flexible expressions like @all - ignore or good - @dirty
     ///
@@ -726,9 +739,10 @@ impl FromStr for SetOperations {
             p.skip_whitespace();
 
             let (n, op) = match p.peek() {
-                '+' => (1, SetOp::Add),
+                '+' | '|' => (1, SetOp::Add),
                 '-' => (1, SetOp::Sub),
                 '^' => (1, SetOp::Difference),
+                '&' => (1, SetOp::Intersection),
                 _ if first => (0, SetOp::Add),
                 '\0' => break,
                 c => {
@@ -791,6 +805,7 @@ enum SetOp {
     Add,
     Sub,
     Difference,
+    Intersection,
 }
 
 #[derive(Parser)]
@@ -1255,7 +1270,7 @@ fn apply_repo_options(
     let mut work = Vec::new();
 
     let set = if !repo_opts.set.iter().all(|s| s.is_empty()) {
-        let mut set = HashSet::new();
+        let mut set = HashSet::<RelativePathBuf>::new();
 
         for (op, s) in repo_opts.set.iter().flat_map(|s| s.sets.iter()) {
             let work = match s {
@@ -1292,13 +1307,29 @@ fn apply_repo_options(
                 SetOp::Sub => |set, id| {
                     set.remove(id);
                 },
-                SetOp::Difference => |set, id| {
-                    if set.contains(id) {
-                        set.remove(id);
-                    } else {
-                        set.insert(id.to_owned());
-                    }
-                },
+                SetOp::Difference => {
+                    let mut other = HashSet::new();
+
+                    work.for_each(|id| {
+                        other.insert(id.to_owned());
+                    });
+
+                    set = set
+                        .symmetric_difference(&other)
+                        .cloned()
+                        .collect::<HashSet<_>>();
+                    continue;
+                }
+                SetOp::Intersection => {
+                    let mut added = HashSet::new();
+
+                    work.for_each(|id| {
+                        added.insert(id.to_owned());
+                    });
+
+                    set.retain(|id| added.contains(id));
+                    continue;
+                }
             };
 
             work.for_each(|id| {

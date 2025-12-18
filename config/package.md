@@ -8,6 +8,25 @@ The following sections describe general types being used in seval places.
 
 <br>
 
+#### `[package]` section
+
+The package section defines configuration which applies to the entire packages.
+
+###### Automatically detect binaries
+
+To automatically detect and use binaries from your Rust project, you can do:
+
+```toml
+[package]
+binaries = true
+```
+
+This will pull any binaries which are associated to your crates and are present
+in `target/release`.
+
+So if you have a crate named `foo`, it would look for binaries in:
+`target/release/foo` (or `foo.exe` on windows).
+
 #### Version Requirement
 
 A version requirement is either the sole `*` which means *any version*, or a

@@ -206,6 +206,19 @@ Commands can produce sets under certain circumstances, the sets are usually
 called `good` and `bad` depending on the outcome when performing the work
 over the repo.
 
+There are a number of special sets you can use:
+* `@all` - All repositories.
+* `@dirty` - Repositories with uncommitted changes.
+* `@outdated` - Repositories that are out-of-date with their remote.
+* `@cached` - Repositories with cached changes staged.
+* `@unreleased` - Repositories have checked out revisions which do not have
+  a corresponding remote tag.
+
+The `--set` parameter also supports simple set operations such as adding
+`+`, subtracting `-`, and difference `^`, and intersecting `&` between sets.
+Such as selecting all repos which *are not* outdated with `@all -
+@outdated`.
+
 If this is set during a run, it will store sets of repos, such as the set
 for which a command failed. This set can then later be re-used through the
 `--set <id>` switch.
