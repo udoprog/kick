@@ -822,6 +822,8 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         }
     }
 
+    env.update_from_env();
+
     if env.github_tokens.is_empty() {
         if opts.action.requires_token() {
             tracing::warn!("No .github-token or --token argument found");
@@ -831,8 +833,6 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             )
         }
     }
-
-    env.update_from_env();
 
     let templating = templates::Templating::new()?;
     let extra_repos = model::load_gitmodules(&root)?;
