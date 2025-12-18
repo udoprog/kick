@@ -23,49 +23,50 @@ const LAST_YEAR: u32 = 2255;
 pub(crate) struct ReleaseOpts {
     /// Define a version.
     ///
-    /// Note that can also be defined through the `KICK_VERSION` environment
+    /// Note that can also be defined through the KICK_VERSION environment
     /// variable. If a switch is specified at the same time the switch takes
     /// priority.
     ///
-    /// This primarily supports plain versions, dates, or tags, such as `1.2.3`,
-    /// `2021-01-01`, or `nightly1` and will be coerced as appropriate into a
-    /// target version specification depending in which type of package is being
-    /// built.
+    /// This primarily supports plain versions, dates, or tags, such as 1.2.3,
+    /// 2021-01-01, or nightly1 and will be coerced as appropriate into a target
+    /// version specification depending in which type of package is being built.
     ///
-    /// This also supports simple expressions such as `$VALUE || %date` which
+    /// This also supports simple expressions such as $VALUE || %date which
     /// are evaluated left-to-right and picks the first non-empty version
     /// defined.
     ///
     /// For a full specification of the supported format, see the wobbly version
     /// specification:
     /// https://github.com/udoprog/kick/blob/main/WOBBLY_VERSIONS.md
-    #[clap(long, value_name = "version")]
+    #[clap(long)]
     version: Option<String>,
     /// Append additional components to the version.
     ///
-    /// For example, if we start with a version like `1.2.3-beta1`, appending
-    /// `fc39` would result in `1.2.3-beta1.fc39`.
+    /// For example, if we start with a version like 1.2.3-beta1, appending fc39
+    /// would result in 1.2.3-beta1.fc39.
     ///
     /// A component must be a valid identifier, so it can only contain ascii
     /// characters and digits and must start with a character.
     ///
     /// Empty components will be ignored and invalid components will cause an
     /// error.
-    #[clap(long, value_name = "component")]
+    #[clap(long)]
     append: Vec<String>,
-    /// Define a custom variable. See `--version` for more information.
-    #[clap(long, value_name = "<key>=<value>")]
+    /// Define a custom variable in key=value form. Custom variables can be used
+    /// in a version specification as the key specified. See --version for more
+    /// information.
+    #[clap(long)]
     define: Vec<String>,
     /// Never include a release prefix. Even if one is part of the input, it
     /// will be stripped.
     ///
-    /// So for example a channel of `v1.0.0` will become `1.0.0` with this
-    /// option enabled.
+    /// So for example a channel of v1.0.0 will become 1.0.0 with this option
+    /// enabled.
     #[clap(long)]
     no_prefix: bool,
     /// Always ensure that the full version is included in the release string.
     ///
-    /// This will pad any version seen with zeros. So `1.0` will become `1.0.0`.
+    /// This will pad any version seen with zeros. So 1.0 will become 1.0.0.
     #[clap(long)]
     full_version: bool,
 }

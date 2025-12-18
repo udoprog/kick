@@ -11,15 +11,15 @@ use super::{BatchConfig, RunOn};
 #[derive(Default, Debug, Parser)]
 pub(crate) struct BatchOptions {
     /// Run the command using the specified execution methods.
-    #[arg(long, value_name = "run-on")]
+    #[arg(long)]
     pub(super) run_on: Vec<RunOnOption>,
-    /// Environment variables to pass to the command to run. Only specifying
-    /// `<key>` means that the specified environment variable should be passed
-    /// through.
+    /// Environment variables to pass to the command to run in key[=value] form.
+    /// Only specifying key means that the specified environment variable should
+    /// be passed through.
     ///
     /// For WSL, this constructs the WSLENV environment variable, which dictates
     /// what environments are passed in.
-    #[arg(long, short = 'E', value_name = "key[=value]")]
+    #[arg(long, short = 'E')]
     pub(super) env: Vec<String>,
     /// Print verbose information.
     ///
@@ -29,7 +29,7 @@ pub(crate) struct BatchOptions {
     pub(super) verbose: u8,
     /// When printing diagnostics output, exposed secrets.
     ///
-    /// If this is not specified, secrets will be printed as `***`.
+    /// If this is not specified, secrets will be printed as ***.
     #[arg(long)]
     pub(super) exposed: bool,
     /// Don't actually run any commands, just print what would be done.
@@ -44,16 +44,17 @@ pub(crate) struct BatchOptions {
     pub(super) keep: bool,
     /// The default shell to use when printing command invocations.
     ///
-    /// By default this is `bash` for unix-like environments and `powershell`
-    /// for windows.
-    #[arg(long, value_name = "shell")]
+    /// By default this is bash for unix-like environments and powershell for
+    /// windows.
+    #[arg(long)]
     pub(super) shell: Option<Shell>,
     /// Matrix values to ignore when running a Github workflows job.
-    #[arg(long, value_name = "value")]
+    #[arg(long)]
     pub(super) matrix_ignore: Vec<String>,
-    /// Filter matrix values when running a Github workflows job, only allowing
-    /// the values which matches one of the conditions specified.
-    #[arg(long, value_name = "key=value")]
+    /// Filter matrix values with key=value arguments when running a Github
+    /// workflows job, only allowing the values which matches one of the
+    /// conditions specified.
+    #[arg(long)]
     pub(super) matrix_filter: Vec<String>,
 }
 

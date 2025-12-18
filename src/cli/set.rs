@@ -7,8 +7,7 @@ use crate::repo_sets::RepoSet;
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     /// Construct a new set with the given name.
-    #[arg(name = "new-set", value_name = "set")]
-    set: String,
+    new_set: String,
 }
 
 pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
@@ -19,6 +18,6 @@ pub(crate) fn entry(cx: &mut Ctxt<'_>, opts: &Opts) -> Result<()> {
     }
 
     let hint = format!("built set: {opts:?}");
-    cx.sets.save(&opts.set, set, &hint);
+    cx.sets.save(&opts.new_set, set, &hint);
     Ok(())
 }

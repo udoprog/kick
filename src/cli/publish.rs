@@ -14,28 +14,27 @@ use crate::model::Repo;
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     /// Provide a list of crates which we do not verify locally by adding
-    /// `--no-verify` to cargo publish.
-    #[arg(long = "no-verify", value_name = "crate")]
+    /// --no-verify to cargo publish.
+    #[arg(long)]
     no_verify: Vec<String>,
     /// Provide a list of crates which we do not verify locally by adding
-    /// `--allow-dirty` to cargo publish.
-    #[arg(long = "allow-dirty", value_name = "crate")]
+    /// --allow-dirty to cargo publish.
+    #[arg(long)]
     allow_dirty: Vec<String>,
     /// Provide a list of crates which we remove [dev-dependencies] from since
     /// it contributes to circular dependencies during publishing.
-    #[arg(long = "remove-dev", value_name = "crate")]
+    #[arg(long)]
     remove_dev: Vec<String>,
     /// Skip publishing a crate.
-    #[arg(long = "skip", value_name = "crate")]
+    #[arg(long)]
     skip: Vec<String>,
-    /// Perform a dry run by passing `--dry-run` to cargo publish.
+    /// Perform a dry run by passing --dry-run to cargo publish.
     #[arg(long)]
     dry_run: bool,
-    /// Options passed to `cargo publish`.
+    /// Options passed to cargo publish.
     #[arg(long = "option", short = 'O')]
-    cargo_publish: Vec<OsString>,
+    cargo_options: Vec<OsString>,
     /// List of crates to consider when publishing.
-    #[arg(value_name = "crate")]
     crates: Vec<String>,
 }
 
@@ -214,7 +213,7 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
             no_verify,
             allow_dirty,
             remove_dev,
-            args: opts.cargo_publish.clone(),
+            args: opts.cargo_options.clone(),
         });
     }
 

@@ -583,7 +583,7 @@ impl Default for Command {
 #[derive(Default, Parser)]
 struct SharedOptions {
     /// Specify custom root folder for project hierarchy.
-    #[arg(long, name = "root", value_name = "path")]
+    #[arg(long)]
     root: Option<PathBuf>,
     /// Save any proposed or loaded changes.
     #[arg(long)]
@@ -596,16 +596,15 @@ struct SharedOptions {
     debug: bool,
     /// Provide an access token to use to access the Github API.
     ///
-    /// This can also be set through the `GITHUB_TOKEN` environment variable, or
-    /// by writing the token to a `.github-token` file in the root of the
-    /// project.
-    #[arg(long, value_name = "token")]
+    /// This can also be set through the GITHUB_TOKEN environment variable, or
+    /// by setting a token with the login command.
+    #[arg(long)]
     github_token: Option<SecretString>,
     /// List all found system tools.
     #[arg(long)]
     list_tools: bool,
     /// The number of operations to do in parallel if applicable.
-    #[arg(long, default_value = PARALLELISM, value_name = "count")]
+    #[arg(long, default_value = PARALLELISM)]
     parallelism: usize,
 }
 
@@ -630,7 +629,7 @@ struct RepoOptions {
     #[arg(long)]
     all: bool,
     /// Only run the specified set of repos.
-    #[arg(long = "path", short = 'p', name = "repos", value_name = "path")]
+    #[arg(long = "path", short = 'p')]
     repos: Vec<String>,
     /// If we should fetch the latest updates from remotes before filtering.
     #[arg(long)]
@@ -660,20 +659,20 @@ struct RepoOptions {
     #[arg(long)]
     supported_os: bool,
     /// Load sets with the given id.
-    #[arg(long, value_name = "set")]
+    #[arg(long)]
     set: Vec<String>,
     /// Save remaining or failed repos to the specified set.
     ///
     /// In case an operation is cancelled, or for repos where the operation
     /// fails, this will cause the remaining repos to be saved to the set of the
     /// specified names.
-    #[arg(long, value_name = "set")]
+    #[arg(long)]
     set_remaining: Vec<String>,
     /// Intersect with the specified set.
-    #[arg(long, value_name = "set")]
+    #[arg(long)]
     set_intersect: Vec<String>,
     /// Difference with the specified set.
-    #[arg(long, value_name = "set")]
+    #[arg(long)]
     set_difference: Vec<String>,
 }
 
@@ -704,10 +703,10 @@ where
 ///
 /// https://github.com/udoprog/kick/blob/main/CONFIGURATION.md
 #[derive(Default, Parser)]
-#[command(author, version = crate::VERSION, max_term_width = 80)]
+#[command(author, version = VERSION, max_term_width = 80)]
 struct Opts {
     /// Action to perform. Defaults to `check`.
-    #[command(subcommand, name = "action")]
+    #[command(subcommand)]
     action: Command,
 }
 

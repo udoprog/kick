@@ -49,53 +49,55 @@ pub(crate) struct Opts {
     #[clap(flatten)]
     release: ReleaseOpts,
     /// A location to write the output to.
-    #[arg(long, value_name = "path")]
+    #[arg(long)]
     output: Option<PathBuf>,
     /// If specified, the output will be written to the path specified by the
     /// given environment variable.
     ///
-    /// For example, an argument of `--output-from-env GITHUB_OUTPUT` would
-    /// cause the values to be written to the path specified by the
-    /// `GITHUB_OUTPUT` environment variable.
-    #[arg(long, value_name = "env")]
+    /// For example, an argument of --output-from-env GITHUB_OUTPUT would cause
+    /// the values to be written to the path specified by the GITHUB_OUTPUT
+    /// environment variable.
+    #[arg(long)]
     output_from_env: Option<OsString>,
     /// The format to write the output in.
     ///
     /// Available formats are: text, json.
-    #[arg(long, value_name = "format", default_value_t = Format::Text)]
+    #[arg(long, default_value_t = Format::Text)]
     format: Format,
     /// If specified, the version will be written to the specified name.
     ///
-    /// For example, an argument of `--value-to version` would cause
-    /// `version=<release>\n` to be written.
-    #[arg(long, value_name = "name")]
+    /// For example, an argument of --value-to version would cause
+    /// version=<release>\n to be written.
+    #[arg(long)]
     version_to: Option<String>,
     /// If specified, the version in MSI format will be written to the specified
     /// name.
     ///
-    /// For example, an argument of `--msi-version-to msi_version` would cause
-    /// `msi_version=<value>\n` to be written.
+    /// For example, an argument of --msi-version-to msi_version would cause
+    /// msi_version=<value>\n to be written.
     ///
     /// Note that the MSI version follows the ProductVersion specification.
     ///
     /// See: https://learn.microsoft.com/en-us/windows/win32/msi/productversion
-    #[arg(long, value_name = "name")]
+    #[arg(long)]
     msi_version_to: Option<String>,
-    /// If specified, the a `yes` or a `no` will be written to the specified
+    /// If specified, the a yes or a no will be written to the specified
     /// variable depending on if it's a prerelease or not.
     ///
     /// Pre-releases are versions which are anything beyond strictly a semantic
     /// version or dated release.
     ///
-    /// For example, an argument of `--is-pre-to prerelease` would cause `prerelease=yes\n` to be written.
-    #[arg(long, value_name = "name")]
+    /// For example, an argument of --is-pre-to prerelease would cause
+    /// prerelease=yes\n to be written.
+    #[arg(long)]
     is_pre_to: Option<String>,
     /// Set default settings for defining variables inside of a github release.
     ///
-    /// Sets `--version-to version`, `--is-pre-to pre`, and `--output-from-env GITHUB_OUTPUT`.
+    /// Sets --version-to version, --is-pre-to pre, and --output-from-env
+    /// GITHUB_OUTPUT.
     ///
     /// Causing a file to be written to the path specified by GITHUB_OUTPUT,
-    /// containing the `version` and `pre` definitions.
+    /// containing the version and pre definitions.
     #[arg(long)]
     github_action: bool,
 }

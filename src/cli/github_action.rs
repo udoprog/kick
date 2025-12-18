@@ -15,11 +15,9 @@ use crate::cli::WithRepos;
 pub(crate) struct Opts {
     #[command(flatten)]
     batch_opts: BatchOptions,
-    /// The workflow to run.
-    #[arg(value_name = "id")]
+    /// Identifier of the workflow to run.
     id: String,
-    /// Inputs to the action.
-    #[arg(value_name = "key=value")]
+    /// Inputs to the action in key=value form.
     input: Vec<String>,
 }
 

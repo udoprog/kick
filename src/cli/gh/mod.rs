@@ -10,7 +10,7 @@ use crate::cli::WithRepos;
 #[derive(Debug, Parser)]
 pub(crate) struct Opts {
     /// Command to use.
-    #[command(subcommand, name = "action")]
+    #[command(subcommand)]
     command: Command,
 }
 

@@ -18,19 +18,19 @@ pub(super) struct Opts {
     #[clap(flatten)]
     release: ReleaseOpts,
     /// SHA of Github commit.
-    #[arg(long, value_name = "sha")]
+    #[arg(long)]
     sha: Option<String>,
     /// Get sha from the specified environment variable.
-    #[arg(long, value_name = "env")]
+    #[arg(long)]
     sha_from_env: Option<String>,
     /// The body of the release.
-    #[arg(long, value_name = "text")]
+    #[arg(long)]
     body: Option<String>,
     /// Indicates if the new release is a draft.
     #[arg(long)]
     draft: bool,
     /// Pattern of release assets to upload.
-    #[arg(long, value_name = "glob")]
+    #[arg(long)]
     upload: Vec<RelativePathBuf>,
     /// Delete any existing releases.
     ///

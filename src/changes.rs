@@ -750,9 +750,9 @@ pub(crate) enum Change {
         manifest_dir: RelativePathBuf,
         /// Whether we perform a dry run or not.
         dry_run: bool,
-        /// Whether `--no-verify` should be passed and the cause fo passing it.
+        /// Whether --no-verify should be passed and the cause fo passing it.
         no_verify: Option<NoVerify>,
-        /// Whether `--allow-dirty` should be passed.
+        /// Whether --allow-dirty should be passed.
         allow_dirty: Option<AllowDirty>,
         /// Whether dev dependencies should be removed.
         remove_dev: bool,

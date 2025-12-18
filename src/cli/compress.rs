@@ -43,18 +43,18 @@ pub(crate) struct Opts {
     release: ReleaseOpts,
     /// The architecture to append to the archive.
     ///
-    /// If not specified, defaults to `std::env::consts::ARCH`,
-    #[arg(long, value_name = "os")]
+    /// If not specified, defaults to the rust ARCH,
+    #[arg(long)]
     arch: Option<String>,
     /// The operating system to append to the archive.
     ///
-    /// If not specified, defaults to `std::env::consts::OS`,
-    #[arg(long, value_name = "os")]
+    /// If not specified, defaults to the rust OS when compiling kick,
+    #[arg(long)]
     os: Option<String>,
     /// The name format to use for the archive
     ///
-    /// If unspecified, the name will be `{project}-{release}-{arch}-{os}`.
-    #[arg(long, value_name = "name")]
+    /// If unspecified, the name will be {project}-{release}-{arch}-{os}.
+    #[arg(long)]
     name: Option<String>,
     /// Exclude the default bianries from the archive.
     #[arg(long)]
@@ -62,13 +62,12 @@ pub(crate) struct Opts {
     /// Binaries to append to the archive as they are named in the workspace.
     ///
     /// By default, all binaries from the primary package will be included.
-    #[arg(long, value_name = "bin")]
+    #[arg(long)]
     bin: Vec<String>,
     #[clap(flatten)]
     output: OutputOpts,
     /// Append the given extra files to the archive.
-    #[arg(value_name = "path")]
-    path: Vec<String>,
+    paths: Vec<String>,
 }
 
 pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, ty: Kind, opts: &Opts) -> Result<()> {
@@ -134,7 +133,7 @@ fn compress(cx: &Ctxt<'_>, ty: Kind, opts: &Opts, repo: &Repo) -> Result<()> {
         }
     }
 
-    for pattern in &opts.path {
+    for pattern in &opts.paths {
         let glob = Glob::new(&root, &pattern);
 
         for path in glob.matcher() {

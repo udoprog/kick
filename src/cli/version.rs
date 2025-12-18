@@ -13,8 +13,8 @@ use crate::model::Repo;
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
-    /// An explicit version override.
-    #[arg(long, name = "[<crate>=]version")]
+    /// Version overrides to use in [crate=]version form.
+    #[arg(long)]
     r#override: Vec<String>,
     /// Perform a major version bump.
     #[arg(long)]
@@ -26,14 +26,13 @@ pub(crate) struct Opts {
     #[arg(long)]
     patch: bool,
     /// Set a prerelease string.
-    #[arg(long, value_name = "pre")]
+    #[arg(long)]
     pre: Option<String>,
     /// Make a commit with the current version with the message `Release <version>`.
     #[arg(long)]
     commit: bool,
     /// Filter crate names to bump.
-    #[arg(value_name = "crate")]
-    filter: Vec<String>,
+    crates: Vec<String>,
 }
 
 pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
@@ -63,7 +62,7 @@ pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Re
     }
 
     let filter = opts
-        .filter
+        .crates
         .iter()
         .map(|s| s.as_str())
         .collect::<HashSet<_>>();

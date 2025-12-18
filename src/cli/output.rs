@@ -13,7 +13,7 @@ use crate::model::RepoRef;
 #[derive(Debug, Default, Parser)]
 pub(super) struct OutputOpts {
     /// Output directory to write to.
-    #[clap(long, value_name = "output")]
+    #[clap(long)]
     output: Option<RelativePathBuf>,
 }
 

@@ -15,7 +15,7 @@ pub(crate) struct Opts {
     #[clap(flatten)]
     release: ReleaseOpts,
     /// Output directory to write to.
-    #[clap(long, value_name = "output")]
+    #[clap(long)]
     output: Option<RelativePathBuf>,
 }
 

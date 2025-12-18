@@ -41,35 +41,36 @@ pub(crate) struct Opts {
     /// causes such packages to be included.
     #[arg(long)]
     include_no_publish: bool,
-    /// Earliest minor version to test. Default: 2021.
+    /// Earliest minor version to test. Default: 2024.
     ///
     /// Supports the following special values, apart from minor version numbers:
+    /// * 2024 - The first Rust version to support 2024 edition.
     /// * 2018 - The first Rust version to support 2018 edition.
     /// * 2021 - The first Rust version to support 2021 edition.
     /// * rust-version - The rust-version specified in the Cargo.toml of the
     ///   project. Note that the first version to support rust-version is 2021.
     /// * workspace - The first Rust version to support workspaces.
     /// * rustc - The version reported by your local rustc.
-    #[arg(long, value_name = "version-spec")]
+    #[arg(long)]
     earliest: Option<String>,
-    /// Latest minor version to test. Default is `rustc`.
+    /// Latest minor version to test. Default is rustc.
     ///
     /// Supports the following special values, apart from minor version numbers:
+    /// * 2024 - The first Rust version to support 2024 edition.
     /// * 2018 - The first Rust version to support 2018 edition.
     /// * 2021 - The first Rust version to support 2021 edition.
     /// * rust-version - The rust-version specified in the Cargo.toml of the
     ///   project. Note that the first version to support rust-version is 2021.
     /// * workspace - The first Rust version to support workspaces.
     /// * rustc - The version reported by your local rustc.
-    #[arg(long, value_name = "version-spec")]
+    #[arg(long)]
     latest: Option<String>,
     /// Command to test with.
     ///
-    /// This is run through `rustup run <version> <command>`, the default
-    /// command is `cargo build --all-features`. The command will be run with
-    /// the argument `--manifest-path <path>`, which will be the path to the
-    /// `Cargo.toml` of the package being built.
-    #[arg(value_name = "command")]
+    /// This is run through rustup run <version> <command>, the default command
+    /// is cargo build --all-features. The command will be run with the argument
+    /// --manifest-path <path>, which will be the path to the Cargo.toml of the
+    /// package being built.
     command: Vec<String>,
 }
 
@@ -274,6 +275,7 @@ fn parse_minor_version(
         Some("rustc") => cx.rustc_version,
         Some("2018") => Some(cargo::rust_version::EDITION_2018),
         Some("2021") => Some(cargo::rust_version::EDITION_2021),
+        Some("2024") => Some(cargo::rust_version::EDITION_2024),
         Some("workspace") => Some(cargo::rust_version::WORKSPACE),
         Some("rust-version") => rust_version.copied(),
         Some(n) => Some(RustVersion::new(1, n.parse()?)),

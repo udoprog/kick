@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize, Serializer};
 pub(crate) const EDITION_2018: RustVersion = RustVersion::new(1, 31);
 /// First version to support 2021 edition.
 pub(crate) const EDITION_2021: RustVersion = RustVersion::new(1, 56);
+/// First version to support 2024 edition.
+pub(crate) const EDITION_2024: RustVersion = RustVersion::new(1, 85);
 /// Oldest version to support workspaces.
 pub(crate) const WORKSPACE: RustVersion = RustVersion::new(1, 12);
 /// Oldest version which supports omitting `version` if publish is false.

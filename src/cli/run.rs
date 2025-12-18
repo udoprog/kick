@@ -14,14 +14,9 @@ use crate::release::{Date, ReleaseOpts, Version};
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
     /// Command to run.
-    #[arg(value_name = "command")]
     command: Option<String>,
     /// Arguments to pass to the run command.
-    #[arg(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        value_name = "args"
-    )]
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     args: Vec<String>,
     #[command(flatten)]
     batch_opts: BatchOptions,
