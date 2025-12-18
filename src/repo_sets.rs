@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Local, NaiveDateTime};
-use relative_path::{RelativePath, RelativePathBuf};
+use relative_path::RelativePathBuf;
 
 use crate::model::Repo;
 
@@ -231,10 +231,7 @@ impl RepoSet {
     }
 
     /// Iterate over all repos in the set.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &RelativePath> {
-        self.repos
-            .keys()
-            .map(|p| p.as_relative_path())
-            .chain(self.added.iter().map(|p| p.as_relative_path()))
+    pub(crate) fn into_iter(self) -> impl Iterator<Item = RelativePathBuf> {
+        self.repos.into_keys().chain(self.added)
     }
 }

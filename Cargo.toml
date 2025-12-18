@@ -50,7 +50,7 @@ thiserror = "2.0.9"
 time = "0.3.30"
 tokio = { version = "1.27.0", features = ["full"] }
 toml = { version = "0.9.5", features = ["preserve_order"] }
-toml_edit = { version = "0.23.0", features = ["serde"] }
+toml_edit = { version = "0.24.0", features = ["serde"] }
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 unicycle = "0.10.2"

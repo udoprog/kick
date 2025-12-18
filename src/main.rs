@@ -411,6 +411,7 @@ mod wix;
 mod workflows;
 mod workspace;
 
+use core::str::{Chars, FromStr};
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -461,16 +462,23 @@ static USER_AGENT: reqwest::header::HeaderValue =
 
 #[derive(Subcommand)]
 enum Command {
-    /// Checks each repo (default action).
-    Check(SharedAction<cli::check::Opts>),
     /// Review or apply staged changes.
     Changes(SharedOptions),
-    /// List paths used by kick.
-    Info(SharedOptions),
-    /// Update Kick itself.
-    Update(SharedOptions),
+    /// Checks each repo (default action).
+    Check(SharedAction<cli::check::Opts>),
+    /// Build an .deb package (builtin).
+    Deb(SharedAction<cli::deb::Opts>),
     /// Collect and define release variables.
     Define(SharedAction<cli::define::Opts>),
+    /// Interact with the github API parameterized over repositories.
+    #[command(name = "gh")]
+    Github(SharedAction<cli::gh::Opts>),
+    /// Run a github action.
+    GithubAction(SharedAction<cli::github_action::Opts>),
+    /// Build a .tar.gz package.
+    Gzip(SharedAction<cli::compress::Opts>),
+    /// List paths used by kick.
+    Info(SharedOptions),
     /// Configure github authentication.
     ///
     /// This can be configured by setting the `GITHUB_TOKEN` environment
@@ -478,35 +486,29 @@ enum Command {
     /// writing the token to your .github-token configuration file using this
     /// command.
     Login(SharedAction<cli::login::Opts>),
-    /// Manage sets.
-    Set(SharedAction<cli::set::Opts>),
-    /// Run a custom command.
-    Run(SharedAction<cli::run::Opts>),
-    /// Find the minimum supported rust version.
-    Msrv(SharedAction<cli::msrv::Opts>),
-    /// Modify package versions.
-    Version(SharedAction<cli::version::Opts>),
-    /// Publish packages in reverse order of dependencies.
-    Publish(SharedAction<cli::publish::Opts>),
-    /// Perform repository aware `cargo upgrade`.change
-    Upgrade(SharedAction<cli::upgrade::Opts>),
     /// Build an .msi package (using wix).
     Msi(SharedAction<cli::msi::Opts>),
+    /// Find the minimum supported rust version.
+    Msrv(SharedAction<cli::msrv::Opts>),
+    /// Publish packages in reverse order of dependencies.
+    Publish(SharedAction<cli::publish::Opts>),
     /// Build an .rpm package (builtin).
     Rpm(SharedAction<cli::rpm::Opts>),
-    /// Build an .deb package (builtin).
-    Deb(SharedAction<cli::deb::Opts>),
-    /// Build a .zip package.
-    Zip(SharedAction<cli::compress::Opts>),
-    /// Build a .tar.gz package.
-    Gzip(SharedAction<cli::compress::Opts>),
-    /// Run a github action.
-    GithubAction(SharedAction<cli::github_action::Opts>),
-    /// Interact with the github API parameterized over repositories.
-    #[command(name = "gh")]
-    Github(SharedAction<cli::gh::Opts>),
+    /// Run a custom command.
+    Run(SharedAction<cli::run::Opts>),
+    /// Manage sets.
+    Set(SharedAction<cli::set::Opts>),
     /// Synchronize repositories.
     Sync(SharedAction<cli::sync::Opts>),
+    /// Update Kick itself.
+    Update(SharedOptions),
+    /// Perform a repository aware cargo upgrade. In particular this prevents
+    /// packages which have been denylisted from being upgraded.
+    Upgrade(SharedAction<cli::upgrade::Opts>),
+    /// Modify package versions.
+    Version(SharedAction<cli::version::Opts>),
+    /// Build a .zip package.
+    Zip(SharedAction<cli::compress::Opts>),
 }
 
 impl Command {
@@ -516,51 +518,51 @@ impl Command {
 
     fn shared(&self) -> &SharedOptions {
         match self {
-            Command::Check(action) => &action.shared,
             Command::Changes(shared) => shared,
+            Command::Check(c) => &c.shared,
+            Command::Deb(c) => &c.shared,
+            Command::Define(c) => &c.shared,
+            Command::Github(c) => &c.shared,
+            Command::GithubAction(c) => &c.shared,
+            Command::Gzip(c) => &c.shared,
             Command::Info(shared) => shared,
+            Command::Login(c) => &c.shared,
+            Command::Msi(c) => &c.shared,
+            Command::Msrv(c) => &c.shared,
+            Command::Publish(c) => &c.shared,
+            Command::Rpm(c) => &c.shared,
+            Command::Run(c) => &c.shared,
+            Command::Set(c) => &c.shared,
+            Command::Sync(c) => &c.shared,
             Command::Update(shared) => shared,
-            Command::Define(action) => &action.shared,
-            Command::Login(action) => &action.shared,
-            Command::Set(action) => &action.shared,
-            Command::Run(action) => &action.shared,
-            Command::Github(action) => &action.shared,
-            Command::Msrv(action) => &action.shared,
-            Command::Version(action) => &action.shared,
-            Command::Publish(action) => &action.shared,
-            Command::Upgrade(action) => &action.shared,
-            Command::Msi(action) => &action.shared,
-            Command::Rpm(action) => &action.shared,
-            Command::Deb(action) => &action.shared,
-            Command::Zip(action) => &action.shared,
-            Command::Gzip(action) => &action.shared,
-            Command::GithubAction(action) => &action.shared,
-            Command::Sync(action) => &action.shared,
+            Command::Upgrade(c) => &c.shared,
+            Command::Version(c) => &c.shared,
+            Command::Zip(c) => &c.shared,
         }
     }
 
     fn repo(&self) -> Option<&RepoOptions> {
         match self {
-            Command::Check(action) => Some(&action.repo),
             Command::Changes(..) => None,
+            Command::Check(action) => Some(&action.repo),
+            Command::Deb(c) => Some(&c.repo),
+            Command::Define(c) => Some(&c.repo),
+            Command::Github(c) => Some(&c.repo),
+            Command::GithubAction(c) => Some(&c.repo),
+            Command::Gzip(c) => Some(&c.repo),
             Command::Info(..) => None,
-            Command::Update(..) => None,
-            Command::Define(..) => None,
             Command::Login(..) => None,
-            Command::Set(action) => Some(&action.repo),
-            Command::Run(action) => Some(&action.repo),
-            Command::Github(action) => Some(&action.repo),
-            Command::Msrv(action) => Some(&action.repo),
-            Command::Version(action) => Some(&action.repo),
-            Command::Publish(action) => Some(&action.repo),
-            Command::Upgrade(action) => Some(&action.repo),
-            Command::Msi(action) => Some(&action.repo),
-            Command::Rpm(action) => Some(&action.repo),
-            Command::Deb(action) => Some(&action.repo),
-            Command::Zip(action) => Some(&action.repo),
-            Command::Gzip(action) => Some(&action.repo),
-            Command::GithubAction(action) => Some(&action.repo),
-            Command::Sync(action) => Some(&action.repo),
+            Command::Msi(c) => Some(&c.repo),
+            Command::Msrv(c) => Some(&c.repo),
+            Command::Publish(c) => Some(&c.repo),
+            Command::Rpm(c) => Some(&c.repo),
+            Command::Run(c) => Some(&c.repo),
+            Command::Set(c) => Some(&c.repo),
+            Command::Sync(c) => Some(&c.repo),
+            Command::Update(..) => None,
+            Command::Upgrade(c) => Some(&c.repo),
+            Command::Version(c) => Some(&c.repo),
+            Command::Zip(c) => Some(&c.repo),
         }
     }
 
@@ -580,7 +582,7 @@ impl Default for Command {
     }
 }
 
-#[derive(Default, Parser)]
+#[derive(Default, Debug, Parser)]
 struct SharedOptions {
     /// Specify custom root folder for project hierarchy.
     #[arg(long)]
@@ -622,7 +624,7 @@ impl SharedOptions {
     }
 }
 
-#[derive(Default, Parser)]
+#[derive(Default, Debug, Parser)]
 struct RepoOptions {
     /// Force processing of all repos, even if the root is currently inside of
     /// an existing repo.
@@ -634,33 +636,22 @@ struct RepoOptions {
     /// If we should fetch the latest updates from remotes before filtering.
     #[arg(long)]
     fetch: bool,
-    /// Only run over dirty modules with changes that have not been staged in
-    /// cache.
-    #[arg(long)]
-    dirty: bool,
-    /// Test if the repository is outdated.
-    ///
-    /// A repo is considered outdated if its branch is ahead of its remote.
-    #[arg(long)]
-    outdated: bool,
-    /// Only run over modules that have changes staged in cache.
-    #[arg(long)]
-    cached: bool,
-    /// Only run over modules that only have changes staged in cached and
-    /// nothing dirty.
-    #[arg(long)]
-    cached_only: bool,
-    /// Only go over repos with unreleased changes, or ones which are on a
-    /// commit that doesn't have a tag as determined by `git describe --tags`.
-    #[arg(long)]
-    unreleased: bool,
     /// Only run over repos which have declared that the same operating system
     /// is supported.
     #[arg(long)]
     supported_os: bool,
-    /// Load sets with the given id.
+    /// Load sets of repositories to operate on. These can take the operators +
+    /// to add, - to remove, and ^ to intersect.
+    ///
+    /// This allows for flexible expressions like @all - ignore or good - @dirty
+    ///
+    /// Sets prefixed with @ are special sets. @all refers to all repos. @dirty
+    /// refers to dirty repos as detected by vcs. @outdated refers to repos that
+    /// are out-of-date with remote. @cached that have cached changes.
+    /// @unreleased refers to repos that point to a revision which does not have
+    /// a remote tag.
     #[arg(long)]
-    set: Vec<String>,
+    set: Vec<SetOperations>,
     /// Save remaining or failed repos to the specified set.
     ///
     /// In case an operation is cancelled, or for repos where the operation
@@ -668,18 +659,133 @@ struct RepoOptions {
     /// specified names.
     #[arg(long)]
     set_remaining: Vec<String>,
-    /// Intersect with the specified set.
-    #[arg(long)]
-    set_intersect: Vec<String>,
-    /// Difference with the specified set.
-    #[arg(long)]
-    set_difference: Vec<String>,
 }
 
-impl RepoOptions {
-    fn needs_git(&self) -> bool {
-        self.dirty || self.cached || self.cached_only || self.unreleased || self.outdated
+#[derive(Debug, Clone)]
+enum Set {
+    All,
+    Dirty,
+    Outdated,
+    Cached,
+    Unreleased,
+    Named(String),
+}
+
+#[derive(Default, Debug, Clone)]
+struct SetOperations {
+    sets: Vec<(SetOp, Set)>,
+}
+
+impl FromStr for SetOperations {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        struct Parser<I>(I);
+
+        impl Parser<Chars<'_>> {
+            fn peek(&self) -> char {
+                self.0.clone().next().unwrap_or('\0')
+            }
+
+            fn skip(&mut self, n: usize) {
+                for _ in 0..n {
+                    _ = self.0.next();
+                }
+            }
+
+            fn next(&mut self) -> char {
+                self.0.next().unwrap_or('\0')
+            }
+
+            fn skip_whitespace(&mut self) {
+                while self.peek().is_whitespace() {
+                    self.skip(1);
+                }
+            }
+
+            fn remaining(&self) -> &str {
+                self.0.as_str()
+            }
+        }
+
+        let mut sets = Vec::new();
+
+        let mut p = Parser(s.chars());
+
+        // Buffer to collect identifiers.
+        let mut id = String::new();
+        // Only allow first set to not have an operator.
+        let mut first = true;
+
+        loop {
+            p.skip_whitespace();
+
+            let (n, op) = match p.peek() {
+                '+' => (1, SetOp::Add),
+                '-' => (1, SetOp::Sub),
+                '^' => (1, SetOp::Difference),
+                _ if first => (0, SetOp::Add),
+                '\0' => break,
+                c => {
+                    return Err(anyhow!(
+                        "expected a set operation like +, -, or ^ but found '{c}'",
+                    ));
+                }
+            };
+
+            first = false;
+
+            p.skip(n);
+            p.skip_whitespace();
+
+            while matches!(p.peek(), '@' | 'a'..='z' | 'A'..='Z' | '0'..='9' | '_') {
+                id.push(p.next());
+            }
+
+            if id.is_empty() {
+                return Err(anyhow!(
+                    "expected a non-empty set name containing a-z, A-Z, 0-9, or _ but found {:?}",
+                    p.remaining()
+                ));
+            }
+
+            let set = if let Some(special) = id.strip_prefix('@') {
+                match special {
+                    "all" => Set::All,
+                    "dirty" => Set::Dirty,
+                    "outdated" => Set::Outdated,
+                    "cached" => Set::Cached,
+                    "unreleased" => Set::Unreleased,
+                    other => {
+                        return Err(anyhow!(
+                            "unknown special set name '@{}', expected '@all' or '@dirty'",
+                            other
+                        ));
+                    }
+                }
+            } else {
+                Set::Named(id.to_string())
+            };
+
+            sets.push((op, set));
+            id.clear();
+        }
+
+        Ok(SetOperations { sets })
     }
+}
+
+impl SetOperations {
+    fn is_empty(&self) -> bool {
+        self.sets.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SetOp {
+    Add,
+    Sub,
+    Difference,
 }
 
 #[derive(Parser)]
@@ -983,13 +1089,12 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             cli::update::entry(&mut with_repos.cx, shared).await?;
             return Ok(ExitCode::SUCCESS);
         }
-        Command::Define(opts) => {
-            cli::define::entry(&mut with_repos, &opts.action)?;
-            return Ok(ExitCode::SUCCESS);
-        }
         Command::Login(opts) => {
             cli::login::entry(&mut with_repos.cx, &opts.action)?;
             return Ok(ExitCode::SUCCESS);
+        }
+        Command::Define(opts) => {
+            cli::define::entry(&mut with_repos, &opts.action)?;
         }
         Command::Set(opts) => {
             cli::set::entry(&mut with_repos.cx, &opts.action)?;
@@ -1102,6 +1207,169 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     Ok(outcome)
 }
 
+struct GitCache<'repo, 'a> {
+    repos: &'repo [Repo],
+    paths: Paths<'a>,
+    system: &'a system::System,
+    fetch: bool,
+    dirty_init: bool,
+    dirty: Vec<&'repo RelativePath>,
+    cached_init: bool,
+    cached: Vec<&'repo RelativePath>,
+    outdated_init: bool,
+    outdated: Vec<&'repo RelativePath>,
+    unreleased_init: bool,
+    unreleased: Vec<&'repo RelativePath>,
+}
+
+impl<'repo, 'a> GitCache<'repo, 'a> {
+    fn new(
+        repos: &'repo [Repo],
+        paths: Paths<'a>,
+        system: &'a system::System,
+        fetch: bool,
+    ) -> Self {
+        Self {
+            repos,
+            paths,
+            system,
+            fetch,
+            dirty_init: false,
+            dirty: Vec::new(),
+            cached_init: false,
+            cached: Vec::new(),
+            outdated_init: false,
+            outdated: Vec::new(),
+            unreleased_init: false,
+            unreleased: Vec::new(),
+        }
+    }
+
+    fn dirty_set(&mut self) -> Result<&[&'repo RelativePath]> {
+        if !self.dirty_init {
+            let git = self
+                .system
+                .git
+                .first()
+                .context("no working git command found")?;
+
+            for repo in self.repos {
+                let path = self.paths.to_path(repo.path());
+
+                if git.is_dirty(&path)? {
+                    self.dirty.push(repo.path());
+                }
+            }
+
+            self.dirty_init = true;
+        }
+
+        Ok(&self.dirty)
+    }
+
+    fn cached_set(&mut self) -> Result<&[&'repo RelativePath]> {
+        if !self.cached_init {
+            let git = self
+                .system
+                .git
+                .first()
+                .context("no working git command found")?;
+
+            for repo in self.repos {
+                let path = self.paths.to_path(repo.path());
+
+                if git.is_cached(&path)? {
+                    self.cached.push(repo.path());
+                }
+            }
+
+            self.cached_init = true;
+        }
+
+        Ok(&self.cached)
+    }
+
+    fn outdated_set(&mut self) -> Result<&[&'repo RelativePath]> {
+        if !self.outdated_init {
+            let git = self
+                .system
+                .git
+                .first()
+                .context("no working git command found")?;
+
+            for repo in self.repos {
+                let path = self.paths.to_path(repo.path());
+
+                if git.is_outdated(&path, self.fetch)? {
+                    self.outdated.push(repo.path());
+                }
+            }
+
+            self.outdated_init = true;
+        }
+
+        Ok(&self.outdated)
+    }
+
+    fn unreleased_set(&mut self) -> Result<&[&'repo RelativePath]> {
+        if !self.unreleased_init {
+            let git = self
+                .system
+                .git
+                .first()
+                .context("no working git command found")?;
+
+            for repo in self.repos {
+                let path = self.paths.to_path(repo.path());
+
+                let outcome = 'outcome: {
+                    let Some(describe) = git.describe_tags(&path, self.fetch)? else {
+                        tracing::trace!("No tags to describe");
+                        break 'outcome true;
+                    };
+
+                    if describe.offset.is_none() {
+                        tracing::trace!("No offset detected (tag: {})", describe.tag);
+                        break 'outcome true;
+                    }
+
+                    false
+                };
+
+                if outcome {
+                    self.unreleased.push(repo.path());
+                }
+            }
+
+            self.unreleased_init = true;
+        }
+
+        Ok(&self.unreleased)
+    }
+}
+
+enum LoadedPaths<'a, 'path> {
+    Owned(&'a Vec<RelativePathBuf>),
+    Borrowed(&'a [&'path RelativePath]),
+}
+
+impl LoadedPaths<'_, '_> {
+    fn for_each(&self, mut f: impl FnMut(&RelativePath)) {
+        match self {
+            Self::Owned(v) => {
+                for p in *v {
+                    f(p);
+                }
+            }
+            Self::Borrowed(v) => {
+                for p in *v {
+                    f(p);
+                }
+            }
+        }
+    }
+}
+
 fn apply_repo_options(
     repo_opts: &RepoOptions,
     paths: Paths<'_>,
@@ -1118,43 +1386,65 @@ fn apply_repo_options(
         filters.push(Fragment::parse(repo));
     }
 
-    let set = match &repo_opts.set[..] {
-        [] => None,
-        ids => {
-            let mut set = HashSet::new();
+    let mut git_cache = GitCache::new(repos, paths, system, repo_opts.fetch);
+    let mut owned_work = Vec::new();
+    let mut work = Vec::new();
 
-            for id in ids {
-                if let Some(s) = sets.load(id)? {
-                    set.extend(s.iter().map(RelativePath::to_owned));
-                }
-            }
+    let set = if !repo_opts.set.iter().all(|s| s.is_empty()) {
+        let mut set = HashSet::new();
 
-            if !repo_opts.set_intersect.is_empty() {
-                let mut intersect = HashSet::new();
+        for (op, s) in repo_opts.set.iter().flat_map(|s| s.sets.iter()) {
+            let work = match s {
+                Set::All => {
+                    work.clear();
 
-                for id in &repo_opts.set_intersect {
-                    if let Some(s) = sets.load(id)? {
-                        intersect.extend(s.iter().map(RelativePath::to_owned));
+                    for repo in repos {
+                        work.push(repo.path());
                     }
+
+                    LoadedPaths::Borrowed(&work)
                 }
+                Set::Dirty => LoadedPaths::Borrowed(git_cache.dirty_set()?),
+                Set::Cached => LoadedPaths::Borrowed(git_cache.cached_set()?),
+                Set::Outdated => LoadedPaths::Borrowed(git_cache.outdated_set()?),
+                Set::Unreleased => LoadedPaths::Borrowed(git_cache.unreleased_set()?),
+                Set::Named(id) => {
+                    owned_work.clear();
 
-                set = &set & &intersect;
-            }
-
-            if !repo_opts.set_difference.is_empty() {
-                let mut intersect = HashSet::new();
-
-                for id in &repo_opts.set_difference {
                     if let Some(s) = sets.load(id)? {
-                        intersect.extend(s.iter().map(RelativePath::to_owned));
+                        owned_work.extend(s.into_iter());
                     }
+
+                    LoadedPaths::Owned(&owned_work)
                 }
+            };
 
-                set = &set ^ &intersect;
-            }
+            let op: fn(&mut HashSet<_>, &RelativePath) = match op {
+                SetOp::Add => |set, id| {
+                    if !set.contains(id) {
+                        set.insert(id.to_owned());
+                    }
+                },
+                SetOp::Sub => |set, id| {
+                    set.remove(id);
+                },
+                SetOp::Difference => |set, id| {
+                    if set.contains(id) {
+                        set.remove(id);
+                    } else {
+                        set.insert(id.to_owned());
+                    }
+                },
+            };
 
-            Some(set)
+            work.for_each(|id| {
+                op(&mut set, id);
+            });
         }
+
+        Some(set)
+    } else {
+        None
     };
 
     let in_current_path = if !repo_opts.all && in_repo_path {
@@ -1165,10 +1455,8 @@ fn apply_repo_options(
 
     filter_repos(
         config,
-        paths,
         in_current_path,
         repo_opts,
-        system.git.first(),
         repos,
         &filters,
         set.as_ref(),
@@ -1181,10 +1469,8 @@ fn apply_repo_options(
 /// Perform more advanced filtering over modules.
 fn filter_repos(
     config: &Config,
-    paths: Paths<'_>,
     in_current_path: Option<&RelativePath>,
     repo_opts: &RepoOptions,
-    git: Option<&system::Git>,
     repos: &[model::Repo],
     filters: &[Fragment<'_>],
     set: Option<&HashSet<RelativePathBuf>>,
@@ -1225,57 +1511,6 @@ fn filter_repos(
 
             if !os.is_empty() && !os.contains(expected) {
                 tracing::trace!("Operating systems {os:?} does not contain {expected:?}");
-                repo.disable();
-            }
-        }
-
-        if repo_opts.needs_git() {
-            let git = git.context("no working git command found")?;
-            let path = paths.to_path(repo.path());
-
-            let cached = git.is_cached(&path)?;
-            let dirty = git.is_dirty(&path)?;
-
-            let span = tracing::trace_span!("git", ?cached, ?dirty, repo = repo.path().to_string());
-            let _enter = span.enter();
-
-            let disable = 'outcome: {
-                if repo_opts.dirty && !dirty {
-                    tracing::trace!("Directory is not dirty");
-                    break 'outcome true;
-                }
-
-                if repo_opts.cached && !cached {
-                    tracing::trace!("Directory has no cached changes");
-                    break 'outcome true;
-                }
-
-                if repo_opts.cached_only && (!cached || dirty) {
-                    tracing::trace!("Directory has no cached changes");
-                    break 'outcome true;
-                }
-
-                if repo_opts.outdated && (!dirty && !git.is_outdated(&path, repo_opts.fetch)?) {
-                    tracing::trace!("Directory is not outdated");
-                    break 'outcome true;
-                }
-
-                if repo_opts.unreleased {
-                    if let Some(describe) = git.describe_tags(&path, repo_opts.fetch)? {
-                        if describe.offset.is_none() {
-                            tracing::trace!("No offset detected (tag: {})", describe.tag);
-                            break 'outcome true;
-                        }
-                    } else {
-                        tracing::trace!("No tags to describe");
-                        break 'outcome true;
-                    }
-                }
-
-                false
-            };
-
-            if disable {
                 repo.disable();
             }
         }
