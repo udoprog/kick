@@ -471,8 +471,12 @@ enum Command {
     Update(SharedOptions),
     /// Collect and define release variables.
     Define(SharedAction<cli::define::Opts>),
-    /// Make sure you are logged into Github to access the API without rate
-    /// limiting.
+    /// Configure github authentication.
+    ///
+    /// This can be configured by setting the `GITHUB_TOKEN` environment
+    /// variable, passing `--github-token` with the token to any command,
+    /// writing the token to your .github-token configuration file using this
+    /// command.
     Login(SharedAction<cli::login::Opts>),
     /// Manage sets.
     Set(SharedAction<cli::set::Opts>),
@@ -709,21 +713,7 @@ struct Opts {
 
 #[tokio::main]
 async fn main() -> Result<ExitCode> {
-    let opts = match Opts::try_parse() {
-        Ok(opts) => opts,
-        Err(error) => {
-            match error.kind() {
-                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
-                    print!("{error}");
-                }
-                _ => {
-                    return Err(error.into());
-                }
-            }
-
-            return Ok(ExitCode::SUCCESS);
-        }
-    };
+    let opts = Opts::parse();
 
     let default_directive = opts.action.shared().directive();
     let filter = tracing_subscriber::EnvFilter::builder();
@@ -826,12 +816,14 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
 
     if env.github_tokens.is_empty() {
         if opts.action.requires_token() {
-            tracing::warn!("No .github-token or --token argument found");
+            tracing::error!("No github token found");
         } else {
-            tracing::trace!(
-                "No .github-token or --token argument found, heavy rate limiting will apply and unless specified some actions will not work"
+            tracing::warn!(
+                "No github token found, heavy rate limiting will apply if accessing the Github"
             )
         }
+
+        tracing::info!("See `kick login --help` for more information on how to set this up");
     }
 
     let templating = templates::Templating::new()?;

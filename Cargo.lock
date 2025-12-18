@@ -460,6 +460,8 @@ dependencies = [
  "clap_lex",
  "strsim",
  "terminal_size",
+ "unicase",
+ "unicode-width",
 ]
 
 [[package]]

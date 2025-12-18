@@ -124,16 +124,16 @@ impl FromStr for SecretString {
 }
 
 /// Helper to optionally read a secret string without leaking it.
-pub(crate) fn read_secret_string<P>(path: P) -> Result<Option<SecretString>>
-where
-    P: AsRef<Path>,
-{
+pub(crate) fn read_secret_string(path: impl AsRef<Path>) -> Result<Option<SecretString>> {
     let path = path.as_ref();
+    read_secret_string_inner(path).with_context(|| path.display().to_string())
+}
 
+fn read_secret_string_inner(path: &Path) -> Result<Option<SecretString>> {
     let f = match fs::File::open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e).context(path.display().to_string()),
+        Err(e) => return Err(e.into()),
     };
 
     let mut line = String::new();
