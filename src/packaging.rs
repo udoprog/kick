@@ -4,6 +4,7 @@ use core::str::FromStr;
 use std::env::consts::EXE_EXTENSION;
 use std::fs::{self, Metadata};
 use std::path::Path;
+use std::time::SystemTime;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use relative_path::{RelativePath, RelativePathBuf};
@@ -119,6 +120,11 @@ impl Mode {
     pub(crate) fn regular_file(self) -> u16 {
         REGULAR_FILE | self.raw
     }
+
+    /// Get as raw permissions without type information.
+    pub(crate) fn permissions(self) -> u32 {
+        self.raw as u32
+    }
 }
 
 impl FromStr for Mode {
@@ -146,16 +152,16 @@ impl fmt::Debug for Mode {
 }
 
 #[cfg(unix)]
-fn infer_mode_from_meta(m: Metadata, _: &Path) -> Result<(Mode, bool)> {
+fn infer_mode_from_meta(m: &Metadata, _: &Path) -> Result<(Mode, bool)> {
     use std::os::unix::fs::PermissionsExt;
-    ensure!(m.is_file(), "Not a file");
+    ensure!(m.is_file(), "not a file");
     let mode = m.permissions().mode() as u16;
     debug_assert!(mode & REGULAR_FILE == REGULAR_FILE);
     Ok((Mode { raw: mode & 0o777 }, mode & 0o111 != 0))
 }
 
 #[cfg(not(unix))]
-fn infer_mode_from_meta(_: Metadata, path: &Path) -> Result<(Mode, bool)> {
+fn infer_mode_from_meta(_: &Metadata, path: &Path) -> Result<(Mode, bool)> {
     if path.extension().and_then(|s| s.to_str()) == Some(EXE_EXTENSION) {
         Ok((Mode::EXECUTABLE, true))
     } else {
@@ -164,11 +170,26 @@ fn infer_mode_from_meta(_: Metadata, path: &Path) -> Result<(Mode, bool)> {
 }
 
 /// Infer mode from path.
-pub(crate) fn infer_mode(path: &Path) -> Result<(Mode, bool)> {
+pub(crate) fn infer(path: &Path) -> Result<Infer> {
     infer_mode_inner(path).with_context(|| path.display().to_string())
 }
 
-fn infer_mode_inner(path: &Path) -> Result<(Mode, bool)> {
+fn infer_mode_inner(path: &Path) -> Result<Infer> {
     let m = fs::metadata(path)?;
-    infer_mode_from_meta(m, path)
+    let (mode, is_exe) = infer_mode_from_meta(&m, path)?;
+
+    Ok(Infer {
+        mode,
+        is_exe,
+        size: m.len(),
+        mtime: m.modified().ok(),
+    })
+}
+
+/// Inferred file information.
+pub(crate) struct Infer {
+    pub(crate) mode: Mode,
+    pub(crate) is_exe: bool,
+    pub(crate) size: u64,
+    pub(crate) mtime: Option<SystemTime>,
 }

@@ -1,20 +1,21 @@
 use std::collections::HashMap;
 use std::env::consts::{self, EXE_EXTENSION};
 use std::fmt;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{self, Cursor, Write};
-#[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::time::SystemTime;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
+use relative_path::RelativePath;
 use time::OffsetDateTime;
 
 use crate::cli::WithRepos;
+use crate::config::PackageFile;
 use crate::ctxt::Ctxt;
-use crate::glob::Glob;
 use crate::model::Repo;
+use crate::packaging::{self, Mode, Packager, infer};
 use crate::release::ReleaseOpts;
 use crate::template::{Template, Variable};
 
@@ -56,18 +57,8 @@ pub(crate) struct Opts {
     /// If unspecified, the name will be {project}-{release}-{arch}-{os}.
     #[arg(long)]
     name: Option<String>,
-    /// Exclude the default bianries from the archive.
-    #[arg(long)]
-    no_bin: bool,
-    /// Binaries to append to the archive as they are named in the workspace.
-    ///
-    /// By default, all binaries from the primary package will be included.
-    #[arg(long)]
-    bin: Vec<String>,
     #[clap(flatten)]
     output: OutputOpts,
-    /// Append the given extra files to the archive.
-    paths: Vec<String>,
 }
 
 pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, ty: Kind, opts: &Opts) -> Result<()> {
@@ -103,8 +94,6 @@ fn compress(cx: &Ctxt<'_>, ty: Kind, opts: &Opts, repo: &Repo) -> Result<()> {
         .render(&variables)
         .context("While rendering name template")?;
 
-    let root = cx.to_path(repo.path());
-
     let mut zip_archive;
     let mut gzip_archive;
 
@@ -119,33 +108,12 @@ fn compress(cx: &Ctxt<'_>, ty: Kind, opts: &Opts, repo: &Repo) -> Result<()> {
         }
     };
 
-    let mut out = Vec::new();
+    let mut packager = CompressPackager { archive };
+    let n = packaging::install_files(&mut packager, cx, repo)?;
 
-    let release_dir = root.join("target").join("release");
-
-    if opts.bin.is_empty() && !opts.no_bin {
-        let binary_path = release_dir.join(name).with_extension(EXE_EXTENSION);
-        out.push(binary_path);
-    } else {
-        for name in &opts.bin {
-            let binary_path = release_dir.join(name).with_extension(EXE_EXTENSION);
-            out.push(binary_path);
-        }
-    }
-
-    for pattern in &opts.paths {
-        let glob = Glob::new(&root, &pattern);
-
-        for path in glob.matcher() {
-            let path = path.with_context(|| anyhow!("Glob `{pattern}` failed"))?;
-            out.push(path.to_path(&root));
-        }
-    }
-
-    for path in out {
-        tracing::info!("Appending: {}", path.display());
-        append(archive, &path).with_context(|| anyhow!("Appending {}", path.display()))?;
-    }
+    if n > 0 {
+        bail!("Stopping due to {n} error(s)");
+    };
 
     let contents = archive.finish()?;
     let output = opts.output.make_directory(cx, repo, ty.extension());
@@ -157,30 +125,42 @@ fn compress(cx: &Ctxt<'_>, ty: Kind, opts: &Opts, repo: &Repo) -> Result<()> {
     Ok(())
 }
 
-fn append(archive: &mut dyn Archive, path: &Path) -> Result<()> {
-    let metadata = fs::metadata(path)?;
+struct CompressPackager<'a> {
+    archive: &'a mut dyn Archive,
+}
 
-    if metadata.is_file() {
+impl Packager for CompressPackager<'_> {
+    fn add_binary(&mut self, name: &str, path: &Path) -> Result<()> {
+        let infer = infer(path)?;
         let input = File::open(path)?;
-
-        let file_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .context("Missing file name")?;
-
-        archive
-            .append_file(&metadata, input, file_name)
-            .with_context(|| anyhow!("Append file {}", path.display()))?;
-    } else {
-        tracing::warn!("Ignoring non-file: {}", path.display());
+        let name = format!("{name}{EXE_EXTENSION}");
+        self.archive
+            .append_file(input, &name, Mode::EXECUTABLE, infer.size, infer.mtime)?;
+        Ok(())
     }
 
-    Ok(())
+    fn add_file(&mut self, file: &PackageFile, path: &Path, dest: &RelativePath) -> Result<()> {
+        let infer = infer(path)?;
+        let mode = file.mode.unwrap_or(infer.mode);
+        let input = File::open(path)?;
+        self.archive
+            .append_file(input, dest.as_str(), mode, infer.size, infer.mtime)?;
+        Ok(())
+    }
 }
 
 trait Archive {
-    fn append_file(&mut self, metadata: &fs::Metadata, input: File, file_name: &str) -> Result<()>;
+    /// Append a file to the archive.
+    fn append_file(
+        &mut self,
+        input: File,
+        name: &str,
+        mode: Mode,
+        size: u64,
+        mtime: Option<SystemTime>,
+    ) -> Result<()>;
 
+    /// Finish the archive and return the contents as a vector of bytes.
     fn finish(&mut self) -> Result<Vec<u8>>;
 }
 
@@ -201,35 +181,33 @@ impl GzipArchive {
 impl Archive for GzipArchive {
     fn append_file(
         &mut self,
-        metadata: &fs::Metadata,
         mut input: File,
-        file_name: &str,
+        name: &str,
+        mode: Mode,
+        size: u64,
+        mtime: Option<SystemTime>,
     ) -> Result<()> {
-        let Some(builder) = &mut self.builder else {
-            bail!("Archive already finished");
-        };
+        let builder = self.builder.as_mut().context("Archive already finished")?;
 
         let mut header = tar::Header::new_gnu();
-        header.set_size(metadata.len());
+        header.set_size(size);
+        header.set_mode(mode.permissions());
 
-        #[cfg(unix)]
+        if let Some(m) = mtime
+            && let Ok(d) = m.duration_since(SystemTime::UNIX_EPOCH)
         {
-            header.set_mode(metadata.mode());
-            header.set_mtime(metadata.mtime() as u64);
+            header.set_mtime(d.as_secs());
         }
 
         builder
-            .append_data(&mut header, file_name, &mut input)
+            .append_data(&mut header, name, &mut input)
             .context("Appending to archive")?;
 
         Ok(())
     }
 
     fn finish(&mut self) -> Result<Vec<u8>> {
-        let Some(builder) = self.builder.take() else {
-            bail!("Archive already finished");
-        };
-
+        let builder = self.builder.take().context("Archive already finished")?;
         let encoder = builder.into_inner().context("Finishing archive")?;
         let inner = encoder.finish().context("Finishing archive")?;
         Ok(inner)
@@ -251,37 +229,34 @@ impl ZipArchive {
 impl Archive for ZipArchive {
     fn append_file(
         &mut self,
-        metadata: &fs::Metadata,
         mut input: File,
-        file_name: &str,
+        name: &str,
+        mode: Mode,
+        _: u64,
+        mtime: Option<SystemTime>,
     ) -> Result<()> {
         use zip::write::FileOptions;
         use zip::{CompressionMethod, DateTime};
 
-        let Some(zip) = &mut self.zip else {
-            bail!("Archive already finished");
-        };
+        let zip = self.zip.as_mut().context("Archive already finished")?;
 
-        let mut options =
-            FileOptions::<()>::default().compression_method(CompressionMethod::Deflated);
+        let mut options = FileOptions::<()>::default();
 
-        #[cfg(unix)]
-        {
-            options = options.unix_permissions(metadata.mode());
+        options = options.compression_method(CompressionMethod::Deflated);
+        options = options.unix_permissions(mode.permissions());
+
+        if let Some(mtime) = mtime {
+            let from = OffsetDateTime::from(mtime);
+            options = options.last_modified_time(DateTime::try_from(from)?);
         }
 
-        let from = OffsetDateTime::from(metadata.modified()?);
-        options = options.last_modified_time(DateTime::try_from(from)?);
-        zip.start_file(file_name, options)?;
+        zip.start_file(name, options)?;
         io::copy(&mut input, zip).context("Copying file")?;
         Ok(())
     }
 
     fn finish(&mut self) -> Result<Vec<u8>> {
-        let Some(zip) = self.zip.take() else {
-            bail!("Archive already finished");
-        };
-
+        let zip = self.zip.take().context("Archive already finished")?;
         Ok(zip.finish()?.into_inner())
     }
 }

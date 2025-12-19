@@ -17,13 +17,14 @@ use semver::Version;
 use tempfile::NamedTempFile;
 use url::Url;
 
+use crate::KICK_TOML;
 use crate::ctxt::Paths;
 use crate::glob::Glob;
 use crate::keys::Keys;
 use crate::model::{Repo, RepoInfo, RepoParams, RepoRef, RepoSource};
+use crate::packaging::Mode;
 use crate::shell::Shell;
 use crate::templates::{Template, Templating};
-use crate::{KICK_TOML, packaging};
 
 /// Default job name.
 const DEFAULT_CI_NAME: &str = "CI";
@@ -179,7 +180,7 @@ pub(crate) struct PackageFile {
     /// Destination of an rpm file.
     pub(crate) dest: RelativePathBuf,
     /// The mode of a file.
-    pub(crate) mode: Option<packaging::Mode>,
+    pub(crate) mode: Option<Mode>,
 }
 
 #[derive(Clone, Debug, Copy)]

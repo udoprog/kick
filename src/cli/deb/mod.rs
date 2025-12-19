@@ -87,36 +87,33 @@ struct DebianPackager<'a> {
 
 impl Packager for DebianPackager<'_> {
     fn add_binary(&mut self, name: &str, path: &Path) -> Result<()> {
-        let meta = path.metadata().context("reading metadata")?;
-        let mtime = meta.modified().context("reading modified time")?;
+        let infer = packaging::infer(path)?;
         let contents = fs::read(path).context("reading contents of file")?;
 
-        self.builder
+        let file = self
+            .builder
             .insert_file(RelativePath::new("usr/bin").join(name))
             .contents(contents)
-            .mode(Mode::EXECUTABLE)
-            .mtime(mtime)?;
+            .mode(Mode::EXECUTABLE);
+
+        if let Some(mtime) = infer.mtime {
+            file.mtime(mtime)?;
+        }
 
         Ok(())
     }
 
     fn add_file(&mut self, file: &PackageFile, path: &Path, dest: &RelativePath) -> Result<()> {
-        let meta = path.metadata().context("reading metadata")?;
-        let mtime = meta.modified().context("reading modified time")?;
         let contents = fs::read(path).context("reading contents of file")?;
 
-        let mode = if let Some(mode) = file.mode {
-            mode
-        } else {
-            let (mode, _) = crate::packaging::infer_mode(path)?;
-            mode
-        };
+        let infer = crate::packaging::infer(path)?;
+        let mode = file.mode.unwrap_or(infer.mode);
 
-        self.builder
-            .insert_file(dest)
-            .contents(contents)
-            .mtime(mtime)?
-            .mode(mode);
+        let file = self.builder.insert_file(dest).contents(contents).mode(mode);
+
+        if let Some(mtime) = infer.mtime {
+            file.mtime(mtime)?;
+        }
 
         Ok(())
     }

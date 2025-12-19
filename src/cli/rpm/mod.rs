@@ -162,11 +162,12 @@ impl Packager for RpmPackager<'_> {
     }
 
     fn add_file(&mut self, file: &PackageFile, path: &Path, dest: &RelativePath) -> Result<()> {
+        let infer = packaging::infer(path)?;
+
         let (mode, is_exe) = if let Some(mode) = file.mode {
             (mode, mode.is_executable())
         } else {
-            let (mode, is_exe) = packaging::infer_mode(path)?;
-            (mode, is_exe)
+            (infer.mode, infer.is_exe)
         };
 
         if is_exe {
