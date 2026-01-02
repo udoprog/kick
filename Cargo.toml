@@ -36,7 +36,7 @@ pulldown-cmark = "0.13.0"
 rand = "0.9.0"
 regex = "1.7.3"
 relative-path = { version = "2.0.1", features = ["serde"] }
-reqwest = { version = "0.12.5", features = ["json", "stream"] }
+reqwest = { version = "0.13.1", features = ["json", "stream"] }
 rpm = "0.18.0"
 semver = { version = "1.0.17", features = ["serde"] }
 serde = { version = "1.0.160", features = ["derive", "rc"] }
@@ -56,10 +56,10 @@ tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 unicycle = "0.10.2"
 url = { version = "2.3.1", features = ["serde"] }
 liblzma = "0.4.4"
-zip = "6.0.0"
+zip = "7.0.0"
 
 [dependencies.gix]
-version = "0.75.0"
+version = "0.77.0"
 features = [
     "blocking-http-transport-reqwest",
     "blocking-http-transport-reqwest-rust-tls-trust-dns",

@@ -345,27 +345,53 @@ fn find_version_mut(item: &mut Item) -> Option<&mut Value> {
 }
 
 /// Parse and return a modified version requirement.
-fn modify_version_req(req: &str, old: &Version, new: &Version) -> Result<String> {
+fn modify_version_req(req: &str, o: &Version, n: &Version) -> Result<String> {
     let mut req = VersionReq::parse(req)?;
 
-    if let [Comparator { op: Op::Caret, .. }] = &req.comparators[..] {
-        return Ok(new.to_string());
+    // Special case: we don't want to expand single caret requirements.
+    if let &[
+        Comparator {
+            op: Op::Caret,
+            major,
+            minor: Some(minor),
+            patch: Some(patch),
+            ref pre,
+        },
+    ] = &req.comparators[..]
+        && (o.major == major || o.minor == minor || o.patch == patch || o.pre != *pre)
+    {
+        let mut v = n.clone();
+        v.build = Default::default();
+        return Ok(v.to_string());
     }
 
-    for c in &mut req.comparators {
-        if !(c.major == old.major
-            && c.minor == Some(old.minor)
-            && c.patch == Some(old.patch)
-            && c.pre == old.pre)
+    let mut modified = false;
+
+    for c in req.comparators.iter_mut() {
+        if c.major == o.major
+            && c.minor.unwrap_or(0) == o.minor
+            && c.patch.unwrap_or(0) == o.patch
+            && c.pre == o.pre
         {
-            continue;
+            c.major = n.major;
+            c.minor = Some(n.minor);
+            c.patch = Some(n.patch);
+            c.pre = n.pre.clone();
+            modified = true;
         }
-
-        c.major = new.major;
-        c.minor = Some(new.minor);
-        c.patch = Some(new.patch);
-        c.pre = new.pre.clone();
     }
 
-    Ok(req.to_string())
+    if modified {
+        return Ok(req.to_string());
+    }
+
+    // If old requirement matches, no need to modify it.
+    if req.matches(n) {
+        return Ok(req.to_string());
+    }
+
+    // If it doesn't match, it is weird. So just straight up replace it.
+    let mut v = n.clone();
+    v.build = Default::default();
+    Ok(v.to_string())
 }
