@@ -50,7 +50,7 @@ impl Env {
             tools_path = Rc::<Path>::from(runner.repo_dir().join("tools"));
             tree.insert(
                 ["runner", "action_path"],
-                runner.action_path().to_string_lossy().as_ref(),
+                &*runner.action_path().to_string_lossy(),
             );
         } else {
             tools_path = Rc::<Path>::from(state_dir.join("tools"));

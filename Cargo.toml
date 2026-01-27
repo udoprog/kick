@@ -59,7 +59,7 @@ liblzma = "0.4.4"
 zip = "7.0.0"
 
 [dependencies.gix]
-version = "0.77.0"
+version = "0.78.0"
 features = [
     "blocking-http-transport-reqwest",
     "blocking-http-transport-reqwest-rust-tls-trust-dns",

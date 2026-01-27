@@ -139,7 +139,7 @@ fn run(
                         write!(o, "  Job: {}", job.id())?;
 
                         if let Some(name) = matrix.name()
-                            && name.to_exposed().as_ref() != job.id()
+                            && name != job.id()
                         {
                             write!(o, " ({name})")?;
                         }

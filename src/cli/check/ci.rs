@@ -239,7 +239,7 @@ fn check_action(
         };
 
         ci.errors.push(WorkflowError::Error {
-            name: name.as_ref().to_owned(),
+            name: AsRef::<str>::as_ref(&name).to_owned(),
             reason,
         });
     }

@@ -44,7 +44,7 @@ fn starts_with<'m>(span: &Span<u32>, args: &[Expr<'m>]) -> Result<Expr<'m>, Eval
 
     let what = what.to_exposed();
     let expect = expect.to_exposed();
-    Ok(Expr::Bool(what.starts_with(expect.as_ref())))
+    Ok(Expr::Bool(what.starts_with(&*expect)))
 }
 
 fn contains<'m>(span: &Span<u32>, args: &[Expr<'m>]) -> Result<Expr<'m>, EvalError> {
@@ -59,7 +59,7 @@ fn contains<'m>(span: &Span<u32>, args: &[Expr<'m>]) -> Result<Expr<'m>, EvalErr
         Expr::String(string) => {
             let needle = needle.to_exposed();
             let string = string.to_exposed();
-            Ok(Expr::Bool(string.contains(needle.as_ref())))
+            Ok(Expr::Bool(string.contains(&*needle)))
         }
         Expr::Array(array) => {
             let found = array

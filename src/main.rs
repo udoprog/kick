@@ -425,11 +425,11 @@ mod wix;
 mod workflows;
 mod workspace;
 
-use core::str::{Chars, FromStr};
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
+use std::str::{Chars, FromStr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 

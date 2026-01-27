@@ -84,7 +84,7 @@ impl ActionRunners {
     ) -> Result<RunnerSteps> {
         let exposed = c.action_name().to_exposed();
 
-        let Some(action) = self.runners.get(exposed.as_ref()) else {
+        let Some(action) = self.runners.get(&*exposed) else {
             bail!("Could not find action runner for {}", c.action_name());
         };
 

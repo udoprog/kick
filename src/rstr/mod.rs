@@ -479,6 +479,13 @@ macro_rules! cmp {
 cmp!(RStr);
 cmp!(RString);
 
+impl PartialEq<str> for RStr {
+    #[inline]
+    fn eq(&self, other: &str) -> bool {
+        self.str_eq(other)
+    }
+}
+
 impl From<Box<str>> for Box<RStr> {
     #[inline]
     fn from(value: Box<str>) -> Self {

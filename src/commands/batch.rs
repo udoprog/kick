@@ -157,7 +157,7 @@ impl Batch {
                 let path = match &run.working_directory {
                     Some(working_directory) => {
                         let working_directory = working_directory.to_exposed();
-                        let working_directory = RelativePath::new(working_directory.as_ref());
+                        let working_directory = RelativePath::new(&*working_directory);
                         modified = working_directory.to_logical_path(&c.path);
                         &modified
                     }

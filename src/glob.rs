@@ -71,12 +71,12 @@ impl<'a> Matcher<'a> {
             let c = e.file_name();
             let c = c.to_string_lossy();
 
-            if !m(c.as_ref()) {
+            if !m(&*c) {
                 continue;
             }
 
             let mut new = current.clone();
-            new.push(c.as_ref());
+            new.push(&*c);
             self.queue.push_back((new, rest));
         }
 
@@ -109,7 +109,7 @@ impl<'a> Matcher<'a> {
                 let e = e?;
                 let c = e.file_name();
                 let c = c.to_string_lossy();
-                let next = current.join(c.as_ref());
+                let next = current.join(&*c);
                 self.queue.push_back((next.clone(), rest));
                 queue.push_back((next, e.path()));
             }
