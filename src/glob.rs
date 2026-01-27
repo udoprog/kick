@@ -71,7 +71,7 @@ impl<'a> Matcher<'a> {
             let c = e.file_name();
             let c = c.to_string_lossy();
 
-            if !m(&*c) {
+            if !m(&c) {
                 continue;
             }
 
