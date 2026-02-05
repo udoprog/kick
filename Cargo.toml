@@ -47,7 +47,7 @@ tar = "0.4.40"
 tempfile = "3.5.0"
 termcolor = "1.4.1"
 thiserror = "2.0.9"
-time = "0.3.30"
+time = "0.3.47"
 tokio = { version = "1.27.0", features = ["full"] }
 toml = { version = "0.9.5", features = ["preserve_order"] }
 toml_edit = { version = "0.24.0", features = ["serde"] }
