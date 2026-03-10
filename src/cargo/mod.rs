@@ -29,7 +29,6 @@ use relative_path::{RelativePath, RelativePathBuf};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
 use crate::ctxt::{Ctxt, Paths};
-use crate::model::Repo;
 use crate::workspace::Crates;
 
 /// The "workspace" field.
@@ -61,15 +60,15 @@ pub(crate) fn open(paths: Paths<'_>, manifest_path: &RelativePath) -> Result<Opt
 pub(crate) enum ManifestBinary {
     /// An autobin directory which should be listed.
     AutoBin(RelativePathBuf),
-    /// A single entry binary.
-    Entry(String),
+    /// An automatic main binary.
+    AutoMain(String, RelativePathBuf),
 }
 
 impl ManifestBinary {
-    pub(crate) fn list(&self, cx: &Ctxt<'_>, repo: &Repo, names: &mut Vec<String>) -> Result<()> {
+    pub(crate) fn list(&self, cx: &Ctxt<'_>, names: &mut Vec<String>) -> Result<()> {
         match self {
             ManifestBinary::AutoBin(dir) => {
-                let dir = cx.to_path(repo.path().join(dir));
+                let dir = cx.to_path(dir);
 
                 let entries = match fs::read_dir(&dir) {
                     Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -101,8 +100,16 @@ impl ManifestBinary {
                     names.push(name.to_owned());
                 }
             }
-            ManifestBinary::Entry(name) => {
-                names.push(name.clone());
+            ManifestBinary::AutoMain(name, path) => {
+                let path = cx.to_path(path);
+
+                tracing::info!(?path);
+
+                if !path.is_file() {
+                    return Ok(());
+                }
+
+                names.push(name.to_owned());
             }
         }
 
@@ -135,10 +142,12 @@ impl Manifest {
         if let Some(package) = self.as_package() {
             if package.is_autobin() {
                 binaries.push(ManifestBinary::AutoBin(self.dir().join("src").join("bin")));
-            }
 
-            let name = package.name()?;
-            binaries.push(ManifestBinary::Entry(name.to_owned()));
+                binaries.push(ManifestBinary::AutoMain(
+                    package.name()?.to_owned(),
+                    self.dir().join("main.rs"),
+                ));
+            }
         }
 
         Ok(())

@@ -45,7 +45,7 @@ pub(crate) fn install_files(
             manifest.binaries(&mut binaries)?;
 
             for binary in binaries.drain(..) {
-                binary.list(cx, repo, &mut names)?;
+                binary.list(cx, &mut names)?;
 
                 for name in names.drain(..) {
                     let mut b = RelativePathBuf::from(repo.path());
