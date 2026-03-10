@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::env::consts::{self, EXE_EXTENSION};
+use std::env::consts::{self, EXE_SUFFIX};
 use std::fmt;
 use std::fs::File;
 use std::io::{self, Cursor, Write};
@@ -133,7 +133,7 @@ impl Packager for CompressPackager<'_> {
     fn add_binary(&mut self, name: &str, path: &Path) -> Result<()> {
         let infer = infer(path)?;
         let input = File::open(path)?;
-        let name = format!("{name}{EXE_EXTENSION}");
+        let name = format!("{name}{EXE_SUFFIX}");
         self.archive
             .append_file(input, &name, Mode::EXECUTABLE, infer.size, infer.mtime)?;
         Ok(())

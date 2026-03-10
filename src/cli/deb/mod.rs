@@ -1,3 +1,4 @@
+use std::env::consts::EXE_SUFFIX;
 use std::fs;
 use std::path::Path;
 
@@ -92,7 +93,7 @@ impl Packager for DebianPackager<'_> {
 
         let file = self
             .builder
-            .insert_file(RelativePath::new("usr/bin").join(name))
+            .insert_file(RelativePath::new("usr/bin").join(format!("{name}{EXE_SUFFIX}")))
             .contents(contents)
             .mode(Mode::EXECUTABLE);
 

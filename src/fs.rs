@@ -60,8 +60,7 @@ pub(crate) fn test_secure(path: impl AsRef<Path>) -> Vec<FileIssue> {
     let mut issues = Vec::new();
 
     match fs::metadata(path) {
-        Ok(m) =>
-        {
+        Ok(m) => {
             #[cfg(not(unix))]
             {
                 _ = m;

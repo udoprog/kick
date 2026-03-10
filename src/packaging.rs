@@ -66,6 +66,7 @@ pub(crate) fn install_files(
                     }
 
                     tracing::info!("Adding binary `{name}`: {}", path.display());
+
                     packager
                         .add_binary(&name, &path)
                         .with_context(|| path.display().to_string())?;

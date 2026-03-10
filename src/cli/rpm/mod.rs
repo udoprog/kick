@@ -2,7 +2,7 @@ mod find_requires;
 mod find_requires_by_elf;
 
 use std::collections::BTreeSet;
-use std::env::consts::ARCH;
+use std::env::consts::{ARCH, EXE_SUFFIX};
 use std::fs::File;
 use std::io::{BufWriter, Write as _};
 use std::path::Path;
@@ -144,10 +144,11 @@ struct RpmPackager<'a> {
 
 impl Packager for RpmPackager<'_> {
     fn add_binary(&mut self, name: &str, path: &Path) -> Result<()> {
-        let options =
-            rpm::FileOptions::new(format!("/usr/bin/{name}")).mode(rpm::FileMode::Regular {
+        let options = rpm::FileOptions::new(format!("/usr/bin/{name}{EXE_SUFFIX}")).mode(
+            rpm::FileMode::Regular {
                 permissions: Mode::EXECUTABLE.regular_file(),
-            });
+            },
+        );
 
         let pkg = self.pkg.take().context("missing package")?;
         self.pkg = Some(pkg.with_file(path, options)?);

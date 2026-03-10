@@ -137,15 +137,15 @@ impl Manifest {
 
     /// List of binary candidates.
     pub(crate) fn binaries(&self, binaries: &mut Vec<ManifestBinary>) -> Result<()> {
-        if let Some(package) = self.as_package() {
-            if package.is_autobin() {
-                binaries.push(ManifestBinary::AutoBin(self.dir().join("src").join("bin")));
+        if let Some(package) = self.as_package()
+            && package.is_autobin()
+        {
+            binaries.push(ManifestBinary::AutoBin(self.dir().join("src").join("bin")));
 
-                binaries.push(ManifestBinary::AutoMain(
-                    package.name()?.to_owned(),
-                    self.dir().join("src").join("main.rs"),
-                ));
-            }
+            binaries.push(ManifestBinary::AutoMain(
+                package.name()?.to_owned(),
+                self.dir().join("src").join("main.rs"),
+            ));
         }
 
         Ok(())
