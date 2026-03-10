@@ -11,6 +11,7 @@ use anyhow::{Result, bail};
 
 #[must_use]
 pub(crate) enum FileIssue {
+    #[cfg_attr(not(unix), allow(dead_code))]
     Mode,
     Error(io::Error),
 }
@@ -22,6 +23,11 @@ impl FileIssue {
         match self {
             Self::Mode => {
                 let m = fs::metadata(p)?;
+
+                #[cfg(not(unix))]
+                {
+                    _ = m;
+                }
 
                 #[cfg(unix)]
                 {
@@ -72,6 +78,11 @@ pub(crate) fn test_secure(path: impl AsRef<Path>) -> Vec<FileIssue> {
 
 /// Set as secure file permissions as possible.
 pub(crate) fn set_secure(p: &mut Permissions) {
+    #[cfg(not(unix))]
+    {
+        _ = p;
+    }
+
     #[cfg(unix)]
     {
         p.set_mode(0o500);

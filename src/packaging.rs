@@ -6,7 +6,9 @@ use std::fs::{self, Metadata};
 use std::path::Path;
 use std::time::SystemTime;
 
-use anyhow::{Context, Result, anyhow, bail, ensure};
+#[cfg(unix)]
+use anyhow::ensure;
+use anyhow::{Context, Result, anyhow, bail};
 use relative_path::{RelativePath, RelativePathBuf};
 
 use crate::config::PackageFile;
