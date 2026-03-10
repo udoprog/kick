@@ -103,8 +103,6 @@ impl ManifestBinary {
             ManifestBinary::AutoMain(name, path) => {
                 let path = cx.to_path(path);
 
-                tracing::info!(?path);
-
                 if !path.is_file() {
                     return Ok(());
                 }
@@ -145,7 +143,7 @@ impl Manifest {
 
                 binaries.push(ManifestBinary::AutoMain(
                     package.name()?.to_owned(),
-                    self.dir().join("main.rs"),
+                    self.dir().join("src").join("main.rs"),
                 ));
             }
         }
