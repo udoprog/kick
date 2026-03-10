@@ -123,9 +123,24 @@ pub(crate) struct DebPackage {
 }
 
 #[derive(Default, Debug, Clone)]
+pub(crate) struct Binaries {
+    /// Whether to automatically include binaries.
+    pub(crate) enabled: Option<bool>,
+    /// Excluded binaries.
+    pub(crate) exclude: BTreeSet<String>,
+}
+
+impl Binaries {
+    fn merge_with(&mut self, other: Self) {
+        self.enabled = other.enabled.or(self.enabled);
+        self.exclude.extend(other.exclude);
+    }
+}
+
+#[derive(Default, Debug, Clone)]
 pub(crate) struct Package {
     /// Automatically include binaries.
-    pub(crate) binaries: Option<bool>,
+    pub(crate) binaries: Binaries,
     /// Packages to include in an rpm package.
     pub(crate) files: Vec<PackageFile>,
     /// Options specific to rpm packages.
@@ -136,6 +151,7 @@ pub(crate) struct Package {
 
 impl Package {
     fn merge_with(&mut self, other: Self) {
+        self.binaries.merge_with(other.binaries);
         self.files.extend(other.files);
         self.rpm.requires.extend(other.rpm.requires);
         self.deb.depends.extend(other.deb.depends);
@@ -769,11 +785,14 @@ impl Config<'_> {
     }
 
     /// Check if we should automatically include binaries.
-    pub(crate) fn package_binaries(&self, repo: &RepoRef) -> bool {
-        self.repos(repo)
-            .flat_map(|r| r.package.binaries)
-            .next()
-            .unwrap_or(true)
+    pub(crate) fn package_binaries(&self, repo: &RepoRef) -> Binaries {
+        let mut binaries = Binaries::default();
+
+        for repo in self.repos(repo) {
+            binaries.merge_with(repo.package.binaries.clone());
+        }
+
+        binaries
     }
 
     /// Get all rpm files.
@@ -1399,6 +1418,26 @@ impl<'a> Cx<'a> {
         })
     }
 
+    fn binaries(&self, value: toml::Value) -> Result<Binaries, ErrorMarker> {
+        match value {
+            toml::Value::Boolean(enabled) => Ok(Binaries {
+                enabled: Some(enabled),
+                exclude: BTreeSet::new(),
+            }),
+            value => self.with_table(value, |cx, table| {
+                let enabled = cx.in_key(table, "enabled", Self::boolean);
+                let exclude = cx.in_array(table, "exclude", None, Self::string);
+
+                let binaries = Binaries {
+                    enabled: Some(enabled?.unwrap_or(true)),
+                    exclude: exclude?,
+                };
+
+                Ok(binaries)
+            }),
+        }
+    }
+
     fn package_file(&self, value: toml::Value) -> Result<PackageFile, ErrorMarker> {
         self.with_table(value, |cx, table| {
             let source = cx.require_key(table, "source", Self::relative_path);
@@ -1467,17 +1506,19 @@ impl<'a> Cx<'a> {
 
     fn package(&self, value: toml::Value) -> Result<Package, ErrorMarker> {
         self.with_table(value, |cx, table| {
-            let binaries = cx.in_key(table, "binaries", Self::boolean);
+            let binaries = cx.in_key(table, "binaries", Self::binaries);
             let files = cx.in_array(table, "files", None, Self::package_file);
             let rpm = cx.in_key(table, "rpm", Self::rpm);
             let deb = cx.in_key(table, "deb", Self::deb);
 
-            Ok(Package {
-                binaries: binaries?,
+            let package = Package {
+                binaries: binaries?.unwrap_or_default(),
                 files: files?,
                 rpm: rpm?.unwrap_or_default(),
                 deb: deb?.unwrap_or_default(),
-            })
+            };
+
+            Ok(package)
         })
     }
 

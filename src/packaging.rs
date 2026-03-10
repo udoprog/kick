@@ -38,11 +38,13 @@ pub(crate) fn install_files(
 ) -> Result<usize> {
     let workspace = repo.workspace(cx)?;
 
+    let config = cx.config.package_binaries(repo);
+
     let mut binaries = Vec::new();
     let mut names = Vec::new();
     let mut errors = 0;
 
-    if cx.config.package_binaries(repo) {
+    if config.enabled.unwrap_or(false) {
         for manifest in workspace.packages() {
             manifest.binaries(&mut binaries)?;
 
@@ -50,6 +52,11 @@ pub(crate) fn install_files(
                 binary.list(cx, &mut names)?;
 
                 for name in names.drain(..) {
+                    if config.exclude.contains(&name) {
+                        tracing::debug!(?name, "Skipping excluded binary");
+                        continue;
+                    }
+
                     let mut b = RelativePathBuf::from(repo.path());
 
                     b.push("target");

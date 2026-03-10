@@ -27,6 +27,17 @@ in `target/release`.
 So if you have a crate named `foo`, it would look for binaries in:
 `target/release/foo` (or `foo.exe` on windows).
 
+Binaries can be excluded with an object configuration in `binaries`:
+
+```
+[package]
+binaries = { exclude = ["web"] }
+```
+
+Supported options are:
+* `enabled` which will enable automatic binaries.
+* `exclude` which will be used as a set of excluded binaries.
+
 #### Version Requirement
 
 A version requirement is either the sole `*` which means *any version*, or a
