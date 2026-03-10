@@ -62,6 +62,11 @@ pub(crate) fn test_secure(path: impl AsRef<Path>) -> Vec<FileIssue> {
     match fs::metadata(path) {
         Ok(m) =>
         {
+            #[cfg(not(unix))]
+            {
+                _ = m;
+            }
+
             #[cfg(unix)]
             if m.mode() != 0o500 {
                 issues.push(FileIssue::Mode);
