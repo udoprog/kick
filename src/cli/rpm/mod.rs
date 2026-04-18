@@ -78,13 +78,13 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
     let build_config = build_config.compression(rpm::CompressionType::Gzip);
 
-    let pkg = rpm::PackageBuilder::new(name, &version, license, ARCH, description)
-        .using_config(build_config);
+    let mut pkg = rpm::PackageBuilder::new(name, &version, license, ARCH, description);
+    pkg.using_config(build_config);
 
     let mut requires = BTreeSet::new();
 
     let mut packager = RpmPackager {
-        pkg: Some(pkg),
+        pkg: &mut pkg,
         requires: &mut requires,
     };
 
@@ -93,8 +93,6 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
     if n > 0 {
         bail!("Stopping due to {n} error(s)");
     };
-
-    let mut pkg = packager.pkg.context("missing package")?;
 
     for require in cx.config.get_all(repo, rpm_requires) {
         let dep = match &require.version {
@@ -116,11 +114,11 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
             },
         };
 
-        pkg = pkg.requires(dep);
+        pkg.requires(dep);
     }
 
     for require in requires {
-        pkg = pkg.requires(rpm::Dependency::any(require));
+        pkg.requires(rpm::Dependency::any(require));
     }
 
     let pkg = pkg.build()?;
@@ -138,20 +136,16 @@ fn rpm(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 }
 
 struct RpmPackager<'a> {
-    pkg: Option<rpm::PackageBuilder>,
+    pkg: &'a mut rpm::PackageBuilder,
     requires: &'a mut BTreeSet<String>,
 }
 
 impl Packager for RpmPackager<'_> {
     fn add_binary(&mut self, name: &str, path: &Path) -> Result<()> {
-        let options = rpm::FileOptions::new(format!("/usr/bin/{name}{EXE_SUFFIX}")).mode(
-            rpm::FileMode::Regular {
-                permissions: Mode::EXECUTABLE.regular_file(),
-            },
-        );
+        let options = rpm::FileOptions::new(format!("/usr/bin/{name}{EXE_SUFFIX}"))
+            .mode(rpm::FileMode::from(Mode::EXECUTABLE.regular_file()));
 
-        let pkg = self.pkg.take().context("missing package")?;
-        self.pkg = Some(pkg.with_file(path, options)?);
+        self.pkg.with_file(path, options)?;
 
         self.requires.extend(if find_requires::detect() {
             find_requires::find(path)?
@@ -181,11 +175,9 @@ impl Packager for RpmPackager<'_> {
 
         let options = rpm::FileOptions::new(format!("/{dest}")).mode(mode.regular_file());
 
-        let pkg = self.pkg.take().context("missing package")?;
-        self.pkg = Some(
-            pkg.with_file(path, options)
-                .context("Adding file to rpm package")?,
-        );
+        self.pkg
+            .with_file(path, options)
+            .context("Adding file to rpm package")?;
 
         Ok(())
     }
