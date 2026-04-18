@@ -318,11 +318,9 @@ fn markdown_checks(readme: &mut Readme<'_, '_>, file: &Arc<File>) -> Result<Mark
 
     for (event, range) in parser.into_offset_iter() {
         match event {
-            Event::Html(html) => {
-                if html.trim() == "<br>" {
-                    preceeding_newline = true;
-                    continue;
-                }
+            Event::Html(html) if html.trim() == "<br>" => {
+                preceeding_newline = true;
+                continue;
             }
             Event::Start(tag) => match tag {
                 Tag::HtmlBlock => {
@@ -362,13 +360,11 @@ fn markdown_checks(readme: &mut Readme<'_, '_>, file: &Arc<File>) -> Result<Mark
                 }
                 _ => {}
             },
-            Event::End(tag) => {
-                if tag == TagEnd::HtmlBlock {
-                    block = block.saturating_sub(1);
+            Event::End(TagEnd::HtmlBlock) => {
+                block = block.saturating_sub(1);
 
-                    if preceeding_newline {
-                        continue;
-                    }
+                if preceeding_newline {
+                    continue;
                 }
             }
             _ => {}
