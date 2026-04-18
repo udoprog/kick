@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Stdio;
@@ -11,9 +12,38 @@ use crate::workflows::Eval;
 
 use super::{ActionRunners, Actions, BatchConfig, Remediations};
 
+enum Suffix {
+    NodeVersion,
+}
+
+enum Wanted<'a> {
+    Fixed(&'a str),
+    Suffixed(&'a str, Suffix),
+}
+
+impl<'a> Wanted<'a> {
+    fn format(&self) -> Cow<'a, str> {
+        match self {
+            Self::Fixed(name) => Cow::Borrowed(*name),
+            Self::Suffixed(name, suffix) => match suffix {
+                Suffix::NodeVersion => Cow::Owned(format!("{}{}", name, NODE_VERSION)),
+            },
+        }
+    }
+}
+
 const CURL: &str = "curl --proto '=https' --tlsv1.2 -sSf";
-const DEBIAN_WANTED: &[&str] = &["gcc", "pkg-config", "nodejs", "libssl-dev"];
-const FEDORA_WANTED: &[&str] = &["gcc", "nodejs", "openssl-devel"];
+const DEBIAN_WANTED: &[Wanted<'static>] = &[
+    Wanted::Fixed("gcc"),
+    Wanted::Fixed("pkg-config"),
+    Wanted::Fixed("nodejs"),
+    Wanted::Fixed("libssl-dev"),
+];
+const FEDORA_WANTED: &[Wanted<'static>] = &[
+    Wanted::Fixed("gcc"),
+    Wanted::Suffixed("nodejs", Suffix::NodeVersion),
+    Wanted::Fixed("openssl-devel"),
+];
 const NODE_VERSION: u32 = 22;
 
 /// Preparations that need to be done before running a batch.
@@ -168,8 +198,8 @@ impl Session {
                 Distribution::Ubuntu | Distribution::Debian => {
                     let mut wanted = BTreeSet::new();
 
-                    for &package in DEBIAN_WANTED {
-                        wanted.insert(package);
+                    for package in DEBIAN_WANTED {
+                        wanted.insert(package.format());
                     }
 
                     if has_wsl {
@@ -240,8 +270,8 @@ impl Session {
 
                         let mut wanted = BTreeSet::new();
 
-                        for &package in FEDORA_WANTED {
-                            wanted.insert(package);
+                        for package in FEDORA_WANTED {
+                            wanted.insert(package.format());
                         }
 
                         dpkg_query_list_installed(dpkg_query.command(), |package| {
@@ -271,8 +301,8 @@ impl Session {
 
                         let mut wanted = BTreeSet::new();
 
-                        for &package in FEDORA_WANTED {
-                            wanted.insert(package);
+                        for package in FEDORA_WANTED {
+                            wanted.insert(package.format());
                         }
 
                         for package in dnf.list_installed()? {
