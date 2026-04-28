@@ -22,8 +22,8 @@ use crate::shell::Shell;
 use crate::workflows::{Matrix, Step};
 
 use super::{
-    ActionConfig, BatchConfig, Env, Run, RunKind, RunOn, Schedule, ScheduleBasicCommand,
-    ScheduleUse, Scheduler, Session,
+    ActionConfig, Env, Run, RunKind, RunOn, Schedule, ScheduleBasicCommand, ScheduleUse, Scheduler,
+    Session, SessionConfig,
 };
 
 const WINDOWS_BASH_MESSAGE: &str = r#"Bash is not installed by default on Windows!
@@ -60,7 +60,7 @@ impl Batch {
 
     /// Construct a batch from a single use.
     pub(super) fn with_use(
-        batch: &BatchConfig<'_, '_>,
+        batch: &SessionConfig<'_, '_>,
         c: &ActionConfig<'_>,
         id: impl AsRef<RStr>,
     ) -> Result<Self> {
@@ -100,7 +100,7 @@ impl Batch {
     pub(crate) fn commit<O>(
         self,
         o: &mut O,
-        c: &BatchConfig<'_, '_>,
+        c: &SessionConfig<'_, '_>,
         session: &mut Session,
     ) -> Result<()>
     where
@@ -662,7 +662,7 @@ impl ScriptFile {
     }
 }
 
-fn as_same_dist_specific(c: &BatchConfig<'_, '_>, command: &str) -> Option<Vec<Distribution>> {
+fn as_same_dist_specific(c: &SessionConfig<'_, '_>, command: &str) -> Option<Vec<Distribution>> {
     if c.cx.os != Os::Linux {
         return None;
     }
@@ -686,7 +686,7 @@ fn as_same_dist_specific(c: &BatchConfig<'_, '_>, command: &str) -> Option<Vec<D
 }
 
 fn setup_same<'a>(
-    c: &BatchConfig<'_, 'a>,
+    c: &SessionConfig<'_, 'a>,
     path: &Path,
     run: &Run,
 ) -> Result<(bool, Command, &'a [PathBuf], Option<ScriptFile>)> {

@@ -9,7 +9,7 @@ use crate::action::ActionKind;
 use crate::rstr::rformat;
 
 use super::{
-    ActionConfig, BatchConfig, Env, Schedule, ScheduleGroup, ScheduleNodeAction, ScheduleOutputs,
+    ActionConfig, Env, Schedule, ScheduleGroup, ScheduleNodeAction, ScheduleOutputs, SessionConfig,
     build_steps,
 };
 
@@ -79,7 +79,7 @@ impl ActionRunners {
     /// Build the run configurations of an action.
     pub(super) fn build(
         &self,
-        batch: &BatchConfig<'_, '_>,
+        batch: &SessionConfig<'_, '_>,
         c: &ActionConfig<'_>,
     ) -> Result<RunnerSteps> {
         let exposed = c.action_name().to_exposed();

@@ -2,7 +2,7 @@ use crate::config::{Distribution, Os};
 
 use anyhow::{Result, bail};
 
-use super::BatchConfig;
+use super::SessionConfig;
 
 /// A run on configuration.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -17,7 +17,7 @@ pub(crate) enum RunOn {
 impl RunOn {
     /// Construct a [`RunOn`] from the specified system.
     pub(super) fn from_os(
-        batch: &BatchConfig<'_, '_>,
+        batch: &SessionConfig<'_, '_>,
         os: &Os,
         dist: Distribution,
     ) -> Result<RunOn> {

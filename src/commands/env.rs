@@ -8,7 +8,7 @@ use crate::process::OsArg;
 use crate::rstr::{RStr, RString};
 use crate::workflows::{Eval, Tree};
 
-use super::{ActionConfig, ActionRunner, BatchConfig, Run};
+use super::{ActionConfig, ActionRunner, Run, SessionConfig};
 
 #[derive(Clone)]
 pub(super) struct Env {
@@ -25,7 +25,7 @@ pub(super) struct Env {
 impl Env {
     /// Construct a new environment from a specialized set of options.
     pub(super) fn new(
-        batch: &BatchConfig<'_, '_>,
+        batch: &SessionConfig<'_, '_>,
         runner: Option<&ActionRunner>,
         c: Option<&ActionConfig<'_>>,
     ) -> Result<Self> {

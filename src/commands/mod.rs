@@ -13,8 +13,8 @@ pub(crate) use self::actions::{Actions, StringObjectId};
 mod batch;
 pub(crate) use self::batch::Batch;
 
-mod batch_config;
-pub(crate) use self::batch_config::BatchConfig;
+mod session_config;
+pub(crate) use self::session_config::SessionConfig;
 
 mod batch_options;
 pub(crate) use self::batch_options::BatchOptions;

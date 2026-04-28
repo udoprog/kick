@@ -7,7 +7,7 @@ use crate::config::{Distribution, Os};
 use crate::rstr::RStr;
 use crate::workflows::{Job, Matrix, Steps, WorkflowManifest};
 
-use super::{Batch, BatchConfig, RunOn, build_steps};
+use super::{Batch, RunOn, SessionConfig, build_steps};
 
 /// A collection of loaded workflows.
 pub(crate) struct LoadedWorkflow<'a, 'cx> {
@@ -88,14 +88,14 @@ impl LoadedJobMatrix<'_, '_> {
 
 /// Loaded workflows.
 pub(crate) struct LoadedWorkflows<'a, 'cx> {
-    batch: &'a BatchConfig<'a, 'cx>,
+    batch: &'a SessionConfig<'a, 'cx>,
     workflows: Vec<(WorkflowManifest<'a, 'cx>, Vec<Job>)>,
 }
 
 impl<'a, 'cx> LoadedWorkflows<'a, 'cx> {
     /// Construct a new collection of loaded workflows.
     pub(super) fn new(
-        batch: &'a BatchConfig<'a, 'cx>,
+        batch: &'a SessionConfig<'a, 'cx>,
         workflows: Vec<(WorkflowManifest<'a, 'cx>, Vec<Job>)>,
     ) -> Self {
         Self { batch, workflows }

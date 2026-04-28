@@ -6,7 +6,7 @@ use anyhow::Result;
 use crate::config::Os;
 use crate::rstr::{RStr, RString};
 
-use super::{Batch, BatchConfig};
+use super::{Batch, SessionConfig};
 
 /// An actions configuration.
 pub(crate) struct ActionConfig<'a> {
@@ -92,7 +92,7 @@ impl<'a> ActionConfig<'a> {
     /// Construct a new use batch.
     pub(crate) fn new_use_batch(
         &self,
-        batch: &BatchConfig<'_, '_>,
+        batch: &SessionConfig<'_, '_>,
         id: impl AsRef<RStr>,
     ) -> Result<Batch> {
         Batch::with_use(batch, self, id)

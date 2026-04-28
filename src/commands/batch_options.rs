@@ -6,7 +6,7 @@ use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::shell::Shell;
 
-use super::{BatchConfig, RunOn};
+use super::{RunOn, SessionConfig};
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct BatchOptions {
@@ -64,12 +64,12 @@ impl BatchOptions {
         &self,
         cx: &'a Ctxt<'cx>,
         repo: &'a Repo,
-    ) -> Result<BatchConfig<'a, 'cx>> {
+    ) -> Result<SessionConfig<'a, 'cx>> {
         let repo_path = cx.to_path(repo.path());
 
         let shell = self.shell.unwrap_or_else(|| cx.os.shell());
 
-        let mut c = BatchConfig::new(cx, repo_path, shell);
+        let mut c = SessionConfig::new(cx, repo_path, shell);
 
         for &run_on in &self.run_on {
             c.add_run_on(run_on.to_run_on(), run_on.to_os(&cx.os))?;

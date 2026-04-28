@@ -9,9 +9,11 @@ use anyhow::{Context, Result, anyhow, bail};
 use bstr::BString;
 use gix::ObjectId;
 use relative_path::RelativePathBuf;
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use tracing::Level;
 
+use crate::action::ActionKind;
 use crate::ctxt::Ctxt;
 use crate::rstr::RStr;
 use crate::workflows::Eval;
@@ -68,14 +70,12 @@ struct KickMetaRef<'a> {
 pub(crate) struct Actions {
     actions: BTreeSet<(String, String, String)>,
     changed: Vec<(String, String, String)>,
+    pub(crate) found_node_versions: BTreeSet<Version>,
 }
 
 impl Actions {
     /// Add an action by id.
-    pub(super) fn insert_action<S>(&mut self, id: S) -> Result<()>
-    where
-        S: AsRef<RStr>,
-    {
+    pub(super) fn insert_action(&mut self, id: impl AsRef<RStr>) -> Result<()> {
         let id = id.as_ref().to_exposed();
         let u = Use::parse(id.as_ref()).with_context(|| anyhow!("Bad action `{id}`"))?;
 
@@ -102,8 +102,16 @@ impl Actions {
         eval: &Eval,
     ) -> Result<()> {
         for (repo, name, version) in self.changed.drain(..) {
-            sync_action(runners, cx, eval, &repo, &name, &version)
-                .with_context(|| anyhow!("Failed to sync GitHub action {repo}/{name}@{version}"))?;
+            sync_action(
+                runners,
+                cx,
+                eval,
+                &repo,
+                &name,
+                &version,
+                &mut self.found_node_versions,
+            )
+            .with_context(|| anyhow!("Failed to sync GitHub action {repo}/{name}@{version}"))?;
         }
 
         Ok(())
@@ -117,6 +125,7 @@ fn sync_action(
     repo: &str,
     name: &str,
     version: &str,
+    node_versions: &mut BTreeSet<Version>,
 ) -> Result<()> {
     let mut refspecs = Vec::new();
     let key = format!("{repo}/{name}@{version}");
@@ -255,6 +264,10 @@ fn sync_action(
                 files: &repo_files,
             },
         )?;
+    }
+
+    if let ActionKind::Node { node_version, .. } = action.kind {
+        node_versions.insert(Version::new(node_version, 0, 0));
     }
 
     let runner = ActionRunner::new(

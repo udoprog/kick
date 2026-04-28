@@ -5,7 +5,7 @@ use termcolor::WriteColor;
 
 use crate::process::Command;
 
-use super::BatchConfig;
+use super::SessionConfig;
 
 /// Suggestions that might arise from a preparation.
 #[derive(Default)]
@@ -19,7 +19,7 @@ impl Remediations {
         self.remediations.is_empty()
     }
 
-    pub(super) fn command(&mut self, title: impl fmt::Display, command: Command) {
+    pub(crate) fn command(&mut self, title: impl fmt::Display, command: Command) {
         self.remediations.push(Remediation::Command {
             title: title.to_string(),
             command,
@@ -27,7 +27,7 @@ impl Remediations {
     }
 
     /// Apply remediations.
-    pub(crate) fn apply<O>(self, o: &mut O, c: &BatchConfig<'_, '_>) -> Result<()>
+    pub(crate) fn apply<O>(self, o: &mut O, c: &SessionConfig<'_, '_>) -> Result<()>
     where
         O: ?Sized + WriteColor,
     {
@@ -47,7 +47,7 @@ impl Remediations {
     }
 
     /// Print suggestions.
-    pub(crate) fn print<O>(&self, o: &mut O, c: &BatchConfig<'_, '_>) -> Result<()>
+    pub(crate) fn print<O>(&self, o: &mut O, c: &SessionConfig<'_, '_>) -> Result<()>
     where
         O: ?Sized + WriteColor,
     {

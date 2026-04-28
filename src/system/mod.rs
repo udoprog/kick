@@ -4,6 +4,7 @@ pub(crate) mod git;
 mod node;
 mod wsl;
 
+use std::collections::BTreeSet;
 use std::collections::HashSet;
 use std::env;
 use std::env::consts::EXE_EXTENSION;
@@ -14,7 +15,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
+
+use crate::commands::Remediations;
+use crate::config::Distribution;
+use crate::process::Command;
 
 pub(crate) use self::dnf::Dnf;
 pub(crate) use self::generic::Generic;
@@ -25,26 +30,32 @@ pub(crate) use self::wsl::Wsl;
 
 type ProbeFn = fn(&mut System, &Path) -> Result<()>;
 
-const TESTS: &[(&str, ProbeFn, Allow)] = &[
-    ("git", git_probe, Allow::None),
-    ("wsl", wsl_probe, Allow::System32),
-    ("powershell", powershell_probe, Allow::None),
-    ("bash", bash_probe, Allow::None),
-    ("node", node_probe, Allow::None),
-    ("podman", podman_probe, Allow::None),
-    ("dnf", dnf_probe, Allow::None),
-    ("sudo", sudo_probe, Allow::None),
-    ("dpkg-query", dpkg_query_probe, Allow::None),
-    ("apt", apt_probe, Allow::None),
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Name {
+    Exact(&'static str),
+    Prefix(&'static str),
+}
+
+const TESTS: &[(Name, ProbeFn, Allow)] = &[
+    (Name::Exact("git"), git_probe, Allow::Default),
+    (Name::Exact("wsl"), wsl_probe, Allow::System32),
+    (Name::Exact("powershell"), powershell_probe, Allow::Default),
+    (Name::Exact("bash"), bash_probe, Allow::Default),
+    (Name::Exact("podman"), podman_probe, Allow::Default),
+    (Name::Exact("dnf"), dnf_probe, Allow::Default),
+    (Name::Exact("sudo"), sudo_probe, Allow::Default),
+    (Name::Exact("dpkg-query"), dpkg_query_probe, Allow::Default),
+    (Name::Exact("apt"), apt_probe, Allow::Default),
+    (Name::Prefix("node"), node_probe, Allow::Default),
 ];
 
 #[cfg(windows)]
-const MSYS_TESTS: &[(&str, ProbeFn, Allow)] = &[("bash", bash_msys64_probe, Allow::None)];
+const MSYS_TESTS: &[(&str, ProbeFn, Allow)] = &[("bash", bash_msys64_probe, Allow::Default)];
 
 /// Detect system commands.
 #[derive(Default)]
 pub(crate) struct System {
-    pub(crate) visited: HashSet<(PathBuf, &'static str)>,
+    visited: HashSet<(PathBuf, Name)>,
     pub(crate) git: Vec<Git>,
     pub(crate) wsl: Vec<Wsl>,
     pub(crate) powershell: Vec<Generic>,
@@ -59,7 +70,7 @@ pub(crate) struct System {
 
 impl System {
     /// Find a node version to use.
-    pub(crate) fn find_node(&self, major: u32) -> Result<&Node> {
+    pub(crate) fn find_node(&self, major: u64) -> Result<&Node> {
         if self.node.is_empty() {
             bail!("Could not find any node installations on the system");
         }
@@ -124,7 +135,7 @@ impl System {
     }
 
     /// Visit a full path with the given symbolic name.
-    fn visit_path(&mut self, path: &Path, name: &'static str) -> bool {
+    fn visit_path(&mut self, path: &Path, name: Name) -> bool {
         let Some(parent) = path.parent() else {
             return false;
         };
@@ -137,45 +148,211 @@ impl System {
     }
 
     /// Visit a directory.
-    fn visit_dir(&mut self, path: PathBuf, name: &'static str) -> bool {
-        self.visited.insert((path, name))
+    fn visit_dir(&mut self, path: PathBuf, test: Name) -> bool {
+        self.visited.insert((path, test))
     }
 
-    fn walk_paths(
-        &mut self,
-        path: &mut PathBuf,
-        tests: &[(&'static str, ProbeFn, Allow)],
-    ) -> Result<()> {
+    fn probe_path(&mut self, path: &Path, test_fn: ProbeFn, allow: Allow) -> Result<()> {
+        let mut ignored = false;
+
+        if cfg!(windows)
+            && let Some(reason) = test_windows_ignored(path, allow)
+        {
+            // Non-existant files will be I/O ignored, avoid
+            // spamming log entries for it.
+            if reason != IgnoreReason::Io {
+                tracing::debug!(path = ?path.display(), "Ignored: {reason}");
+            }
+
+            ignored = true;
+        }
+
+        if !ignored {
+            tracing::trace!(path = ?path.display(), "testing");
+            test_fn(self, path).with_context(|| anyhow!("Testing {}", path.display()))?;
+        }
+
+        Ok(())
+    }
+
+    fn walk_paths(&mut self, path: &mut PathBuf, tests: &[(Name, ProbeFn, Allow)]) -> Result<()> {
         let Ok(canonical) = path.canonicalize() else {
             return Ok(());
         };
 
-        for &(name, test, allow) in tests {
+        for &(name, test_fn, allow) in tests {
             if self.visit_dir(canonical.clone(), name) {
-                path.push(name);
-                path.set_extension(EXE_EXTENSION);
-
-                let mut ignored = false;
-
-                if cfg!(windows)
-                    && let Some(reason) = test_windows_ignored(path, allow)
-                {
-                    // Non-existant files will be I/O ignored, avoid
-                    // spamming log entries for it.
-                    if reason != IgnoreReason::Io {
-                        tracing::debug!(path = ?path.display(), "Ignored: {reason}");
+                match name {
+                    Name::Exact(exact) => {
+                        path.push(exact);
+                        path.set_extension(EXE_EXTENSION);
+                        self.probe_path(&path, test_fn, allow)?;
                     }
+                    Name::Prefix(prefix) => {
+                        let iter = match fs::read_dir(&canonical) {
+                            Ok(iter) => iter,
+                            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                            Err(e) => {
+                                return Err(e)
+                                    .context(format!("Reading directory {}", canonical.display()));
+                            }
+                        };
 
-                    ignored = true;
-                }
+                        for e in iter {
+                            let e = match e {
+                                Ok(e) => e,
+                                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                                Err(e) => {
+                                    return Err(e).context(format!(
+                                        "Reading directory {}",
+                                        canonical.display()
+                                    ));
+                                }
+                            };
 
-                if !ignored {
-                    tracing::trace!(path = ?path.display(), "testing");
-                    test(self, path).with_context(|| anyhow!("Testing {}", path.display()))?;
+                            let file_name = e.file_name();
+
+                            let Some(file_name) = file_name.to_str() else {
+                                continue;
+                            };
+
+                            if file_name.starts_with(prefix) {
+                                path.push(file_name);
+                                self.probe_path(&path, test_fn, allow)?;
+                                path.pop();
+                            }
+                        }
+                    }
                 }
 
                 path.pop();
             }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn debian_ensure_packages(
+        &self,
+        what: impl fmt::Display,
+        packages: impl IntoIterator<Item: AsRef<str>>,
+        suggestions: &mut Remediations,
+    ) -> Result<()> {
+        let Some(sudo) = self.sudo.first() else {
+            bail!("sudo not available");
+        };
+
+        let Some(dpkg_query) = self.dpkg_query.first() else {
+            bail!("dpkg-query not available");
+        };
+
+        let Some(apt) = self.apt.first() else {
+            bail!("apt not available");
+        };
+
+        let mut wanted = BTreeSet::new();
+
+        for package in packages {
+            wanted.insert(package.as_ref().to_owned());
+        }
+
+        dpkg_query_list_installed(dpkg_query.command(), |package| {
+            wanted.remove(package);
+        })?;
+
+        if !wanted.is_empty() {
+            let packages = wanted.into_iter().collect::<Vec<_>>();
+            let packages = packages.join(" ");
+
+            let mut command = sudo.command();
+            command.arg("--");
+            command.arg(&apt.path);
+            command.args(["install", "--yes"]);
+            command.arg(&packages);
+
+            suggestions.command(format_args!("Some packages in {what} are missing"), command);
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn debian_ensure_wsl_packages(
+        &self,
+        path: impl AsRef<Path>,
+        dist: Distribution,
+        packages: impl IntoIterator<Item: AsRef<str>>,
+        suggestions: &mut Remediations,
+    ) -> Result<()> {
+        let path = path.as_ref();
+
+        let Some(wsl) = self.wsl.first() else {
+            bail!("WSL not available");
+        };
+
+        let mut wanted = BTreeSet::new();
+
+        for package in packages {
+            wanted.insert(package.as_ref().to_owned());
+        }
+
+        let mut command = wsl.shell(path, dist);
+        command.args(["dpkg-query"]);
+
+        dpkg_query_list_installed(command, |package| {
+            wanted.remove(package);
+        })?;
+
+        if !wanted.is_empty() {
+            let packages = wanted.into_iter().collect::<Vec<_>>();
+            let packages = packages.join(" ");
+
+            let mut command = wsl.shell(path, dist);
+
+            command.args(["bash", "-i", "-c"]).arg(format!(
+                "sudo apt update && sudo apt install --yes {packages}"
+            ));
+
+            suggestions.command(format_args!("Some packages in {dist} are missing"), command);
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn fedora_ensure_packages(
+        &self,
+        what: impl fmt::Display,
+        packages: impl IntoIterator<Item: AsRef<str>>,
+        suggestions: &mut Remediations,
+    ) -> Result<()> {
+        let Some(sudo) = self.sudo.first() else {
+            bail!("sudo not available");
+        };
+
+        let Some(dnf) = self.dnf.first() else {
+            bail!("dnf not available");
+        };
+
+        let mut wanted = BTreeSet::new();
+
+        for package in packages {
+            wanted.insert(package.as_ref().to_owned());
+        }
+
+        for package in dnf.list_installed()? {
+            wanted.remove(package.as_str());
+        }
+
+        if !wanted.is_empty() {
+            let packages = wanted.into_iter().collect::<Vec<_>>();
+            let packages = packages.join(" ");
+
+            let mut command = sudo.command();
+            command.arg("--");
+            command.arg(&dnf.path);
+            command.args(["install", "--assumeyes"]);
+            command.arg(&packages);
+
+            suggestions.command(format_args!("Some packages in {what} are missing"), command);
         }
 
         Ok(())
@@ -191,7 +368,7 @@ pub(crate) fn detect() -> Result<System> {
     if let Some(path) = env::var_os("GIT_PATH") {
         let path = PathBuf::from(path);
 
-        if system.visit_path(&path, "git") && probe(&path, "--version")? {
+        if system.visit_path(&path, Name::Exact("git")) && probe(&path, "--version")? {
             system.git.push(Git::new(path));
         }
     }
@@ -303,7 +480,7 @@ fn bash_msys64_probe(s: &mut System, path: &Path) -> Result<()> {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Allow {
-    None,
+    Default,
     System32,
 }
 
@@ -401,4 +578,29 @@ where
             arg.to_string_lossy()
         )),
     }
+}
+
+fn dpkg_query_list_installed(mut command: Command, mut visit: impl FnMut(&str)) -> Result<()> {
+    let output = command
+        .args(["-W", "-f", "\\${db:Status-Status} \\${Package}\n"])
+        .stdout(Stdio::piped())
+        .output()?;
+
+    ensure!(
+        output.status.success(),
+        "Failed to query installed packages: {}",
+        output.status
+    );
+
+    for line in output.stdout.split(|&b| b == b'\n') {
+        let Ok(line) = str::from_utf8(line) else {
+            continue;
+        };
+
+        if let Some(("installed", package)) = line.split_once(' ') {
+            visit(package);
+        }
+    }
+
+    Ok(())
 }

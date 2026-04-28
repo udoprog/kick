@@ -11,7 +11,7 @@ use crate::rstr::{RStr, RString};
 use crate::shell::Shell;
 use crate::workflows::{Eval, Step, Tree};
 
-use super::{ActionConfig, ActionRunner, ActionRunners, BatchConfig, Env, Run, Session};
+use super::{ActionConfig, ActionRunner, ActionRunners, Env, Run, Session, SessionConfig};
 
 /// Schedule outputs.
 #[derive(Clone)]
@@ -72,7 +72,7 @@ impl Schedule {
 
 /// Add jobs from a workflows, matrix, and associated steps.
 pub(super) fn build_steps(
-    batch: &BatchConfig<'_, '_>,
+    batch: &SessionConfig<'_, '_>,
     c: Option<&ActionConfig<'_>>,
     id: Option<&Rc<RStr>>,
     name: Option<&RStr>,
@@ -143,7 +143,7 @@ impl ScheduleBasicCommand {
 #[derive(Clone)]
 pub(crate) struct ScheduleNodeAction {
     path: Rc<Path>,
-    node_version: u32,
+    node_version: u64,
     skipped: Option<String>,
     env: Env,
     condition: Option<String>,
@@ -152,7 +152,7 @@ pub(crate) struct ScheduleNodeAction {
 impl ScheduleNodeAction {
     pub(crate) fn new(
         path: Rc<Path>,
-        node_version: u32,
+        node_version: u64,
         skipped: Option<&str>,
         env: Env,
         condition: Option<String>,
@@ -312,7 +312,7 @@ impl ScheduleUse {
 
     pub(super) fn build(
         self,
-        batch: &BatchConfig<'_, '_>,
+        batch: &SessionConfig<'_, '_>,
         parent: &Tree,
         runners: &ActionRunners,
         os: &Os,

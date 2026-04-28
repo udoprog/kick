@@ -32,7 +32,7 @@ pub(super) enum ActionKind {
         pre_if: Option<String>,
         post: Option<Rc<Path>>,
         post_if: Option<String>,
-        node_version: u32,
+        node_version: u64,
     },
     Composite {
         steps: Vec<Rc<Step>>,
@@ -145,18 +145,38 @@ impl<'repo> ActionContext<'repo> {
     ) -> Result<Action> {
         let kind = match kind {
             ActionRunnerKind::Node(node) => {
-                let Ok(node) = u32::from_str(node.as_ref()) else {
+                let Ok(node_version) = u64::from_str(node.as_ref()) else {
                     return Err(anyhow!("Invalid node runner version `{node}`"));
                 };
 
                 let mut out = Vec::new();
 
                 let main = self
-                    .extract(version, node, dir, &mut out, self.main.as_deref(), "main")?
+                    .extract(
+                        version,
+                        node_version,
+                        dir,
+                        &mut out,
+                        self.main.as_deref(),
+                        "main",
+                    )?
                     .with_context(|| anyhow!("Missing main script"))?;
-                let pre = self.extract(version, node, dir, &mut out, self.pre.as_deref(), "pre")?;
-                let post =
-                    self.extract(version, node, dir, &mut out, self.post.as_deref(), "post")?;
+                let pre = self.extract(
+                    version,
+                    node_version,
+                    dir,
+                    &mut out,
+                    self.pre.as_deref(),
+                    "pre",
+                )?;
+                let post = self.extract(
+                    version,
+                    node_version,
+                    dir,
+                    &mut out,
+                    self.post.as_deref(),
+                    "post",
+                )?;
 
                 if let Some(path) = &self.action_yml {
                     let (action_yml, _) = self
@@ -164,8 +184,9 @@ impl<'repo> ActionContext<'repo> {
                         .get(path)
                         .with_context(|| anyhow!("Missing {path}"))?;
 
-                    let action_yml_path =
-                        Rc::<Path>::from(dir.join(format!("action-{node}-{node}.yml")));
+                    let action_yml_path = Rc::<Path>::from(
+                        dir.join(format!("action-{node_version}-{node_version}.yml")),
+                    );
 
                     out.push((action_yml_path, action_yml));
                 }
@@ -187,7 +208,7 @@ impl<'repo> ActionContext<'repo> {
                     pre_if: self.pre_if.clone(),
                     post,
                     post_if: self.post_if.clone(),
-                    node_version: node,
+                    node_version,
                 }
             }
             ActionRunnerKind::Composite => {
@@ -253,7 +274,7 @@ impl<'repo> ActionContext<'repo> {
     fn extract(
         &'repo self,
         version: &str,
-        node_version: u32,
+        node_version: u64,
         dir: &Path,
         exports: &mut Vec<(Rc<Path>, &Id<'repo>)>,
         relative_path: Option<&RelativePath>,

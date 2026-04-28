@@ -16,7 +16,7 @@ use super::{Colors, LoadedWorkflows, RunOn};
 const GITHUB_SERVER: &str = "https://github.com";
 
 /// A batch runner configuration.
-pub(crate) struct BatchConfig<'a, 'cx> {
+pub(crate) struct SessionConfig<'a, 'cx> {
     pub(super) cx: &'a Ctxt<'cx>,
     pub(super) process_id: u32,
     pub(super) path: PathBuf,
@@ -36,7 +36,7 @@ pub(crate) struct BatchConfig<'a, 'cx> {
     pub(super) github_token: Option<Box<RStr>>,
 }
 
-impl<'a, 'cx> BatchConfig<'a, 'cx> {
+impl<'a, 'cx> SessionConfig<'a, 'cx> {
     /// Construct a new batch configuration.
     pub(crate) fn new(cx: &'a Ctxt<'cx>, path: PathBuf, shell: Shell) -> Self {
         Self {

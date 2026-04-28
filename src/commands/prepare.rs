@@ -1,50 +1,20 @@
-use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Stdio;
 use std::str;
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, bail};
+use semver::Version;
 
 use crate::config::{Distribution, Os};
 use crate::process::Command;
 use crate::workflows::Eval;
 
-use super::{ActionRunners, Actions, BatchConfig, Remediations};
-
-enum Suffix {
-    NodeVersion,
-}
-
-enum Wanted<'a> {
-    Fixed(&'a str),
-    Suffixed(&'a str, Suffix),
-}
-
-impl<'a> Wanted<'a> {
-    fn format(&self) -> Cow<'a, str> {
-        match self {
-            Self::Fixed(name) => Cow::Borrowed(*name),
-            Self::Suffixed(name, suffix) => match suffix {
-                Suffix::NodeVersion => Cow::Owned(format!("{}{}", name, NODE_VERSION)),
-            },
-        }
-    }
-}
+use super::{ActionRunners, Actions, Remediations, SessionConfig};
 
 const CURL: &str = "curl --proto '=https' --tlsv1.2 -sSf";
-const DEBIAN_WANTED: &[Wanted<'static>] = &[
-    Wanted::Fixed("gcc"),
-    Wanted::Fixed("pkg-config"),
-    Wanted::Fixed("nodejs"),
-    Wanted::Fixed("libssl-dev"),
-];
-const FEDORA_WANTED: &[Wanted<'static>] = &[
-    Wanted::Fixed("gcc"),
-    Wanted::Suffixed("nodejs", Suffix::NodeVersion),
-    Wanted::Fixed("openssl-devel"),
-];
-const NODE_VERSION: u32 = 22;
+const DEBIAN_WANTED: &[&'static str] = &["gcc", "pkg-config", "libssl-dev"];
+const FEDORA_WANTED: &[&'static str] = &["gcc", "openssl-devel"];
 
 /// Preparations that need to be done before running a batch.
 pub(crate) struct Session {
@@ -54,6 +24,8 @@ pub(crate) struct Session {
     pub(super) is_same: bool,
     /// Loaded distributions.
     prepared_dists: BTreeSet<Distribution>,
+    /// Prepared node versions.
+    prepared_node_versions: BTreeSet<(Distribution, Version)>,
     /// Whether we have prepared the same distro.
     is_same_prepare: bool,
     /// Actions that need to be synchronized.
@@ -70,11 +42,12 @@ pub(crate) struct Session {
 
 impl Session {
     /// Construct a new preparation.
-    pub(crate) fn new(c: &BatchConfig<'_, '_>) -> Self {
+    pub(crate) fn new(c: &SessionConfig<'_, '_>) -> Self {
         Self {
             dists: BTreeSet::new(),
             is_same: false,
             prepared_dists: BTreeSet::new(),
+            prepared_node_versions: BTreeSet::new(),
             is_same_prepare: false,
             actions: Actions::default(),
             runners: ActionRunners::default(),
@@ -109,7 +82,7 @@ impl Session {
     /// Run all preparations.
     pub(super) fn prepare(
         &mut self,
-        config: &BatchConfig<'_, '_>,
+        config: &SessionConfig<'_, '_>,
         eval: &Eval,
     ) -> Result<Remediations> {
         let mut suggestions = Remediations::default();
@@ -125,10 +98,19 @@ impl Session {
 
         self.actions
             .synchronize(&mut self.runners, config.cx, eval)?;
+
+        while let Some(version) = self.actions.found_node_versions.pop_first() {
+            self.prepare_node_version(&version, config, &mut suggestions)?;
+        }
+
         Ok(suggestions)
     }
 
-    fn prepare_wsl(&mut self, config: &BatchConfig, suggestions: &mut Remediations) -> Result<()> {
+    fn prepare_wsl(
+        &mut self,
+        config: &SessionConfig,
+        suggestions: &mut Remediations,
+    ) -> Result<()> {
         let Some(wsl) = config.cx.system.wsl.first() else {
             bail!("WSL not available");
         };
@@ -196,48 +178,12 @@ impl Session {
 
             match dist {
                 Distribution::Ubuntu | Distribution::Debian => {
-                    let mut wanted = BTreeSet::new();
-
-                    for package in DEBIAN_WANTED {
-                        wanted.insert(package.format());
-                    }
-
-                    if has_wsl {
-                        let mut command = wsl.shell(&config.path, dist);
-
-                        command.args(["dpkg-query"]);
-
-                        dpkg_query_list_installed(command, |package| {
-                            wanted.remove(package);
-                        })?;
-                    }
-
-                    let wants_node_js = wanted.remove("nodejs");
-
-                    if !wanted.is_empty() {
-                        let packages = wanted.into_iter().collect::<Vec<_>>();
-                        let packages = packages.join(" ");
-
-                        let mut command = wsl.shell(&config.path, dist);
-
-                        command.args(["bash", "-i", "-c"]).arg(format!(
-                            "sudo apt update && sudo apt install --yes {packages}"
-                        ));
-
-                        suggestions
-                            .command(format_args!("Some packages in {dist} are missing"), command);
-                    }
-
-                    if wants_node_js {
-                        let mut command = wsl.shell(&config.path, dist);
-                        command.args(["bash", "-i", "-c"]).arg(format!(
-                            "{CURL} https://deb.nodesource.com/setup_{NODE_VERSION}.x | sudo -E bash - && sudo apt-get install -y nodejs"
-                        ));
-                        suggestions.command(
-                            format_args!("Missing a modern nodejs version in {dist}"),
-                            command,
-                        );
-                    }
+                    config.cx.system.debian_ensure_wsl_packages(
+                        &config.path,
+                        dist,
+                        DEBIAN_WANTED,
+                        suggestions,
+                    )?;
                 }
                 _ => {}
             }
@@ -247,89 +193,114 @@ impl Session {
     }
 
     /// Prepare the same distro.
-    fn prepare_same(&mut self, config: &BatchConfig, suggestions: &mut Remediations) -> Result<()> {
+    fn prepare_same(
+        &mut self,
+        config: &SessionConfig,
+        suggestions: &mut Remediations,
+    ) -> Result<()> {
         let os = &config.cx.os;
         let dist = &config.cx.dist;
 
         match os {
             Os::Windows => {}
-            Os::Linux => {
-                let Some(sudo) = config.cx.system.sudo.first() else {
-                    bail!("sudo not available");
-                };
-
-                match dist {
-                    Distribution::Ubuntu | Distribution::Debian => {
-                        let Some(dpkg_query) = config.cx.system.dpkg_query.first() else {
-                            bail!("dpkg-query not available");
-                        };
-
-                        let Some(apt) = config.cx.system.apt.first() else {
-                            bail!("apt not available");
-                        };
-
-                        let mut wanted = BTreeSet::new();
-
-                        for package in FEDORA_WANTED {
-                            wanted.insert(package.format());
-                        }
-
-                        dpkg_query_list_installed(dpkg_query.command(), |package| {
-                            wanted.remove(package);
-                        })?;
-
-                        if !wanted.is_empty() {
-                            let packages = wanted.into_iter().collect::<Vec<_>>();
-                            let packages = packages.join(" ");
-
-                            let mut command = sudo.command();
-                            command.arg("--");
-                            command.arg(&apt.path);
-                            command.args(["install", "--yes"]);
-                            command.arg(&packages);
-
-                            suggestions.command(
-                                format_args!("Some packages in {dist} are missing"),
-                                command,
-                            );
-                        }
-                    }
-                    Distribution::Fedora => {
-                        let Some(dnf) = config.cx.system.dnf.first() else {
-                            bail!("dnf not available");
-                        };
-
-                        let mut wanted = BTreeSet::new();
-
-                        for package in FEDORA_WANTED {
-                            wanted.insert(package.format());
-                        }
-
-                        for package in dnf.list_installed()? {
-                            wanted.remove(package.as_str());
-                        }
-
-                        if !wanted.is_empty() {
-                            let packages = wanted.into_iter().collect::<Vec<_>>();
-                            let packages = packages.join(" ");
-
-                            let mut command = sudo.command();
-                            command.arg("--");
-                            command.arg(&dnf.path);
-                            command.args(["install", "--assumeyes"]);
-                            command.arg(&packages);
-
-                            suggestions.command(
-                                format_args!("Some packages in {dist} are missing"),
-                                command,
-                            );
-                        }
-                    }
-                    Distribution::Other => {}
+            Os::Linux => match dist {
+                Distribution::Ubuntu | Distribution::Debian => {
+                    config
+                        .cx
+                        .system
+                        .debian_ensure_packages(dist, DEBIAN_WANTED, suggestions)?;
                 }
-            }
+                Distribution::Fedora => {
+                    config
+                        .cx
+                        .system
+                        .fedora_ensure_packages(dist, FEDORA_WANTED, suggestions)?;
+                }
+                Distribution::Other => {}
+            },
             Os::Mac => {}
             Os::Other(..) => {}
+        }
+
+        Ok(())
+    }
+
+    fn prepare_node_version(
+        &mut self,
+        version: &Version,
+        config: &SessionConfig,
+        suggestions: &mut Remediations,
+    ) -> Result<()> {
+        let mut to_be_done = Vec::new();
+
+        for &dist in &self.dists {
+            if !self.prepared_node_versions.insert((dist, version.clone())) {
+                continue;
+            }
+
+            to_be_done.push(dist);
+        }
+
+        if to_be_done.is_empty() {
+            return Ok(());
+        }
+
+        match config.cx.os {
+            Os::Windows => {
+                let Some(wsl) = config.cx.system.wsl.first() else {
+                    bail!("WSL not available");
+                };
+
+                let available = wsl.list()?;
+
+                let available = available
+                    .into_iter()
+                    .map(Distribution::from_string_ignore_case)
+                    .collect::<BTreeSet<_>>();
+
+                for dist in to_be_done {
+                    if !available.contains(&dist) {
+                        tracing::warn!(
+                            "Cannot ensure node version {version} in WSL distro {dist} because the distro is not available"
+                        );
+                        continue;
+                    }
+
+                    match dist {
+                        Distribution::Ubuntu | Distribution::Debian => {
+                            config.cx.system.debian_ensure_wsl_packages(
+                                &config.path,
+                                dist,
+                                [format!("nodejs{}", version.major)],
+                                suggestions,
+                            )?;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Os::Linux => {
+                for dist in to_be_done {
+                    match dist {
+                        Distribution::Ubuntu | Distribution::Debian => {
+                            config.cx.system.debian_ensure_packages(
+                                dist,
+                                [format!("nodejs{}", version.major)],
+                                suggestions,
+                            )?;
+                        }
+                        Distribution::Fedora => {
+                            config.cx.system.fedora_ensure_packages(
+                                dist,
+                                [format!("nodejs{}", version.major)],
+                                suggestions,
+                            )?;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
         }
 
         Ok(())
@@ -352,29 +323,4 @@ impl Drop for Session {
     fn drop(&mut self) {
         self.cleanup();
     }
-}
-
-fn dpkg_query_list_installed(mut command: Command, mut visit: impl FnMut(&str)) -> Result<()> {
-    let output = command
-        .args(["-W", "-f", "\\${db:Status-Status} \\${Package}\n"])
-        .stdout(Stdio::piped())
-        .output()?;
-
-    ensure!(
-        output.status.success(),
-        "Failed to query installed packages: {}",
-        output.status
-    );
-
-    for line in output.stdout.split(|&b| b == b'\n') {
-        let Ok(line) = str::from_utf8(line) else {
-            continue;
-        };
-
-        if let Some(("installed", package)) = line.split_once(' ') {
-            visit(package);
-        }
-    }
-
-    Ok(())
 }

@@ -17,7 +17,7 @@ pub(super) enum RunKind {
         args: Box<[OsArg]>,
     },
     Node {
-        node_version: u32,
+        node_version: u64,
         script_file: Rc<Path>,
     },
 }
@@ -66,7 +66,7 @@ impl Run {
     }
 
     /// Setup a command to run.
-    pub(super) fn node(node_version: u32, script_file: Rc<Path>) -> Self {
+    pub(super) fn node(node_version: u64, script_file: Rc<Path>) -> Self {
         Self::with_run(RunKind::Node {
             node_version,
             script_file: script_file.clone(),

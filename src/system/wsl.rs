@@ -17,10 +17,7 @@ impl Wsl {
     }
 
     /// Set up a WSL shell command.
-    pub(crate) fn shell<D>(&self, dir: D, dist: Distribution) -> Command
-    where
-        D: AsRef<Path>,
-    {
+    pub(crate) fn shell(&self, dir: impl AsRef<Path>, dist: Distribution) -> Command {
         let mut command = Command::new(&self.path);
         command.args(["--shell-type", "login"]);
 

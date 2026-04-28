@@ -9,7 +9,7 @@ use crate::config::Os;
 use crate::rstr::{RStr, RString};
 use crate::workflows::{Eval, Tree};
 
-use super::{BatchConfig, Run, Schedule, ScheduleOutputs, Session};
+use super::{Run, Schedule, ScheduleOutputs, Session, SessionConfig};
 
 struct StackEntry {
     name: Option<Rc<RStr>>,
@@ -155,7 +155,7 @@ impl Scheduler {
     pub(super) fn advance<O>(
         &mut self,
         o: &mut O,
-        batch: &BatchConfig<'_, '_>,
+        config: &SessionConfig<'_, '_>,
         session: &mut Session,
         os: &Os,
     ) -> Result<Option<Run>>
@@ -167,15 +167,15 @@ impl Scheduler {
 
             // This will take care to synchronize any actions which are needed
             // to advance the scheduler.
-            let remediations = session.prepare(batch, Eval::empty())?;
+            let remediations = session.prepare(config, Eval::empty())?;
 
             if !remediations.is_empty() {
-                if !batch.fix {
-                    remediations.print(o, batch)?;
+                if !config.fix {
+                    remediations.print(o, config)?;
                     bail!("Failed to prepare commands, use `--fix` to try and fix the system");
                 }
 
-                remediations.apply(o, batch)?;
+                remediations.apply(o, config)?;
             }
 
             match schedule {
@@ -207,7 +207,7 @@ impl Scheduler {
                     return Ok(Some(run));
                 }
                 Schedule::Use(u) => {
-                    let group = u.build(batch, self.tree(), session.runners(), os)?;
+                    let group = u.build(config, self.tree(), session.runners(), os)?;
 
                     let e = self
                         .stack
