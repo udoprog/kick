@@ -13,8 +13,8 @@ use crate::workflows::Eval;
 use super::{ActionRunners, Actions, Remediations, SessionConfig};
 
 const CURL: &str = "curl --proto '=https' --tlsv1.2 -sSf";
-const DEBIAN_WANTED: &[&'static str] = &["gcc", "pkg-config", "libssl-dev"];
-const FEDORA_WANTED: &[&'static str] = &["gcc", "openssl-devel"];
+const DEBIAN_WANTED: &[&str] = &["gcc", "pkg-config", "libssl-dev"];
+const FEDORA_WANTED: &[&str] = &["gcc", "openssl-devel"];
 
 /// Preparations that need to be done before running a batch.
 pub(crate) struct Session {

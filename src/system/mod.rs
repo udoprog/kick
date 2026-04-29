@@ -50,7 +50,8 @@ const TESTS: &[(Name, ProbeFn, Allow)] = &[
 ];
 
 #[cfg(windows)]
-const MSYS_TESTS: &[(&str, ProbeFn, Allow)] = &[("bash", bash_msys64_probe, Allow::Default)];
+const MSYS_TESTS: &[(Name, ProbeFn, Allow)] =
+    &[(Name::Exact("bash"), bash_msys64_probe, Allow::Default)];
 
 /// Detect system commands.
 #[derive(Default)]
@@ -186,7 +187,7 @@ impl System {
                     Name::Exact(exact) => {
                         path.push(exact);
                         path.set_extension(EXE_EXTENSION);
-                        self.probe_path(&path, test_fn, allow)?;
+                        self.probe_path(path, test_fn, allow)?;
                     }
                     Name::Prefix(prefix) => {
                         let iter = match fs::read_dir(&canonical) {
@@ -218,7 +219,7 @@ impl System {
 
                             if file_name.starts_with(prefix) {
                                 path.push(file_name);
-                                self.probe_path(&path, test_fn, allow)?;
+                                self.probe_path(path, test_fn, allow)?;
                                 path.pop();
                             }
                         }
