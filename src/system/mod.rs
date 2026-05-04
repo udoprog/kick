@@ -11,9 +11,8 @@ use std::env::consts::EXE_EXTENSION;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Command as StdCommand, Stdio};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 
@@ -124,7 +123,7 @@ impl System {
             let mut path = msys.to_owned();
             path.push("usr");
             path.push("bin");
-            self.walk_paths(&mut path, MSYS_TESTS)?;
+            self.test_paths(&mut path, MSYS_TESTS)?;
         }
 
         Ok(())
@@ -136,7 +135,7 @@ impl System {
     }
 
     /// Visit a full path with the given symbolic name.
-    fn visit_path(&mut self, path: &Path, name: Name) -> bool {
+    fn should_visit_parent(&mut self, path: &Path, name: Name) -> bool {
         let Some(parent) = path.parent() else {
             return false;
         };
@@ -145,12 +144,7 @@ impl System {
             return false;
         };
 
-        self.visit_dir(parent, name)
-    }
-
-    /// Visit a directory.
-    fn visit_dir(&mut self, path: PathBuf, test: Name) -> bool {
-        self.visited.insert((path, test))
+        self.visited.insert((parent, name))
     }
 
     fn probe_path(&mut self, path: &Path, test_fn: ProbeFn, allow: Allow) -> Result<()> {
@@ -170,63 +164,61 @@ impl System {
 
         if !ignored {
             tracing::trace!(path = ?path.display(), "testing");
-            test_fn(self, path).with_context(|| anyhow!("Testing {}", path.display()))?;
+
+            if let Err(error) = test_fn(self, path) {
+                tracing::trace!(path = ?path.display(), %error, "Failed test");
+            }
         }
 
         Ok(())
     }
 
-    fn walk_paths(&mut self, path: &mut PathBuf, tests: &[(Name, ProbeFn, Allow)]) -> Result<()> {
+    fn test_paths(&mut self, path: &mut PathBuf, tests: &[(Name, ProbeFn, Allow)]) -> Result<()> {
         let Ok(canonical) = path.canonicalize() else {
             return Ok(());
         };
 
         for &(name, test_fn, allow) in tests {
-            if self.visit_dir(canonical.clone(), name) {
-                match name {
-                    Name::Exact(exact) => {
-                        path.push(exact);
-                        path.set_extension(EXE_EXTENSION);
-                        self.probe_path(path, test_fn, allow)?;
-                    }
-                    Name::Prefix(prefix) => {
-                        let iter = match fs::read_dir(&canonical) {
-                            Ok(iter) => iter,
-                            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            if !self.visited.insert((canonical.clone(), name)) {
+                continue;
+            }
+
+            match name {
+                Name::Exact(exact) => {
+                    path.push(exact);
+                    path.set_extension(EXE_EXTENSION);
+                    self.probe_path(path, test_fn, allow)?;
+                    path.pop();
+                }
+                Name::Prefix(prefix) => {
+                    let iter = match fs::read_dir(&canonical) {
+                        Ok(iter) => iter,
+                        Err(e) => {
+                            tracing::debug!(path = ?canonical.display(), error = ?e, "Failed to read directory");
+                            continue;
+                        }
+                    };
+
+                    for e in iter {
+                        let e = match e {
+                            Ok(e) => e,
                             Err(e) => {
-                                return Err(e)
-                                    .context(format!("Reading directory {}", canonical.display()));
+                                tracing::debug!(path = ?canonical.display(), error = ?e, "Failed to read directory");
+                                break;
                             }
                         };
 
-                        for e in iter {
-                            let e = match e {
-                                Ok(e) => e,
-                                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-                                Err(e) => {
-                                    return Err(e).context(format!(
-                                        "Reading directory {}",
-                                        canonical.display()
-                                    ));
-                                }
-                            };
+                        let n = e.file_name();
 
-                            let file_name = e.file_name();
-
-                            let Some(file_name) = file_name.to_str() else {
-                                continue;
-                            };
-
-                            if file_name.starts_with(prefix) {
-                                path.push(file_name);
-                                self.probe_path(path, test_fn, allow)?;
-                                path.pop();
-                            }
+                        if let Some(n) = n.to_str()
+                            && n.starts_with(prefix)
+                        {
+                            path.push(n);
+                            self.probe_path(path, test_fn, allow)?;
+                            path.pop();
                         }
                     }
                 }
-
-                path.pop();
             }
         }
 
@@ -369,14 +361,14 @@ pub(crate) fn detect() -> Result<System> {
     if let Some(path) = env::var_os("GIT_PATH") {
         let path = PathBuf::from(path);
 
-        if system.visit_path(&path, Name::Exact("git")) && probe(&path, "--version")? {
+        if system.should_visit_parent(&path, Name::Exact("git")) && probe(&path, "--version")? {
             system.git.push(Git::new(path));
         }
     }
 
     if let Some(path) = env::var_os("PATH") {
         for mut path in env::split_paths(&path) {
-            system.walk_paths(&mut path, TESTS)?;
+            system.test_paths(&mut path, TESTS)?;
         }
     }
 
@@ -523,23 +515,18 @@ fn test_windows_ignored(path: &Path, allow: Allow) -> Option<IgnoreReason> {
     None
 }
 
-fn probe<C, A>(command: C, arg: A) -> Result<bool>
-where
-    C: AsRef<OsStr>,
-    A: AsRef<OsStr>,
-{
+fn probe(command: impl AsRef<OsStr>, arg: impl AsRef<OsStr>) -> Result<bool> {
     let command = command.as_ref();
     let arg = arg.as_ref();
 
-    match std::process::Command::new(command)
+    match StdCommand::new(command)
         .arg(arg)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
     {
         Ok(status) => Ok(status.success()),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(e).context(format!(
+        Err(e) => Err(e).context(anyhow!(
             "{} {}",
             command.to_string_lossy(),
             arg.to_string_lossy()
@@ -547,15 +534,11 @@ where
     }
 }
 
-fn probe_with_out<C, A>(command: C, arg: A) -> Result<Option<String>>
-where
-    C: AsRef<OsStr>,
-    A: AsRef<OsStr>,
-{
+fn probe_with_out(command: impl AsRef<OsStr>, arg: impl AsRef<OsStr>) -> Result<Option<String>> {
     let command = command.as_ref();
     let arg = arg.as_ref();
 
-    match std::process::Command::new(command)
+    match StdCommand::new(command)
         .arg(arg)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -566,14 +549,10 @@ where
                 return Ok(None);
             }
 
-            let Ok(string) = String::from_utf8(output.stdout) else {
-                return Ok(None);
-            };
-
+            let string = String::from_utf8(output.stdout)?;
             Ok(Some(string))
         }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).context(format!(
+        Err(e) => Err(e).context(anyhow!(
             "{} {}",
             command.to_string_lossy(),
             arg.to_string_lossy()
