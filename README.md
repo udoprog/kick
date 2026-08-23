@@ -359,34 +359,40 @@ The same things go in a `[deploy]` section once they stop fitting on a command
 line, or when they belong to the project rather than to one deployment:
 
 ```toml
-[variables]
+[deploy]
+host = ["moore", "dahl"]
+user = "integration"
+pre_build = ["trunk build --release"]
+build_features = ["bundle"]
+
+[deploy.systemd]
 args = ["--bind", "0.0.0.0:3004"]
 user = "track"
 group = "track"
-
-[deploy]
-host = "integration@moore"
-pre_build = ["trunk build --release"]
-build_features = ["bundle"]
 ```
 
-Either way `kick deploy` runs the build, uploads the binary, and over a single
-`ssh` connection stops the service, installs the binary into `/usr/local/bin`,
-installs the unit into `/etc/systemd/system`, and starts the service again. The
-unit is compared against the installed one first, so systemd is only reloaded
-when it actually changed.
+`host` takes a list when the project runs on more than one machine, in which case
+it is built once and each host is deployed to in turn. `user` is the user being
+logged in as, which is not the same thing as the `user` in `[deploy.systemd]`
+that the service itself runs as.
 
-The unit comes from a built-in template which is filled in from your
-[variables][variables-config], so there is nothing to write to get a working
-service. When you need something it doesn't cover, point `systemd` at a unit file
-of your own instead — they are [minijinja] templates, so
+Either way `kick deploy` runs the build, uploads the binary, and over a single
+`ssh` connection per host stops the service, installs the binary into
+`/usr/local/bin`, installs the unit into `/etc/systemd/system`, and starts the
+service again. The unit is compared against the installed one first, so systemd
+is only reloaded when it actually changed.
+
+The unit comes from a built-in template which is filled in from whatever you
+put in `[deploy.systemd]`, so there is nothing to write to get a working service.
+When you need something it doesn't cover, point `systemd` at a unit file of your
+own instead — they are [minijinja] templates, so
 `ExecStart={{ exec }} {{ args | join(" ") }}` picks up the remote path of the
 binary along with anything else you have defined.
 
 [minijinja]: https://docs.rs/minijinja
 
-Before any of this happens the host is logged into once to make sure that we can
-actually reach it as the user we expect, that the commands being used are
+Before any of this happens every host is logged into once to make sure that we
+can actually reach it as the user we expect, that the commands being used are
 available, and that `sudo` doesn't need a password. Finding that out after a
 lengthy build is not very helpful.
 
@@ -456,5 +462,4 @@ Note that version information is exported by default when specifying
 
 [config]: https://github.com/udoprog/kick/blob/main/config.md
 [deploy-config]: https://github.com/udoprog/kick/blob/main/config/deploy.md
-[variables-config]: https://github.com/udoprog/kick/blob/main/config/variables.md
 [wobbly-versions]: https://github.com/udoprog/kick/blob/main/WOBBLY_VERSIONS.md

@@ -183,8 +183,10 @@ pub(crate) struct DeployFile {
 /// Deployment configuration.
 #[derive(Default, Debug, Clone)]
 pub(crate) struct Deploy {
-    /// The host to deploy to, such as `user@example.com`.
-    pub(crate) host: Option<String>,
+    /// The hosts to deploy to, such as `example.com`.
+    pub(crate) host: Vec<String>,
+    /// The user to log into the hosts as.
+    pub(crate) user: Option<String>,
     /// The port to connect to.
     pub(crate) port: Option<u16>,
     /// The identity file to authenticate with.
@@ -218,7 +220,14 @@ pub(crate) struct Deploy {
 
 impl Deploy {
     fn merge_with(&mut self, mut other: Self) {
-        self.host = other.host.or(self.host.take());
+        // NB: Hosts replace rather than extend, since a more specific layer
+        // which names its own hosts is redirecting the deployment rather than
+        // adding to it.
+        if !other.host.is_empty() {
+            self.host = other.host;
+        }
+
+        self.user = other.user.or(self.user.take());
         self.port = other.port.or(self.port.take());
         self.identity_file = other.identity_file.or(self.identity_file.take());
         self.options.append(&mut other.options);
@@ -245,35 +254,47 @@ impl Deploy {
 #[derive(Debug, Clone)]
 pub(crate) struct Systemd {
     /// Whether a unit should be installed at all, which is how `systemd =
-    /// false` is represented.
-    pub(crate) enabled: bool,
+    /// false` is represented. Defaults to `true`.
+    pub(crate) enabled: Option<bool>,
     /// The source of the template which is rendered into the unit being
-    /// installed.
-    pub(crate) template: Box<str>,
+    /// installed, or `None` for the built-in template.
+    pub(crate) template: Option<Box<str>>,
     /// The name of the unit, defaults to the name of the binary.
     pub(crate) name: Option<String>,
     /// Whether the unit should be enabled so that it starts on boot.
     pub(crate) enable: Option<bool>,
+    /// The variables the unit template is rendered with.
+    ///
+    /// These are every key in the section which isn't one of the options
+    /// above, which scopes them to the unit rather than putting them in the
+    /// global `[variables]` section where nothing else has any use for them.
+    pub(crate) variables: toml::Table,
 }
 
 impl Default for Systemd {
     #[inline]
     fn default() -> Self {
         Self {
-            enabled: true,
-            template: systemd::DEFAULT_TEMPLATE.into(),
+            enabled: None,
+            template: None,
             name: None,
             enable: None,
+            variables: toml::Table::new(),
         }
     }
 }
 
 impl Systemd {
-    fn merge_with(&mut self, other: Self) {
-        self.enabled = other.enabled;
-        self.template = other.template;
+    fn merge_with(&mut self, mut other: Self) {
+        // NB: Only what the more specific layer actually said overrides what
+        // came before it, since a section which just sets a variable has no
+        // opinion on which template is being rendered or whether a unit is
+        // being installed at all.
+        self.enabled = other.enabled.or(self.enabled.take());
+        self.template = other.template.take().or(self.template.take());
         self.name = other.name.or(self.name.take());
         self.enable = other.enable.or(self.enable.take());
+        merge_map(&mut self.variables, other.variables);
     }
 }
 
@@ -1703,6 +1724,15 @@ impl<'a> Cx<'a> {
         })
     }
 
+    /// The hosts being deployed to, which is either a single host or a list of
+    /// them.
+    fn deploy_hosts(&self, value: toml::Value) -> Result<Vec<String>, ErrorMarker> {
+        match value {
+            toml::Value::Array(..) => self.array(value, Self::string),
+            value => Ok(vec![self.string(value)?]),
+        }
+    }
+
     fn deploy_command(&self, value: toml::Value) -> Result<DeployCommand, ErrorMarker> {
         let parts = match value {
             toml::Value::String(string) => string.split_whitespace().map(str::to_owned).collect(),
@@ -1750,32 +1780,41 @@ impl<'a> Cx<'a> {
         match value {
             // NB: The boolean form asks for the built-in unit template.
             toml::Value::Boolean(enabled) => Ok(Systemd {
-                enabled,
+                enabled: Some(enabled),
                 ..Systemd::default()
             }),
             // NB: The bare string form is the path to a unit template.
             value @ toml::Value::String(..) => Ok(Systemd {
-                template: self.unit_template(value)?,
+                template: Some(self.unit_template(value)?),
                 ..Systemd::default()
             }),
-            value => self.with_table(value, |cx, table| {
-                let template = cx.in_key(table, "template", Self::unit_template);
-                let name = cx.in_key(table, "name", Self::string);
-                let enable = cx.in_key(table, "enable", Self::boolean);
+            value => {
+                let mut table = self.table(value)?;
 
+                let template = self.in_key(&mut table, "template", Self::unit_template);
+                let name = self.in_key(&mut table, "name", Self::string);
+                let enable = self.in_key(&mut table, "enable", Self::boolean);
+
+                // NB: Everything which is left over is a variable the unit
+                // template is rendered with. This is why the section cannot
+                // reject keys it doesn't know about the way the others do, so
+                // a misspelled option quietly becomes a variable which the
+                // template doesn't use instead of being reported.
                 Ok(Systemd {
-                    template: template?.unwrap_or_else(|| systemd::DEFAULT_TEMPLATE.into()),
+                    template: template?,
                     name: name?,
                     enable: enable?,
+                    variables: table,
                     ..Systemd::default()
                 })
-            }),
+            }
         }
     }
 
     fn deploy(&self, value: toml::Value) -> Result<Deploy, ErrorMarker> {
         self.with_table(value, |cx, table| {
-            let host = cx.in_key(table, "host", Self::string);
+            let host = cx.in_key(table, "host", Self::deploy_hosts);
+            let user = cx.in_key(table, "user", Self::string);
             let port = cx.in_key(table, "port", Self::port);
             let identity_file = cx.in_key(table, "identity_file", Self::string);
             let options = cx.in_array(table, "options", None, Self::string);
@@ -1792,7 +1831,8 @@ impl<'a> Cx<'a> {
             let systemd = cx.in_key(table, "systemd", Self::systemd);
 
             Ok(Deploy {
-                host: host?,
+                host: host?.unwrap_or_default(),
+                user: user?,
                 port: port?,
                 identity_file: identity_file?,
                 options: options?,

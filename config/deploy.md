@@ -5,19 +5,24 @@ lightweight way to deploy a project to a server over ssh.
 
 Deploying performs the following steps:
 
-* The remote host is [checked for access](#access-check) before any work is
+* Every remote host is [checked for access](#access-check) before any work is
   done.
-* The project is [built](#building) locally.
+* The project is [built](#building) locally, once regardless of how many hosts
+  are being deployed to.
 * The binary to deploy is located in `target/<profile>/<binary>`.
-* The binary, any [extra files](#deployfiles) and the rendered
-  [systemd unit](#systemd) are uploaded with `scp` to the
-  [staging directory](#deploy-section) on the remote host.
-* A single `ssh` invocation stops the service, installs everything into place,
-  and starts the service again. The unit is only written and systemd only
-  reloaded if the unit actually changed.
+* Then, for each host in turn:
+  * The binary, any [extra files](#deployfiles) and the rendered
+    [systemd unit](#systemd) are uploaded with `scp` to the
+    [staging directory](#deploy-section) on the remote host.
+  * A single `ssh` invocation stops the service, installs everything into
+    place, and starts the service again. The unit is only written and systemd
+    only reloaded if the unit actually changed.
 
 Nothing is installed remotely unless the upload succeeded, and the staged files
 are removed once they've been installed.
+
+Hosts are deployed to in the order they are listed, and the first one which
+fails ends the deployment, so the hosts after it are left as they were.
 
 <br>
 
@@ -40,12 +45,20 @@ should be started with, so a deployment which doesn't run as `root` with no
 arguments has to say so:
 
 ```sh
-kick deploy --host moore docular --user docular --args "--bind 0.0.0.0:3004"
+kick deploy --host moore docular --service-user docular --args "--bind 0.0.0.0:3004"
 ```
 
 Which runs the service as `docular:docular`, since `--group` defaults to
-`--user`. Everything else the unit needs is configured through
-[variables](#the-built-in-template).
+`--service-user`. Everything else the unit needs is configured through
+[variables](#template-variables) in the `[deploy.systemd]` section.
+
+Note that `--service-user` is the user the *service* runs as. The user the
+deployment itself logs in as is `--user`, and the two are rarely the same, since
+one needs `sudo` and the other should not:
+
+```sh
+kick deploy --host moore --user integration docular --service-user docular
+```
 
 Anything else the build needs can be passed along:
 
@@ -61,7 +74,8 @@ line, or when they are a property of the project rather than of one deployment:
 
 ```toml
 [deploy]
-host = "integration@moore"
+host = "moore"
+user = "integration"
 pre_build = ["trunk build --release"]
 build_features = ["bundle"]
 ```
@@ -77,8 +91,13 @@ actually being performed.
 
 The following options are available:
 
-* `host` the host to deploy to, such as `integration@moore`. This is required,
-  but can also be specified with `--host <host>`.
+* `host` the host to deploy to, such as `moore`. This is required, but can also
+  be specified with `--host <host>`. A list deploys to
+  [several hosts](#deploying-to-more-than-one-host) in turn.
+* `user` the user to log into the hosts as, such as `integration`. This is the
+  user the deployment is performed as, not the user the deployed service runs
+  as, which is a [variable](#template-variables) in the `[deploy.systemd]`
+  section. Also available as `--user <user>`.
 * `port` the port to connect over. Passed to `ssh` with `-p` and to `scp` with
   `-P`.
 * `identity_file` the identity file used to authenticate. Passed with `-i`.
@@ -101,8 +120,65 @@ The following options are available:
 * `pre_build`, `build` and `build_features` control how the project is
   [built](#building).
 * `files` a list of [extra files](#deployfiles) to install.
-* `systemd` the [systemd unit](#systemd) to install. Defaults to the built-in
+* `systemd` the [systemd unit](#systemd) to install, along with the
+  [variables](#template-variables) it is rendered with. Defaults to the built-in
   unit template.
+
+<br>
+
+### Deploying to more than one host
+
+The `host` option takes a list when a project runs on more than one machine:
+
+```toml
+[deploy]
+host = ["moore", "dahl", "hilbert"]
+user = "integration"
+```
+
+The project is built once, and each host is then deployed to in turn with the
+same binary and the same set of files. The first host which fails ends the
+deployment, so the hosts listed after it are left as they were, and `kick deploy`
+exits non-zero.
+
+Every host is [checked for access](#access-check) up front rather than as it is
+reached, so a fleet one member of which cannot be logged into says so before the
+first host is touched.
+
+Since the unit is rendered per host, the [`host` variable](#template-variables)
+refers to the host the unit is being installed on, which is how one template
+covers a fleet:
+
+```jinja
+Description=track on {{ host }}
+```
+
+The same works on the command line, where `--host` can be used more than once:
+
+```sh
+kick deploy --host moore --host dahl --user integration track
+```
+
+Note that `--host` *replaces* the configured hosts rather than adding to them,
+which is what you want when deploying somewhere other than where the project
+usually goes.
+
+<br>
+
+#### The login user
+
+The user being logged in as comes from the `user` option, so it doesn't have to
+be repeated for every host. It can still be spelled out as part of a host, which
+wins over `user` for that host alone:
+
+```toml
+[deploy]
+host = ["moore", "dahl", "root@legacy"]
+user = "integration"
+```
+
+Which logs into `moore` and `dahl` as `integration`, and into `legacy` as
+`root`.
 
 <br>
 
@@ -244,6 +320,23 @@ enable = false
 * `enable` whether `systemctl enable` is run so that the service starts on boot.
   Defaults to `true`.
 
+Every other key in the section is a [variable](#template-variables) the unit is
+rendered with, which is where directives like `User=` or `Environment=` come
+from:
+
+```toml
+[deploy.systemd]
+name = "track"
+user = "track"
+environment = { RUST_LOG = "info" }
+```
+
+Since anything which isn't one of the three options above is taken as a
+variable, this is the one section which cannot tell you that you misspelled an
+option. Writing `enabel = true` defines a variable named `enabel` which the
+template doesn't use, and the unit is installed as if you hadn't written it at
+all.
+
 <br>
 
 #### Templates
@@ -274,10 +367,27 @@ User={{ user }}
 
 #### Template variables
 
-Templates are rendered with the [`variables`](./variables.md) which are available
-elsewhere in `Kick.toml`, so anything which differs between projects or
-deployments can be defined there. In addition to those, the following are always
-available:
+Templates are rendered with the keys defined in the [`systemd`](#systemd)
+section which aren't one of its options, so anything which differs between
+projects or deployments is defined there:
+
+```toml
+[deploy.systemd]
+description = "Track Service"
+user = "track"
+args = ["--bind", "0.0.0.0:3004"]
+```
+
+These are scoped to the unit rather than being taken from the global
+[`[variables]`](./variables.md) section, since a `User=` directive is not
+something the rest of the configuration has any use for. A variable defined in
+`[variables]` is *not* visible to a unit template.
+
+They are layered per repo the same way everything else in `Kick.toml` is, so a
+`[repo."<name>".deploy.systemd]` section overrides individual variables without
+having to repeat the rest of them.
+
+In addition to what you define, the following are always available:
 
 * `name` the name of the unit.
 * `binary` the name of the binary being deployed.
@@ -285,7 +395,9 @@ available:
   `bin_dir` and `binary` joined together.
 * `bin_dir` the remote directory the binary is installed into.
 * `unit_dir` the remote directory the unit is installed into.
-* `host` the host being deployed to.
+* `host` the host being deployed to, without the login user. When several hosts
+  are being deployed to, the unit is rendered once per host, so this is the host
+  it is being installed on.
 
 <br>
 
@@ -338,16 +450,18 @@ WantedBy={{ wanted_by | default("multi-user.target") }}
 ```
 
 Every variable it uses beyond the ones above is optional, and defining one in
-`[variables]` fills in the corresponding directive:
+the `[deploy.systemd]` section fills in the corresponding directive:
 
 * `description`, defaults to `<name> service`.
 * `after` and `wants`, both default to `network-online.target`.
 * `requires`.
 * `start_limit_interval_sec` and `start_limit_burst`.
 * `type`, defaults to `simple`.
-* `user` and `group`, which can also be set with `--user <user>` and `--group
-  <group>`. The options override the variables, and `--user` on its own also
-  defines `group` unless the variable is set.
+* `user` and `group`, which can also be set with `--service-user <user>` and
+  `--group <group>`. The options override the variables, and `--service-user` on
+  its own also defines `group` unless the variable is set. Note that this is the
+  user the *service* runs as, and has nothing to do with the `user` option in
+  the `[deploy]` section, which is the user being logged in as.
 * `working_directory`.
 * `kill_signal`.
 * `environment`, a table which becomes one `Environment=` per entry.
@@ -374,7 +488,12 @@ copy.
 The following configuration:
 
 ```toml
-[variables]
+[deploy]
+host = "moore"
+user = "integration"
+binary = "track"
+
+[deploy.systemd]
 description = "Track Service"
 user = "track"
 group = "track"
@@ -384,11 +503,6 @@ start_limit_interval_sec = "60s"
 start_limit_burst = 3
 timeout_stop_sec = "5min"
 args = ["--bind", "0.0.0.0:3004"]
-
-[deploy]
-host = "integration@moore"
-binary = "track"
-systemd = true
 ```
 
 Installs the following unit into `/etc/systemd/system/track.service`:
@@ -420,10 +534,11 @@ WantedBy=multi-user.target
 
 ### Access check
 
-Before anything is built or uploaded, `kick deploy` logs into the remote host
-once to make sure the deployment can actually go through. It checks that:
+Before anything is built or uploaded, `kick deploy` logs into every remote host
+once to make sure the deployment can actually go through. For each host it checks
+that:
 
-* We can log in over ssh at all, and that we end up as the user the `host`
+* We can log in over ssh at all, and that we end up as the user the `user`
   option asks for. Ending up as a different user is a warning, not an error.
 * `install` is available, along with `systemctl` and `cmp` if a unit is being
   installed.
@@ -473,12 +588,17 @@ passphrase or a login password still works as usual.
 The `kick deploy` action takes the name of the binary to deploy as an argument,
 which overrides the `binary` option, along with the following options:
 
-* `--host <host>` overrides the `host` option.
-* `--user <user>` sets the `user` variable, which the unit installs as a
-  `User=` directive. Without it the service runs as `root`.
+* `--host <host>` replaces the `host` option, can be used more than once to
+  deploy to [several hosts](#deploying-to-more-than-one-host).
+* `--user <user>` overrides the `user` option, which is the user being logged in
+  as. Ignored for a host which spells out a user of its own.
+* `--service-user <user>` sets the `user` variable, which the unit installs as a
+  `User=` directive. Without it the service runs as `root`. This is the user the
+  service runs as, not the user the deployment is performed as, which is
+  `--user`.
 * `--group <group>` sets the `group` variable, which the unit installs as a
-  `Group=` directive. Defaults to `--user`, unless `group` is set in
-  `[variables]`.
+  `Group=` directive. Defaults to `--service-user`, unless `group` is set in
+  `[deploy.systemd]`.
 * `--args <args>` sets the `args` variable, which the unit appends to
   `ExecStart`. Can be used more than once, and each use is split on whitespace.
 * `--profile <profile>` overrides the `profile` option.
@@ -502,7 +622,7 @@ which overrides the `binary` option, along with the following options:
 
 ### Requirements
 
-The remote host is expected to:
+Every remote host being deployed to is expected to:
 
 * Be reachable over `ssh`, either without a prompt or by prompting on the
   terminal `kick` is being run from.
