@@ -18,6 +18,7 @@ use crate::cargo::RustVersion;
 use crate::ctxt::Ctxt;
 use crate::gitmodules;
 use crate::system::Git;
+use crate::system::git::parse_url;
 use crate::workspace::Crates;
 
 /// Parameters particular to a given package.
@@ -404,9 +405,9 @@ pub(crate) fn load_from_git(
     if git_path.exists() {
         let git = git.context("no working git command available")?;
         tracing::trace!("Using repository: {}", root.display());
-        return Ok(Some(
-            from_git(git, root).with_context(|| root.display().to_string())?,
-        ));
+        return Ok(Some(from_git(git, root).with_context(|| {
+            format!("Loading repository from git: {}", root.display())
+        })?));
     }
 
     match url_from_github_action() {
@@ -447,15 +448,10 @@ pub(crate) fn parse_git_module(
             "url" => {
                 let string = std::str::from_utf8(value)?;
 
-                let out = 'out: {
-                    if let Ok(url) = str::parse::<Url>(string) {
-                        break 'out url;
-                    }
+                let url = parse_url(string)
+                    .with_context(|| format!("Parsing url of git module: {string}"))?;
 
-                    parse_remote(string)?
-                };
-
-                parsed_url = Some(out);
+                parsed_url = Some(url);
             }
             _ => {}
         }
@@ -466,20 +462,6 @@ pub(crate) fn parse_git_module(
     };
 
     Ok(Some((path, RepoInfo::new(RepoSource::Gitmodules, url))))
-}
-
-fn parse_remote(remote: &str) -> Result<Url> {
-    let remote = match remote.split_once('@') {
-        Some((_, remote)) => remote,
-        None => remote,
-    };
-
-    let Some((domain, path)) = remote.split_once(':') else {
-        bail!("Missing domain:path")
-    };
-
-    let string = format!("https://{domain}/{path}");
-    Ok(Url::parse(&string)?)
 }
 
 /// Parse gitmodules from the given input.

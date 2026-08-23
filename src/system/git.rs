@@ -366,7 +366,8 @@ impl Git {
 
         ensure!(output.status.success(), output.status);
         let url = String::from_utf8(output.stdout)?;
-        Ok(Url::parse(url.trim())?)
+        let url = url.trim();
+        parse_url(url).with_context(|| format!("Parsing url of remote `{remote}`: {url}"))
     }
 
     /// Get credentials.
@@ -433,5 +434,79 @@ impl Credentials {
         let mut string = String::new();
         STANDARD_NO_PAD.encode_string(&self.combined, &mut string);
         SecretString::new(string)
+    }
+}
+
+/// Parse a git url.
+///
+/// In addition to regular urls, this supports the scp-like syntax used by git
+/// remotes, such as `git@github.com:udoprog/kick`, which is translated into an
+/// equivalent `https` url.
+pub(crate) fn parse_url(string: &str) -> Result<Url> {
+    // Git treats a url as scp-like if the first colon is not preceded by a
+    // slash and is not part of a `://` scheme separator.
+    if let Some((head, tail)) = string.split_once(':')
+        && !head.contains('/')
+        && !tail.starts_with("//")
+    {
+        let host = match head.split_once('@') {
+            Some((_, host)) => host,
+            None => head,
+        };
+
+        ensure!(!host.is_empty(), "Missing host in `[<user>@]<host>:<path>`");
+
+        let path = tail.trim_start_matches('/');
+        ensure!(!path.is_empty(), "Missing path in `[<user>@]<host>:<path>`");
+
+        let string = format!("https://{host}/{path}");
+        return Url::parse(&string).with_context(|| format!("Parsing scp-like url as `{string}`"));
+    }
+
+    Ok(Url::parse(string)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_url;
+
+    #[test]
+    fn test_parse_url() {
+        macro_rules! assert_url {
+            ($string:expr, $expected:expr) => {
+                assert_eq!(parse_url($string).unwrap().as_str(), $expected);
+            };
+        }
+
+        assert_url!(
+            "https://github.com/udoprog/kick",
+            "https://github.com/udoprog/kick"
+        );
+        assert_url!(
+            "ssh://git@github.com/udoprog/kick.git",
+            "ssh://git@github.com/udoprog/kick.git"
+        );
+        assert_url!(
+            "git@github.com:udoprog/kick",
+            "https://github.com/udoprog/kick"
+        );
+        assert_url!(
+            "git@github.com:udoprog/kick.git",
+            "https://github.com/udoprog/kick.git"
+        );
+        assert_url!("github.com:udoprog/kick", "https://github.com/udoprog/kick");
+        assert_url!(
+            "git@github.com:/udoprog/kick",
+            "https://github.com/udoprog/kick"
+        );
+
+        assert_url!(
+            "@github.com:udoprog/kick",
+            "https://github.com/udoprog/kick"
+        );
+
+        assert!(parse_url("git@github.com:").is_err());
+        assert!(parse_url("git@:udoprog/kick").is_err());
+        assert!(parse_url("/local/path/repo").is_err());
     }
 }
