@@ -1,0 +1,713 @@
+use std::collections::{HashMap, HashSet};
+use std::env::consts::EXE_EXTENSION;
+use std::fmt::Write as _;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+
+use anyhow::{Context, Result, anyhow, bail};
+use clap::Parser;
+use termcolor::{ColorChoice, StandardStream};
+
+use crate::cli::WithRepos;
+use crate::config::Deploy;
+use crate::ctxt::Ctxt;
+use crate::glob::Glob;
+use crate::model::Repo;
+use crate::packaging::{self, Mode};
+use crate::process::Command;
+use crate::shell::Shell;
+use crate::systemd;
+
+/// The remote directory binaries are installed into by default.
+const DEFAULT_BIN_DIR: &str = "/usr/local/bin";
+/// The remote directory systemd units are installed into by default.
+const DEFAULT_UNIT_DIR: &str = "/etc/systemd/system";
+/// The remote directory files are uploaded to by default, relative to the home
+/// directory of the user being logged in as.
+const DEFAULT_STAGING_DIR: &str = ".kick-deploy";
+/// The build profile binaries are picked up from by default.
+const DEFAULT_PROFILE: &str = "release";
+/// Remote commands which are always needed.
+const REQUIRED_COMMANDS: &[&str] = &["install"];
+/// Remote commands which are needed to install a systemd unit.
+const SYSTEMD_COMMANDS: &[&str] = &["systemctl", "cmp"];
+
+#[derive(Default, Debug, Parser)]
+pub(crate) struct Opts {
+    /// The name of the binary to deploy.
+    ///
+    /// This overrides the `binary` option in the `[deploy]` section, and
+    /// defaults to the name of the primary crate in the project.
+    binary: Option<String>,
+    /// The host to deploy to, overrides the `host` option in the `[deploy]`
+    /// section.
+    #[arg(long)]
+    host: Option<String>,
+    /// A command to run before the project is built, can be used more than
+    /// once.
+    ///
+    /// This is added to whatever the `pre_build` option in the `[deploy]`
+    /// section specifies.
+    #[arg(long = "pre-build", value_name = "COMMAND")]
+    pre_build: Vec<String>,
+    /// A feature to enable when building, can be used more than once.
+    ///
+    /// This is added to whatever the `build_features` option in the `[deploy]`
+    /// section specifies, and has no effect if the build command is specified
+    /// in full through the `build` option.
+    #[arg(long = "build-features", value_name = "FEATURES")]
+    build_features: Vec<String>,
+    /// The build profile the binary being deployed is found in, overrides the
+    /// `profile` option in the `[deploy]` section.
+    #[arg(long)]
+    profile: Option<String>,
+    /// Do not run the commands specified in the `build` option of the
+    /// `[deploy]` section.
+    #[arg(long)]
+    no_build: bool,
+    /// Do not install the systemd unit associated with the deployment.
+    #[arg(long)]
+    no_systemd: bool,
+    /// Do not stop or start the service being deployed.
+    #[arg(long)]
+    no_restart: bool,
+    /// Do not check that the remote host can be accessed before deploying.
+    #[arg(long)]
+    no_check: bool,
+    /// Print the commands which would be run instead of running them.
+    ///
+    /// Note that the access check is still performed, since it does not modify
+    /// the remote host.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
+    let mut o = StandardStream::stdout(ColorChoice::Auto);
+
+    with_repos.run("deploy", format_args!("deploy: {opts:?}"), |cx, repo| {
+        deploy(&mut o, cx, opts, repo)
+    })?;
+
+    Ok(())
+}
+
+#[tracing::instrument(skip_all)]
+fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
+    let config = cx.config.deploy(repo);
+
+    let Some(host) = opts.host.as_deref().or(config.host.as_deref()) else {
+        bail!(
+            "Missing host to deploy to, specify `host` in the `[deploy]` section or pass `--host <host>`"
+        );
+    };
+
+    let root = cx.to_path(repo.path());
+
+    // NB: Deploying a service without a unit to run it is rarely what anyone
+    // wants, so the built-in template applies unless it is turned off.
+    let systemd = config.systemd.clone().unwrap_or_default();
+    let systemd = (systemd.enabled && !opts.no_systemd).then_some(systemd);
+
+    let use_sudo = config.sudo.unwrap_or(true);
+
+    // NB: Access is checked before anything is built, since discovering that we
+    // cannot log in after a lengthy build is not very helpful.
+    if !opts.no_check {
+        check(o, opts, &config, host, use_sudo, systemd.is_some())?;
+    }
+
+    let profile = opts
+        .profile
+        .as_deref()
+        .or(config.profile.as_deref())
+        .unwrap_or(DEFAULT_PROFILE);
+
+    if !opts.no_build {
+        build(o, opts, &config, &root, profile)?;
+    }
+
+    let binary = match opts.binary.as_deref().or(config.binary.as_deref()) {
+        Some(binary) => binary.to_owned(),
+        None => {
+            let workspace = repo.workspace(cx)?;
+            let package = workspace.primary_package()?.ensure_package()?;
+            package.name()?.to_owned()
+        }
+    };
+
+    let mut source = repo.path().to_owned();
+    source.push("target");
+    source.push(profile_dir(profile));
+    source.push(&binary);
+    source.set_extension(EXE_EXTENSION);
+
+    let binary_path = cx.to_path(&source);
+
+    if !binary_path.is_file() {
+        bail!("Missing binary to deploy: {}", binary_path.display());
+    }
+
+    let bin_dir = trim_dir(config.bin_dir.as_deref().unwrap_or(DEFAULT_BIN_DIR));
+    let unit_dir = trim_dir(config.unit_dir.as_deref().unwrap_or(DEFAULT_UNIT_DIR));
+    let staging_dir = trim_dir(config.staging_dir.as_deref().unwrap_or(DEFAULT_STAGING_DIR));
+
+    // NB: The script is run non-interactively over ssh, so `-n` is used to make
+    // sudo fail immediately with a diagnostic instead of trying to prompt for a
+    // password on a terminal which isn't there.
+    let sudo = if use_sudo { "sudo -n " } else { "" };
+
+    // Files to upload, as `(local path, remote file name)`.
+    let mut uploads = Vec::new();
+    // Files to install remotely, as `(remote file name, destination, mode)`.
+    let mut installs = Vec::new();
+
+    uploads.push((binary_path, binary.clone()));
+
+    for file in &config.files {
+        let glob = Glob::new(&root, &file.source);
+        let mut matched = false;
+
+        for source in glob.matcher() {
+            let relative = source?;
+
+            let Some(file_name) = relative.file_name() else {
+                bail!("Missing file name: {relative}");
+            };
+
+            let path = cx.to_path(repo.path().join(&relative));
+
+            let dest = if file.dest.ends_with('/') {
+                format!("{}{file_name}", file.dest)
+            } else {
+                file.dest.clone()
+            };
+
+            let mode = match file.mode {
+                Some(mode) => mode,
+                None => packaging::infer(&path)?.mode,
+            };
+
+            installs.push((file_name.to_owned(), dest, mode));
+            uploads.push((path, file_name.to_owned()));
+            matched = true;
+        }
+
+        if !matched {
+            bail!("No files matched: {}", file.source);
+        }
+    }
+
+    // The unit file is generated locally into a temporary directory so that it
+    // can be uploaded under its expected name.
+    let temp = tempfile::TempDir::new().context("Creating temporary directory")?;
+
+    let unit = match &systemd {
+        Some(systemd) => {
+            let name = systemd.name.as_deref().unwrap_or(&binary).to_owned();
+            let file_name = format!("{name}.service");
+
+            let mut variables = cx.config.variables(repo);
+            variables.insert(String::from("name"), toml::Value::String(name.clone()));
+            variables.insert(String::from("binary"), toml::Value::String(binary.clone()));
+            variables.insert(
+                String::from("exec"),
+                toml::Value::String(format!("{bin_dir}/{binary}")),
+            );
+            variables.insert(
+                String::from("bin_dir"),
+                toml::Value::String(bin_dir.to_owned()),
+            );
+            variables.insert(
+                String::from("unit_dir"),
+                toml::Value::String(unit_dir.to_owned()),
+            );
+            variables.insert(String::from("host"), toml::Value::String(host.to_owned()));
+
+            let contents = systemd::render(&systemd.template, &variables)
+                .with_context(|| anyhow!("Rendering unit `{file_name}`"))?;
+
+            let path = temp.path().join(&file_name);
+
+            std::fs::write(&path, &contents)
+                .with_context(|| anyhow!("Writing {}", path.display()))?;
+
+            uploads.push((path, file_name.clone()));
+            Some((name, file_name, contents))
+        }
+        None => None,
+    };
+
+    let mut staged = HashMap::new();
+
+    for (path, name) in &uploads {
+        if let Some(existing) = staged.insert(name.clone(), path.clone()) {
+            bail!(
+                "Multiple files would be staged as `{name}`: {} and {}",
+                existing.display(),
+                path.display()
+            );
+        }
+    }
+
+    let script = script(
+        &config,
+        opts,
+        &uploads,
+        &installs,
+        ScriptOpts {
+            sudo,
+            binary: &binary,
+            bin_dir,
+            unit_dir,
+            staging_dir,
+            unit: unit
+                .as_ref()
+                .map(|(name, file_name, _)| (&**name, &**file_name)),
+        },
+    )?;
+
+    if opts.dry_run {
+        if let Some((_, file_name, contents)) = &unit {
+            writeln!(o, "# {unit_dir}/{file_name}:")?;
+
+            for line in contents.lines() {
+                writeln!(o, "# {line}")?;
+            }
+        }
+
+        writeln!(o, "# remote script:")?;
+
+        for line in script.lines() {
+            writeln!(o, "# {line}")?;
+        }
+    }
+
+    let shell = Shell::Bash;
+
+    let mut command = ssh(&config, host);
+    command.arg(format!("mkdir -p {}", shell.escape(staging_dir)));
+    run(o, opts, &mut command)?;
+
+    let mut command = scp(&config);
+
+    for (path, _) in &uploads {
+        command.arg(path);
+    }
+
+    command.arg(format!("{host}:{staging_dir}/"));
+    run(o, opts, &mut command)?;
+
+    let mut command = ssh(&config, host);
+    command.arg(&script);
+    run(o, opts, &mut command)?;
+    Ok(())
+}
+
+struct ScriptOpts<'a> {
+    sudo: &'a str,
+    binary: &'a str,
+    bin_dir: &'a str,
+    unit_dir: &'a str,
+    staging_dir: &'a str,
+    unit: Option<(&'a str, &'a str)>,
+}
+
+/// Build the script which installs the uploaded files remotely.
+fn script(
+    config: &Deploy,
+    opts: &Opts,
+    uploads: &[(PathBuf, String)],
+    installs: &[(String, String, Mode)],
+    s: ScriptOpts<'_>,
+) -> Result<String> {
+    let shell = Shell::Bash;
+
+    let ScriptOpts {
+        sudo,
+        binary,
+        bin_dir,
+        unit_dir,
+        staging_dir,
+        unit,
+    } = s;
+
+    let escape = move |value: &str| shell.escape(value).into_owned();
+    let staged = move |name: &str| escape(&format!("{staging_dir}/{name}"));
+
+    let mut script = String::new();
+
+    writeln!(script, "set -eu")?;
+
+    // Stop the service before its binary is replaced, the unit might not exist
+    // yet in which case this is a no-op.
+    if let Some((name, _)) = unit
+        && !opts.no_restart
+    {
+        writeln!(
+            script,
+            "{sudo}systemctl stop {} 2>/dev/null || true",
+            shell.escape(name)
+        )?;
+    }
+
+    writeln!(script, "{sudo}mkdir -p {}", shell.escape(bin_dir))?;
+
+    writeln!(
+        script,
+        "{sudo}install -m 0755 {} {}",
+        staged(binary),
+        escape(&format!("{bin_dir}/{binary}"))
+    )?;
+
+    for (name, dest, mode) in installs {
+        writeln!(
+            script,
+            "{sudo}install -D -m {:04o} {} {}",
+            mode.permissions(),
+            staged(name),
+            shell.escape(dest)
+        )?;
+    }
+
+    if let Some((name, file_name)) = unit {
+        let dest = escape(&format!("{unit_dir}/{file_name}"));
+
+        writeln!(script, "{sudo}mkdir -p {}", shell.escape(unit_dir))?;
+
+        // NB: Installing the unit unconditionally would touch it on every
+        // deployment, so only do it when it actually changed. This also keeps
+        // us from reloading systemd for no reason.
+        writeln!(
+            script,
+            "if ! {sudo}cmp -s {} {dest}; then",
+            staged(file_name)
+        )?;
+
+        writeln!(
+            script,
+            "  {sudo}install -m 0644 {} {dest}",
+            staged(file_name)
+        )?;
+
+        writeln!(script, "  {sudo}systemctl daemon-reload")?;
+        writeln!(script, "fi")?;
+
+        let enable = config
+            .systemd
+            .as_ref()
+            .and_then(|s| s.enable)
+            .unwrap_or(true);
+
+        if enable {
+            writeln!(script, "{sudo}systemctl enable {}", shell.escape(name))?;
+        }
+
+        if !opts.no_restart {
+            writeln!(script, "{sudo}systemctl start {}", shell.escape(name))?;
+        }
+    }
+
+    for (_, name) in uploads {
+        writeln!(script, "rm -f {}", staged(name))?;
+    }
+
+    Ok(script)
+}
+
+/// Build the project locally.
+///
+/// Anything in `pre_build` is run first, followed by the build command. The
+/// build command is generated from the profile and the features being enabled
+/// unless it has been specified in full.
+fn build(
+    o: &mut StandardStream,
+    opts: &Opts,
+    config: &Deploy,
+    root: &Path,
+    profile: &str,
+) -> Result<()> {
+    for pre_build in &config.pre_build {
+        let mut command = Command::new(&pre_build.command);
+        command.args(&pre_build.args);
+        command.current_dir(root);
+        run(o, opts, &mut command)?;
+    }
+
+    for pre_build in &opts.pre_build {
+        let Some((pre_build, args)) = split_command(pre_build) else {
+            continue;
+        };
+
+        let mut command = Command::new(pre_build);
+        command.args(args);
+        command.current_dir(root);
+        run(o, opts, &mut command)?;
+    }
+
+    let features = config
+        .build_features
+        .iter()
+        .chain(&opts.build_features)
+        .flat_map(|f| f.split([',', ' ']))
+        .filter(|f| !f.is_empty())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    if !config.build.is_empty() {
+        if !features.is_empty() {
+            tracing::warn!(
+                "Ignoring features `{features}` since the build command is specified in full"
+            );
+        }
+
+        for build in &config.build {
+            let mut command = Command::new(&build.command);
+            command.args(&build.args);
+            command.current_dir(root);
+            run(o, opts, &mut command)?;
+        }
+
+        return Ok(());
+    }
+
+    let mut command = Command::new("cargo");
+    command.arg("build");
+
+    match profile {
+        "dev" => {}
+        "release" => {
+            command.arg("--release");
+        }
+        profile => {
+            command.arg("--profile");
+            command.arg(profile);
+        }
+    }
+
+    if !features.is_empty() {
+        command.arg("--features");
+        command.arg(&features);
+    }
+
+    command.current_dir(root);
+    run(o, opts, &mut command)
+}
+
+/// The directory under `target` which cargo puts the given profile in.
+fn profile_dir(profile: &str) -> &str {
+    match profile {
+        "dev" | "test" => "debug",
+        "bench" => "release",
+        profile => profile,
+    }
+}
+
+/// Split a command specified as a single string into a command and arguments.
+fn split_command(command: &str) -> Option<(&str, impl Iterator<Item = &str>)> {
+    let mut it = command.split_whitespace();
+    let command = it.next()?;
+    Some((command, it))
+}
+
+/// Construct an `ssh` command towards the given host.
+fn ssh(config: &Deploy, host: &str) -> Command {
+    let mut command = Command::new("ssh");
+
+    if let Some(port) = config.port {
+        command.arg("-p");
+        command.arg(port.to_string());
+    }
+
+    options(&mut command, config);
+    command.arg(host);
+    command
+}
+
+/// Construct an `scp` command.
+fn scp(config: &Deploy) -> Command {
+    let mut command = Command::new("scp");
+
+    if let Some(port) = config.port {
+        // NB: Unlike ssh, scp spells the port option with a capital `P`.
+        command.arg("-P");
+        command.arg(port.to_string());
+    }
+
+    options(&mut command, config);
+    command
+}
+
+fn options(command: &mut Command, config: &Deploy) {
+    if let Some(identity_file) = &config.identity_file {
+        command.arg("-i");
+        command.arg(identity_file);
+    }
+
+    for option in &config.options {
+        command.arg("-o");
+        command.arg(option);
+    }
+}
+
+fn run(o: &mut StandardStream, opts: &Opts, command: &mut Command) -> Result<()> {
+    let repr = command.display().to_string();
+
+    if opts.dry_run {
+        writeln!(o, "{repr}")?;
+        return Ok(());
+    }
+
+    tracing::info!("{repr}");
+
+    let status = command.status()?;
+
+    if !status.success() {
+        bail!("Command failed with {status}: {repr}");
+    }
+
+    Ok(())
+}
+
+/// Check that the host being deployed to can actually be accessed before doing
+/// any work.
+///
+/// This logs in over ssh and makes sure that we end up as the expected user,
+/// that the commands we depend on are available, and that we can elevate
+/// privileges without being prompted for a password. Nothing is modified on the
+/// remote host.
+fn check(
+    o: &mut StandardStream,
+    opts: &Opts,
+    config: &Deploy,
+    host: &str,
+    use_sudo: bool,
+    systemd: bool,
+) -> Result<()> {
+    let mut commands = REQUIRED_COMMANDS.to_vec();
+
+    if systemd {
+        commands.extend(SYSTEMD_COMMANDS);
+    }
+
+    let mut script = String::new();
+
+    writeln!(
+        script,
+        r#"printf 'user=%s
+' "$(id -un 2>/dev/null || true)""#
+    )?;
+    writeln!(script, "for cmd in {}; do", commands.join(" "))?;
+    writeln!(
+        script,
+        r#"if command -v "$cmd" >/dev/null 2>&1; then printf 'command=%s
+' "$cmd"; fi"#
+    )?;
+    writeln!(script, "done")?;
+
+    if use_sudo {
+        writeln!(
+            script,
+            r#"if sudo -n true >/dev/null 2>&1; then printf 'sudo=yes
+'; else printf 'sudo=no
+'; fi"#
+        )?;
+    }
+
+    let mut command = ssh(config, host);
+    command.arg(&script);
+
+    if opts.dry_run {
+        writeln!(o, "{}", command.display())?;
+    } else {
+        tracing::debug!("{}", command.display());
+        tracing::info!("Checking access to `{host}`");
+    }
+
+    // NB: Only stdout is captured, since ssh reports failures to authenticate
+    // and any prompts it needs to make over stderr.
+    let output = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .output()?;
+
+    if !output.status.success() {
+        bail!(
+            "Failed to access `{host}` over ssh with {}, see the error above (pass `--no-check` to skip this check)",
+            output.status
+        );
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let mut user = None;
+    let mut available = HashSet::new();
+    let mut sudo = None;
+
+    for line in stdout.lines() {
+        let Some((key, value)) = line.trim().split_once('=') else {
+            continue;
+        };
+
+        match key {
+            "user" if !value.is_empty() => user = Some(value.to_owned()),
+            "command" => {
+                available.insert(value.to_owned());
+            }
+            "sudo" => sudo = Some(value == "yes"),
+            _ => {}
+        }
+    }
+
+    // NB: ssh separates the user from the host at the last `@`.
+    let expected = host.rsplit_once('@').map(|(user, _)| user);
+
+    match (expected, user.as_deref()) {
+        (Some(expected), Some(user)) if expected != user => {
+            tracing::warn!("Logged into `{host}` as `{user}`, but expected `{expected}`");
+        }
+        (_, Some(user)) => {
+            tracing::info!("Logged into `{host}` as `{user}`");
+        }
+        (_, None) => {
+            tracing::warn!("Logged into `{host}`, but could not determine which user as");
+        }
+    }
+
+    for command in commands {
+        if available.contains(command) {
+            continue;
+        }
+
+        match command {
+            "systemctl" => bail!(
+                "Missing `systemctl` on `{host}`, which is needed to install the systemd unit (pass `--no-systemd` to skip it)"
+            ),
+            command => bail!(
+                "Missing `{command}` on `{host}`, which is needed to install the files being deployed"
+            ),
+        }
+    }
+
+    // NB: The script which installs the deployment is run non-interactively
+    // over ssh, so there is nowhere for a sudo password prompt to go.
+    if sudo == Some(false) {
+        bail!(
+            "Cannot use sudo on `{host}` without a password, and the deployment is run \
+             non-interactively over ssh so there is nowhere to prompt for one. Give the user a \
+             NOPASSWD entry in sudoers, or set `sudo = false` in the `[deploy]` section if you \
+             are deploying as root"
+        );
+    }
+
+    Ok(())
+}
+
+/// Trim any trailing slashes from a directory so that it can be consistently
+/// joined with a file name.
+fn trim_dir(dir: &str) -> &str {
+    let trimmed = dir.trim_end_matches('/');
+
+    if trimmed.is_empty() { dir } else { trimmed }
+}

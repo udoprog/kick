@@ -1,0 +1,43 @@
+[Unit]
+Description={{ description | default(name ~ " service") }}
+After={{ after | default("network-online.target") }}
+Wants={{ wants | default("network-online.target") }}
+{%- if requires is defined %}
+Requires={{ requires }}
+{%- endif %}
+{%- if start_limit_interval_sec is defined %}
+StartLimitIntervalSec={{ start_limit_interval_sec }}
+{%- endif %}
+{%- if start_limit_burst is defined %}
+StartLimitBurst={{ start_limit_burst }}
+{%- endif %}
+
+[Service]
+Type={{ type | default("simple") }}
+{%- if user is defined %}
+User={{ user }}
+{%- endif %}
+{%- if group is defined %}
+Group={{ group }}
+{%- endif %}
+{%- if working_directory is defined %}
+WorkingDirectory={{ working_directory }}
+{%- endif %}
+{%- if kill_signal is defined %}
+KillSignal={{ kill_signal }}
+{%- endif %}
+{%- for key, value in environment | default({}) | items %}
+Environment={{ key }}={{ value }}
+{%- endfor %}
+{%- if environment_file is defined %}
+EnvironmentFile={{ environment_file }}
+{%- endif %}
+ExecStart={{ exec }}{% if args is defined %} {{ args | join(" ") }}{% endif %}
+Restart={{ restart | default("always") }}
+RestartSec={{ restart_sec | default(5) }}
+{%- if timeout_stop_sec is defined %}
+TimeoutStopSec={{ timeout_stop_sec }}
+{%- endif %}
+
+[Install]
+WantedBy={{ wanted_by | default("multi-user.target") }}

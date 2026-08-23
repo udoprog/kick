@@ -24,6 +24,7 @@ use crate::keys::Keys;
 use crate::model::{Repo, RepoInfo, RepoParams, RepoRef, RepoSource};
 use crate::packaging::Mode;
 use crate::shell::Shell;
+use crate::systemd;
 use crate::templates::{Template, Templating};
 
 /// Default job name.
@@ -155,6 +156,124 @@ impl Package {
         self.files.extend(other.files);
         self.rpm.requires.extend(other.rpm.requires);
         self.deb.depends.extend(other.deb.depends);
+    }
+}
+
+/// A command which is run locally as part of a deployment.
+#[derive(Debug, Clone)]
+pub(crate) struct DeployCommand {
+    /// The command to run.
+    pub(crate) command: String,
+    /// Arguments to pass to the command.
+    pub(crate) args: Vec<String>,
+}
+
+/// An extra file to install as part of a deployment.
+#[derive(Debug, Clone)]
+pub(crate) struct DeployFile {
+    /// The local source of the file, this can be a wildcard.
+    pub(crate) source: RelativePathBuf,
+    /// The remote destination of the file. If this ends with a `/` the file
+    /// name of the source is appended to it.
+    pub(crate) dest: String,
+    /// The mode the file is installed with.
+    pub(crate) mode: Option<Mode>,
+}
+
+/// Deployment configuration.
+#[derive(Default, Debug, Clone)]
+pub(crate) struct Deploy {
+    /// The host to deploy to, such as `user@example.com`.
+    pub(crate) host: Option<String>,
+    /// The port to connect to.
+    pub(crate) port: Option<u16>,
+    /// The identity file to authenticate with.
+    pub(crate) identity_file: Option<String>,
+    /// Extra options passed to `ssh` and `scp` through `-o`.
+    pub(crate) options: Vec<String>,
+    /// Whether privileged remote commands should be prefixed with `sudo`.
+    pub(crate) sudo: Option<bool>,
+    /// The remote directory binaries are installed into.
+    pub(crate) bin_dir: Option<String>,
+    /// The remote directory systemd units are installed into.
+    pub(crate) unit_dir: Option<String>,
+    /// The remote directory files are uploaded to before being installed.
+    pub(crate) staging_dir: Option<String>,
+    /// The name of the binary being deployed.
+    pub(crate) binary: Option<String>,
+    /// The build profile the binary being deployed is found in.
+    pub(crate) profile: Option<String>,
+    /// Commands which are run locally before the project is built.
+    pub(crate) pre_build: Vec<DeployCommand>,
+    /// Commands which replace the build command which would otherwise be
+    /// generated.
+    pub(crate) build: Vec<DeployCommand>,
+    /// Features to enable in the generated build command.
+    pub(crate) build_features: Vec<String>,
+    /// Extra files to install.
+    pub(crate) files: Vec<DeployFile>,
+    /// The systemd unit to install.
+    pub(crate) systemd: Option<Systemd>,
+}
+
+impl Deploy {
+    fn merge_with(&mut self, mut other: Self) {
+        self.host = other.host.or(self.host.take());
+        self.port = other.port.or(self.port.take());
+        self.identity_file = other.identity_file.or(self.identity_file.take());
+        self.options.append(&mut other.options);
+        self.sudo = other.sudo.or(self.sudo.take());
+        self.bin_dir = other.bin_dir.or(self.bin_dir.take());
+        self.unit_dir = other.unit_dir.or(self.unit_dir.take());
+        self.staging_dir = other.staging_dir.or(self.staging_dir.take());
+        self.binary = other.binary.or(self.binary.take());
+        self.profile = other.profile.or(self.profile.take());
+        self.pre_build.append(&mut other.pre_build);
+        self.build.append(&mut other.build);
+        self.build_features.append(&mut other.build_features);
+        self.files.append(&mut other.files);
+
+        match (&mut self.systemd, other.systemd) {
+            (Some(systemd), Some(other)) => systemd.merge_with(other),
+            (systemd @ None, other) => *systemd = other,
+            _ => {}
+        }
+    }
+}
+
+/// The systemd unit associated with a deployment.
+#[derive(Debug, Clone)]
+pub(crate) struct Systemd {
+    /// Whether a unit should be installed at all, which is how `systemd =
+    /// false` is represented.
+    pub(crate) enabled: bool,
+    /// The source of the template which is rendered into the unit being
+    /// installed.
+    pub(crate) template: Box<str>,
+    /// The name of the unit, defaults to the name of the binary.
+    pub(crate) name: Option<String>,
+    /// Whether the unit should be enabled so that it starts on boot.
+    pub(crate) enable: Option<bool>,
+}
+
+impl Default for Systemd {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            template: systemd::DEFAULT_TEMPLATE.into(),
+            name: None,
+            enable: None,
+        }
+    }
+}
+
+impl Systemd {
+    fn merge_with(&mut self, other: Self) {
+        self.enabled = other.enabled;
+        self.template = other.template;
+        self.name = other.name.or(self.name.take());
+        self.enable = other.enable.or(self.enable.take());
     }
 }
 
@@ -492,6 +611,8 @@ pub(crate) struct RepoConfig {
     pub(crate) package: Package,
     /// Actions configuration.
     pub(crate) actions: Actions,
+    /// Deployment configuration.
+    pub(crate) deploy: Deploy,
 }
 
 impl RepoConfig {
@@ -522,6 +643,7 @@ impl RepoConfig {
         self.upgrade.merge_with(other.upgrade);
         self.package.merge_with(other.package);
         self.actions.merge_with(other.actions);
+        self.deploy.merge_with(other.deploy);
 
         merge_map(&mut self.variables, other.variables);
     }
@@ -800,6 +922,17 @@ impl Config<'_> {
         self.repos(repo).flat_map(|r| &r.package.files).collect()
     }
 
+    /// Get the deployment configuration for the given repo.
+    pub(crate) fn deploy(&self, repo: &RepoRef) -> Deploy {
+        let mut deploy = Deploy::default();
+
+        for repo in self.repos(repo) {
+            deploy.merge_with(repo.deploy.clone());
+        }
+
+        deploy
+    }
+
     /// Get all denied actions.
     pub(crate) fn action_deny(&self, repo: &RepoRef) -> Vec<&DenyAction> {
         self.repos(repo).flat_map(|r| &r.actions.deny).collect()
@@ -1030,18 +1163,20 @@ impl<'a> Cx<'a> {
         O::from_str(value.as_str()).map_err(self.map())
     }
 
-    /// Compile a template from a path.
-    fn compile_path(&self, value: toml::Value) -> Result<Template, ErrorMarker> {
+    /// Read the template stored at the given path.
+    fn read_template(&self, value: toml::Value) -> Result<String, ErrorMarker> {
         let path = self.relative_path(value)?;
         let path = self.current.join(path).to_path(self.paths.root);
 
-        let template = match fs::read_to_string(&path) {
-            Ok(template) => template,
-            Err(err) => {
-                return Err(self.capture(format_args!("reading {}: {}", path.display(), err)));
-            }
-        };
+        match fs::read_to_string(&path) {
+            Ok(template) => Ok(template),
+            Err(err) => Err(self.capture(format_args!("reading {}: {}", path.display(), err))),
+        }
+    }
 
+    /// Compile a template from a path.
+    fn compile_path(&self, value: toml::Value) -> Result<Template, ErrorMarker> {
+        let template = self.read_template(value)?;
         self.compile_str(template)
     }
 
@@ -1081,6 +1216,49 @@ impl<'a> Cx<'a> {
             toml::Value::Boolean(value) => Ok(value),
             other => Err(self.capture(format_args!("expected boolean, got {}", other.type_str()))),
         }
+    }
+
+    fn port(&self, value: toml::Value) -> Result<u16, ErrorMarker> {
+        match value {
+            toml::Value::Integer(value) => match u16::try_from(value) {
+                Ok(value) => Ok(value),
+                Err(..) => {
+                    Err(self.capture(format_args!("expected port between 0-65535, got {value}")))
+                }
+            },
+            other => Err(self.capture(format_args!("expected integer, got {}", other.type_str()))),
+        }
+    }
+
+    /// Process the elements of a standalone array.
+    fn array<O>(
+        &self,
+        value: toml::Value,
+        mut f: impl FnMut(&Self, toml::Value) -> Result<O, ErrorMarker>,
+    ) -> Result<Vec<O>, ErrorMarker> {
+        let toml::Value::Array(array) = value else {
+            return Err(self.capture(format_args!("expected array, got {}", value.type_str())));
+        };
+
+        let mut out = Vec::with_capacity(array.len());
+        let mut error = false;
+
+        for (index, item) in array.into_iter().enumerate() {
+            self.keys.index(index);
+
+            match f(self, item) {
+                Ok(item) => out.push(item),
+                Err(ErrorMarker) => error = true,
+            }
+
+            self.keys.pop();
+        }
+
+        if error {
+            return Err(ErrorMarker);
+        }
+
+        Ok(out)
     }
 
     fn table(&self, value: toml::Value) -> Result<toml::Table, ErrorMarker> {
@@ -1355,6 +1533,8 @@ impl<'a> Cx<'a> {
 
         let actions = self.in_key(table, "actions", Self::actions);
 
+        let deploy = self.in_key(table, "deploy", Self::deploy);
+
         Ok(RepoConfig {
             sources: BTreeSet::from_iter([RepoSource::Config(self.current.to_owned())]),
             name: name?,
@@ -1378,6 +1558,7 @@ impl<'a> Cx<'a> {
             upgrade: upgrade?.unwrap_or_default(),
             package: package?.unwrap_or_default(),
             actions: actions?.unwrap_or_default(),
+            deploy: deploy?.unwrap_or_default(),
         })
     }
 
@@ -1519,6 +1700,114 @@ impl<'a> Cx<'a> {
             };
 
             Ok(package)
+        })
+    }
+
+    fn deploy_command(&self, value: toml::Value) -> Result<DeployCommand, ErrorMarker> {
+        let parts = match value {
+            toml::Value::String(string) => string.split_whitespace().map(str::to_owned).collect(),
+            value => self.array(value, Self::string)?,
+        };
+
+        let mut it = parts.into_iter();
+
+        let Some(command) = it.next() else {
+            return Err(self.capture("expected a non-empty command"));
+        };
+
+        Ok(DeployCommand {
+            command,
+            args: it.collect(),
+        })
+    }
+
+    fn deploy_file(&self, value: toml::Value) -> Result<DeployFile, ErrorMarker> {
+        self.with_table(value, |cx, table| {
+            let source = cx.require_key(table, "source", Self::relative_path);
+            let dest = cx.require_key(table, "dest", Self::string);
+            let mode = cx.in_key(table, "mode", Self::parse);
+
+            Ok(DeployFile {
+                source: source?,
+                dest: dest?,
+                mode: mode?,
+            })
+        })
+    }
+
+    /// Read and validate a unit template stored at the given path.
+    fn unit_template(&self, value: toml::Value) -> Result<Box<str>, ErrorMarker> {
+        let source = self.read_template(value)?;
+
+        if let Err(error) = systemd::validate(&source) {
+            return Err(self.capture(error));
+        }
+
+        Ok(source.into())
+    }
+
+    fn systemd(&self, value: toml::Value) -> Result<Systemd, ErrorMarker> {
+        match value {
+            // NB: The boolean form asks for the built-in unit template.
+            toml::Value::Boolean(enabled) => Ok(Systemd {
+                enabled,
+                ..Systemd::default()
+            }),
+            // NB: The bare string form is the path to a unit template.
+            value @ toml::Value::String(..) => Ok(Systemd {
+                template: self.unit_template(value)?,
+                ..Systemd::default()
+            }),
+            value => self.with_table(value, |cx, table| {
+                let template = cx.in_key(table, "template", Self::unit_template);
+                let name = cx.in_key(table, "name", Self::string);
+                let enable = cx.in_key(table, "enable", Self::boolean);
+
+                Ok(Systemd {
+                    template: template?.unwrap_or_else(|| systemd::DEFAULT_TEMPLATE.into()),
+                    name: name?,
+                    enable: enable?,
+                    ..Systemd::default()
+                })
+            }),
+        }
+    }
+
+    fn deploy(&self, value: toml::Value) -> Result<Deploy, ErrorMarker> {
+        self.with_table(value, |cx, table| {
+            let host = cx.in_key(table, "host", Self::string);
+            let port = cx.in_key(table, "port", Self::port);
+            let identity_file = cx.in_key(table, "identity_file", Self::string);
+            let options = cx.in_array(table, "options", None, Self::string);
+            let sudo = cx.in_key(table, "sudo", Self::boolean);
+            let bin_dir = cx.in_key(table, "bin_dir", Self::string);
+            let unit_dir = cx.in_key(table, "unit_dir", Self::string);
+            let staging_dir = cx.in_key(table, "staging_dir", Self::string);
+            let binary = cx.in_key(table, "binary", Self::string);
+            let profile = cx.in_key(table, "profile", Self::string);
+            let pre_build = cx.in_array(table, "pre_build", None, Self::deploy_command);
+            let build = cx.in_array(table, "build", None, Self::deploy_command);
+            let build_features = cx.in_array(table, "build_features", None, Self::string);
+            let files = cx.in_array(table, "files", None, Self::deploy_file);
+            let systemd = cx.in_key(table, "systemd", Self::systemd);
+
+            Ok(Deploy {
+                host: host?,
+                port: port?,
+                identity_file: identity_file?,
+                options: options?,
+                sudo: sudo?,
+                bin_dir: bin_dir?,
+                unit_dir: unit_dir?,
+                staging_dir: staging_dir?,
+                binary: binary?,
+                profile: profile?,
+                pre_build: pre_build?,
+                build: build?,
+                build_features: build_features?,
+                files: files?,
+                systemd: systemd?,
+            })
         })
     }
 

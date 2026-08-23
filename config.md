@@ -46,4 +46,5 @@ See the following sections for documentation on the various configuration sectio
 * [Managing `[badges]`](./config/badges.md)
 * [Managing GitHub `[actions]`](./config/actions.md)
 * [Building packages using `[package]`](./config/package.md)
+* [Deploying projects using `[deploy]`](./config/deploy.md)
 * [Keeping version strings up to date with `[version]`](./config/versions.md)

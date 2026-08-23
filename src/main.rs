@@ -25,6 +25,7 @@
 //! * [Staged changes](#staged-changes)
 //! * [Running commands over repo sets](#repo-sets)
 //! * [Easily package your project](#packaging)
+//! * [Deploying over ssh](#deploying-over-ssh)
 //! * [Flexible version specifications](#version-specification)
 //! * [Integrating with Github Actions](#integrating-with-github-actions)
 //!
@@ -331,6 +332,75 @@
 //!
 //! <br>
 //!
+//! ## Deploying over ssh
+//!
+//! The `deploy` action is a lightweight way of getting a project onto a server.
+//!
+//! It builds the project, uploads the binary with `scp`, installs it, and makes
+//! sure that a systemd unit is installed and running. The defaults are picked so
+//! that this needs no configuration at all:
+//!
+//! ```sh
+//! kick deploy --host moore docular
+//! ```
+//!
+//! That builds with `cargo build --release`, installs `target/release/docular` as
+//! `/usr/local/bin/docular`, and installs and starts a `docular.service`. Anything
+//! the build needs can be passed along:
+//!
+//! ```sh
+//! kick deploy --host moore docular --pre-build "trunk build --release" --build-features bundle
+//! ```
+//!
+//! The same things go in a `[deploy]` section once they stop fitting on a command
+//! line, or when they belong to the project rather than to one deployment:
+//!
+//! ```toml
+//! [variables]
+//! args = ["--bind", "0.0.0.0:3004"]
+//! user = "track"
+//! group = "track"
+//!
+//! [deploy]
+//! host = "integration@moore"
+//! pre_build = ["trunk build --release"]
+//! build_features = ["bundle"]
+//! ```
+//!
+//! Either way `kick deploy` runs the build, uploads the binary, and over a single
+//! `ssh` connection stops the service, installs the binary into `/usr/local/bin`,
+//! installs the unit into `/etc/systemd/system`, and starts the service again. The
+//! unit is compared against the installed one first, so systemd is only reloaded
+//! when it actually changed.
+//!
+//! The unit comes from a built-in template which is filled in from your
+//! [variables][variables-config], so there is nothing to write to get a working
+//! service. When you need something it doesn't cover, point `systemd` at a unit file
+//! of your own instead — they are [minijinja] templates, so
+//! `ExecStart={{ exec }} {{ args | join(" ") }}` picks up the remote path of the
+//! binary along with anything else you have defined.
+//!
+//! [minijinja]: https://docs.rs/minijinja
+//!
+//! Before any of this happens the host is logged into once to make sure that we can
+//! actually reach it as the user we expect, that the commands being used are
+//! available, and that `sudo` doesn't need a password. Finding that out after a
+//! lengthy build is not very helpful.
+//!
+//! That last one matters because the install script is handed to `ssh` as a single
+//! non-interactive command. There is no terminal for a password prompt to be
+//! answered on, so every privileged command uses `sudo -n` and the deploying user is
+//! expected to have a `NOPASSWD` entry in sudoers.
+//!
+//! Since nothing is installed remotely unless the upload succeeded, a failed
+//! deployment leaves the currently running service alone.
+//!
+//! To see exactly what would happen without changing anything, use `kick deploy
+//! --dry-run`. For all available options, see the [deployment
+//! documentation][deploy-config].
+//!
+//! <br>
+//!
 //! ## Version specification
 //!
 //! Some actions need to determine a version to use, such as when creating a
@@ -382,6 +452,8 @@
 //! --help`.
 //!
 //! [config]: https://github.com/udoprog/kick/blob/main/config.md
+//! [deploy-config]: https://github.com/udoprog/kick/blob/main/config/deploy.md
+//! [variables-config]: https://github.com/udoprog/kick/blob/main/config/variables.md
 //! [wobbly-versions]: https://github.com/udoprog/kick/blob/main/WOBBLY_VERSIONS.md
 
 #![allow(clippy::too_many_arguments)]
@@ -417,6 +489,7 @@ mod restore;
 mod rstr;
 mod shell;
 mod system;
+mod systemd;
 mod template;
 mod templates;
 mod urls;
@@ -486,6 +559,8 @@ enum Command {
     Deb(SharedAction<cli::deb::Opts>),
     /// Collect and define release variables.
     Define(SharedAction<cli::define::Opts>),
+    /// Deploy a project over ssh.
+    Deploy(SharedAction<cli::deploy::Opts>),
     /// Interact with the github API parameterized over repositories.
     #[command(name = "gh")]
     Github(SharedAction<cli::gh::Opts>),
@@ -538,6 +613,7 @@ impl Command {
             Command::Check(c) => &c.shared,
             Command::Deb(c) => &c.shared,
             Command::Define(c) => &c.shared,
+            Command::Deploy(c) => &c.shared,
             Command::Github(c) => &c.shared,
             Command::GithubAction(c) => &c.shared,
             Command::Gzip(c) => &c.shared,
@@ -563,6 +639,7 @@ impl Command {
             Command::Check(action) => Some(&action.repo),
             Command::Deb(c) => Some(&c.repo),
             Command::Define(c) => Some(&c.repo),
+            Command::Deploy(c) => Some(&c.repo),
             Command::Github(c) => Some(&c.repo),
             Command::GithubAction(c) => Some(&c.repo),
             Command::Gzip(c) => Some(&c.repo),
@@ -1115,6 +1192,9 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         }
         Command::Define(opts) => {
             cli::define::entry(&mut with_repos, &opts.action)?;
+        }
+        Command::Deploy(opts) => {
+            cli::deploy::entry(&mut with_repos, &opts.action)?;
         }
         Command::Set(opts) => {
             cli::set::entry(&mut with_repos.cx, &opts.action)?;

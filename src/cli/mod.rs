@@ -6,6 +6,7 @@ pub(crate) mod check;
 pub(crate) mod compress;
 pub(crate) mod deb;
 pub(crate) mod define;
+pub(crate) mod deploy;
 pub(crate) mod gh;
 pub(crate) mod github_action;
 pub(crate) mod login;
