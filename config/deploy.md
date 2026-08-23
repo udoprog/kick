@@ -55,7 +55,9 @@ build_features = ["bundle"]
 ```
 
 Use `kick deploy --dry-run` to print the unit which would be installed and every
-command which would be run without changing anything on the remote host.
+command which would be run without changing anything on the remote host, or
+`kick deploy --verbose` to see the same information for a deployment which is
+actually being performed.
 
 <br>
 
@@ -467,6 +469,10 @@ which overrides the `binary` option, along with the following options:
 * `--no-restart` installs everything without stopping or starting the service.
 * `--dry-run` prints the unit which would be installed and every command which
   would be run without changing anything.
+* `--verbose` / `-V` prints the deployment plan, the unit being installed and
+  the script which is run remotely, and traces the remote script as it
+  executes. Passing it twice (`-VV`) also prints the [access
+  check](#access-check) and makes `ssh` and `scp` verbose.
 
 <br>
 

@@ -81,6 +81,43 @@ pub(crate) struct Opts {
     /// the remote host.
     #[arg(long)]
     dry_run: bool,
+    /// Print verbose information about what is being done.
+    ///
+    /// One level `-V` prints the deployment plan, the systemd unit and the
+    /// script which is run remotely, and traces the remote script as it
+    /// executes. Two levels `-VV` additionally prints the access check and
+    /// passes `-v` to `ssh` and `scp`.
+    #[arg(long, short = 'V', action = clap::ArgAction::Count)]
+    verbose: u8,
+}
+
+impl Opts {
+    /// Whether details about what is being done should be printed.
+    ///
+    /// A dry run is verbose by definition, since printing what would be done
+    /// is the only thing it does.
+    fn details(&self) -> bool {
+        self.verbose >= 1 || self.dry_run
+    }
+}
+
+/// Print a block of `#` prefixed lines describing what is being done.
+fn details<'a>(
+    o: &mut StandardStream,
+    title: &str,
+    lines: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
+    writeln!(o, "# {title}:")?;
+
+    for line in lines {
+        if line.is_empty() {
+            writeln!(o, "#")?;
+        } else {
+            writeln!(o, "#   {line}")?;
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
@@ -268,29 +305,69 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
         },
     )?;
 
-    if opts.dry_run {
+    if opts.details() {
+        let mut plan = Vec::new();
+
+        plan.push(format!("host: {host}"));
+
+        if let Some(port) = config.port {
+            plan.push(format!("port: {port}"));
+        }
+
+        plan.push(format!("binary: {binary}"));
+        plan.push(format!("profile: {profile}"));
+        plan.push(format!("sudo: {}", if use_sudo { "yes" } else { "no" }));
+        plan.push(format!("bin_dir: {bin_dir}"));
+
+        if let Some((_, file_name, _)) = &unit {
+            plan.push(format!("unit_dir: {unit_dir}"));
+            plan.push(format!("unit: {file_name}"));
+        }
+
+        plan.push(format!("staging_dir: {staging_dir}"));
+
+        details(o, "deployment", plan.iter().map(String::as_str))?;
+
+        let uploaded = uploads
+            .iter()
+            .map(|(path, name)| format!("{} -> {staging_dir}/{name}", path.display()))
+            .collect::<Vec<_>>();
+
+        details(o, "uploads", uploaded.iter().map(String::as_str))?;
+
+        let mut installed = vec![format!(
+            "{staging_dir}/{binary} -> {bin_dir}/{binary} (0755)"
+        )];
+
+        for (name, dest, mode) in &installs {
+            installed.push(format!(
+                "{staging_dir}/{name} -> {dest} ({:04o})",
+                mode.permissions()
+            ));
+        }
+
+        if let Some((_, file_name, _)) = &unit {
+            installed.push(format!(
+                "{staging_dir}/{file_name} -> {unit_dir}/{file_name} (0644)"
+            ));
+        }
+
+        details(o, "installs", installed.iter().map(String::as_str))?;
+
         if let Some((_, file_name, contents)) = &unit {
-            writeln!(o, "# {unit_dir}/{file_name}:")?;
-
-            for line in contents.lines() {
-                writeln!(o, "# {line}")?;
-            }
+            details(o, &format!("{unit_dir}/{file_name}"), contents.lines())?;
         }
 
-        writeln!(o, "# remote script:")?;
-
-        for line in script.lines() {
-            writeln!(o, "# {line}")?;
-        }
+        details(o, "remote script", script.lines())?;
     }
 
     let shell = Shell::Bash;
 
-    let mut command = ssh(&config, host);
+    let mut command = ssh(opts, &config, host);
     command.arg(format!("mkdir -p {}", shell.escape(staging_dir)));
     run(o, opts, &mut command)?;
 
-    let mut command = scp(&config);
+    let mut command = scp(opts, &config);
 
     for (path, _) in &uploads {
         command.arg(path);
@@ -299,7 +376,7 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
     command.arg(format!("{host}:{staging_dir}/"));
     run(o, opts, &mut command)?;
 
-    let mut command = ssh(&config, host);
+    let mut command = ssh(opts, &config, host);
     command.arg(&script);
     run(o, opts, &mut command)?;
     Ok(())
@@ -338,7 +415,13 @@ fn script(
 
     let mut script = String::new();
 
-    writeln!(script, "set -eu")?;
+    // NB: Tracing the script is the only insight into the remote half of the
+    // deployment, since it is run non-interactively over ssh.
+    if opts.verbose >= 1 {
+        writeln!(script, "set -eux")?;
+    } else {
+        writeln!(script, "set -eu")?;
+    }
 
     // Stop the service before its binary is replaced, the unit might not exist
     // yet in which case this is a no-op.
@@ -512,7 +595,7 @@ fn split_command(command: &str) -> Option<(&str, impl Iterator<Item = &str>)> {
 }
 
 /// Construct an `ssh` command towards the given host.
-fn ssh(config: &Deploy, host: &str) -> Command {
+fn ssh(opts: &Opts, config: &Deploy, host: &str) -> Command {
     let mut command = Command::new("ssh");
 
     if let Some(port) = config.port {
@@ -520,13 +603,13 @@ fn ssh(config: &Deploy, host: &str) -> Command {
         command.arg(port.to_string());
     }
 
-    options(&mut command, config);
+    options(&mut command, opts, config);
     command.arg(host);
     command
 }
 
 /// Construct an `scp` command.
-fn scp(config: &Deploy) -> Command {
+fn scp(opts: &Opts, config: &Deploy) -> Command {
     let mut command = Command::new("scp");
 
     if let Some(port) = config.port {
@@ -535,11 +618,17 @@ fn scp(config: &Deploy) -> Command {
         command.arg(port.to_string());
     }
 
-    options(&mut command, config);
+    options(&mut command, opts, config);
     command
 }
 
-fn options(command: &mut Command, config: &Deploy) {
+fn options(command: &mut Command, opts: &Opts, config: &Deploy) {
+    // NB: `ssh` and `scp` are only made verbose at the second level, since
+    // what they print is about the connection rather than the deployment.
+    if opts.verbose >= 2 {
+        command.arg("-v");
+    }
+
     if let Some(identity_file) = &config.identity_file {
         command.arg("-i");
         command.arg(identity_file);
@@ -615,7 +704,11 @@ fn check(
         )?;
     }
 
-    let mut command = ssh(config, host);
+    if opts.verbose >= 2 {
+        details(o, "access check", script.lines())?;
+    }
+
+    let mut command = ssh(opts, config, host);
     command.arg(&script);
 
     if opts.dry_run {

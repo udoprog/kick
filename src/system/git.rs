@@ -463,7 +463,9 @@ pub(crate) fn parse_url(string: &str) -> Result<Url> {
         return Url::parse(&string).with_context(|| format!("Parsing scp-like url as `{string}`"));
     }
 
-    Ok(Url::parse(string)?)
+    Url::parse(string).context(
+        "Expected a url such as `https://github.com/udoprog/kick`, or an scp-like remote such as `git@github.com:udoprog/kick`",
+    )
 }
 
 #[cfg(test)]
