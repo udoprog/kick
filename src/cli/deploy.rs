@@ -44,6 +44,35 @@ pub(crate) struct Opts {
     /// section.
     #[arg(long)]
     host: Option<String>,
+    /// The arguments the deployed service is started with.
+    ///
+    /// Can be used more than once, and each use is split on whitespace. This
+    /// defines the `args` variable, which the built-in unit template appends
+    /// to `ExecStart`, and overrides `args` in the `[variables]` section. An
+    /// argument which itself contains whitespace has to be specified through
+    /// the variable instead.
+    ///
+    /// Since service arguments tend to start with `-`, values are taken as
+    /// they are given, which means that `--args --user x` passes `--user x` to
+    /// the service rather than being read as an option to `kick`.
+    #[arg(long = "args", value_name = "ARGS", allow_hyphen_values = true)]
+    args: Vec<String>,
+    /// The user the deployed service runs as.
+    ///
+    /// This defines the `user` variable, which the built-in unit template
+    /// installs as a `User=` directive, and overrides `user` in the
+    /// `[variables]` section. Without it the service runs as `root`, which is
+    /// what systemd does in the absence of a `User=` directive.
+    #[arg(long)]
+    user: Option<String>,
+    /// The group the deployed service runs as.
+    ///
+    /// This defines the `group` variable, which the built-in unit template
+    /// installs as a `Group=` directive. It defaults to `--user`, since a
+    /// service which runs as a dedicated user conventionally has a group of
+    /// the same name, unless `group` is set in the `[variables]` section.
+    #[arg(long)]
+    group: Option<String>,
     /// A command to run before the project is built, can be used more than
     /// once.
     ///
@@ -146,6 +175,20 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
     // wants, so the built-in template applies unless it is turned off.
     let systemd = config.systemd.clone().unwrap_or_default();
     let systemd = (systemd.enabled && !opts.no_systemd).then_some(systemd);
+
+    if systemd.is_none() {
+        if opts.user.is_some() {
+            tracing::warn!("Ignoring `--user` since no systemd unit is being installed");
+        }
+
+        if opts.group.is_some() {
+            tracing::warn!("Ignoring `--group` since no systemd unit is being installed");
+        }
+
+        if !opts.args.is_empty() {
+            tracing::warn!("Ignoring `--args` since no systemd unit is being installed");
+        }
+    }
 
     let use_sudo = config.sudo.unwrap_or(true);
 
@@ -261,6 +304,37 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
                 toml::Value::String(unit_dir.to_owned()),
             );
             variables.insert(String::from("host"), toml::Value::String(host.to_owned()));
+
+            // NB: Which user a service runs as and what it is started with are
+            // things a deployment which has no configuration at all still needs
+            // to be able to say.
+            if let Some(user) = &opts.user {
+                variables.insert(String::from("user"), toml::Value::String(user.clone()));
+            }
+
+            // NB: A service which runs as a dedicated user conventionally has a
+            // group of the same name, but a configured group is not something
+            // to be overridden by that convention.
+            let group = match &opts.group {
+                Some(group) => Some(group),
+                None if !variables.contains_key("group") => opts.user.as_ref(),
+                None => None,
+            };
+
+            if let Some(group) = group {
+                variables.insert(String::from("group"), toml::Value::String(group.clone()));
+            }
+
+            let args = opts
+                .args
+                .iter()
+                .flat_map(|args| args.split_whitespace())
+                .map(|arg| toml::Value::String(arg.to_owned()))
+                .collect::<Vec<_>>();
+
+            if !args.is_empty() {
+                variables.insert(String::from("args"), toml::Value::Array(args));
+            }
 
             let contents = systemd::render(&systemd.template, &variables)
                 .with_context(|| anyhow!("Rendering unit `{file_name}`"))?;

@@ -35,6 +35,18 @@ This builds the project with `cargo build --release`, installs
 `docular.service` built from the [built-in unit
 template](#the-built-in-template).
 
+There is no way to figure out which user a service should run as or what it
+should be started with, so a deployment which doesn't run as `root` with no
+arguments has to say so:
+
+```sh
+kick deploy --host moore docular --user docular --args "--bind 0.0.0.0:3004"
+```
+
+Which runs the service as `docular:docular`, since `--group` defaults to
+`--user`. Everything else the unit needs is configured through
+[variables](#the-built-in-template).
+
 Anything else the build needs can be passed along:
 
 ```sh
@@ -333,12 +345,17 @@ Every variable it uses beyond the ones above is optional, and defining one in
 * `requires`.
 * `start_limit_interval_sec` and `start_limit_burst`.
 * `type`, defaults to `simple`.
-* `user` and `group`.
+* `user` and `group`, which can also be set with `--user <user>` and `--group
+  <group>`. The options override the variables, and `--user` on its own also
+  defines `group` unless the variable is set.
 * `working_directory`.
 * `kill_signal`.
 * `environment`, a table which becomes one `Environment=` per entry.
 * `environment_file`.
-* `args`, a list which is appended to `ExecStart`.
+* `args`, a list which is appended to `ExecStart`. Can also be set with
+  `--args <args>`, which overrides the variable. Values are taken as they are
+  given, so `--args --user x` passes `--user x` to the service, and an argument
+  which itself contains whitespace has to be specified through the variable.
 * `restart`, defaults to `always`.
 * `restart_sec`, defaults to `5`.
 * `timeout_stop_sec`.
@@ -457,6 +474,13 @@ The `kick deploy` action takes the name of the binary to deploy as an argument,
 which overrides the `binary` option, along with the following options:
 
 * `--host <host>` overrides the `host` option.
+* `--user <user>` sets the `user` variable, which the unit installs as a
+  `User=` directive. Without it the service runs as `root`.
+* `--group <group>` sets the `group` variable, which the unit installs as a
+  `Group=` directive. Defaults to `--user`, unless `group` is set in
+  `[variables]`.
+* `--args <args>` sets the `args` variable, which the unit appends to
+  `ExecStart`. Can be used more than once, and each use is split on whitespace.
 * `--profile <profile>` overrides the `profile` option.
 * `--pre-build <command>` adds a command to `pre_build`, can be used more than
   once.

@@ -48,6 +48,9 @@ fn env() -> minijinja::Environment<'static> {
     // templates have to be explicit about what is optional through `default()`
     // or `is defined`.
     env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+    // NB: Unit files are expected to end with a newline like any other text
+    // file, and minijinja would otherwise eat the one the template ends with.
+    env.set_keep_trailing_newline(true);
     env
 }
 
@@ -72,6 +75,7 @@ mod tests {
         assert!(unit.contains("ExecStart=/usr/local/bin/track\n"));
         assert!(unit.contains("WantedBy=multi-user.target"));
         assert!(!unit.contains("User="));
+        assert!(unit.ends_with("\n"));
     }
 
     /// Optional variables fill in the directives they belong to.
