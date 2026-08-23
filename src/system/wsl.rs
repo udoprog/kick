@@ -49,10 +49,11 @@ impl Wsl {
 }
 
 fn decode_utf16(bytes: &[u8]) -> Result<String> {
-    let it = bytes.chunks_exact(2).flat_map(|s| match s {
-        &[a, b] => Some(u16::from_ne_bytes([a, b])),
-        _ => None,
-    });
+    let it = bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&[a, b]| u16::from_ne_bytes([a, b]));
 
     let mut string = String::with_capacity(bytes.len() / 2);
 

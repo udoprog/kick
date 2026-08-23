@@ -234,7 +234,7 @@ impl DataBuilder {
             let mut header = tar::Header::new_gnu();
             header
                 .set_path(file.path.as_str())
-                .with_context(|| anyhow!("Setting path {}", &file.path))?;
+                .with_context(|| anyhow!("Setting path {}", file.path))?;
 
             header.set_size(file.contents.len() as u64);
             header.set_mode(file.mode.regular_file() as u32);

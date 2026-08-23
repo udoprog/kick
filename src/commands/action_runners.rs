@@ -88,11 +88,10 @@ impl ActionRunners {
             bail!("Could not find action runner for {}", c.action_name());
         };
 
-        let main;
         let mut pre = None;
         let mut post = None;
 
-        match &action.kind {
+        let main = match &action.kind {
             ActionKind::Node {
                 main: main_path,
                 pre: pre_path,
@@ -155,19 +154,17 @@ impl ActionRunners {
                     });
                 }
 
-                main = Schedule::Group(group);
+                Schedule::Group(group)
             }
-            ActionKind::Composite { steps } => {
-                main = build_steps(
-                    batch,
-                    Some(c),
-                    c.id(),
-                    Some(c.action_name()),
-                    steps,
-                    Some(action),
-                )?;
-            }
-        }
+            ActionKind::Composite { steps } => build_steps(
+                batch,
+                Some(c),
+                c.id(),
+                Some(c.action_name()),
+                steps,
+                Some(action),
+            )?,
+        };
 
         Ok(RunnerSteps { main, pre, post })
     }

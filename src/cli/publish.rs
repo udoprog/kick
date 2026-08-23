@@ -148,7 +148,7 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
                 continue;
             }
 
-            for (_, deps) in deps.iter_mut() {
+            for deps in deps.values_mut() {
                 deps.retain(|d| d.name != name);
             }
 

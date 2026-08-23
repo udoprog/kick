@@ -147,9 +147,8 @@ fn define(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
     let mut output_file;
     let mut stdout;
-    let o: &mut dyn io::Write;
 
-    match output {
+    let o: &mut dyn io::Write = match output {
         Some((ref name, path)) => {
             output_file = OpenOptions::new()
                 .append(true)
@@ -158,13 +157,13 @@ fn define(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
                 .with_context(|| path.display().to_string())?;
 
             tracing::info!("Writing information on version `{version}` to {name}",);
-            o = &mut output_file;
+            &mut output_file
         }
         _ => {
             stdout = io::stdout();
-            o = &mut stdout;
+            &mut stdout
         }
-    }
+    };
 
     tracing::trace! {
         output = output.as_ref().map(|(name, _)| name.to_string()),
