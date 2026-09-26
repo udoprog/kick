@@ -506,7 +506,7 @@ use std::str::{Chars, FromStr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
 
 use config::{Config, Distribution, Os};
@@ -1123,6 +1123,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             &repos,
             &sets,
             in_repo_path,
+            from_group,
         )?;
     }
 
@@ -1345,7 +1346,32 @@ fn apply_repo_options(
     repos: &[Repo],
     sets: &repo_sets::RepoSets,
     in_repo_path: bool,
+    from_group: bool,
 ) -> Result<()> {
+    let has_set = !repo_opts.set.iter().all(|s| s.is_empty());
+
+    // Refuse to guess when there is no explicit selection and we're running
+    // from inside of a git checkout which is not one of the configured repos
+    // (e.g. an unregistered worktree). Otherwise every configured repo would
+    // silently be selected.
+    if from_group
+        && !repo_opts.all
+        && repo_opts.repos.is_empty()
+        && !has_set
+        && !in_repo_path
+        && let Some(current) = paths.current
+        && let Some(checkout) = unregistered_git_checkout(paths.root, current)
+    {
+        let checkout = checkout.to_path(paths.root);
+        let checkout = checkout.canonicalize().unwrap_or(checkout);
+
+        bail!(
+            "The current directory is inside of the git checkout `{}` which is not a configured repo in {}; pass `--all` to operate on all repos, or select repos explicitly with `-p`/`--path` or `--set`",
+            checkout.display(),
+            KICK_TOML,
+        );
+    }
+
     let mut filters = Vec::new();
 
     for repo in &repo_opts.repos {
@@ -1356,7 +1382,7 @@ fn apply_repo_options(
     let mut owned_work = Vec::new();
     let mut work = Vec::new();
 
-    let set = if !repo_opts.set.iter().all(|s| s.is_empty()) {
+    let set = if has_set {
         let mut set = HashSet::<RelativePathBuf>::new();
 
         for (op, s) in repo_opts.set.iter().flat_map(|s| s.sets.iter()) {
@@ -1446,6 +1472,29 @@ fn apply_repo_options(
     )?;
 
     Ok(())
+}
+
+/// Find the nearest git checkout (a directory containing a `.git` directory or
+/// file) at or above `current`, but strictly below `root`.
+fn unregistered_git_checkout<'a>(
+    root: &Path,
+    current: &'a RelativePath,
+) -> Option<&'a RelativePath> {
+    let mut path = Some(current);
+
+    while let Some(p) = path {
+        if p.as_str().is_empty() {
+            break;
+        }
+
+        if p.to_path(root).join(".git").exists() {
+            return Some(p);
+        }
+
+        path = p.parent();
+    }
+
+    None
 }
 
 /// Perform more advanced filtering over modules.
@@ -1551,4 +1600,39 @@ fn find_from_current_dir(current_dir: &Path) -> Option<(PathBuf, RelativePathBuf
     }
 
     first_git
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use relative_path::RelativePath;
+
+    use super::unregistered_git_checkout;
+
+    #[test]
+    fn detects_unregistered_git_checkouts() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path();
+
+        // A worktree has a `.git` file, a regular clone a `.git` directory.
+        fs::create_dir_all(root.join("worktree/src/nested"))?;
+        fs::write(root.join("worktree/.git"), "gitdir: /elsewhere\n")?;
+        fs::create_dir_all(root.join("clone/.git"))?;
+        fs::create_dir_all(root.join("plain/sub"))?;
+        // A `.git` in root itself must not count.
+        fs::create_dir_all(root.join(".git"))?;
+
+        let check = |p: &str| {
+            unregistered_git_checkout(root, RelativePath::new(p)).map(|p| p.as_str().to_owned())
+        };
+
+        assert_eq!(check("worktree").as_deref(), Some("worktree"));
+        assert_eq!(check("worktree/src/nested").as_deref(), Some("worktree"));
+        assert_eq!(check("clone").as_deref(), Some("clone"));
+        assert_eq!(check("plain/sub"), None);
+        assert_eq!(check("plain"), None);
+        assert_eq!(check(""), None);
+        Ok(())
+    }
 }
