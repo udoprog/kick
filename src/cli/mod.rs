@@ -9,6 +9,7 @@ pub(crate) mod define;
 pub(crate) mod deploy;
 pub(crate) mod gh;
 pub(crate) mod github_action;
+pub(crate) mod install;
 pub(crate) mod login;
 pub(crate) mod msi;
 pub(crate) mod msrv;

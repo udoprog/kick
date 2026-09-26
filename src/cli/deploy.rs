@@ -10,7 +10,7 @@ use clap::Parser;
 use termcolor::{ColorChoice, StandardStream};
 
 use crate::cli::WithRepos;
-use crate::config::Deploy;
+use crate::config::{ConfigCommand, Deploy};
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::model::Repo;
@@ -707,22 +707,13 @@ fn build(
     root: &Path,
     profile: &str,
 ) -> Result<()> {
-    for pre_build in &config.pre_build {
-        let mut command = Command::new(&pre_build.command);
-        command.args(&pre_build.args);
-        command.current_dir(root);
-        run(o, opts, &mut command)?;
-    }
+    let extra = opts
+        .pre_build
+        .iter()
+        .filter_map(|c| ConfigCommand::split(c));
 
-    for pre_build in &opts.pre_build {
-        let Some((pre_build, args)) = split_command(pre_build) else {
-            continue;
-        };
-
-        let mut command = Command::new(pre_build);
-        command.args(args);
-        command.current_dir(root);
-        run(o, opts, &mut command)?;
+    for pre_build in config.pre_build.iter().cloned().chain(extra) {
+        run(o, opts, &mut pre_build.to_command(root))?;
     }
 
     let features = config
@@ -742,10 +733,7 @@ fn build(
         }
 
         for build in &config.build {
-            let mut command = Command::new(&build.command);
-            command.args(&build.args);
-            command.current_dir(root);
-            run(o, opts, &mut command)?;
+            run(o, opts, &mut build.to_command(root))?;
         }
 
         return Ok(());
@@ -781,13 +769,6 @@ fn profile_dir(profile: &str) -> &str {
         "bench" => "release",
         profile => profile,
     }
-}
-
-/// Split a command specified as a single string into a command and arguments.
-fn split_command(command: &str) -> Option<(&str, impl Iterator<Item = &str>)> {
-    let mut it = command.split_whitespace();
-    let command = it.next()?;
-    Some((command, it))
 }
 
 /// Construct an `ssh` command towards the given host.

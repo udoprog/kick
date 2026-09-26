@@ -47,4 +47,5 @@ See the following sections for documentation on the various configuration sectio
 * [Managing GitHub `[actions]`](./config/actions.md)
 * [Building packages using `[package]`](./config/package.md)
 * [Deploying projects using `[deploy]`](./config/deploy.md)
+* [Installing projects locally using `[install]`](./config/install.md)
 * [Keeping version strings up to date with `[version]`](./config/versions.md)

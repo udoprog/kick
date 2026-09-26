@@ -570,6 +570,8 @@ enum Command {
     Gzip(SharedAction<cli::compress::Opts>),
     /// List paths used by kick.
     Info(SharedOptions),
+    /// Install a project locally by running its install commands.
+    Install(SharedAction<cli::install::Opts>),
     /// Configure github authentication.
     ///
     /// This can be configured by setting the `GITHUB_TOKEN` environment
@@ -618,6 +620,7 @@ impl Command {
             Command::GithubAction(c) => &c.shared,
             Command::Gzip(c) => &c.shared,
             Command::Info(shared) => shared,
+            Command::Install(c) => &c.shared,
             Command::Login(c) => &c.shared,
             Command::Msi(c) => &c.shared,
             Command::Msrv(c) => &c.shared,
@@ -644,6 +647,7 @@ impl Command {
             Command::GithubAction(c) => Some(&c.repo),
             Command::Gzip(c) => Some(&c.repo),
             Command::Info(..) => None,
+            Command::Install(c) => Some(&c.repo),
             Command::Login(..) => None,
             Command::Msi(c) => Some(&c.repo),
             Command::Msrv(c) => Some(&c.repo),
@@ -1195,6 +1199,9 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         }
         Command::Deploy(opts) => {
             cli::deploy::entry(&mut with_repos, &opts.action)?;
+        }
+        Command::Install(opts) => {
+            cli::install::entry(&mut with_repos, &opts.action)?;
         }
         Command::Set(opts) => {
             cli::set::entry(&mut with_repos.cx, &opts.action)?;

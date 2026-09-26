@@ -121,6 +121,10 @@ Kick can effortlessly package your Rust projects using actions such
 `gzip`,`zip`, or packaging systems such as `rpm`, `deb`, or `msi` preparing
 them for distribution.
 
+Kick can `install` a project locally, which runs `cargo install --path .` by
+default or the commands configured in the [`[install]` section][install-config].
+Use `kick install --dry-run` to see what would be run.
+
 Kick can run custom commands over git modules using convenient filters.
 Combined with [repo sets](#repo-sets). Performing batch maintenance over
 many git projects has never been easier!
@@ -462,4 +466,5 @@ Note that version information is exported by default when specifying
 
 [config]: https://github.com/udoprog/kick/blob/main/config.md
 [deploy-config]: https://github.com/udoprog/kick/blob/main/config/deploy.md
+[install-config]: https://github.com/udoprog/kick/blob/main/config/install.md
 [wobbly-versions]: https://github.com/udoprog/kick/blob/main/WOBBLY_VERSIONS.md

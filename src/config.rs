@@ -23,6 +23,7 @@ use crate::glob::Glob;
 use crate::keys::Keys;
 use crate::model::{Repo, RepoInfo, RepoParams, RepoRef, RepoSource};
 use crate::packaging::Mode;
+use crate::process;
 use crate::shell::Shell;
 use crate::systemd;
 use crate::templates::{Template, Templating};
@@ -159,13 +160,52 @@ impl Package {
     }
 }
 
-/// A command which is run locally as part of a deployment.
-#[derive(Debug, Clone)]
-pub(crate) struct DeployCommand {
+/// A command which is run locally, such as part of a deployment or an install.
+///
+/// In configuration this is either a string, which is split on whitespace, or
+/// an array of arguments in case an argument contains whitespace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ConfigCommand {
     /// The command to run.
     pub(crate) command: String,
     /// Arguments to pass to the command.
     pub(crate) args: Vec<String>,
+}
+
+impl ConfigCommand {
+    /// Construct a command from a string by splitting it on whitespace.
+    ///
+    /// Returns `None` if the string is empty or only contains whitespace.
+    pub(crate) fn split(command: &str) -> Option<Self> {
+        let mut it = command.split_whitespace();
+        let command = it.next()?.to_owned();
+
+        Some(Self {
+            command,
+            args: it.map(str::to_owned).collect(),
+        })
+    }
+
+    /// Build a process command which runs this command in the given directory.
+    pub(crate) fn to_command(&self, dir: &Path) -> process::Command {
+        let mut command = process::Command::new(&self.command);
+        command.args(&self.args);
+        command.current_dir(dir);
+        command
+    }
+}
+
+/// Install configuration.
+#[derive(Default, Debug, Clone)]
+pub(crate) struct Install {
+    /// Commands which are run in order to install the project.
+    pub(crate) commands: Vec<ConfigCommand>,
+}
+
+impl Install {
+    fn merge_with(&mut self, mut other: Self) {
+        self.commands.append(&mut other.commands);
+    }
 }
 
 /// An extra file to install as part of a deployment.
@@ -206,10 +246,10 @@ pub(crate) struct Deploy {
     /// The build profile the binary being deployed is found in.
     pub(crate) profile: Option<String>,
     /// Commands which are run locally before the project is built.
-    pub(crate) pre_build: Vec<DeployCommand>,
+    pub(crate) pre_build: Vec<ConfigCommand>,
     /// Commands which replace the build command which would otherwise be
     /// generated.
-    pub(crate) build: Vec<DeployCommand>,
+    pub(crate) build: Vec<ConfigCommand>,
     /// Features to enable in the generated build command.
     pub(crate) build_features: Vec<String>,
     /// Extra files to install.
@@ -634,6 +674,8 @@ pub(crate) struct RepoConfig {
     pub(crate) actions: Actions,
     /// Deployment configuration.
     pub(crate) deploy: Deploy,
+    /// Install configuration.
+    pub(crate) install: Install,
 }
 
 impl RepoConfig {
@@ -665,6 +707,7 @@ impl RepoConfig {
         self.package.merge_with(other.package);
         self.actions.merge_with(other.actions);
         self.deploy.merge_with(other.deploy);
+        self.install.merge_with(other.install);
 
         merge_map(&mut self.variables, other.variables);
     }
@@ -952,6 +995,17 @@ impl Config<'_> {
         }
 
         deploy
+    }
+
+    /// Get the install configuration for the given repo.
+    pub(crate) fn install(&self, repo: &RepoRef) -> Install {
+        let mut install = Install::default();
+
+        for repo in self.repos(repo) {
+            install.merge_with(repo.install.clone());
+        }
+
+        install
     }
 
     /// Get all denied actions.
@@ -1556,6 +1610,8 @@ impl<'a> Cx<'a> {
 
         let deploy = self.in_key(table, "deploy", Self::deploy);
 
+        let install = self.in_key(table, "install", Self::install);
+
         Ok(RepoConfig {
             sources: BTreeSet::from_iter([RepoSource::Config(self.current.to_owned())]),
             name: name?,
@@ -1580,6 +1636,7 @@ impl<'a> Cx<'a> {
             package: package?.unwrap_or_default(),
             actions: actions?.unwrap_or_default(),
             deploy: deploy?.unwrap_or_default(),
+            install: install?.unwrap_or_default(),
         })
     }
 
@@ -1733,7 +1790,7 @@ impl<'a> Cx<'a> {
         }
     }
 
-    fn deploy_command(&self, value: toml::Value) -> Result<DeployCommand, ErrorMarker> {
+    fn config_command(&self, value: toml::Value) -> Result<ConfigCommand, ErrorMarker> {
         let parts = match value {
             toml::Value::String(string) => string.split_whitespace().map(str::to_owned).collect(),
             value => self.array(value, Self::string)?,
@@ -1745,9 +1802,19 @@ impl<'a> Cx<'a> {
             return Err(self.capture("expected a non-empty command"));
         };
 
-        Ok(DeployCommand {
+        Ok(ConfigCommand {
             command,
             args: it.collect(),
+        })
+    }
+
+    fn install(&self, value: toml::Value) -> Result<Install, ErrorMarker> {
+        self.with_table(value, |cx, table| {
+            let commands = cx.in_array(table, "commands", None, Self::config_command);
+
+            Ok(Install {
+                commands: commands?,
+            })
         })
     }
 
@@ -1824,8 +1891,8 @@ impl<'a> Cx<'a> {
             let staging_dir = cx.in_key(table, "staging_dir", Self::string);
             let binary = cx.in_key(table, "binary", Self::string);
             let profile = cx.in_key(table, "profile", Self::string);
-            let pre_build = cx.in_array(table, "pre_build", None, Self::deploy_command);
-            let build = cx.in_array(table, "build", None, Self::deploy_command);
+            let pre_build = cx.in_array(table, "pre_build", None, Self::config_command);
+            let build = cx.in_array(table, "build", None, Self::config_command);
             let build_features = cx.in_array(table, "build_features", None, Self::string);
             let files = cx.in_array(table, "files", None, Self::deploy_file);
             let systemd = cx.in_key(table, "systemd", Self::systemd);
@@ -2057,4 +2124,92 @@ pub(crate) fn rpm_requires(config: &RepoConfig) -> &[RpmRequire] {
 /// Access `deb.depends` through [`Config::get_all`].
 pub(crate) fn deb_depends(config: &RepoConfig) -> &[DebDependency] {
     &config.package.deb.depends
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use relative_path::RelativePath;
+
+    use super::{ConfigCommand, Cx, Install};
+    use crate::ctxt::Paths;
+    use crate::templates::Templating;
+
+    fn command(command: &str, args: &[&str]) -> ConfigCommand {
+        ConfigCommand {
+            command: command.to_owned(),
+            args: args.iter().map(|a| (*a).to_owned()).collect(),
+        }
+    }
+
+    fn parse_install(source: &str) -> (Option<Install>, usize) {
+        let templating = Templating::new().unwrap();
+
+        let paths = Paths {
+            root: Path::new("."),
+            current: None,
+            config: None,
+            cache: None,
+        };
+
+        let cx = Cx::new(paths, RelativePath::new(""), &templating);
+        let value: toml::Value = toml::from_str(source).unwrap();
+        let install = cx.install(value).ok();
+        let errors = cx.errors.borrow().len();
+        (install, errors)
+    }
+
+    #[test]
+    fn install_commands() {
+        let (install, errors) = parse_install(
+            r#"commands = ["trunk build --release", ["cargo", "install", "--path", "."]]"#,
+        );
+
+        assert_eq!(errors, 0);
+
+        let install = install.unwrap();
+
+        assert_eq!(
+            install.commands,
+            [
+                command("trunk", &["build", "--release"]),
+                command("cargo", &["install", "--path", "."]),
+            ]
+        );
+    }
+
+    #[test]
+    fn install_rejects_bad_config() {
+        let (_, errors) = parse_install(r#"commands = [""]"#);
+        assert_eq!(errors, 1);
+
+        let (_, errors) = parse_install(
+            r#"commands = []
+unknown = 1"#,
+        );
+        assert_eq!(errors, 1);
+    }
+
+    #[test]
+    fn install_merges_by_appending() {
+        let mut install = Install {
+            commands: vec![command("a", &[])],
+        };
+
+        install.merge_with(Install {
+            commands: vec![command("b", &["c"])],
+        });
+
+        assert_eq!(install.commands, [command("a", &[]), command("b", &["c"])]);
+    }
+
+    #[test]
+    fn split_command() {
+        assert_eq!(
+            ConfigCommand::split("  cargo  install --path . "),
+            Some(command("cargo", &["install", "--path", "."]))
+        );
+        assert_eq!(ConfigCommand::split("   "), None);
+    }
 }
