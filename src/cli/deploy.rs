@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::env::consts::EXE_EXTENSION;
 use std::fmt::Write as _;
-use std::io::Write as _;
+use std::io::{IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -10,7 +10,7 @@ use clap::Parser;
 use termcolor::{ColorChoice, StandardStream};
 
 use crate::cli::WithRepos;
-use crate::config::{ConfigCommand, Deploy};
+use crate::config::{ConfigCommand, Deploy, DeployKind, SystemdScope};
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::model::Repo;
@@ -21,8 +21,12 @@ use crate::systemd;
 
 /// The remote directory binaries are installed into by default.
 const DEFAULT_BIN_DIR: &str = "/usr/local/bin";
-/// The remote directory systemd units are installed into by default.
+/// The directory system units are installed into by default.
 const DEFAULT_UNIT_DIR: &str = "/etc/systemd/system";
+/// The directory user units are installed into by default.
+const DEFAULT_USER_UNIT_DIR: &str = "~/.config/systemd/user";
+/// The host a local deployment is reported as deploying to.
+const LOCAL_HOST: &str = "localhost";
 /// The remote directory files are uploaded to by default, relative to the home
 /// directory of the user being logged in as.
 const DEFAULT_STAGING_DIR: &str = ".kick-deploy";
@@ -40,6 +44,17 @@ pub(crate) struct Opts {
     /// This overrides the `binary` option in the `[deploy]` section, and
     /// defaults to the name of the primary crate in the project.
     binary: Option<String>,
+    /// The deploy profile to use, as defined in a `[deploy.profiles.<name>]`
+    /// section.
+    ///
+    /// Defaults to the `default_profile` option in the `[deploy]` section, or
+    /// the only profile if there is just one. With several profiles and no
+    /// default, you are asked which one to use when running in a terminal.
+    ///
+    /// Note that this is not the same as `--profile`, which is the cargo build
+    /// profile.
+    #[arg(long = "to", value_name = "PROFILE")]
+    to: Option<String>,
     /// A host to deploy to, can be used more than once.
     ///
     /// This replaces the `host` option in the `[deploy]` section rather than
@@ -174,38 +189,320 @@ pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Re
     Ok(())
 }
 
-#[tracing::instrument(skip_all)]
-fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
-    let config = cx.config.deploy(repo);
+/// Which profile a deployment uses.
+#[derive(Debug, PartialEq, Eq)]
+enum Choice<'a> {
+    /// No profiles are defined, so the `[deploy]` section is used as it is.
+    Base,
+    /// The named profile.
+    Profile(&'a str),
+    /// Several profiles are defined and none is selected, so the user has to
+    /// be asked which one to use.
+    Ask(Vec<&'a str>),
+}
 
-    // NB: Hosts given on the command line replace the configured ones rather
-    // than adding to them, since `--host` is how you deploy somewhere other
-    // than where the project usually goes.
-    let hosts = if opts.host.is_empty() {
-        &config.host[..]
-    } else {
-        &opts.host[..]
-    };
+/// The names of the defined profiles as a comma-separated list.
+fn profile_names(config: &Deploy) -> String {
+    config
+        .profiles
+        .keys()
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
-    if hosts.is_empty() {
-        bail!(
-            "Missing host to deploy to, specify `host` in the `[deploy]` section or pass `--host <host>`"
+/// Pick the profile to deploy.
+///
+/// `--to` wins, followed by `default_profile`, followed by the only profile
+/// there is. With several profiles and nothing to pick between them, the user
+/// is asked if `interactive` is set, and it is an error otherwise.
+fn choose_profile<'a>(
+    config: &'a Deploy,
+    to: Option<&'a str>,
+    interactive: bool,
+) -> Result<Choice<'a>> {
+    if let Some(to) = to {
+        if config.profiles.is_empty() {
+            bail!(
+                "Cannot deploy to `{to}` since no profiles are defined, add a `[deploy.profiles.{to}]` section"
+            );
+        }
+
+        if !config.profiles.contains_key(to) {
+            bail!(
+                "No deploy profile named `{to}`, the defined profiles are: {}",
+                profile_names(config)
+            );
+        }
+
+        return Ok(Choice::Profile(to));
+    }
+
+    if config.profiles.is_empty() {
+        if let Some(default) = &config.default_profile {
+            bail!(
+                "The `default_profile` in `[deploy]` is `{default}`, but no profiles are defined, add a `[deploy.profiles.{default}]` section"
+            );
+        }
+
+        return Ok(Choice::Base);
+    }
+
+    if let Some(default) = &config.default_profile {
+        if !config.profiles.contains_key(default) {
+            bail!(
+                "The `default_profile` in `[deploy]` is `{default}`, which is not a defined profile, the defined profiles are: {}",
+                profile_names(config)
+            );
+        }
+
+        return Ok(Choice::Profile(default));
+    }
+
+    let mut names = config.profiles.keys().map(String::as_str);
+
+    if let (Some(name), None) = (names.next(), names.next()) {
+        return Ok(Choice::Profile(name));
+    }
+
+    if interactive {
+        return Ok(Choice::Ask(
+            config.profiles.keys().map(String::as_str).collect(),
+        ));
+    }
+
+    bail!(
+        "Multiple deploy profiles are defined and none is selected, pass `--to <profile>` or set `default_profile` in `[deploy]`. The defined profiles are: {}",
+        profile_names(config)
+    )
+}
+
+/// Ask the user which of the given profiles to deploy.
+fn ask_profile<'a>(names: &[&'a str]) -> Result<&'a str> {
+    let stdin = std::io::stdin();
+    let mut stderr = std::io::stderr();
+
+    writeln!(stderr, "Multiple deploy profiles are defined:")?;
+
+    for (index, name) in names.iter().enumerate() {
+        writeln!(stderr, "  {}) {name}", index + 1)?;
+    }
+
+    loop {
+        write!(stderr, "Profile to deploy [1-{}]: ", names.len())?;
+        stderr.flush()?;
+
+        let mut line = String::new();
+
+        if stdin.read_line(&mut line)? == 0 {
+            bail!("No deploy profile selected, pass `--to <profile>` to select one");
+        }
+
+        let line = line.trim();
+
+        if let Ok(index) = line.parse::<usize>()
+            && let Some(name) = index.checked_sub(1).and_then(|index| names.get(index))
+        {
+            return Ok(name);
+        }
+
+        if let Some(name) = names.iter().find(|name| **name == line) {
+            return Ok(name);
+        }
+
+        writeln!(stderr, "No such profile `{line}`")?;
+    }
+}
+
+/// Warn about options which have no effect on a local deployment.
+fn warn_ignored_for_local(layer: &Deploy, opts: &Opts, what: &str) {
+    let mut ignored = Vec::new();
+
+    if !layer.host.is_empty() {
+        ignored.push("host");
+    }
+
+    if layer.user.is_some() {
+        ignored.push("user");
+    }
+
+    if layer.port.is_some() {
+        ignored.push("port");
+    }
+
+    if layer.identity_file.is_some() {
+        ignored.push("identity_file");
+    }
+
+    if !layer.options.is_empty() {
+        ignored.push("options");
+    }
+
+    if layer.staging_dir.is_some() {
+        ignored.push("staging_dir");
+    }
+
+    if !ignored.is_empty() {
+        tracing::warn!(
+            "Ignoring {} in {what} since the deployment is local",
+            ignored
+                .iter()
+                .map(|key| format!("`{key}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
 
-    let login = opts.user.as_deref().or(config.user.as_deref());
+    if !opts.host.is_empty() {
+        tracing::warn!("Ignoring `--host` since the deployment is local");
+    }
 
-    let targets = hosts
-        .iter()
-        .map(|host| Target::new(login, host))
-        .collect::<Vec<_>>();
+    if opts.user.is_some() {
+        tracing::warn!("Ignoring `--user` since the deployment is local");
+    }
+
+    if opts.no_check {
+        tracing::warn!(
+            "Ignoring `--no-check` since there is no access check for a local deployment"
+        );
+    }
+}
+
+/// Expand a leading `~`, `$HOME` or `${HOME}` in a path to the given home
+/// directory.
+///
+/// Returns `Ok(None)` if there is nothing to expand, and `Err(())` if there is
+/// but the home directory is not known.
+fn expand_home(value: &str, home: Option<&str>) -> Result<Option<String>, ()> {
+    let rest = ["~", "${HOME}", "$HOME"].into_iter().find_map(|prefix| {
+        let rest = value.strip_prefix(prefix)?;
+        (rest.is_empty() || rest.starts_with('/')).then_some(rest)
+    });
+
+    let Some(rest) = rest else {
+        return Ok(None);
+    };
+
+    let Some(home) = home else {
+        return Err(());
+    };
+
+    Ok(Some(format!("{}{rest}", home.trim_end_matches('/'))))
+}
+
+/// Expand the home directory in every string in the given value.
+fn expand_value(value: &mut toml::Value, home: Option<&str>) -> Result<(), String> {
+    match value {
+        toml::Value::String(string) => match expand_home(string, home) {
+            Ok(Some(expanded)) => *string = expanded,
+            Ok(None) => {}
+            Err(()) => return Err(string.clone()),
+        },
+        toml::Value::Array(values) => {
+            for value in values {
+                expand_value(value, home)?;
+            }
+        }
+        toml::Value::Table(table) => {
+            for (_, value) in table.iter_mut() {
+                expand_value(value, home)?;
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+/// The home directory of the user running `kick`.
+fn local_home() -> Option<String> {
+    if let Some(home) = std::env::var_os("HOME")
+        && !home.is_empty()
+    {
+        return Some(home.to_string_lossy().into_owned());
+    }
+
+    let dirs = directories::BaseDirs::new()?;
+    Some(dirs.home_dir().to_string_lossy().into_owned())
+}
+
+#[tracing::instrument(skip_all)]
+fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
+    let base = cx.config.deploy(repo);
+
+    let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+
+    let selected = match choose_profile(&base, opts.to.as_deref(), interactive)? {
+        Choice::Base => None,
+        Choice::Profile(name) => Some(name.to_owned()),
+        Choice::Ask(names) => Some(ask_profile(&names)?.to_owned()),
+    };
+
+    let config = match &selected {
+        Some(name) => base
+            .with_profile(name)
+            .with_context(|| anyhow!("Missing deploy profile `{name}`"))?,
+        None => base.clone(),
+    };
+
+    let kind = config.kind.unwrap_or_default();
+
+    let systemd_config = config.systemd.clone().unwrap_or_default();
+    let scope = systemd_config.scope.unwrap_or_default();
+
+    let targets = match kind {
+        DeployKind::Ssh => {
+            // NB: Hosts given on the command line replace the configured ones
+            // rather than adding to them, since `--host` is how you deploy
+            // somewhere other than where the project usually goes.
+            let hosts = if opts.host.is_empty() {
+                &config.host[..]
+            } else {
+                &opts.host[..]
+            };
+
+            if hosts.is_empty() {
+                match &selected {
+                    Some(name) => bail!(
+                        "Missing host to deploy to, specify `host` in the `[deploy.profiles.{name}]` section or pass `--host <host>`"
+                    ),
+                    None => bail!(
+                        "Missing host to deploy to, specify `host` in the `[deploy]` section or pass `--host <host>`"
+                    ),
+                }
+            }
+
+            let login = opts.user.as_deref().or(config.user.as_deref());
+
+            hosts
+                .iter()
+                .map(|host| Target::new(login, host))
+                .collect::<Vec<_>>()
+        }
+        DeployKind::Local => {
+            match &selected {
+                Some(name) => {
+                    if let Some(profile) = base.profiles.get(name) {
+                        warn_ignored_for_local(
+                            profile,
+                            opts,
+                            &format!("`[deploy.profiles.{name}]`"),
+                        );
+                    }
+                }
+                None => warn_ignored_for_local(&config, opts, "`[deploy]`"),
+            }
+
+            vec![Target::local()]
+        }
+    };
 
     let root = cx.to_path(repo.path());
 
     // NB: Deploying a service without a unit to run it is rarely what anyone
     // wants, so the built-in template applies unless it is turned off.
-    let systemd = config.systemd.clone().unwrap_or_default();
-    let systemd = (systemd.enabled.unwrap_or(true) && !opts.no_systemd).then_some(systemd);
+    let systemd =
+        (systemd_config.enabled.unwrap_or(true) && !opts.no_systemd).then_some(systemd_config);
 
     if systemd.is_none() {
         if opts.service_user.is_some() {
@@ -221,15 +518,38 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
         }
     }
 
-    let use_sudo = config.sudo.unwrap_or(true);
+    // NB: Installing locally happens as the user running kick, which is
+    // rarely someone who wants to elevate.
+    let use_sudo = config.sudo.unwrap_or(kind == DeployKind::Ssh);
 
     // NB: Access is checked before anything is built, since discovering that we
     // cannot log in after a lengthy build is not very helpful. Every host is
     // checked up front for the same reason, so a fleet which cannot be fully
     // deployed to says so before the first host is touched.
-    if !opts.no_check {
-        for target in &targets {
-            check(o, opts, &config, target, use_sudo, systemd.is_some())?;
+    //
+    // The check also reports the home directory of the user being logged in
+    // as, which is what a leading `~` in a path expands to.
+    let mut homes = Vec::with_capacity(targets.len());
+
+    match kind {
+        DeployKind::Ssh => {
+            for target in &targets {
+                if opts.no_check {
+                    homes.push(None);
+                } else {
+                    homes.push(check(
+                        o,
+                        opts,
+                        &config,
+                        target,
+                        use_sudo,
+                        systemd.is_some(),
+                    )?);
+                }
+            }
+        }
+        DeployKind::Local => {
+            homes.push(local_home());
         }
     }
 
@@ -260,23 +580,32 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
 
     let binary_path = cx.to_path(&source);
 
+    // NB: The build is only printed during a dry run, so the binary is only
+    // required to exist when it will actually be installed.
     if !binary_path.is_file() {
-        bail!("Missing binary to deploy: {}", binary_path.display());
+        if opts.dry_run && !opts.no_build {
+            tracing::warn!(
+                "Missing binary to deploy: {} (it would be built first)",
+                binary_path.display()
+            );
+        } else {
+            bail!("Missing binary to deploy: {}", binary_path.display());
+        }
     }
 
+    let default_unit_dir = match scope {
+        SystemdScope::System => DEFAULT_UNIT_DIR,
+        SystemdScope::User => DEFAULT_USER_UNIT_DIR,
+    };
+
     let bin_dir = trim_dir(config.bin_dir.as_deref().unwrap_or(DEFAULT_BIN_DIR));
-    let unit_dir = trim_dir(config.unit_dir.as_deref().unwrap_or(DEFAULT_UNIT_DIR));
+    let unit_dir = trim_dir(config.unit_dir.as_deref().unwrap_or(default_unit_dir));
     let staging_dir = trim_dir(config.staging_dir.as_deref().unwrap_or(DEFAULT_STAGING_DIR));
 
-    // NB: The script is run non-interactively over ssh, so `-n` is used to make
-    // sudo fail immediately with a diagnostic instead of trying to prompt for a
-    // password on a terminal which isn't there.
-    let sudo = if use_sudo { "sudo -n " } else { "" };
-
-    // Files to upload, as `(local path, remote file name)`. The unit is added
+    // Files to upload, as `(local path, staged file name)`. The unit is added
     // per host, since it is rendered for the host it is being installed on.
     let mut uploads = Vec::new();
-    // Files to install remotely, as `(remote file name, destination, mode)`.
+    // Files to install, as `(staged file name, destination, mode)`.
     let mut installs = Vec::new();
 
     uploads.push((binary_path, binary.clone()));
@@ -315,6 +644,16 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
         }
     }
 
+    // NB: A local deployment installs straight from where the files are, which
+    // is only unambiguous with absolute paths since the script is not
+    // necessarily run from the repo.
+    if kind == DeployKind::Local {
+        for (path, _) in &mut uploads {
+            *path = std::path::absolute(&*path)
+                .with_context(|| anyhow!("Making {} absolute", path.display()))?;
+        }
+    }
+
     let unit_name = systemd
         .as_ref()
         .map(|systemd| systemd.name.as_deref().unwrap_or(&binary).to_owned());
@@ -349,7 +688,25 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
     // directory, since the unit is rendered for the host it belongs to.
     let temp = tempfile::TempDir::new().context("Creating temporary directory")?;
 
-    for (index, target) in targets.iter().enumerate() {
+    for (index, (target, home)) in targets.iter().zip(&homes).enumerate() {
+        let home = home.as_deref();
+
+        let expand = |value: &str| -> Result<String> {
+            match expand_home(value, home) {
+                Ok(Some(expanded)) => Ok(expanded),
+                Ok(None) => Ok(value.to_owned()),
+                Err(()) => Err(missing_home(target, value)),
+            }
+        };
+
+        let bin_dir = expand(bin_dir)?;
+        let unit_dir = expand(unit_dir)?;
+
+        let installs = installs
+            .iter()
+            .map(|(name, dest, mode)| Ok((name.clone(), expand(dest)?, *mode)))
+            .collect::<Result<Vec<_>>>()?;
+
         let mut uploads = uploads.clone();
 
         let unit = match (&systemd, &unit_name) {
@@ -361,6 +718,19 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
                 // directive is not something anything else in the
                 // configuration has any use for.
                 let mut variables = systemd.variables.clone();
+
+                // NB: A user unit runs as the user being deployed as, so a `~`
+                // means the same thing to it as it does to us. A system unit
+                // runs as whatever `User=` says, and systemd resolves a `~` in
+                // `WorkingDirectory=` against that user, so it is left alone.
+                if scope == SystemdScope::User {
+                    for (_, value) in variables.iter_mut() {
+                        if let Err(value) = expand_value(value, home) {
+                            return Err(missing_home(target, &value));
+                        }
+                    }
+                }
+
                 variables.insert(String::from("name"), toml::Value::String(name.clone()));
                 variables.insert(String::from("binary"), toml::Value::String(binary.clone()));
                 variables.insert(
@@ -369,15 +739,19 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
                 );
                 variables.insert(
                     String::from("bin_dir"),
-                    toml::Value::String(bin_dir.to_owned()),
+                    toml::Value::String(bin_dir.clone()),
                 );
                 variables.insert(
                     String::from("unit_dir"),
-                    toml::Value::String(unit_dir.to_owned()),
+                    toml::Value::String(unit_dir.clone()),
                 );
                 variables.insert(
                     String::from("host"),
                     toml::Value::String(target.host.clone()),
+                );
+                variables.insert(
+                    String::from("scope"),
+                    toml::Value::String(scope.as_str().to_owned()),
                 );
 
                 // NB: Which user a service runs as and what it is started with
@@ -436,17 +810,32 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
             _ => None,
         };
 
+        let sources = match kind {
+            DeployKind::Ssh => Sources::Staged(staging_dir),
+            DeployKind::Local => Sources::Local(&uploads),
+        };
+
         let script = script(
             &config,
             opts,
-            &uploads,
             &installs,
             ScriptOpts {
-                sudo,
+                sudo: match (use_sudo, kind) {
+                    (false, _) => "",
+                    // NB: The script is run non-interactively over ssh, so
+                    // `-n` is used to make sudo fail immediately with a
+                    // diagnostic instead of trying to prompt for a password
+                    // on a terminal which isn't there.
+                    (true, DeployKind::Ssh) => "sudo -n ",
+                    // NB: A local script runs on our terminal, where sudo can
+                    // prompt like it usually does.
+                    (true, DeployKind::Local) => "sudo ",
+                },
+                scope,
                 binary: &binary,
-                bin_dir,
-                unit_dir,
-                staging_dir,
+                bin_dir: &bin_dir,
+                unit_dir: &unit_dir,
+                sources,
                 unit: unit
                     .as_ref()
                     .map(|(name, file_name, _)| (&**name, &**file_name)),
@@ -456,14 +845,29 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
         if opts.details() {
             let mut plan = Vec::new();
 
-            plan.push(format!("host: {}", target.host));
-
-            if let Some(user) = &target.user {
-                plan.push(format!("user: {user}"));
+            if let Some(name) = &selected {
+                plan.push(format!("deploy profile: {name}"));
             }
 
-            if let Some(port) = config.port {
-                plan.push(format!("port: {port}"));
+            if !base.profiles.is_empty() {
+                plan.push(format!(
+                    "deploy profiles: {}",
+                    base.profiles.keys().cloned().collect::<Vec<_>>().join(", ")
+                ));
+            }
+
+            plan.push(format!("kind: {kind}"));
+
+            if kind == DeployKind::Ssh {
+                plan.push(format!("host: {}", target.host));
+
+                if let Some(user) = &target.user {
+                    plan.push(format!("user: {user}"));
+                }
+
+                if let Some(port) = config.port {
+                    plan.push(format!("port: {port}"));
+                }
             }
 
             plan.push(format!("binary: {binary}"));
@@ -474,33 +878,40 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
             if let Some((_, file_name, _)) = &unit {
                 plan.push(format!("unit_dir: {unit_dir}"));
                 plan.push(format!("unit: {file_name}"));
+                plan.push(format!("scope: {scope}"));
             }
 
-            plan.push(format!("staging_dir: {staging_dir}"));
+            if kind == DeployKind::Ssh {
+                plan.push(format!("staging_dir: {staging_dir}"));
+            }
 
             details(o, "deployment", plan.iter().map(String::as_str))?;
 
-            let uploaded = uploads
-                .iter()
-                .map(|(path, name)| format!("{} -> {staging_dir}/{name}", path.display()))
-                .collect::<Vec<_>>();
+            if kind == DeployKind::Ssh {
+                let uploaded = uploads
+                    .iter()
+                    .map(|(path, name)| format!("{} -> {staging_dir}/{name}", path.display()))
+                    .collect::<Vec<_>>();
 
-            details(o, "uploads", uploaded.iter().map(String::as_str))?;
+                details(o, "uploads", uploaded.iter().map(String::as_str))?;
+            }
 
-            let mut installed = vec![format!(
-                "{staging_dir}/{binary} -> {bin_dir}/{binary} (0755)"
-            )];
+            let from = |name: &str| sources.display(name);
+
+            let mut installed = vec![format!("{} -> {bin_dir}/{binary} (0755)", from(&binary))];
 
             for (name, dest, mode) in &installs {
                 installed.push(format!(
-                    "{staging_dir}/{name} -> {dest} ({:04o})",
+                    "{} -> {dest} ({:04o})",
+                    from(name),
                     mode.permissions()
                 ));
             }
 
             if let Some((_, file_name, _)) = &unit {
                 installed.push(format!(
-                    "{staging_dir}/{file_name} -> {unit_dir}/{file_name} (0644)"
+                    "{} -> {unit_dir}/{file_name} (0644)",
+                    from(file_name)
                 ));
             }
 
@@ -510,30 +921,59 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
                 details(o, &format!("{unit_dir}/{file_name}"), contents.lines())?;
             }
 
-            details(o, "remote script", script.lines())?;
+            let title = match kind {
+                DeployKind::Ssh => "remote script",
+                DeployKind::Local => "local script",
+            };
+
+            details(o, title, script.lines())?;
         }
 
-        let shell = Shell::Bash;
+        match kind {
+            DeployKind::Ssh => {
+                let shell = Shell::Bash;
 
-        let mut command = ssh(opts, &config, target);
-        command.arg(format!("mkdir -p {}", shell.escape(staging_dir)));
-        run(o, opts, &mut command)?;
+                let mut command = ssh(opts, &config, target);
+                command.arg(format!("mkdir -p {}", shell.escape(staging_dir)));
+                run(o, opts, &mut command)?;
 
-        let mut command = scp(opts, &config);
+                let mut command = scp(opts, &config);
 
-        for (path, _) in &uploads {
-            command.arg(path);
+                for (path, _) in &uploads {
+                    command.arg(path);
+                }
+
+                command.arg(format!("{}:{staging_dir}/", target.ssh));
+                run(o, opts, &mut command)?;
+
+                let mut command = ssh(opts, &config, target);
+                command.arg(&script);
+                run(o, opts, &mut command)?;
+            }
+            DeployKind::Local => {
+                let mut command = Command::new("sh");
+                command.arg("-c");
+                command.arg(&script);
+                command.current_dir(&root);
+                run(o, opts, &mut command)?;
+            }
         }
-
-        command.arg(format!("{}:{staging_dir}/", target.ssh));
-        run(o, opts, &mut command)?;
-
-        let mut command = ssh(opts, &config, target);
-        command.arg(&script);
-        run(o, opts, &mut command)?;
     }
 
     Ok(())
+}
+
+/// The error raised when a path starts with `~` but the home directory it
+/// refers to is not known.
+fn missing_home(target: &Target, value: &str) -> anyhow::Error {
+    if target.local {
+        anyhow!("Cannot expand `{value}` since the home directory is not known, set `HOME`")
+    } else {
+        anyhow!(
+            "Cannot expand `{value}` since the home directory on `{}` is not known. It is determined by the access check, so either don't pass `--no-check` or use an absolute path",
+            target.ssh
+        )
+    }
 }
 
 /// A host being deployed to, along with the user we log into it as.
@@ -545,6 +985,8 @@ struct Target {
     host: String,
     /// The user we expect to end up as after logging in, if we know it.
     user: Option<String>,
+    /// Whether this is the local machine.
+    local: bool,
 }
 
 impl Target {
@@ -559,6 +1001,7 @@ impl Target {
                 ssh: host.to_owned(),
                 host: bare.to_owned(),
                 user: Some(user.to_owned()),
+                local: false,
             };
         }
 
@@ -567,6 +1010,7 @@ impl Target {
                 ssh: host.to_owned(),
                 host: host.to_owned(),
                 user: None,
+                local: false,
             };
         };
 
@@ -574,24 +1018,58 @@ impl Target {
             ssh: format!("{login}@{host}"),
             host: host.to_owned(),
             user: Some(login.to_owned()),
+            local: false,
+        }
+    }
+
+    /// The machine kick is running on.
+    fn local() -> Self {
+        Self {
+            ssh: String::from(LOCAL_HOST),
+            host: String::from(LOCAL_HOST),
+            user: None,
+            local: true,
+        }
+    }
+}
+
+/// Where the script installs files from.
+#[derive(Clone, Copy)]
+enum Sources<'a> {
+    /// Files have been uploaded into the given staging directory.
+    Staged(&'a str),
+    /// Files are installed from where they are, as `(path, staged name)`.
+    Local(&'a [(PathBuf, String)]),
+}
+
+impl Sources<'_> {
+    /// The path a file is installed from.
+    fn display(&self, name: &str) -> String {
+        match self {
+            Sources::Staged(dir) => format!("{dir}/{name}"),
+            Sources::Local(files) => files
+                .iter()
+                .find(|(_, n)| n == name)
+                .map(|(path, _)| path.display().to_string())
+                .unwrap_or_else(|| name.to_owned()),
         }
     }
 }
 
 struct ScriptOpts<'a> {
     sudo: &'a str,
+    scope: SystemdScope,
     binary: &'a str,
     bin_dir: &'a str,
     unit_dir: &'a str,
-    staging_dir: &'a str,
+    sources: Sources<'a>,
     unit: Option<(&'a str, &'a str)>,
 }
 
-/// Build the script which installs the uploaded files remotely.
+/// Build the script which installs the deployed files.
 fn script(
     config: &Deploy,
     opts: &Opts,
-    uploads: &[(PathBuf, String)],
     installs: &[(String, String, Mode)],
     s: ScriptOpts<'_>,
 ) -> Result<String> {
@@ -599,15 +1077,24 @@ fn script(
 
     let ScriptOpts {
         sudo,
+        scope,
         binary,
         bin_dir,
         unit_dir,
-        staging_dir,
+        sources,
         unit,
     } = s;
 
     let escape = move |value: &str| shell.escape(value).into_owned();
-    let staged = move |name: &str| escape(&format!("{staging_dir}/{name}"));
+    let source = move |name: &str| escape(&sources.display(name));
+
+    // NB: A user unit belongs to the user being deployed as, so neither it nor
+    // its manager has any use for sudo, and `sudo systemctl --user` would talk
+    // to the wrong manager.
+    let (unit_sudo, systemctl) = match scope {
+        SystemdScope::System => (sudo, format!("{sudo}systemctl")),
+        SystemdScope::User => ("", String::from("systemctl --user")),
+    };
 
     let mut script = String::new();
 
@@ -626,7 +1113,7 @@ fn script(
     {
         writeln!(
             script,
-            "{sudo}systemctl stop {} 2>/dev/null || true",
+            "{systemctl} stop {} 2>/dev/null || true",
             shell.escape(name)
         )?;
     }
@@ -636,7 +1123,7 @@ fn script(
     writeln!(
         script,
         "{sudo}install -m 0755 {} {}",
-        staged(binary),
+        source(binary),
         escape(&format!("{bin_dir}/{binary}"))
     )?;
 
@@ -645,7 +1132,7 @@ fn script(
             script,
             "{sudo}install -D -m {:04o} {} {}",
             mode.permissions(),
-            staged(name),
+            source(name),
             shell.escape(dest)
         )?;
     }
@@ -653,24 +1140,24 @@ fn script(
     if let Some((name, file_name)) = unit {
         let dest = escape(&format!("{unit_dir}/{file_name}"));
 
-        writeln!(script, "{sudo}mkdir -p {}", shell.escape(unit_dir))?;
+        writeln!(script, "{unit_sudo}mkdir -p {}", shell.escape(unit_dir))?;
 
         // NB: Installing the unit unconditionally would touch it on every
         // deployment, so only do it when it actually changed. This also keeps
         // us from reloading systemd for no reason.
         writeln!(
             script,
-            "if ! {sudo}cmp -s {} {dest}; then",
-            staged(file_name)
+            "if ! {unit_sudo}cmp -s {} {dest}; then",
+            source(file_name)
         )?;
 
         writeln!(
             script,
-            "  {sudo}install -m 0644 {} {dest}",
-            staged(file_name)
+            "  {unit_sudo}install -m 0644 {} {dest}",
+            source(file_name)
         )?;
 
-        writeln!(script, "  {sudo}systemctl daemon-reload")?;
+        writeln!(script, "  {systemctl} daemon-reload")?;
         writeln!(script, "fi")?;
 
         let enable = config
@@ -680,16 +1167,24 @@ fn script(
             .unwrap_or(true);
 
         if enable {
-            writeln!(script, "{sudo}systemctl enable {}", shell.escape(name))?;
+            writeln!(script, "{systemctl} enable {}", shell.escape(name))?;
         }
 
         if !opts.no_restart {
-            writeln!(script, "{sudo}systemctl start {}", shell.escape(name))?;
+            writeln!(script, "{systemctl} start {}", shell.escape(name))?;
         }
     }
 
-    for (_, name) in uploads {
-        writeln!(script, "rm -f {}", staged(name))?;
+    // NB: Only staged copies are removed, a local deployment installs from the
+    // originals.
+    if let Sources::Staged(dir) = sources {
+        let mut names = vec![binary];
+        names.extend(installs.iter().map(|(name, _, _)| name.as_str()));
+        names.extend(unit.map(|(_, file_name)| file_name));
+
+        for name in names {
+            writeln!(script, "rm -f {}", escape(&format!("{dir}/{name}")))?;
+        }
     }
 
     Ok(script)
@@ -843,6 +1338,9 @@ fn run(o: &mut StandardStream, opts: &Opts, command: &mut Command) -> Result<()>
 /// that the commands we depend on are available, and that we can elevate
 /// privileges without being prompted for a password. Nothing is modified on the
 /// remote host.
+///
+/// Returns the home directory of the user being logged in as, if it could be
+/// determined.
 fn check(
     o: &mut StandardStream,
     opts: &Opts,
@@ -850,7 +1348,7 @@ fn check(
     target: &Target,
     use_sudo: bool,
     systemd: bool,
-) -> Result<()> {
+) -> Result<Option<String>> {
     let host = &target.ssh;
 
     let mut commands = REQUIRED_COMMANDS.to_vec();
@@ -865,6 +1363,11 @@ fn check(
         script,
         r#"printf 'user=%s
 ' "$(id -un 2>/dev/null || true)""#
+    )?;
+    writeln!(
+        script,
+        r#"printf 'home=%s
+' "$HOME""#
     )?;
     writeln!(script, "for cmd in {}; do", commands.join(" "))?;
     writeln!(
@@ -914,6 +1417,7 @@ fn check(
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     let mut user = None;
+    let mut home = None;
     let mut available = HashSet::new();
     let mut sudo = None;
 
@@ -924,6 +1428,7 @@ fn check(
 
         match key {
             "user" if !value.is_empty() => user = Some(value.to_owned()),
+            "home" if !value.is_empty() => home = Some(value.to_owned()),
             "command" => {
                 available.insert(value.to_owned());
             }
@@ -970,7 +1475,7 @@ fn check(
         );
     }
 
-    Ok(())
+    Ok(home)
 }
 
 /// Trim any trailing slashes from a directory so that it can be consistently
@@ -979,4 +1484,304 @@ fn trim_dir(dir: &str) -> &str {
     let trimmed = dir.trim_end_matches('/');
 
     if trimmed.is_empty() { dir } else { trimmed }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use crate::config::{Deploy, DeployKind, Systemd, SystemdScope};
+    use crate::packaging::Mode;
+
+    use super::{Choice, Opts, ScriptOpts, Sources, choose_profile, expand_home, script};
+
+    fn profiles(names: &[&str]) -> Deploy {
+        let mut deploy = Deploy::default();
+
+        for name in names {
+            deploy
+                .profiles
+                .insert((*name).to_owned(), Deploy::default());
+        }
+
+        deploy
+    }
+
+    #[test]
+    fn profile_without_profiles_is_the_base() {
+        let deploy = Deploy::default();
+        assert_eq!(choose_profile(&deploy, None, false).unwrap(), Choice::Base);
+        assert_eq!(choose_profile(&deploy, None, true).unwrap(), Choice::Base);
+
+        let error = choose_profile(&deploy, Some("local"), false).unwrap_err();
+        assert!(error.to_string().contains("no profiles are defined"));
+    }
+
+    #[test]
+    fn profile_from_flag() {
+        let mut deploy = profiles(&["local", "remote"]);
+        deploy.default_profile = Some(String::from("remote"));
+
+        assert_eq!(
+            choose_profile(&deploy, Some("local"), false).unwrap(),
+            Choice::Profile("local")
+        );
+    }
+
+    #[test]
+    fn profile_from_default() {
+        let mut deploy = profiles(&["local", "remote"]);
+        deploy.default_profile = Some(String::from("remote"));
+
+        assert_eq!(
+            choose_profile(&deploy, None, false).unwrap(),
+            Choice::Profile("remote")
+        );
+
+        deploy.default_profile = Some(String::from("missing"));
+        let error = choose_profile(&deploy, None, false).unwrap_err();
+        assert!(error.to_string().contains("`local`, `remote`"));
+    }
+
+    #[test]
+    fn profile_single() {
+        let deploy = profiles(&["local"]);
+
+        assert_eq!(
+            choose_profile(&deploy, None, false).unwrap(),
+            Choice::Profile("local")
+        );
+    }
+
+    #[test]
+    fn profile_ambiguous() {
+        let deploy = profiles(&["local", "remote"]);
+
+        let error = choose_profile(&deploy, None, false).unwrap_err();
+        let error = error.to_string();
+        assert!(error.contains("--to <profile>"), "{error}");
+        assert!(error.contains("default_profile"), "{error}");
+        assert!(error.contains("`local`, `remote`"), "{error}");
+
+        assert_eq!(
+            choose_profile(&deploy, None, true).unwrap(),
+            Choice::Ask(vec!["local", "remote"])
+        );
+    }
+
+    #[test]
+    fn profile_unknown() {
+        let deploy = profiles(&["local", "remote"]);
+
+        let error = choose_profile(&deploy, Some("nope"), true).unwrap_err();
+        let error = error.to_string();
+        assert!(error.contains("`nope`"), "{error}");
+        assert!(error.contains("`local`, `remote`"), "{error}");
+    }
+
+    #[test]
+    fn profile_layers_over_base() {
+        let mut deploy = Deploy {
+            binary: Some(String::from("kanban")),
+            build_features: vec![String::from("bundle")],
+            bin_dir: Some(String::from("/usr/local/bin")),
+            default_profile: Some(String::from("local")),
+            ..Deploy::default()
+        };
+
+        deploy.profiles.insert(
+            String::from("local"),
+            Deploy {
+                kind: Some(DeployKind::Local),
+                bin_dir: Some(String::from("~/.cargo/bin")),
+                ..Deploy::default()
+            },
+        );
+
+        let local = deploy.with_profile("local").unwrap();
+        assert_eq!(local.kind, Some(DeployKind::Local));
+        assert_eq!(local.binary.as_deref(), Some("kanban"));
+        assert_eq!(local.build_features, ["bundle"]);
+        assert_eq!(local.bin_dir.as_deref(), Some("~/.cargo/bin"));
+        assert!(local.profiles.is_empty());
+        assert!(local.default_profile.is_none());
+
+        assert!(deploy.with_profile("missing").is_none());
+    }
+
+    #[test]
+    fn expands_home() {
+        let home = Some("/home/me");
+
+        assert_eq!(expand_home("~", home), Ok(Some(String::from("/home/me"))));
+        assert_eq!(
+            expand_home("~/.cargo/bin", home),
+            Ok(Some(String::from("/home/me/.cargo/bin")))
+        );
+        assert_eq!(
+            expand_home("$HOME/x", home),
+            Ok(Some(String::from("/home/me/x")))
+        );
+        assert_eq!(
+            expand_home("${HOME}/x", Some("/home/me/")),
+            Ok(Some(String::from("/home/me/x")))
+        );
+        assert_eq!(expand_home("~other/x", home), Ok(None));
+        assert_eq!(expand_home("$HOMEDIR", home), Ok(None));
+        assert_eq!(expand_home("/usr/local/bin", home), Ok(None));
+        assert_eq!(expand_home("/usr/local/bin", None), Ok(None));
+        assert_eq!(expand_home("~/x", None), Err(()));
+    }
+
+    fn user_unit() -> Deploy {
+        Deploy {
+            systemd: Some(Systemd {
+                scope: Some(SystemdScope::User),
+                ..Systemd::default()
+            }),
+            ..Deploy::default()
+        }
+    }
+
+    #[test]
+    fn local_script() {
+        let config = user_unit();
+        let opts = Opts::default();
+
+        let uploads = vec![
+            (
+                PathBuf::from("/src/kanban/target/release/kanban"),
+                String::from("kanban"),
+            ),
+            (
+                PathBuf::from("/src/kanban/config.toml"),
+                String::from("config.toml"),
+            ),
+            (
+                PathBuf::from("/tmp/unit/kanban.service"),
+                String::from("kanban.service"),
+            ),
+        ];
+
+        let installs = vec![(
+            String::from("config.toml"),
+            String::from("/home/me/.config/kanban/config.toml"),
+            "644".parse::<Mode>().unwrap(),
+        )];
+
+        let script = script(
+            &config,
+            &opts,
+            &installs,
+            ScriptOpts {
+                sudo: "",
+                scope: SystemdScope::User,
+                binary: "kanban",
+                bin_dir: "/home/me/.cargo/bin",
+                unit_dir: "/home/me/.config/systemd/user",
+                sources: Sources::Local(&uploads),
+                unit: Some(("kanban", "kanban.service")),
+            },
+        )
+        .unwrap();
+
+        let expected = "\
+set -eu
+systemctl --user stop kanban 2>/dev/null || true
+mkdir -p /home/me/.cargo/bin
+install -m 0755 /src/kanban/target/release/kanban /home/me/.cargo/bin/kanban
+install -D -m 0644 /src/kanban/config.toml /home/me/.config/kanban/config.toml
+mkdir -p /home/me/.config/systemd/user
+if ! cmp -s /tmp/unit/kanban.service /home/me/.config/systemd/user/kanban.service; then
+  install -m 0644 /tmp/unit/kanban.service /home/me/.config/systemd/user/kanban.service
+  systemctl --user daemon-reload
+fi
+systemctl --user enable kanban
+systemctl --user start kanban
+";
+
+        assert_eq!(script, expected);
+    }
+
+    #[test]
+    fn ssh_script_with_user_unit() {
+        let config = user_unit();
+        let opts = Opts::default();
+
+        let script = script(
+            &config,
+            &opts,
+            &[],
+            ScriptOpts {
+                sudo: "sudo -n ",
+                scope: SystemdScope::User,
+                binary: "track",
+                bin_dir: "/usr/local/bin",
+                unit_dir: "/home/integration/.config/systemd/user",
+                sources: Sources::Staged(".kick-deploy"),
+                unit: Some(("track", "track.service")),
+            },
+        )
+        .unwrap();
+
+        // NB: The binary still needs sudo, but nothing belonging to the user
+        // unit does.
+        let expected = "\
+set -eu
+systemctl --user stop track 2>/dev/null || true
+sudo -n mkdir -p /usr/local/bin
+sudo -n install -m 0755 .kick-deploy/track /usr/local/bin/track
+mkdir -p /home/integration/.config/systemd/user
+if ! cmp -s .kick-deploy/track.service /home/integration/.config/systemd/user/track.service; then
+  install -m 0644 .kick-deploy/track.service /home/integration/.config/systemd/user/track.service
+  systemctl --user daemon-reload
+fi
+systemctl --user enable track
+systemctl --user start track
+rm -f .kick-deploy/track
+rm -f .kick-deploy/track.service
+";
+
+        assert_eq!(script, expected);
+    }
+
+    #[test]
+    fn ssh_script_with_system_unit() {
+        let config = Deploy::default();
+        let opts = Opts::default();
+
+        let script = script(
+            &config,
+            &opts,
+            &[],
+            ScriptOpts {
+                sudo: "sudo -n ",
+                scope: SystemdScope::System,
+                binary: "track",
+                bin_dir: "/usr/local/bin",
+                unit_dir: "/etc/systemd/system",
+                sources: Sources::Staged(".kick-deploy"),
+                unit: Some(("track", "track.service")),
+            },
+        )
+        .unwrap();
+
+        let expected = "\
+set -eu
+sudo -n systemctl stop track 2>/dev/null || true
+sudo -n mkdir -p /usr/local/bin
+sudo -n install -m 0755 .kick-deploy/track /usr/local/bin/track
+sudo -n mkdir -p /etc/systemd/system
+if ! sudo -n cmp -s .kick-deploy/track.service /etc/systemd/system/track.service; then
+  sudo -n install -m 0644 .kick-deploy/track.service /etc/systemd/system/track.service
+  sudo -n systemctl daemon-reload
+fi
+sudo -n systemctl enable track
+sudo -n systemctl start track
+rm -f .kick-deploy/track
+rm -f .kick-deploy/track.service
+";
+
+        assert_eq!(script, expected);
+    }
 }

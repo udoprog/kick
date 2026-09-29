@@ -1,6 +1,6 @@
 use core::cell::RefCell;
 use core::mem;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, btree_map};
 use std::fmt;
 use std::fs::{self, File};
 use std::hash::Hash;
@@ -220,9 +220,85 @@ pub(crate) struct DeployFile {
     pub(crate) mode: Option<Mode>,
 }
 
+/// How a deployment reaches the machine it is installed on.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeployKind {
+    /// Upload with `scp` and install over `ssh`, the default.
+    #[default]
+    Ssh,
+    /// Install on the machine `kick` is running on through the local shell.
+    Local,
+}
+
+impl fmt::Display for DeployKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DeployKind::Ssh => f.write_str("ssh"),
+            DeployKind::Local => f.write_str("local"),
+        }
+    }
+}
+
+impl FromStr for DeployKind {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "ssh" => Ok(DeployKind::Ssh),
+            "local" => Ok(DeployKind::Local),
+            other => bail!("unsupported deploy kind `{other}`, expected `ssh` or `local`"),
+        }
+    }
+}
+
+/// Which systemd instance a unit is installed into.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SystemdScope {
+    /// The system instance, managed with `systemctl`.
+    #[default]
+    System,
+    /// The user instance of the user being deployed as, managed with
+    /// `systemctl --user`.
+    User,
+}
+
+impl SystemdScope {
+    /// The name of the scope as used in configuration.
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            SystemdScope::System => "system",
+            SystemdScope::User => "user",
+        }
+    }
+}
+
+impl fmt::Display for SystemdScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SystemdScope {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "system" => Ok(SystemdScope::System),
+            "user" => Ok(SystemdScope::User),
+            other => bail!("unsupported systemd scope `{other}`, expected `system` or `user`"),
+        }
+    }
+}
+
 /// Deployment configuration.
 #[derive(Default, Debug, Clone)]
 pub(crate) struct Deploy {
+    /// How the deployment reaches the machine being deployed to.
+    pub(crate) kind: Option<DeployKind>,
+    /// The profile deployed when none is selected with `--to`.
+    pub(crate) default_profile: Option<String>,
+    /// Named profiles, each of which is layered over the rest of this section.
+    pub(crate) profiles: BTreeMap<String, Deploy>,
     /// The hosts to deploy to, such as `example.com`.
     pub(crate) host: Vec<String>,
     /// The user to log into the hosts as.
@@ -259,7 +335,38 @@ pub(crate) struct Deploy {
 }
 
 impl Deploy {
+    /// The deployment described by the named profile, which is the profile
+    /// layered over the settings it shares with every other profile.
+    ///
+    /// Returns `None` if there is no such profile.
+    pub(crate) fn with_profile(&self, name: &str) -> Option<Deploy> {
+        let profile = self.profiles.get(name)?;
+
+        let mut deploy = Deploy {
+            default_profile: None,
+            profiles: BTreeMap::new(),
+            ..self.clone()
+        };
+
+        deploy.merge_with(profile.clone());
+        Some(deploy)
+    }
+
     fn merge_with(&mut self, mut other: Self) {
+        self.kind = other.kind.or(self.kind.take());
+        self.default_profile = other.default_profile.or(self.default_profile.take());
+
+        for (name, profile) in other.profiles {
+            match self.profiles.entry(name) {
+                btree_map::Entry::Vacant(e) => {
+                    e.insert(profile);
+                }
+                btree_map::Entry::Occupied(e) => {
+                    e.into_mut().merge_with(profile);
+                }
+            }
+        }
+
         // NB: Hosts replace rather than extend, since a more specific layer
         // which names its own hosts is redirecting the deployment rather than
         // adding to it.
@@ -303,6 +410,8 @@ pub(crate) struct Systemd {
     pub(crate) name: Option<String>,
     /// Whether the unit should be enabled so that it starts on boot.
     pub(crate) enable: Option<bool>,
+    /// Which systemd instance the unit is installed into.
+    pub(crate) scope: Option<SystemdScope>,
     /// The variables the unit template is rendered with.
     ///
     /// These are every key in the section which isn't one of the options
@@ -319,6 +428,7 @@ impl Default for Systemd {
             template: None,
             name: None,
             enable: None,
+            scope: None,
             variables: toml::Table::new(),
         }
     }
@@ -334,6 +444,7 @@ impl Systemd {
         self.template = other.template.take().or(self.template.take());
         self.name = other.name.or(self.name.take());
         self.enable = other.enable.or(self.enable.take());
+        self.scope = other.scope.or(self.scope.take());
         merge_map(&mut self.variables, other.variables);
     }
 }
@@ -1861,6 +1972,7 @@ impl<'a> Cx<'a> {
                 let template = self.in_key(&mut table, "template", Self::unit_template);
                 let name = self.in_key(&mut table, "name", Self::string);
                 let enable = self.in_key(&mut table, "enable", Self::boolean);
+                let scope = self.in_key(&mut table, "scope", Self::parse);
 
                 // NB: Everything which is left over is a variable the unit
                 // template is rendered with. This is why the section cannot
@@ -1871,6 +1983,7 @@ impl<'a> Cx<'a> {
                     template: template?,
                     name: name?,
                     enable: enable?,
+                    scope: scope?,
                     variables: table,
                     ..Systemd::default()
                 })
@@ -1880,41 +1993,65 @@ impl<'a> Cx<'a> {
 
     fn deploy(&self, value: toml::Value) -> Result<Deploy, ErrorMarker> {
         self.with_table(value, |cx, table| {
-            let host = cx.in_key(table, "host", Self::deploy_hosts);
-            let user = cx.in_key(table, "user", Self::string);
-            let port = cx.in_key(table, "port", Self::port);
-            let identity_file = cx.in_key(table, "identity_file", Self::string);
-            let options = cx.in_array(table, "options", None, Self::string);
-            let sudo = cx.in_key(table, "sudo", Self::boolean);
-            let bin_dir = cx.in_key(table, "bin_dir", Self::string);
-            let unit_dir = cx.in_key(table, "unit_dir", Self::string);
-            let staging_dir = cx.in_key(table, "staging_dir", Self::string);
-            let binary = cx.in_key(table, "binary", Self::string);
-            let profile = cx.in_key(table, "profile", Self::string);
-            let pre_build = cx.in_array(table, "pre_build", None, Self::config_command);
-            let build = cx.in_array(table, "build", None, Self::config_command);
-            let build_features = cx.in_array(table, "build_features", None, Self::string);
-            let files = cx.in_array(table, "files", None, Self::deploy_file);
-            let systemd = cx.in_key(table, "systemd", Self::systemd);
+            let default_profile = cx.in_key(table, "default_profile", Self::string);
+            let profiles = cx.in_table(table, "profiles", |cx, name, value| {
+                Ok((name, cx.deploy_profile(value)?))
+            });
 
-            Ok(Deploy {
-                host: host?.unwrap_or_default(),
-                user: user?,
-                port: port?,
-                identity_file: identity_file?,
-                options: options?,
-                sudo: sudo?,
-                bin_dir: bin_dir?,
-                unit_dir: unit_dir?,
-                staging_dir: staging_dir?,
-                binary: binary?,
-                profile: profile?,
-                pre_build: pre_build?,
-                build: build?,
-                build_features: build_features?,
-                files: files?,
-                systemd: systemd?,
-            })
+            let mut deploy = cx.deploy_table(table)?;
+            deploy.default_profile = default_profile?;
+            deploy.profiles = profiles?;
+            Ok(deploy)
+        })
+    }
+
+    /// A profile in `[deploy.profiles]`, which takes everything `[deploy]`
+    /// does except for profiles of its own.
+    fn deploy_profile(&self, value: toml::Value) -> Result<Deploy, ErrorMarker> {
+        self.with_table(value, Self::deploy_table)
+    }
+
+    fn deploy_table(&self, table: &mut toml::Table) -> Result<Deploy, ErrorMarker> {
+        let cx = self;
+
+        let kind = cx.in_key(table, "kind", Self::parse);
+        let host = cx.in_key(table, "host", Self::deploy_hosts);
+        let user = cx.in_key(table, "user", Self::string);
+        let port = cx.in_key(table, "port", Self::port);
+        let identity_file = cx.in_key(table, "identity_file", Self::string);
+        let options = cx.in_array(table, "options", None, Self::string);
+        let sudo = cx.in_key(table, "sudo", Self::boolean);
+        let bin_dir = cx.in_key(table, "bin_dir", Self::string);
+        let unit_dir = cx.in_key(table, "unit_dir", Self::string);
+        let staging_dir = cx.in_key(table, "staging_dir", Self::string);
+        let binary = cx.in_key(table, "binary", Self::string);
+        let profile = cx.in_key(table, "profile", Self::string);
+        let pre_build = cx.in_array(table, "pre_build", None, Self::config_command);
+        let build = cx.in_array(table, "build", None, Self::config_command);
+        let build_features = cx.in_array(table, "build_features", None, Self::string);
+        let files = cx.in_array(table, "files", None, Self::deploy_file);
+        let systemd = cx.in_key(table, "systemd", Self::systemd);
+
+        Ok(Deploy {
+            kind: kind?,
+            default_profile: None,
+            profiles: BTreeMap::new(),
+            host: host?.unwrap_or_default(),
+            user: user?,
+            port: port?,
+            identity_file: identity_file?,
+            options: options?,
+            sudo: sudo?,
+            bin_dir: bin_dir?,
+            unit_dir: unit_dir?,
+            staging_dir: staging_dir?,
+            binary: binary?,
+            profile: profile?,
+            pre_build: pre_build?,
+            build: build?,
+            build_features: build_features?,
+            files: files?,
+            systemd: systemd?,
         })
     }
 
@@ -2132,7 +2269,7 @@ mod tests {
 
     use relative_path::RelativePath;
 
-    use super::{ConfigCommand, Cx, Install};
+    use super::{ConfigCommand, Cx, Deploy, DeployKind, Install, SystemdScope};
     use crate::ctxt::Paths;
     use crate::templates::Templating;
 
@@ -2158,6 +2295,150 @@ mod tests {
         let install = cx.install(value).ok();
         let errors = cx.errors.borrow().len();
         (install, errors)
+    }
+
+    fn parse_deploy(source: &str) -> (Option<Deploy>, usize) {
+        let templating = Templating::new().unwrap();
+
+        let paths = Paths {
+            root: Path::new("."),
+            current: None,
+            config: None,
+            cache: None,
+        };
+
+        let cx = Cx::new(paths, RelativePath::new(""), &templating);
+        let value: toml::Value = toml::from_str(source).unwrap();
+        let deploy = cx.deploy(value).ok();
+        let errors = cx.errors.borrow().len();
+        (deploy, errors)
+    }
+
+    #[test]
+    fn deploy_profiles() {
+        let (deploy, errors) = parse_deploy(
+            r#"
+binary = "kanban"
+default_profile = "local"
+
+[profiles.local]
+kind = "local"
+bin_dir = "~/.cargo/bin"
+
+[profiles.local.systemd]
+scope = "user"
+working_directory = "~/repo/kanban"
+
+[profiles.remote]
+host = "moore"
+"#,
+        );
+
+        assert_eq!(errors, 0);
+
+        let deploy = deploy.unwrap();
+        assert_eq!(deploy.default_profile.as_deref(), Some("local"));
+        assert_eq!(deploy.kind, None);
+        assert_eq!(
+            deploy
+                .profiles
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["local", "remote"]
+        );
+
+        let local = &deploy.profiles["local"];
+        assert_eq!(local.kind, Some(DeployKind::Local));
+
+        let systemd = local.systemd.as_ref().unwrap();
+        assert_eq!(systemd.scope, Some(SystemdScope::User));
+        // NB: `scope` is an option, not a variable.
+        assert!(!systemd.variables.contains_key("scope"));
+        assert!(systemd.variables.contains_key("working_directory"));
+
+        assert_eq!(deploy.profiles["remote"].host, ["moore"]);
+    }
+
+    #[test]
+    fn deploy_without_profiles() {
+        let (deploy, errors) = parse_deploy(r#"host = "moore""#);
+        assert_eq!(errors, 0);
+
+        let deploy = deploy.unwrap();
+        assert_eq!(deploy.host, ["moore"]);
+        assert!(deploy.profiles.is_empty());
+        assert!(deploy.default_profile.is_none());
+    }
+
+    #[test]
+    fn deploy_rejects_bad_profiles() {
+        // Profiles do not nest.
+        let (_, errors) = parse_deploy(
+            r#"
+[profiles.a.profiles.b]
+host = "moore"
+"#,
+        );
+        assert_eq!(errors, 1);
+
+        let (_, errors) = parse_deploy(
+            r#"
+[profiles.a]
+default_profile = "a"
+"#,
+        );
+        assert_eq!(errors, 1);
+
+        let (_, errors) = parse_deploy(r#"kind = "ftp""#);
+        assert_eq!(errors, 1);
+
+        let (_, errors) = parse_deploy(
+            r#"
+[systemd]
+scope = "session"
+"#,
+        );
+        assert_eq!(errors, 1);
+    }
+
+    #[test]
+    fn deploy_merges_profiles_by_name() {
+        let (base, _) = parse_deploy(
+            r#"
+[profiles.local]
+kind = "local"
+
+[profiles.local.systemd]
+scope = "user"
+"#,
+        );
+
+        let (more, _) = parse_deploy(
+            r#"
+default_profile = "local"
+
+[profiles.local]
+bin_dir = "~/bin"
+
+[profiles.remote]
+host = "moore"
+"#,
+        );
+
+        let mut deploy = base.unwrap();
+        deploy.merge_with(more.unwrap());
+
+        assert_eq!(deploy.default_profile.as_deref(), Some("local"));
+
+        let local = &deploy.profiles["local"];
+        assert_eq!(local.kind, Some(DeployKind::Local));
+        assert_eq!(local.bin_dir.as_deref(), Some("~/bin"));
+        assert_eq!(
+            local.systemd.as_ref().and_then(|s| s.scope),
+            Some(SystemdScope::User)
+        );
+        assert!(deploy.profiles.contains_key("remote"));
     }
 
     #[test]

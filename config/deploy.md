@@ -1,7 +1,9 @@
 Deployment configuration.
 
 The `[deploy]` section configures the `kick deploy` action, which is a
-lightweight way to deploy a project to a server over ssh.
+lightweight way to deploy a project to a server over ssh, or to the machine
+`kick` is running on through a [local deployment](#local-deployments). A project
+which is deployed in more than one way defines [profiles](#profiles).
 
 Deploying performs the following steps:
 
@@ -23,6 +25,9 @@ are removed once they've been installed.
 
 Hosts are deployed to in the order they are listed, and the first one which
 fails ends the deployment, so the hosts after it are left as they were.
+
+A [local deployment](#local-deployments) skips the access check and the upload,
+and runs the same install script through the local shell instead.
 
 <br>
 
@@ -91,6 +96,12 @@ actually being performed.
 
 The following options are available:
 
+* `kind` how the deployment reaches the machine it installs on, either `ssh`
+  (the default) or `local`. See [local deployments](#local-deployments).
+* `default_profile` the [profile](#profiles) deployed when none is selected with
+  `--to`.
+* `profiles` named [profiles](#profiles), as `[deploy.profiles.<name>]`
+  sections.
 * `host` the host to deploy to, such as `moore`. This is required, but can also
   be specified with `--host <host>`. A list deploys to
   [several hosts](#deploying-to-more-than-one-host) in turn.
@@ -103,20 +114,23 @@ The following options are available:
 * `identity_file` the identity file used to authenticate. Passed with `-i`.
 * `options` a list of extra options passed to `ssh` and `scp` with `-o`.
 * `sudo` whether privileged remote commands are prefixed with `sudo`. Defaults
-  to `true`, set it to `false` when deploying as `root`. See
-  [sudo and interactivity](#sudo-and-interactivity), since sudo must not require
-  a password.
-* `bin_dir` the remote directory the binary is installed into. Defaults to
-  `/usr/local/bin`.
-* `unit_dir` the remote directory the systemd unit is installed into. Defaults
-  to `/etc/systemd/system`.
+  to `true` over ssh and `false` for a local deployment, set it to `false` when
+  deploying as `root`. See [sudo and interactivity](#sudo-and-interactivity),
+  since sudo must not require a password over ssh.
+* `bin_dir` the directory the binary is installed into. Defaults to
+  `/usr/local/bin`. A leading `~` [expands](#home-directories) to the home
+  directory of the user deploying.
+* `unit_dir` the directory the systemd unit is installed into. Defaults to
+  `/etc/systemd/system`, or `~/.config/systemd/user` for a
+  [user unit](#user-units).
 * `staging_dir` the remote directory files are uploaded to before they are
   installed. Defaults to `.kick-deploy`, which is relative to the home directory
-  of the user being logged in as.
+  of the user being logged in as. Not used by a local deployment.
 * `binary` the name of the binary to deploy. Defaults to the name of the primary
   crate in the project, and can be given as an argument to `kick deploy`.
-* `profile` the build profile the binary is picked up from. Defaults to
-  `release`, and can be overridden with `--profile <profile>`.
+* `profile` the *cargo* build profile the binary is picked up from. Defaults to
+  `release`, and can be overridden with `--profile <profile>`. This has nothing
+  to do with [deploy profiles](#profiles), which are selected with `--to`.
 * `pre_build`, `build` and `build_features` control how the project is
   [built](#building).
 * `files` a list of [extra files](#deployfiles) to install.
@@ -179,6 +193,175 @@ user = "integration"
 
 Which logs into `moore` and `dahl` as `integration`, and into `legacy` as
 `root`.
+
+<br>
+
+### Profiles
+
+A project which is deployed in more than one way, such as to a server and to the
+machine you are working on, defines each way as a named profile in a
+`[deploy.profiles.<name>]` section. A profile takes every option `[deploy]` does
+other than `default_profile` and `profiles`, and is layered over the rest of the
+`[deploy]` section: what the profile sets wins, lists like `pre_build` and
+`files` are added to, and `[deploy.profiles.<name>.systemd]` overrides
+individual options and variables of `[deploy.systemd]`. So `[deploy]` holds what
+the profiles share, and each profile what is particular to it:
+
+```toml
+[deploy]
+binary = "track"
+pre_build = ["trunk build --release"]
+build_features = ["bundle"]
+
+[deploy.profiles.production]
+host = ["moore", "dahl"]
+user = "integration"
+
+[deploy.profiles.staging]
+host = "hilbert"
+user = "integration"
+
+[deploy.profiles.local]
+kind = "local"
+bin_dir = "~/.local/bin"
+systemd = { scope = "user" }
+```
+
+The profile being deployed is picked as follows:
+
+* `--to <name>` selects a profile by name.
+* Otherwise the `default_profile` option in `[deploy]` is used.
+* Otherwise, if only one profile is defined, it is used.
+* Otherwise, when running in a terminal, you are asked which profile to deploy.
+* Otherwise `kick deploy` fails with an error listing the profiles, since there
+  is nobody to ask.
+
+Naming a profile which doesn't exist is an error which lists the ones which do,
+and `--dry-run` prints the profile being deployed along with every profile
+defined, so `kick deploy --dry-run` is also a way to see which profiles there
+are.
+
+A `[deploy]` section without any profiles is deployed as it is, which is how
+every deployment worked before profiles existed.
+
+Note that `--to` and `default_profile` refer to deploy profiles, while
+`--profile` and the `profile` option are the cargo build profile the binary is
+picked up from.
+
+<br>
+
+### Local deployments
+
+A deployment with `kind = "local"` installs on the machine `kick` is running on
+rather than over ssh:
+
+* There is no [access check](#access-check), nothing is uploaded, and there is
+  no staging directory. The binary, any extra files and the rendered unit are
+  installed from where they are.
+* The same script which would otherwise run over ssh runs through the local
+  shell with `sh -c`, so the service is still stopped, installed, and started
+  again in the same way.
+* `host`, `user`, `port`, `identity_file`, `options` and `staging_dir` don't
+  apply, and are ignored with a warning if the local profile sets them, as are
+  `--host`, `--user` and `--no-check`.
+* `sudo` defaults to `false`, since installing locally usually means installing
+  into your own home directory. When it is enabled, sudo is run without `-n`,
+  since there is a terminal to prompt on.
+
+Local deployments pair naturally with a [user unit](#user-units), which needs
+neither root nor sudo.
+
+<br>
+
+#### Example: the kanban board
+
+The kanban board runs as a user service on the machine it is developed on. Its
+frontend is built by `trunk` and bundled into the binary, which is installed
+into `~/.cargo/bin` and started with `kanban serve` from the checkout:
+
+```toml
+[deploy]
+binary = "kanban"
+pre_build = ["trunk build --release"]
+build_features = ["bundle"]
+
+[deploy.profiles.local]
+kind = "local"
+bin_dir = "~/.cargo/bin"
+
+[deploy.profiles.local.systemd]
+scope = "user"
+description = "Kanban Web UI"
+after = "network.target"
+working_directory = "~/repo/kanban"
+args = ["serve"]
+restart = "on-failure"
+```
+
+Running `kick deploy --to local`, or plain `kick deploy` since it is the only
+profile, builds with:
+
+```sh
+trunk build --release
+cargo build --release --features bundle
+```
+
+And then runs the following through the local shell, with `~` expanded to the
+home directory of the user running `kick`:
+
+```sh
+set -eu
+systemctl --user stop kanban 2>/dev/null || true
+mkdir -p ~/.cargo/bin
+install -m 0755 <repo>/target/release/kanban ~/.cargo/bin/kanban
+mkdir -p ~/.config/systemd/user
+if ! cmp -s <rendered unit> ~/.config/systemd/user/kanban.service; then
+  install -m 0644 <rendered unit> ~/.config/systemd/user/kanban.service
+  systemctl --user daemon-reload
+fi
+systemctl --user enable kanban
+systemctl --user start kanban
+```
+
+Which installs the following unit into `~/.config/systemd/user/kanban.service`:
+
+```text
+[Unit]
+Description=Kanban Web UI
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/me/repo/kanban
+ExecStart=/home/me/.cargo/bin/kanban serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+Use `kick deploy --dry-run --to local` to see all of it without changing
+anything.
+
+<br>
+
+### Home directories
+
+A leading `~`, `$HOME` or `${HOME}` in `bin_dir`, `unit_dir` and the `dest` of
+[`[[deploy.files]]`](#deployfiles) expands to the home directory of the user
+deploying. For a local deployment that is the user running `kick`. Over ssh it
+is the user being logged in as, which the [access check](#access-check) finds
+out, so a path which needs expanding is an error with `--no-check`.
+
+The variables of a [user unit](#user-units), such as `working_directory`, are
+expanded the same way, since a user unit runs as the user deploying. The
+variables of a system unit are not, since systemd itself resolves a `~` in
+`WorkingDirectory=` against the user the unit runs as, which is rarely the user
+deploying.
+
+Only a leading `~` followed by `/` or nothing at all is expanded, so `~other`
+is left alone.
 
 <br>
 
@@ -319,6 +502,8 @@ enable = false
 * `name` the name of the unit. Defaults to the name of the binary.
 * `enable` whether `systemctl enable` is run so that the service starts on boot.
   Defaults to `true`.
+* `scope` which systemd instance the unit is installed into, either `system`
+  (the default) or `user`. See [user units](#user-units).
 
 Every other key in the section is a [variable](#template-variables) the unit is
 rendered with, which is where directives like `User=` or `Environment=` come
@@ -331,11 +516,35 @@ user = "track"
 environment = { RUST_LOG = "info" }
 ```
 
-Since anything which isn't one of the three options above is taken as a
+Since anything which isn't one of the options above is taken as a
 variable, this is the one section which cannot tell you that you misspelled an
 option. Writing `enabel = true` defines a variable named `enabel` which the
 template doesn't use, and the unit is installed as if you hadn't written it at
 all.
+
+<br>
+
+#### User units
+
+With `scope = "user"` the unit is installed into the user instance of systemd
+belonging to the user deploying, rather than into the system instance:
+
+* It is managed with `systemctl --user`, and neither it nor the unit file is
+  handled with sudo even if `sudo` is enabled, since the unit belongs to the
+  user deploying. The binary and any extra files still use sudo if it is
+  enabled.
+* `unit_dir` defaults to `~/.config/systemd/user`.
+* The built-in template leaves out `After=` and `Wants=` unless they are set,
+  since `network-online.target` belongs to the system instance, and defaults
+  `wanted_by` to `default.target`.
+* No `User=` or `Group=` is written unless they are set, as with system units,
+  and they rarely should be for a user unit.
+* Its variables have a leading `~` [expanded](#home-directories).
+
+The scope is independent of the [kind](#local-deployments) of deployment, so a
+user unit can be installed over ssh too. Either way, note that the user instance
+of systemd only runs while the user is logged in unless lingering is enabled
+with `loginctl enable-linger <user>`.
 
 <br>
 
@@ -391,13 +600,15 @@ In addition to what you define, the following are always available:
 
 * `name` the name of the unit.
 * `binary` the name of the binary being deployed.
-* `exec` the remote path of the binary, which is what `ExecStart` wants. This is
+* `exec` the installed path of the binary, which is what `ExecStart` wants. This is
   `bin_dir` and `binary` joined together.
-* `bin_dir` the remote directory the binary is installed into.
-* `unit_dir` the remote directory the unit is installed into.
+* `bin_dir` the directory the binary is installed into.
+* `unit_dir` the directory the unit is installed into.
 * `host` the host being deployed to, without the login user. When several hosts
   are being deployed to, the unit is rendered once per host, so this is the host
-  it is being installed on.
+  it is being installed on. For a local deployment this is `localhost`.
+* `scope` the [scope](#user-units) the unit is installed into, `system` or
+  `user`.
 
 <br>
 
@@ -406,8 +617,12 @@ In addition to what you define, the following are always available:
 ```jinja
 [Unit]
 Description={{ description | default(name ~ " service") }}
+{%- if after is defined or scope | default("system") != "user" %}
 After={{ after | default("network-online.target") }}
+{%- endif %}
+{%- if wants is defined or scope | default("system") != "user" %}
 Wants={{ wants | default("network-online.target") }}
+{%- endif %}
 {%- if requires is defined %}
 Requires={{ requires }}
 {%- endif %}
@@ -446,14 +661,15 @@ TimeoutStopSec={{ timeout_stop_sec }}
 {%- endif %}
 
 [Install]
-WantedBy={{ wanted_by | default("multi-user.target") }}
+WantedBy={{ wanted_by | default("default.target" if scope | default("system") == "user" else "multi-user.target") }}
 ```
 
 Every variable it uses beyond the ones above is optional, and defining one in
 the `[deploy.systemd]` section fills in the corresponding directive:
 
 * `description`, defaults to `<name> service`.
-* `after` and `wants`, both default to `network-online.target`.
+* `after` and `wants`, both default to `network-online.target` for a system
+  unit, and are left out of a [user unit](#user-units) unless set.
 * `requires`.
 * `start_limit_interval_sec` and `start_limit_burst`.
 * `type`, defaults to `simple`.
@@ -473,7 +689,8 @@ the `[deploy.systemd]` section fills in the corresponding directive:
 * `restart`, defaults to `always`.
 * `restart_sec`, defaults to `5`.
 * `timeout_stop_sec`.
-* `wanted_by`, defaults to `multi-user.target`.
+* `wanted_by`, defaults to `multi-user.target`, or `default.target` for a
+  [user unit](#user-units).
 
 If you need something the built-in template doesn't cover, copy it out of
 `src/systemd/default.service` in the [kick repo] and point `template` at your own
@@ -546,8 +763,12 @@ that:
   enabled. This is an error, see
   [sudo and interactivity](#sudo-and-interactivity) below.
 
+The check also finds out the home directory of the user being logged in as,
+which is what a leading `~` [expands](#home-directories) to.
+
 The check only reads state, it doesn't modify the remote host, so it is
-performed for `--dry-run` as well. It can be skipped with `--no-check`.
+performed for `--dry-run` as well. It can be skipped with `--no-check`. A
+[local deployment](#local-deployments) has no access check.
 
 <br>
 
@@ -588,6 +809,9 @@ passphrase or a login password still works as usual.
 The `kick deploy` action takes the name of the binary to deploy as an argument,
 which overrides the `binary` option, along with the following options:
 
+* `--to <profile>` selects the [profile](#profiles) to deploy, overriding the
+  `default_profile` option.
+
 * `--host <host>` replaces the `host` option, can be used more than once to
   deploy to [several hosts](#deploying-to-more-than-one-host).
 * `--user <user>` overrides the `user` option, which is the user being logged in
@@ -601,7 +825,8 @@ which overrides the `binary` option, along with the following options:
   `[deploy.systemd]`.
 * `--args <args>` sets the `args` variable, which the unit appends to
   `ExecStart`. Can be used more than once, and each use is split on whitespace.
-* `--profile <profile>` overrides the `profile` option.
+* `--profile <profile>` overrides the `profile` option, which is the cargo
+  build profile and not a [deploy profile](#profiles).
 * `--pre-build <command>` adds a command to `pre_build`, can be used more than
   once.
 * `--build-features <features>` adds features to `build_features`, can be used
@@ -611,8 +836,8 @@ which overrides the `binary` option, along with the following options:
 * `--no-systemd` skips installing the systemd unit, and by extension restarting
   the service.
 * `--no-restart` installs everything without stopping or starting the service.
-* `--dry-run` prints the unit which would be installed and every command which
-  would be run without changing anything.
+* `--dry-run` prints the profile being deployed, the unit which would be
+  installed and every command which would be run without changing anything.
 * `--verbose` / `-V` prints the deployment plan, the unit being installed and
   the script which is run remotely, and traces the remote script as it
   executes. Passing it twice (`-VV`) also prints the [access
@@ -621,6 +846,9 @@ which overrides the `binary` option, along with the following options:
 <br>
 
 ### Requirements
+
+A local deployment needs `install`, and `systemctl` and `cmp` if a unit is
+being installed, on the machine `kick` is running on.
 
 Every remote host being deployed to is expected to:
 

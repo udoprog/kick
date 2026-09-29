@@ -341,7 +341,8 @@ be used:
 
 ## Deploying over ssh
 
-The `deploy` action is a lightweight way of getting a project onto a server.
+The `deploy` action is a lightweight way of getting a project onto a server, or
+onto the machine you are working on through a local profile.
 
 It builds the project, uploads the binary with `scp`, installs it, and makes
 sure that a systemd unit is installed and running. The defaults are picked so
@@ -407,6 +408,36 @@ expected to have a `NOPASSWD` entry in sudoers.
 
 Since nothing is installed remotely unless the upload succeeded, a failed
 deployment leaves the currently running service alone.
+
+A project which is deployed in more than one way, say to a server over ssh and
+to the machine you are working on, defines named profiles which are layered over
+the shared `[deploy]` settings. A profile with `kind = "local"` installs through
+the local shell instead of over ssh, and `scope = "user"` in its
+`[deploy.systemd]` section installs a user unit managed with `systemctl --user`:
+
+```toml
+[deploy]
+default_profile = "local"
+pre_build = ["trunk build --release"]
+build_features = ["bundle"]
+
+[deploy.profiles.local]
+kind = "local"
+bin_dir = "~/.cargo/bin"
+
+[deploy.profiles.local.systemd]
+scope = "user"
+working_directory = "~/repo/kanban"
+args = ["serve"]
+
+[deploy.profiles.server]
+host = "moore"
+user = "integration"
+```
+
+Pick a profile with `kick deploy --to server`. Without `--to` the
+`default_profile` is used, or the only profile if there is just one, and
+otherwise you are asked which one to deploy when running in a terminal.
 
 To see exactly what would happen without changing anything, use `kick deploy
 --dry-run`. For all available options, see the [deployment

@@ -102,6 +102,53 @@ mod tests {
         assert!(unit.contains("ExecStart=/usr/local/bin/track --bind 0.0.0.0:3004\n"));
     }
 
+    /// A user unit has no use for the network targets of the system instance,
+    /// and is wanted by the default target of the user instance.
+    #[test]
+    fn default_template_user_scope() {
+        let ctx = BTreeMap::from([
+            ("name", "kanban"),
+            ("exec", "/home/me/.cargo/bin/kanban"),
+            ("scope", "user"),
+        ]);
+
+        let unit = render(DEFAULT_TEMPLATE, &ctx).unwrap();
+
+        assert!(!unit.contains("After="), "{unit}");
+        assert!(!unit.contains("Wants="), "{unit}");
+        assert!(!unit.contains("User="), "{unit}");
+        assert!(unit.contains("WantedBy=default.target\n"), "{unit}");
+
+        let ctx = BTreeMap::from([
+            ("name", "kanban"),
+            ("exec", "/home/me/.cargo/bin/kanban"),
+            ("scope", "user"),
+            ("after", "network.target"),
+            ("wanted_by", "graphical-session.target"),
+        ]);
+
+        let unit = render(DEFAULT_TEMPLATE, &ctx).unwrap();
+
+        assert!(unit.contains("After=network.target\n"), "{unit}");
+        assert!(!unit.contains("Wants="), "{unit}");
+        assert!(
+            unit.contains("WantedBy=graphical-session.target\n"),
+            "{unit}"
+        );
+
+        let ctx = BTreeMap::from([
+            ("name", "track"),
+            ("exec", "/usr/local/bin/track"),
+            ("scope", "system"),
+        ]);
+
+        let unit = render(DEFAULT_TEMPLATE, &ctx).unwrap();
+
+        assert!(unit.contains("After=network-online.target\n"), "{unit}");
+        assert!(unit.contains("Wants=network-online.target\n"), "{unit}");
+        assert!(unit.contains("WantedBy=multi-user.target\n"), "{unit}");
+    }
+
     /// Referring to something undefined is an error rather than an empty
     /// substitution which would produce a broken unit.
     #[test]
