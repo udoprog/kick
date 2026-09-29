@@ -1362,13 +1362,19 @@ fn apply_repo_options(
         && let Some(current) = paths.current
         && let Some(checkout) = unregistered_git_checkout(paths.root, current)
     {
-        let checkout = checkout.to_path(paths.root);
-        let checkout = checkout.canonicalize().unwrap_or(checkout);
+        let dir = checkout.to_path(paths.root);
+        let dir = dir.canonicalize().unwrap_or(dir);
+        let root = paths.root.canonicalize();
+        let root = root.as_deref().unwrap_or(paths.root);
+
+        let url = system
+            .git
+            .first()
+            .and_then(|git| git.get_url(&dir, "origin").ok());
 
         bail!(
-            "The current directory is inside of the git checkout `{}` which is not a configured repo in {}; pass `--all` to operate on all repos, or select repos explicitly with `-p`/`--path` or `--set`",
-            checkout.display(),
-            KICK_TOML,
+            "{}",
+            unregistered_checkout_message(root, &dir, checkout, url.as_ref().map(|u| u.as_str()))
         );
     }
 
@@ -1472,6 +1478,38 @@ fn apply_repo_options(
     )?;
 
     Ok(())
+}
+
+/// Placeholder used in the suggested `Kick.toml` snippet when the checkout has
+/// no readable `origin` remote.
+const URL_PLACEHOLDER: &str = "<url of the repo>";
+
+/// Build the error explaining that `dir` looks like a project not tracked by
+/// the `Kick.toml` in `root`, with a snippet registering it.
+fn unregistered_checkout_message(
+    root: &Path,
+    dir: &Path,
+    checkout: &RelativePath,
+    url: Option<&str>,
+) -> String {
+    let kick_toml = root.join(KICK_TOML);
+    let url = url.unwrap_or(URL_PLACEHOLDER);
+
+    format!(
+        "The current directory looks like a project (git checkout `{dir}`) which is not tracked by kick's {KICK_TOML} at `{root}`.\n\
+         \n\
+         Passing `--all` runs the command over every repo in that {KICK_TOML} hierarchy instead of just this project.\n\
+         Use `-p`/`--path` or `--set` to select repos explicitly.\n\
+         \n\
+         To make this error go away, register the project in `{kick_toml}`:\n\
+         \n\
+         [repo.\"{checkout}\"]\n\
+         url = \"{url}\"",
+        dir = dir.display(),
+        root = root.display(),
+        kick_toml = kick_toml.display(),
+        checkout = checkout.as_str(),
+    )
 }
 
 /// Find the nearest git checkout (a directory containing a `.git` directory or
@@ -1608,7 +1646,44 @@ mod tests {
 
     use relative_path::RelativePath;
 
-    use super::unregistered_git_checkout;
+    use std::path::Path;
+
+    use super::{unregistered_checkout_message, unregistered_git_checkout};
+
+    #[test]
+    fn unregistered_checkout_message_with_url() {
+        let message = unregistered_checkout_message(
+            Path::new("/src"),
+            Path::new("/src/repos/foo"),
+            RelativePath::new("repos/foo"),
+            Some("https://github.com/udoprog/foo"),
+        );
+
+        assert_eq!(
+            message,
+            "The current directory looks like a project (git checkout `/src/repos/foo`) which is not tracked by kick's Kick.toml at `/src`.\n\
+             \n\
+             Passing `--all` runs the command over every repo in that Kick.toml hierarchy instead of just this project.\n\
+             Use `-p`/`--path` or `--set` to select repos explicitly.\n\
+             \n\
+             To make this error go away, register the project in `/src/Kick.toml`:\n\
+             \n\
+             [repo.\"repos/foo\"]\n\
+             url = \"https://github.com/udoprog/foo\""
+        );
+    }
+
+    #[test]
+    fn unregistered_checkout_message_without_url() {
+        let message = unregistered_checkout_message(
+            Path::new("/src"),
+            Path::new("/src/foo"),
+            RelativePath::new("foo"),
+            None,
+        );
+
+        assert!(message.ends_with("[repo.\"foo\"]\nurl = \"<url of the repo>\""), "{message}");
+    }
 
     #[test]
     fn detects_unregistered_git_checkouts() -> anyhow::Result<()> {
