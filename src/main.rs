@@ -1643,10 +1643,9 @@ fn find_from_current_dir(current_dir: &Path) -> Option<(PathBuf, RelativePathBuf
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
 
     use relative_path::RelativePath;
-
-    use std::path::Path;
 
     use super::{unregistered_checkout_message, unregistered_git_checkout};
 
@@ -1682,7 +1681,10 @@ mod tests {
             None,
         );
 
-        assert!(message.ends_with("[repo.\"foo\"]\nurl = \"<url of the repo>\""), "{message}");
+        assert!(
+            message.ends_with("[repo.\"foo\"]\nurl = \"<url of the repo>\""),
+            "{message}"
+        );
     }
 
     #[test]
