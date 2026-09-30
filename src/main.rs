@@ -1374,26 +1374,47 @@ fn nested_worktree(
     match worktree::detect(paths.root, current, repos.iter().map(|r| r.path())) {
         Some(worktree::Nested::Worktree { repo, checkout }) => Ok(Some((repo, checkout))),
         Some(worktree::Nested::Other { repo, checkout }) if !explicit => {
-            let canonical = |p: &RelativePath| {
-                let dir = p.to_path(paths.root);
-                dir.canonicalize().unwrap_or(dir)
-            };
-
-            let root = paths.root.canonicalize();
-            let root = root.as_deref().unwrap_or(paths.root);
+            let root = canonical_root(paths.root);
 
             bail!(
                 "{}",
                 worktree::nested_checkout_message(
-                    root,
-                    &canonical(&checkout),
+                    &root,
+                    &canonical(paths.root, &checkout),
                     &repo,
-                    &canonical(&repo)
+                    &canonical(paths.root, &repo)
+                )
+            )
+        }
+        Some(worktree::Nested::Broken {
+            repo,
+            checkout,
+            gitdir,
+        }) if !explicit => {
+            let root = canonical_root(paths.root);
+
+            bail!(
+                "{}",
+                worktree::broken_worktree_message(
+                    &root,
+                    &canonical(paths.root, &checkout),
+                    &gitdir,
+                    &repo,
+                    &canonical(paths.root, &repo)
                 )
             )
         }
         _ => Ok(None),
     }
+}
+
+fn canonical_root(root: &Path) -> PathBuf {
+    root.canonicalize().unwrap_or_else(|_| root.to_owned())
+}
+
+fn canonical(root: &Path, path: &RelativePath) -> PathBuf {
+    let dir = path.to_path(root);
+    dir.canonicalize().unwrap_or(dir)
 }
 
 enum LoadedPaths<'a, 'path> {

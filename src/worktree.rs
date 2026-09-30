@@ -20,6 +20,24 @@ pub(crate) enum Nested {
         repo: RelativePathBuf,
         checkout: RelativePathBuf,
     },
+    /// A worktree whose `.git` file links to a `gitdir` which does not exist,
+    /// such as after its main checkout was moved.
+    Broken {
+        repo: RelativePathBuf,
+        checkout: RelativePathBuf,
+        gitdir: PathBuf,
+    },
+}
+
+/// The outcome of resolving the git common directory of a checkout.
+#[derive(Debug)]
+enum CommonDir {
+    /// The canonical common directory.
+    Found(PathBuf),
+    /// The `.git` file links to a `gitdir` which does not exist.
+    Missing(PathBuf),
+    /// The common directory could not be determined.
+    Unknown,
 }
 
 /// Detect if `current` is inside of a git checkout which is nested strictly
@@ -53,49 +71,67 @@ pub(crate) fn detect<'a>(
 
     let repo = enclosing?;
 
-    let same = match (
-        common_dir(&checkout.to_path(root)),
-        repo.to_path(root).join(".git").canonicalize(),
-    ) {
-        (Some(a), Ok(b)) => a == b,
-        _ => false,
-    };
+    let common = common_dir(&checkout.to_path(root));
+    let repo_git = repo.to_path(root).join(".git").canonicalize();
 
     let repo = repo.to_owned();
     let checkout = checkout.to_owned();
 
-    Some(if same {
-        Nested::Worktree { repo, checkout }
-    } else {
-        Nested::Other { repo, checkout }
+    Some(match (common, repo_git) {
+        (CommonDir::Found(a), Ok(b)) if a == b => Nested::Worktree { repo, checkout },
+        (CommonDir::Missing(gitdir), _) => Nested::Broken {
+            repo,
+            checkout,
+            gitdir,
+        },
+        _ => Nested::Other { repo, checkout },
     })
 }
 
 /// Resolve the canonical git common directory of the checkout at `dir`, which
 /// for a worktree is the `.git` directory of its main checkout.
-fn common_dir(dir: &Path) -> Option<PathBuf> {
+fn common_dir(dir: &Path) -> CommonDir {
     let dot_git = dir.join(".git");
 
-    if fs::metadata(&dot_git).ok()?.is_dir() {
-        return dot_git.canonicalize().ok();
+    let Ok(meta) = fs::metadata(&dot_git) else {
+        return CommonDir::Unknown;
+    };
+
+    if meta.is_dir() {
+        return found(dot_git.canonicalize());
     }
 
-    let content = fs::read_to_string(&dot_git).ok()?;
+    let Ok(content) = fs::read_to_string(&dot_git) else {
+        return CommonDir::Unknown;
+    };
 
-    let git_dir = content
+    let Some(git_dir) = content
         .lines()
-        .find_map(|line| line.strip_prefix("gitdir:"))?
-        .trim();
+        .find_map(|line| line.strip_prefix("gitdir:"))
+    else {
+        return CommonDir::Unknown;
+    };
 
     // Relative gitdir paths are relative to the checkout.
-    let git_dir = dir.join(git_dir);
+    let git_dir = dir.join(git_dir.trim());
+
+    if !git_dir.try_exists().unwrap_or(true) {
+        return CommonDir::Missing(git_dir);
+    }
 
     let common = match fs::read_to_string(git_dir.join("commondir")) {
         Ok(common) => git_dir.join(common.trim()),
         Err(_) => git_dir,
     };
 
-    common.canonicalize().ok()
+    found(common.canonicalize())
+}
+
+fn found(path: std::io::Result<PathBuf>) -> CommonDir {
+    match path {
+        Ok(path) => CommonDir::Found(path),
+        Err(_) => CommonDir::Unknown,
+    }
 }
 
 /// Build the error explaining that the current directory is inside a checkout
@@ -117,6 +153,27 @@ pub(crate) fn nested_checkout_message(
     )
 }
 
+/// Build the error explaining that the current directory is inside a worktree
+/// nested in a registered repo whose link to its `gitdir` is broken.
+pub(crate) fn broken_worktree_message(
+    root: &Path,
+    checkout_dir: &Path,
+    gitdir: &Path,
+    repo: &RelativePath,
+    repo_dir: &Path,
+) -> String {
+    format!(
+        "The current directory is inside git worktree `{checkout_dir}`, which is nested inside repo `{repo}` of kick's {kick_toml} at `{root}`, but its link is broken: its .git file points to gitdir `{gitdir}`, which does not exist. This usually happens when the repo was moved.\n\
+         \n\
+         To fix the link, run `git worktree repair {checkout_dir}` from the main checkout `{repo_dir}`. Otherwise run kick from the main checkout, or pass `--all`, `-p`/`--path` or `--set` to select repos explicitly.",
+        checkout_dir = checkout_dir.display(),
+        gitdir = gitdir.display(),
+        kick_toml = crate::KICK_TOML,
+        root = root.display(),
+        repo_dir = repo_dir.display(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -125,7 +182,7 @@ mod tests {
 
     use relative_path::RelativePath;
 
-    use super::{Nested, detect};
+    use super::{Nested, broken_worktree_message, detect};
 
     fn git(dir: &Path, args: &[&str]) {
         let status = Command::new("git")
@@ -184,6 +241,19 @@ mod tests {
             &["worktree", "add", "-q", "../track-sibling"],
         );
 
+        // A worktree of track whose link points to a gitdir that no longer
+        // exists, as if track had been moved from `repos/old-track`.
+        git(
+            &root.join("repos/track"),
+            &["worktree", "add", "-q", ".claude/worktrees/stale"],
+        );
+        let missing = root.join("repos/old-track/.git/worktrees/stale");
+        fs::write(
+            root.join("repos/track/.claude/worktrees/stale/.git"),
+            format!("gitdir: {}\n", missing.display()),
+        )
+        .unwrap();
+
         let repos = [
             RelativePath::new("repos/track"),
             RelativePath::new("repos/other"),
@@ -214,6 +284,14 @@ mod tests {
             })
         );
 
+        let broken = Some(Nested::Broken {
+            repo: "repos/track".into(),
+            checkout: "repos/track/.claude/worktrees/stale".into(),
+            gitdir: missing.clone(),
+        });
+
+        assert_eq!(check("repos/track/.claude/worktrees/stale"), broken);
+
         // Plain directories and the main checkouts themselves.
         assert_eq!(check("repos/track"), None);
         assert_eq!(check("repos/track/src/deep"), None);
@@ -223,5 +301,24 @@ mod tests {
         assert_eq!(check(""), None);
         // Sibling worktrees are left to the unregistered checkout check.
         assert_eq!(check("repos/track-sibling"), None);
+    }
+
+    #[test]
+    fn broken_worktree_message_names_gitdir() {
+        let message = broken_worktree_message(
+            Path::new("/root"),
+            Path::new("/root/repos/track/.claude/worktrees/stale"),
+            Path::new("/root/repos/old-track/.git/worktrees/stale"),
+            RelativePath::new("repos/track"),
+            Path::new("/root/repos/track"),
+        );
+
+        assert!(message.contains("gitdir `/root/repos/old-track/.git/worktrees/stale`"));
+        assert!(message.contains("does not exist"));
+        assert!(message.contains("repo was moved"));
+        assert!(message.contains(
+            "`git worktree repair /root/repos/track/.claude/worktrees/stale` from the main checkout `/root/repos/track`"
+        ));
+        assert!(message.contains("`--all`, `-p`/`--path` or `--set`"));
     }
 }
