@@ -1384,6 +1384,17 @@ fn apply_repo_options(
         filters.push(Fragment::parse(repo));
     }
 
+    // `-p` filters are matched against repo paths relative to the root, so a
+    // filter like `.` silently selects nothing. Refuse to run in that case.
+    if let Some(message) = unmatched_path_filters_message(
+        paths.root,
+        &repo_opts.repos,
+        &filters,
+        repos.iter().map(|repo| repo.path()),
+    ) {
+        bail!("{message}");
+    }
+
     let mut git_cache = GitCache::new(repos, paths, system, repo_opts.fetch);
     let mut owned_work = Vec::new();
     let mut work = Vec::new();
@@ -1478,6 +1489,63 @@ fn apply_repo_options(
     )?;
 
     Ok(())
+}
+
+/// Number of example repo paths to show when `-p` filters match nothing.
+const PATH_FILTER_EXAMPLES: usize = 2;
+
+/// Build an error message if any of the `-p`/`--path` `filters` (with their
+/// original spelling in `raw`) matches none of the configured `repos`.
+///
+/// Returns `None` if every filter matches at least one repo.
+fn unmatched_path_filters_message<'a>(
+    root: &Path,
+    raw: &[String],
+    filters: &[Fragment<'_>],
+    repos: impl IntoIterator<Item = &'a RelativePath>,
+) -> Option<String> {
+    let repos = repos.into_iter().collect::<Vec<_>>();
+
+    let unmatched = raw
+        .iter()
+        .zip(filters)
+        .filter(|(_, filter)| !repos.iter().any(|repo| filter.is_match(repo.as_str())))
+        .map(|(raw, _)| format!("`{raw}`"))
+        .collect::<Vec<_>>();
+
+    if unmatched.is_empty() {
+        return None;
+    }
+
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_owned());
+
+    let (noun, verb) = if unmatched.len() == 1 {
+        ("filter", "does")
+    } else {
+        ("filters", "do")
+    };
+
+    let examples = repos
+        .iter()
+        .take(PATH_FILTER_EXAMPLES)
+        .map(|repo| format!("`{}`", repo.as_str()))
+        .collect::<Vec<_>>();
+
+    let examples = if examples.is_empty() {
+        String::from(" (no repos are configured)")
+    } else {
+        format!(", such as {}", examples.join(" or "))
+    };
+
+    Some(format!(
+        "The `-p`/`--path` {noun} {unmatched} {verb} not match any repo configured in `{kick_toml}`.\n\
+         \n\
+         `-p` matches repo paths relative to `{root}`{examples}, and supports `*` wildcards.\n\
+         Use `--all` to run over every repo, or `--set` to select repos by set.",
+        unmatched = unmatched.join(", "),
+        kick_toml = root.join(KICK_TOML).display(),
+        root = root.display(),
+    ))
 }
 
 /// Placeholder used in the suggested `Kick.toml` snippet when the checkout has
@@ -1647,7 +1715,67 @@ mod tests {
 
     use relative_path::RelativePath;
 
-    use super::{unregistered_checkout_message, unregistered_git_checkout};
+    use super::{
+        unmatched_path_filters_message, unregistered_checkout_message, unregistered_git_checkout,
+    };
+    use crate::glob::Fragment;
+
+    fn path_filters_message(filters: &[&str], repos: &[&str]) -> Option<String> {
+        let raw = filters.iter().map(|f| f.to_string()).collect::<Vec<_>>();
+        let fragments = raw.iter().map(|f| Fragment::parse(f)).collect::<Vec<_>>();
+
+        unmatched_path_filters_message(
+            Path::new("/nonexistent-kick-root"),
+            &raw,
+            &fragments,
+            repos.iter().map(|r| RelativePath::new(*r)),
+        )
+    }
+
+    #[test]
+    fn path_filters_all_matching() {
+        let repos = ["repos/foo", "repos/bar", "other/baz"];
+        assert_eq!(path_filters_message(&[], &repos), None);
+        assert_eq!(path_filters_message(&["repos/foo"], &repos), None);
+        assert_eq!(path_filters_message(&["repos/*", "*baz"], &repos), None);
+    }
+
+    #[test]
+    fn path_filters_single_unmatched() {
+        let repos = ["repos/foo", "repos/bar", "other/baz"];
+
+        assert_eq!(
+            path_filters_message(&["."], &repos).as_deref(),
+            Some(
+                "The `-p`/`--path` filter `.` does not match any repo configured in `/nonexistent-kick-root/Kick.toml`.\n\
+                 \n\
+                 `-p` matches repo paths relative to `/nonexistent-kick-root`, such as `repos/foo` or `repos/bar`, and supports `*` wildcards.\n\
+                 Use `--all` to run over every repo, or `--set` to select repos by set."
+            )
+        );
+    }
+
+    #[test]
+    fn path_filters_partially_unmatched() {
+        let repos = ["repos/foo"];
+
+        let message = path_filters_message(&["repos/foo", ".", "nope*"], &repos)
+            .expect("unmatched filters should fail");
+
+        assert!(
+            message.starts_with(
+                "The `-p`/`--path` filters `.`, `nope*` do not match any repo configured in"
+            ),
+            "{message}"
+        );
+        assert!(message.contains("such as `repos/foo`, and"), "{message}");
+    }
+
+    #[test]
+    fn path_filters_without_repos() {
+        let message = path_filters_message(&["foo"], &[]).expect("no repos should fail");
+        assert!(message.contains("(no repos are configured)"), "{message}");
+    }
 
     #[test]
     fn unregistered_checkout_message_with_url() {
