@@ -1352,7 +1352,7 @@ impl<'a> Cx<'a> {
     /// Read the template stored at the given path.
     fn read_template(&self, value: toml::Value) -> Result<String, ErrorMarker> {
         let path = self.relative_path(value)?;
-        let path = self.current.join(path).to_path(self.paths.root);
+        let path = self.paths.to_path(self.current.join(path));
 
         match fs::read_to_string(&path) {
             Ok(template) => Ok(template),
@@ -2288,6 +2288,7 @@ mod tests {
             current: None,
             config: None,
             cache: None,
+            redirect: None,
         };
 
         let cx = Cx::new(paths, RelativePath::new(""), &templating);
@@ -2305,6 +2306,7 @@ mod tests {
             current: None,
             config: None,
             cache: None,
+            redirect: None,
         };
 
         let cx = Cx::new(paths, RelativePath::new(""), &templating);

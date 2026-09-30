@@ -497,6 +497,7 @@ mod utils;
 mod wix;
 mod workflows;
 mod workspace;
+mod worktree;
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashSet};
@@ -987,6 +988,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         current: current_path.as_deref(),
         config: project_dirs.as_ref().map(|p| p.config_dir()),
         cache: project_dirs.as_ref().map(|p| p.cache_dir()),
+        redirect: None,
     };
 
     tracing::trace!(?paths, "Using paths");
@@ -1107,6 +1109,30 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
 
     let mut sets = repo_sets::RepoSets::new(root.join("sets"))?;
 
+    // When running from a git worktree nested inside of a registered repo, use
+    // the worktree as that repo's working directory.
+    let worktree = nested_worktree(paths, repo_opts, &repos, from_group)?;
+
+    let (paths, config) = match &worktree {
+        Some((repo, checkout)) => {
+            let paths = Paths {
+                redirect: Some(ctxt::Redirect {
+                    repo,
+                    worktree: checkout,
+                }),
+                ..paths
+            };
+
+            // Reload the configuration so that repo configuration and
+            // templates are read from the worktree.
+            let extra_repos = model::load_gitmodules(&root)?;
+            let config = config::load(paths, &templating, extra_repos, &defaults)
+                .context("Loading kick configuration")?;
+            (paths, config)
+        }
+        None => (paths, config),
+    };
+
     // This is `true` if the current directory is currently inside one of the
     // repos.
     let in_repo_path = paths
@@ -1125,6 +1151,14 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             in_repo_path,
             from_group,
         )?;
+    }
+
+    if let Some((repo, checkout)) = &worktree
+        && repos.iter().any(|r| r.path() == repo && !r.is_disabled())
+    {
+        let dir = checkout.to_path(&root);
+        let dir = dir.canonicalize().unwrap_or(dir);
+        tracing::info!("using worktree {} for repo {repo}", dir.display());
     }
 
     let changes_path = root.join("changes.gz");
@@ -1313,6 +1347,53 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     }
 
     Ok(outcome)
+}
+
+/// Detect if the current directory is inside a git checkout nested in a
+/// registered repo.
+///
+/// Returns the `(repo, worktree)` pair to redirect if it is a worktree of that
+/// same repo, and errors if it is some other checkout and no repos were
+/// selected explicitly. `--all` disables the detection.
+fn nested_worktree(
+    paths: Paths<'_>,
+    repo_opts: Option<&RepoOptions>,
+    repos: &[Repo],
+    from_group: bool,
+) -> Result<Option<(RelativePathBuf, RelativePathBuf)>> {
+    let (true, Some(opts), Some(current)) = (from_group, repo_opts, paths.current) else {
+        return Ok(None);
+    };
+
+    if opts.all {
+        return Ok(None);
+    }
+
+    let explicit = !opts.repos.is_empty() || !opts.set.iter().all(|s| s.is_empty());
+
+    match worktree::detect(paths.root, current, repos.iter().map(|r| r.path())) {
+        Some(worktree::Nested::Worktree { repo, checkout }) => Ok(Some((repo, checkout))),
+        Some(worktree::Nested::Other { repo, checkout }) if !explicit => {
+            let canonical = |p: &RelativePath| {
+                let dir = p.to_path(paths.root);
+                dir.canonicalize().unwrap_or(dir)
+            };
+
+            let root = paths.root.canonicalize();
+            let root = root.as_deref().unwrap_or(paths.root);
+
+            bail!(
+                "{}",
+                worktree::nested_checkout_message(
+                    root,
+                    &canonical(&checkout),
+                    &repo,
+                    &canonical(&repo)
+                )
+            )
+        }
+        _ => Ok(None),
+    }
 }
 
 enum LoadedPaths<'a, 'path> {

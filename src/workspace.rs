@@ -84,11 +84,13 @@ fn expand_members<'a>(
     let mut output = Vec::new();
 
     for path in iter {
-        let manifest_dir = manifest.dir().join(path);
-        let glob = Glob::new(cx.root(), &manifest_dir);
+        // Glob from the manifest directory as resolved by the context, so
+        // that a repo redirected to a worktree is expanded in the worktree.
+        let manifest_dir = cx.to_path(manifest.dir());
+        let glob = Glob::new(&manifest_dir, path);
 
         for path in glob.matcher() {
-            let path = path?;
+            let path = manifest.dir().join(path?);
 
             if !cx.to_path(&path).is_dir() {
                 continue;

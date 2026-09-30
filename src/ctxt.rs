@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
-use relative_path::RelativePath;
+use relative_path::{RelativePath, RelativePathBuf};
 
 use super::system::{Git, System};
 use crate::cargo::{self, Package, RustVersion};
@@ -26,13 +26,47 @@ pub(crate) struct Paths<'a> {
     pub(crate) current: Option<&'a RelativePath>,
     pub(crate) config: Option<&'a Path>,
     pub(crate) cache: Option<&'a Path>,
+    /// Redirect paths under a repo to a git worktree of it.
+    pub(crate) redirect: Option<Redirect<'a>>,
+}
+
+/// A registered repo whose working directory is a git worktree of it located
+/// elsewhere. Both paths are relative to the root.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Redirect<'a> {
+    pub(crate) repo: &'a RelativePath,
+    pub(crate) worktree: &'a RelativePath,
+}
+
+impl Redirect<'_> {
+    /// Rewrite a path under the repo into the same path under the worktree.
+    ///
+    /// Returns `None` if the path is not under the repo, or already under the
+    /// worktree.
+    pub(crate) fn rewrite(self, path: &RelativePath) -> Option<RelativePathBuf> {
+        if path.starts_with(self.worktree) {
+            return None;
+        }
+
+        let rest = path.strip_prefix(self.repo).ok()?;
+
+        if rest.as_str().is_empty() {
+            return Some(self.worktree.to_owned());
+        }
+
+        Some(self.worktree.join(rest))
+    }
 }
 
 impl Paths<'_> {
     /// Get a repo path that is used as the base to other paths.
     pub(crate) fn to_path(self, path: impl AsRef<RelativePath>) -> PathBuf {
+        let path = path.as_ref();
+        let rewritten = self.redirect.and_then(|r| r.rewrite(path));
+        let path = rewritten.as_deref().unwrap_or(path);
+
         if self.root.components().eq([Component::CurDir]) {
-            return PathBuf::from(path.as_ref().as_str());
+            return PathBuf::from(path.as_str());
         }
 
         if let Some(current_path) = self.current {
@@ -45,7 +79,7 @@ impl Paths<'_> {
             return PathBuf::from(output.as_str());
         }
 
-        path.as_ref().to_path(self.root)
+        path.to_path(self.root)
     }
 
     /// Read the given path to a string.
@@ -109,10 +143,6 @@ impl<'a> Ctxt<'a> {
         };
 
         octokit::Client::new(auth)
-    }
-
-    pub(crate) fn root(&self) -> &Path {
-        self.paths.root
     }
 
     /// Convert a context into an outcome.
@@ -237,5 +267,80 @@ impl<'a> Iterator for Repos<'a> {
 
             return Some(repo);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use relative_path::RelativePath;
+
+    use super::{Paths, Redirect};
+
+    fn redirect() -> Redirect<'static> {
+        Redirect {
+            repo: RelativePath::new("repos/track"),
+            worktree: RelativePath::new("repos/track/.claude/worktrees/wt"),
+        }
+    }
+
+    fn paths(current: Option<&'static str>, redirect: Option<Redirect<'static>>) -> Paths<'static> {
+        Paths {
+            root: Path::new("/src"),
+            current: current.map(RelativePath::new),
+            config: None,
+            cache: None,
+            redirect,
+        }
+    }
+
+    #[test]
+    fn redirect_rewrite() {
+        let rewrite = |p: &str| {
+            redirect()
+                .rewrite(RelativePath::new(p))
+                .map(|p| p.to_string())
+        };
+
+        assert_eq!(
+            rewrite("repos/track").as_deref(),
+            Some("repos/track/.claude/worktrees/wt")
+        );
+        assert_eq!(
+            rewrite("repos/track/src/main.rs").as_deref(),
+            Some("repos/track/.claude/worktrees/wt/src/main.rs")
+        );
+        // Already under the worktree.
+        assert_eq!(rewrite("repos/track/.claude/worktrees/wt/src"), None);
+        // Not under the repo, including a repo sharing a name prefix.
+        assert_eq!(rewrite("repos/kick"), None);
+        assert_eq!(rewrite("repos/tracker"), None);
+        assert_eq!(rewrite(""), None);
+    }
+
+    #[test]
+    fn to_path_with_redirect() {
+        let p = paths(None, Some(redirect()));
+        assert_eq!(
+            p.to_path("repos/track/Cargo.toml"),
+            PathBuf::from("/src/repos/track/.claude/worktrees/wt/Cargo.toml")
+        );
+        assert_eq!(p.to_path("repos/kick"), PathBuf::from("/src/repos/kick"));
+
+        let p = paths(
+            Some("repos/track/.claude/worktrees/wt/src"),
+            Some(redirect()),
+        );
+        assert_eq!(p.to_path("repos/track"), PathBuf::from(".."));
+        assert_eq!(p.to_path("repos/track/src"), PathBuf::from("."));
+        assert_eq!(
+            p.to_path("repos/kick"),
+            PathBuf::from("../../../../../kick")
+        );
+
+        // Without a redirect the main checkout is used.
+        let p = paths(Some("repos/track/.claude/worktrees/wt"), None);
+        assert_eq!(p.to_path("repos/track"), PathBuf::from("../../.."));
     }
 }
