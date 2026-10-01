@@ -412,6 +412,8 @@ pub(crate) struct Systemd {
     pub(crate) enable: Option<bool>,
     /// Which systemd instance the unit is installed into.
     pub(crate) scope: Option<SystemdScope>,
+    /// The socket unit which activates the service, if any.
+    pub(crate) socket: Option<SystemdSocket>,
     /// The variables the unit template is rendered with.
     ///
     /// These are every key in the section which isn't one of the options
@@ -429,6 +431,7 @@ impl Default for Systemd {
             name: None,
             enable: None,
             scope: None,
+            socket: None,
             variables: toml::Table::new(),
         }
     }
@@ -445,6 +448,37 @@ impl Systemd {
         self.name = other.name.or(self.name.take());
         self.enable = other.enable.or(self.enable.take());
         self.scope = other.scope.or(self.scope.take());
+
+        match (&mut self.socket, other.socket) {
+            (Some(socket), Some(other)) => socket.merge_with(other),
+            (socket @ None, other) => *socket = other,
+            _ => {}
+        }
+
+        merge_map(&mut self.variables, other.variables);
+    }
+}
+
+/// The socket unit which activates the service of a deployment.
+#[derive(Default, Debug, Clone)]
+pub(crate) struct SystemdSocket {
+    /// Whether a socket unit should be installed at all, which is how `socket
+    /// = false` is represented. Defaults to `true` once the section is present.
+    pub(crate) enabled: Option<bool>,
+    /// The source of the template which is rendered into the socket unit, or
+    /// `None` for the built-in template.
+    pub(crate) template: Option<Box<str>>,
+    /// The name of the socket unit, defaults to the name of the service.
+    pub(crate) name: Option<String>,
+    /// The variables the socket template is rendered with.
+    pub(crate) variables: toml::Table,
+}
+
+impl SystemdSocket {
+    fn merge_with(&mut self, mut other: Self) {
+        self.enabled = other.enabled.or(self.enabled.take());
+        self.template = other.template.take().or(self.template.take());
+        self.name = other.name.or(self.name.take());
         merge_map(&mut self.variables, other.variables);
     }
 }
@@ -1973,6 +2007,7 @@ impl<'a> Cx<'a> {
                 let name = self.in_key(&mut table, "name", Self::string);
                 let enable = self.in_key(&mut table, "enable", Self::boolean);
                 let scope = self.in_key(&mut table, "scope", Self::parse);
+                let socket = self.in_key(&mut table, "socket", Self::systemd_socket);
 
                 // NB: Everything which is left over is a variable the unit
                 // template is rendered with. This is why the section cannot
@@ -1984,8 +2019,38 @@ impl<'a> Cx<'a> {
                     name: name?,
                     enable: enable?,
                     scope: scope?,
+                    socket: socket?,
                     variables: table,
                     ..Systemd::default()
+                })
+            }
+        }
+    }
+
+    fn systemd_socket(&self, value: toml::Value) -> Result<SystemdSocket, ErrorMarker> {
+        match value {
+            // NB: The boolean form asks for the built-in socket template.
+            toml::Value::Boolean(enabled) => Ok(SystemdSocket {
+                enabled: Some(enabled),
+                ..SystemdSocket::default()
+            }),
+            // NB: The bare string form is the path to a socket template.
+            value @ toml::Value::String(..) => Ok(SystemdSocket {
+                template: Some(self.unit_template(value)?),
+                ..SystemdSocket::default()
+            }),
+            value => {
+                let mut table = self.table(value)?;
+
+                let template = self.in_key(&mut table, "template", Self::unit_template);
+                let name = self.in_key(&mut table, "name", Self::string);
+
+                // NB: As with the service, everything else is a variable.
+                Ok(SystemdSocket {
+                    template: template?,
+                    name: name?,
+                    variables: table,
+                    ..SystemdSocket::default()
                 })
             }
         }
@@ -2360,6 +2425,76 @@ host = "moore"
         assert!(systemd.variables.contains_key("working_directory"));
 
         assert_eq!(deploy.profiles["remote"].host, ["moore"]);
+    }
+
+    #[test]
+    fn deploy_socket() {
+        let (deploy, errors) = parse_deploy(
+            r#"
+[systemd]
+scope = "user"
+
+[systemd.socket]
+listen_stream = "%t/kanban/kanban.sock"
+socket_mode = "0600"
+
+[profiles.system.systemd.socket]
+listen_stream = "/run/kanban/kanban.sock"
+socket_group = "kanban"
+
+[profiles.plain.systemd]
+socket = false
+"#,
+        );
+
+        assert_eq!(errors, 0);
+
+        let deploy = deploy.unwrap();
+
+        let systemd = deploy.systemd.as_ref().unwrap();
+        // NB: `socket` is an option, not a variable.
+        assert!(!systemd.variables.contains_key("socket"));
+
+        let socket = systemd.socket.as_ref().unwrap();
+        assert_eq!(socket.enabled, None);
+        assert!(socket.template.is_none());
+        assert_eq!(
+            socket.variables["listen_stream"].as_str(),
+            Some("%t/kanban/kanban.sock")
+        );
+
+        let system = deploy.with_profile("system").unwrap();
+        let socket = system.systemd.unwrap().socket.unwrap();
+        assert_eq!(
+            socket.variables["listen_stream"].as_str(),
+            Some("/run/kanban/kanban.sock")
+        );
+        assert_eq!(socket.variables["socket_mode"].as_str(), Some("0600"));
+        assert_eq!(socket.variables["socket_group"].as_str(), Some("kanban"));
+
+        let plain = deploy.with_profile("plain").unwrap();
+        let socket = plain.systemd.unwrap().socket.unwrap();
+        assert_eq!(socket.enabled, Some(false));
+
+        let (deploy, errors) = parse_deploy(
+            r#"
+[systemd]
+socket = true
+"#,
+        );
+
+        assert_eq!(errors, 0);
+        let socket = deploy.unwrap().systemd.unwrap().socket.unwrap();
+        assert_eq!(socket.enabled, Some(true));
+
+        let (_, errors) = parse_deploy(
+            r#"
+[systemd]
+socket = 42
+"#,
+        );
+
+        assert_eq!(errors, 1);
     }
 
     #[test]

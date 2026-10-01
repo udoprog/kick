@@ -1,0 +1,28 @@
+[Unit]
+Description={{ description | default(name ~ " socket") }}
+
+[Socket]
+{%- for listen in ([listen_stream] if listen_stream is string else listen_stream) %}
+ListenStream={{ listen }}
+{%- endfor %}
+{%- if socket_user is defined %}
+SocketUser={{ socket_user }}
+{%- endif %}
+{%- if socket_group is defined %}
+SocketGroup={{ socket_group }}
+{%- endif %}
+{%- if socket_mode is defined %}
+SocketMode={{ socket_mode }}
+{%- endif %}
+{%- if directory_mode is defined %}
+DirectoryMode={{ directory_mode }}
+{%- endif %}
+{%- if remove_on_stop is defined %}
+RemoveOnStop={{ remove_on_stop if remove_on_stop is string else ("yes" if remove_on_stop else "no") }}
+{%- endif %}
+{%- if service != name ~ ".service" %}
+Service={{ service }}
+{%- endif %}
+
+[Install]
+WantedBy={{ wanted_by | default("sockets.target") }}

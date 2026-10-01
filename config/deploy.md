@@ -14,7 +14,8 @@ Deploying performs the following steps:
 * The binary to deploy is located in `target/<profile>/<binary>`.
 * Then, for each host in turn, a single `ssh` invocation:
   * Receives the binary, any [extra files](#deployfiles) and the rendered
-    [systemd unit](#systemd) as a `tar` archive streamed over its stdin, and
+    [systemd unit](#systemd), along with its [socket unit](#socket-units) if it
+    has one, as a `tar` archive streamed over its stdin, and
     unpacks them into the [staging directory](#deploy-section) on the remote
     host.
   * Stops the service, installs everything into place, and starts the service
@@ -508,6 +509,8 @@ enable = false
   Defaults to `true`.
 * `scope` which systemd instance the unit is installed into, either `system`
   (the default) or `user`. See [user units](#user-units).
+* `socket` a socket unit which activates the service, see [socket
+  units](#socket-units).
 
 Every other key in the section is a [variable](#template-variables) the unit is
 rendered with, which is where directives like `User=` or `Environment=` come
@@ -549,6 +552,206 @@ The scope is independent of the [kind](#local-deployments) of deployment, so a
 user unit can be installed over ssh too. Either way, note that the user instance
 of systemd only runs while the user is logged in unless lingering is enabled
 with `loginctl enable-linger <user>`.
+
+<br>
+
+#### Socket units
+
+A service which is started by systemd on demand, or which is handed a socket
+that systemd owns, is installed together with a socket unit through
+`[deploy.systemd.socket]`. It takes the same forms as the `systemd` option:
+
+```toml
+[deploy.systemd]
+# The built-in socket template, configured through variables.
+socket = true
+# Or your own template.
+socket = "systemd/kanban.socket"
+```
+
+Or as a table:
+
+```toml
+[deploy.systemd.socket]
+template = "systemd/kanban.socket"
+name = "kanban"
+listen_stream = "/run/kanban/kanban.sock"
+```
+
+* `template` the path to a socket unit template, relative to the repo. Defaults
+  to the [built-in socket template](#the-built-in-socket-template).
+* `name` the name of the socket unit. Defaults to the name of the service, which
+  is what lets systemd pair them up without a `Service=` directive.
+
+Every other key in the section is a variable the socket unit is rendered with.
+These are the socket's own, a variable defined for the service is not visible to
+the socket and the other way around, but the [built-in
+variables](#template-variables) are available to both, with `name` being the name
+of the socket unit. A socket template also has `service`, the file name of the
+service it activates such as `kanban.service`. A service template with a socket
+has `socket`, the file name of the socket unit such as `kanban.socket`, which the
+built-in template uses to add `Requires=` and `After=` on it.
+
+Like the rest of the `systemd` section, a profile can override individual
+socket variables, or turn the socket off with `socket = false`.
+
+The socket unit is installed as `<unit_dir>/<name>.socket` next to the service,
+and is compared and written the same way, only when it changed. With a socket
+unit, the deployment:
+
+* Compares the socket unit with the installed one up front. If it changed, or
+  isn't installed yet, the service and then the socket are stopped.
+* Installs the binary, the service unit and, if it changed, the socket unit, and
+  runs `systemctl daemon-reload` once if either unit was written.
+* Runs `systemctl enable --now <name>.socket`. It is the socket which is
+  enabled, not the service. With `enable = false` the socket is only started.
+* Runs `systemctl restart <service>`.
+
+So a deployment which only changes the binary leaves an active socket alone and
+only restarts the service, and anything connecting in the meantime is queued by
+systemd rather than refused. With `--no-restart`, the units are installed and
+the socket enabled, but nothing is stopped or started.
+
+<br>
+
+#### The built-in socket template
+
+```jinja
+[Unit]
+Description={{ description | default(name ~ " socket") }}
+
+[Socket]
+{%- for listen in ([listen_stream] if listen_stream is string else listen_stream) %}
+ListenStream={{ listen }}
+{%- endfor %}
+{%- if socket_user is defined %}
+SocketUser={{ socket_user }}
+{%- endif %}
+{%- if socket_group is defined %}
+SocketGroup={{ socket_group }}
+{%- endif %}
+{%- if socket_mode is defined %}
+SocketMode={{ socket_mode }}
+{%- endif %}
+{%- if directory_mode is defined %}
+DirectoryMode={{ directory_mode }}
+{%- endif %}
+{%- if remove_on_stop is defined %}
+RemoveOnStop={{ remove_on_stop if remove_on_stop is string else ("yes" if remove_on_stop else "no") }}
+{%- endif %}
+{%- if service != name ~ ".service" %}
+Service={{ service }}
+{%- endif %}
+
+[Install]
+WantedBy={{ wanted_by | default("sockets.target") }}
+```
+
+* `listen_stream` is required, either a single address or a list of them, each
+  of which becomes a `ListenStream=`.
+* `description`, defaults to `<name> socket`.
+* `socket_user`, `socket_group` and `socket_mode`.
+* `directory_mode`.
+* `remove_on_stop`, either a boolean or a string such as `"yes"`.
+* `wanted_by`, defaults to `sockets.target`.
+
+`Service=` is only written when the socket is named differently from the
+service.
+
+<br>
+
+#### Example: a socket-activated service
+
+The kanban board listens on a unix socket which systemd owns. As a user service
+the socket lives in the runtime directory of the user, and on a server it is
+shared with the members of the `kanban` group:
+
+```toml
+[deploy]
+binary = "kanban"
+
+[deploy.systemd]
+args = ["serve"]
+
+[deploy.systemd.socket]
+remove_on_stop = true
+
+[deploy.profiles.local]
+kind = "local"
+bin_dir = "~/.cargo/bin"
+
+[deploy.profiles.local.systemd]
+scope = "user"
+
+[deploy.profiles.local.systemd.socket]
+listen_stream = "%t/kanban/kanban.sock"
+socket_mode = "0600"
+directory_mode = "0700"
+
+[deploy.profiles.server]
+host = "moore"
+
+[deploy.profiles.server.systemd]
+user = "kanban"
+
+[deploy.profiles.server.systemd.socket]
+listen_stream = "/run/kanban/kanban.sock"
+socket_mode = "0660"
+socket_group = "kanban"
+```
+
+`kick deploy --to local` installs the following into
+`~/.config/systemd/user/kanban.socket`:
+
+```text
+[Unit]
+Description=kanban socket
+
+[Socket]
+ListenStream=%t/kanban/kanban.sock
+SocketMode=0600
+DirectoryMode=0700
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target
+```
+
+Along with a `kanban.service` which has `Requires=kanban.socket` and
+`After=kanban.socket`, and runs:
+
+```sh
+set -eu
+socket_changed=no
+if ! cmp -s <rendered socket> ~/.config/systemd/user/kanban.socket; then
+  socket_changed=yes
+fi
+if [ "$socket_changed" = yes ]; then
+  systemctl --user stop kanban 2>/dev/null || true
+  systemctl --user stop kanban.socket 2>/dev/null || true
+fi
+mkdir -p ~/.cargo/bin
+install -m 0755 <repo>/target/release/kanban ~/.cargo/bin/kanban
+mkdir -p ~/.config/systemd/user
+reload=no
+if ! cmp -s <rendered unit> ~/.config/systemd/user/kanban.service; then
+  install -m 0644 <rendered unit> ~/.config/systemd/user/kanban.service
+  reload=yes
+fi
+if [ "$socket_changed" = yes ]; then
+  install -m 0644 <rendered socket> ~/.config/systemd/user/kanban.socket
+  reload=yes
+fi
+if [ "$reload" = yes ]; then
+  systemctl --user daemon-reload
+fi
+systemctl --user enable --now kanban.socket
+systemctl --user restart kanban
+```
+
+`kick deploy --to server` does the same with `sudo -n systemctl` over ssh, and
+installs into `/etc/systemd/system`. Use `--dry-run` with either to see both
+rendered units and the script without changing anything.
 
 <br>
 
@@ -630,6 +833,10 @@ Wants={{ wants | default("network-online.target") }}
 {%- if requires is defined %}
 Requires={{ requires }}
 {%- endif %}
+{%- if socket is defined %}
+Requires={{ socket }}
+After={{ socket }}
+{%- endif %}
 {%- if start_limit_interval_sec is defined %}
 StartLimitIntervalSec={{ start_limit_interval_sec }}
 {%- endif %}
@@ -675,6 +882,8 @@ the `[deploy.systemd]` section fills in the corresponding directive:
 * `after` and `wants`, both default to `network-online.target` for a system
   unit, and are left out of a [user unit](#user-units) unless set.
 * `requires`.
+* `socket` is defined when a [socket unit](#socket-units) is installed with the
+  service, which adds `Requires=` and `After=` on it.
 * `start_limit_interval_sec` and `start_limit_burst`.
 * `type`, defaults to `simple`.
 * `user` and `group`, which can also be set with `--service-user <user>` and

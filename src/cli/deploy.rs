@@ -661,6 +661,19 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
         .as_ref()
         .map(|systemd| systemd.name.as_deref().unwrap_or(&binary).to_owned());
 
+    // NB: A socket unit is only installed alongside the service it activates,
+    // and is named after it unless told otherwise, which is what lets systemd
+    // pair them up without a `Service=` directive.
+    let socket = systemd
+        .as_ref()
+        .and_then(|systemd| systemd.socket.as_ref())
+        .filter(|socket| socket.enabled.unwrap_or(true));
+
+    let socket_name = match (socket, &unit_name) {
+        (Some(socket), Some(name)) => Some(socket.name.as_deref().unwrap_or(name).to_owned()),
+        _ => None,
+    };
+
     let mut staged = HashMap::new();
 
     for (path, name) in &uploads {
@@ -681,6 +694,17 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
         if let Some(existing) = staged.get(&file_name) {
             bail!(
                 "The systemd unit and {} would both be staged as `{file_name}`",
+                existing.display()
+            );
+        }
+    }
+
+    if let Some(name) = &socket_name {
+        let file_name = format!("{name}.socket");
+
+        if let Some(existing) = staged.get(&file_name) {
+            bail!(
+                "The systemd socket unit and {} would both be staged as `{file_name}`",
                 existing.display()
             );
         }
@@ -713,50 +737,109 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
 
         let mut uploads = uploads.clone();
 
+        let mut socket_unit = None;
+
         let unit = match (&systemd, &unit_name) {
             (Some(systemd), Some(name)) => {
                 let file_name = format!("{name}.service");
+                let dir = temp.path().join(index.to_string());
+
+                std::fs::create_dir_all(&dir)
+                    .with_context(|| anyhow!("Creating {}", dir.display()))?;
+
+                // NB: Both units are rendered with the same set of built-in
+                // variables, but each with its own name.
+                let builtins = |name: &str| -> toml::Table {
+                    let mut variables = toml::Table::new();
+                    variables.insert(String::from("name"), toml::Value::String(name.to_owned()));
+                    variables.insert(String::from("binary"), toml::Value::String(binary.clone()));
+                    variables.insert(
+                        String::from("exec"),
+                        toml::Value::String(format!("{bin_dir}/{binary}")),
+                    );
+                    variables.insert(
+                        String::from("bin_dir"),
+                        toml::Value::String(bin_dir.clone()),
+                    );
+                    variables.insert(
+                        String::from("unit_dir"),
+                        toml::Value::String(unit_dir.clone()),
+                    );
+                    variables.insert(
+                        String::from("host"),
+                        toml::Value::String(target.host.clone()),
+                    );
+                    variables.insert(
+                        String::from("scope"),
+                        toml::Value::String(scope.as_str().to_owned()),
+                    );
+                    variables
+                };
+
+                // NB: A user unit runs as the user being deployed as, so a `~`
+                // means the same thing to it as it does to us. A system unit
+                // runs as whatever `User=` says, and systemd resolves a `~` in
+                // `WorkingDirectory=` against that user, so it is left alone.
+                let expand_variables = |variables: &mut toml::Table| -> Result<()> {
+                    if scope == SystemdScope::User {
+                        for (_, value) in variables.iter_mut() {
+                            if let Err(value) = expand_value(value, home) {
+                                return Err(missing_home(target, &value));
+                            }
+                        }
+                    }
+
+                    Ok(())
+                };
+
+                let socket_file_name = socket_name.as_ref().map(|name| format!("{name}.socket"));
+
+                if let (Some(socket), Some(socket_name), Some(socket_file_name)) =
+                    (socket, &socket_name, &socket_file_name)
+                {
+                    // NB: The socket is rendered with its own variables rather
+                    // than those of the service, since a `Description=` or
+                    // `WantedBy=` meant for one is wrong for the other.
+                    let mut variables = socket.variables.clone();
+                    expand_variables(&mut variables)?;
+                    variables.extend(builtins(socket_name));
+                    variables.insert(
+                        String::from("service"),
+                        toml::Value::String(file_name.clone()),
+                    );
+
+                    let template = socket
+                        .template
+                        .as_deref()
+                        .unwrap_or(systemd::DEFAULT_SOCKET_TEMPLATE);
+
+                    let contents = systemd::render(template, &variables).with_context(|| {
+                        anyhow!("Rendering unit `{socket_file_name}` for `{}`", target.ssh)
+                    })?;
+
+                    let path = dir.join(socket_file_name);
+
+                    std::fs::write(&path, &contents)
+                        .with_context(|| anyhow!("Writing {}", path.display()))?;
+
+                    uploads.push((path, socket_file_name.clone()));
+                    socket_unit = Some((socket_file_name.clone(), contents));
+                }
 
                 // NB: The unit is rendered with the variables which are scoped
                 // to it in the `[deploy.systemd]` section, since a unit
                 // directive is not something anything else in the
                 // configuration has any use for.
                 let mut variables = systemd.variables.clone();
+                expand_variables(&mut variables)?;
+                variables.extend(builtins(name));
 
-                // NB: A user unit runs as the user being deployed as, so a `~`
-                // means the same thing to it as it does to us. A system unit
-                // runs as whatever `User=` says, and systemd resolves a `~` in
-                // `WorkingDirectory=` against that user, so it is left alone.
-                if scope == SystemdScope::User {
-                    for (_, value) in variables.iter_mut() {
-                        if let Err(value) = expand_value(value, home) {
-                            return Err(missing_home(target, &value));
-                        }
-                    }
+                if let Some(socket_file_name) = &socket_file_name {
+                    variables.insert(
+                        String::from("socket"),
+                        toml::Value::String(socket_file_name.clone()),
+                    );
                 }
-
-                variables.insert(String::from("name"), toml::Value::String(name.clone()));
-                variables.insert(String::from("binary"), toml::Value::String(binary.clone()));
-                variables.insert(
-                    String::from("exec"),
-                    toml::Value::String(format!("{bin_dir}/{binary}")),
-                );
-                variables.insert(
-                    String::from("bin_dir"),
-                    toml::Value::String(bin_dir.clone()),
-                );
-                variables.insert(
-                    String::from("unit_dir"),
-                    toml::Value::String(unit_dir.clone()),
-                );
-                variables.insert(
-                    String::from("host"),
-                    toml::Value::String(target.host.clone()),
-                );
-                variables.insert(
-                    String::from("scope"),
-                    toml::Value::String(scope.as_str().to_owned()),
-                );
 
                 // NB: Which user a service runs as and what it is started with
                 // are things a deployment which has no configuration at all
@@ -798,11 +881,6 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
                     anyhow!("Rendering unit `{file_name}` for `{}`", target.ssh)
                 })?;
 
-                let dir = temp.path().join(index.to_string());
-
-                std::fs::create_dir_all(&dir)
-                    .with_context(|| anyhow!("Creating {}", dir.display()))?;
-
                 let path = dir.join(&file_name);
 
                 std::fs::write(&path, &contents)
@@ -843,6 +921,7 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
                 unit: unit
                     .as_ref()
                     .map(|(name, file_name, _)| (&**name, &**file_name)),
+                socket: socket_unit.as_ref().map(|(file_name, _)| &**file_name),
             },
         )?;
 
@@ -882,6 +961,11 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
             if let Some((_, file_name, _)) = &unit {
                 plan.push(format!("unit_dir: {unit_dir}"));
                 plan.push(format!("unit: {file_name}"));
+
+                if let Some((socket_file_name, _)) = &socket_unit {
+                    plan.push(format!("socket: {socket_file_name}"));
+                }
+
                 plan.push(format!("scope: {scope}"));
             }
 
@@ -923,9 +1007,20 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
                 ));
             }
 
+            if let Some((file_name, _)) = &socket_unit {
+                installed.push(format!(
+                    "{} -> {unit_dir}/{file_name} (0644)",
+                    from(file_name)
+                ));
+            }
+
             details(o, "installs", installed.iter().map(String::as_str))?;
 
             if let Some((_, file_name, contents)) = &unit {
+                details(o, &format!("{unit_dir}/{file_name}"), contents.lines())?;
+            }
+
+            if let Some((file_name, contents)) = &socket_unit {
                 details(o, &format!("{unit_dir}/{file_name}"), contents.lines())?;
             }
 
@@ -1061,6 +1156,8 @@ struct ScriptOpts<'a> {
     unit_dir: &'a str,
     sources: Sources<'a>,
     unit: Option<(&'a str, &'a str)>,
+    /// The file name of the socket unit which activates the service, if any.
+    socket: Option<&'a str>,
 }
 
 /// Build the script which installs the deployed files.
@@ -1080,6 +1177,7 @@ fn script(
         unit_dir,
         sources,
         unit,
+        socket,
     } = s;
 
     let escape = move |value: &str| shell.escape(value).into_owned();
@@ -1111,16 +1209,49 @@ fn script(
         writeln!(script, "tar -x -f - -C {}", shell.escape(dir))?;
     }
 
-    // Stop the service before its binary is replaced, the unit might not exist
-    // yet in which case this is a no-op.
-    if let Some((name, _)) = unit
-        && !opts.no_restart
-    {
-        writeln!(
-            script,
-            "{systemctl} stop {} 2>/dev/null || true",
-            shell.escape(name)
-        )?;
+    let socket_dest = socket.map(|file_name| escape(&format!("{unit_dir}/{file_name}")));
+
+    match (unit, socket.zip(socket_dest.as_deref())) {
+        // NB: A socket unit is compared up front, since whether it changed
+        // decides whether the socket has to be stopped. A socket which is
+        // already active and unchanged is left alone, so that whatever is
+        // listening on it keeps working while the binary is replaced, and the
+        // service is restarted once it is in place.
+        (Some((name, _)), Some((file_name, dest))) => {
+            writeln!(script, "socket_changed=no")?;
+            writeln!(
+                script,
+                "if ! {unit_sudo}cmp -s {} {dest}; then",
+                source(file_name)
+            )?;
+            writeln!(script, "  socket_changed=yes")?;
+            writeln!(script, "fi")?;
+
+            if !opts.no_restart {
+                writeln!(script, "if [ \"$socket_changed\" = yes ]; then")?;
+                writeln!(
+                    script,
+                    "  {systemctl} stop {} 2>/dev/null || true",
+                    shell.escape(name)
+                )?;
+                writeln!(
+                    script,
+                    "  {systemctl} stop {} 2>/dev/null || true",
+                    shell.escape(file_name)
+                )?;
+                writeln!(script, "fi")?;
+            }
+        }
+        // Stop the service before its binary is replaced, the unit might not
+        // exist yet in which case this is a no-op.
+        (Some((name, _)), None) if !opts.no_restart => {
+            writeln!(
+                script,
+                "{systemctl} stop {} 2>/dev/null || true",
+                shell.escape(name)
+            )?;
+        }
+        _ => {}
     }
 
     writeln!(script, "{sudo}mkdir -p {}", shell.escape(bin_dir))?;
@@ -1147,36 +1278,89 @@ fn script(
 
         writeln!(script, "{unit_sudo}mkdir -p {}", shell.escape(unit_dir))?;
 
-        // NB: Installing the unit unconditionally would touch it on every
-        // deployment, so only do it when it actually changed. This also keeps
-        // us from reloading systemd for no reason.
-        writeln!(
-            script,
-            "if ! {unit_sudo}cmp -s {} {dest}; then",
-            source(file_name)
-        )?;
-
-        writeln!(
-            script,
-            "  {unit_sudo}install -m 0644 {} {dest}",
-            source(file_name)
-        )?;
-
-        writeln!(script, "  {systemctl} daemon-reload")?;
-        writeln!(script, "fi")?;
-
         let enable = config
             .systemd
             .as_ref()
             .and_then(|s| s.enable)
             .unwrap_or(true);
 
-        if enable {
-            writeln!(script, "{systemctl} enable {}", shell.escape(name))?;
-        }
+        if let (Some(socket), Some(socket_dest)) = (socket, &socket_dest) {
+            // NB: With two units which might change, systemd is reloaded once
+            // after both have been installed.
+            writeln!(script, "reload=no")?;
 
-        if !opts.no_restart {
-            writeln!(script, "{systemctl} start {}", shell.escape(name))?;
+            writeln!(
+                script,
+                "if ! {unit_sudo}cmp -s {} {dest}; then",
+                source(file_name)
+            )?;
+            writeln!(
+                script,
+                "  {unit_sudo}install -m 0644 {} {dest}",
+                source(file_name)
+            )?;
+            writeln!(script, "  reload=yes")?;
+            writeln!(script, "fi")?;
+
+            writeln!(script, "if [ \"$socket_changed\" = yes ]; then")?;
+            writeln!(
+                script,
+                "  {unit_sudo}install -m 0644 {} {socket_dest}",
+                source(socket)
+            )?;
+            writeln!(script, "  reload=yes")?;
+            writeln!(script, "fi")?;
+
+            writeln!(script, "if [ \"$reload\" = yes ]; then")?;
+            writeln!(script, "  {systemctl} daemon-reload")?;
+            writeln!(script, "fi")?;
+
+            // NB: It is the socket which is enabled rather than the service,
+            // since the service is started by connections to the socket.
+            match (enable, opts.no_restart) {
+                (true, false) => {
+                    writeln!(script, "{systemctl} enable --now {}", shell.escape(socket))?;
+                }
+                (true, true) => {
+                    writeln!(script, "{systemctl} enable {}", shell.escape(socket))?;
+                }
+                (false, false) => {
+                    writeln!(script, "{systemctl} start {}", shell.escape(socket))?;
+                }
+                (false, true) => {}
+            }
+
+            // NB: The service is only stopped up front if the socket changed,
+            // so it is restarted to pick up the new binary.
+            if !opts.no_restart {
+                writeln!(script, "{systemctl} restart {}", shell.escape(name))?;
+            }
+        } else {
+            // NB: Installing the unit unconditionally would touch it on every
+            // deployment, so only do it when it actually changed. This also
+            // keeps us from reloading systemd for no reason.
+            writeln!(
+                script,
+                "if ! {unit_sudo}cmp -s {} {dest}; then",
+                source(file_name)
+            )?;
+
+            writeln!(
+                script,
+                "  {unit_sudo}install -m 0644 {} {dest}",
+                source(file_name)
+            )?;
+
+            writeln!(script, "  {systemctl} daemon-reload")?;
+            writeln!(script, "fi")?;
+
+            if enable {
+                writeln!(script, "{systemctl} enable {}", shell.escape(name))?;
+            }
+
+            if !opts.no_restart {
+                writeln!(script, "{systemctl} start {}", shell.escape(name))?;
+            }
         }
     }
 
@@ -1186,6 +1370,7 @@ fn script(
         let mut names = vec![binary];
         names.extend(installs.iter().map(|(name, _, _)| name.as_str()));
         names.extend(unit.map(|(_, file_name)| file_name));
+        names.extend(socket);
 
         for name in names {
             writeln!(script, "rm -f {}", escape(&format!("{dir}/{name}")))?;
@@ -1749,6 +1934,7 @@ mod tests {
                 unit_dir: "/home/me/.config/systemd/user",
                 sources: Sources::Local(&uploads),
                 unit: Some(("kanban", "kanban.service")),
+                socket: None,
             },
         )
         .unwrap();
@@ -1788,6 +1974,7 @@ systemctl --user start kanban
                 unit_dir: "/home/integration/.config/systemd/user",
                 sources: Sources::Staged(".kick-deploy"),
                 unit: Some(("track", "track.service")),
+                socket: None,
             },
         )
         .unwrap();
@@ -1832,6 +2019,7 @@ rm -f .kick-deploy/track.service
                 unit_dir: "/etc/systemd/system",
                 sources: Sources::Staged(".kick-deploy"),
                 unit: Some(("track", "track.service")),
+                socket: None,
             },
         )
         .unwrap();
@@ -1855,6 +2043,173 @@ rm -f .kick-deploy/track.service
 ";
 
         assert_eq!(script, expected);
+    }
+
+    #[test]
+    fn local_script_with_socket() {
+        let config = user_unit();
+        let opts = Opts::default();
+
+        let uploads = vec![
+            (
+                PathBuf::from("/src/kanban/target/release/kanban"),
+                String::from("kanban"),
+            ),
+            (
+                PathBuf::from("/tmp/unit/kanban.service"),
+                String::from("kanban.service"),
+            ),
+            (
+                PathBuf::from("/tmp/unit/kanban.socket"),
+                String::from("kanban.socket"),
+            ),
+        ];
+
+        let script = script(
+            &config,
+            &opts,
+            &[],
+            ScriptOpts {
+                sudo: "",
+                scope: SystemdScope::User,
+                binary: "kanban",
+                bin_dir: "/home/me/.cargo/bin",
+                unit_dir: "/home/me/.config/systemd/user",
+                sources: Sources::Local(&uploads),
+                unit: Some(("kanban", "kanban.service")),
+                socket: Some("kanban.socket"),
+            },
+        )
+        .unwrap();
+
+        let expected = "\
+set -eu
+socket_changed=no
+if ! cmp -s /tmp/unit/kanban.socket /home/me/.config/systemd/user/kanban.socket; then
+  socket_changed=yes
+fi
+if [ \"$socket_changed\" = yes ]; then
+  systemctl --user stop kanban 2>/dev/null || true
+  systemctl --user stop kanban.socket 2>/dev/null || true
+fi
+mkdir -p /home/me/.cargo/bin
+install -m 0755 /src/kanban/target/release/kanban /home/me/.cargo/bin/kanban
+mkdir -p /home/me/.config/systemd/user
+reload=no
+if ! cmp -s /tmp/unit/kanban.service /home/me/.config/systemd/user/kanban.service; then
+  install -m 0644 /tmp/unit/kanban.service /home/me/.config/systemd/user/kanban.service
+  reload=yes
+fi
+if [ \"$socket_changed\" = yes ]; then
+  install -m 0644 /tmp/unit/kanban.socket /home/me/.config/systemd/user/kanban.socket
+  reload=yes
+fi
+if [ \"$reload\" = yes ]; then
+  systemctl --user daemon-reload
+fi
+systemctl --user enable --now kanban.socket
+systemctl --user restart kanban
+";
+
+        assert_eq!(script, expected);
+    }
+
+    #[test]
+    fn ssh_script_with_system_socket() {
+        let config = Deploy::default();
+        let opts = Opts::default();
+
+        let script = script(
+            &config,
+            &opts,
+            &[],
+            ScriptOpts {
+                sudo: "sudo -n ",
+                scope: SystemdScope::System,
+                binary: "kanban",
+                bin_dir: "/usr/local/bin",
+                unit_dir: "/etc/systemd/system",
+                sources: Sources::Staged(".kick-deploy"),
+                unit: Some(("kanban", "kanban.service")),
+                socket: Some("kanban.socket"),
+            },
+        )
+        .unwrap();
+
+        let expected = "\
+set -eu
+mkdir -p .kick-deploy
+tar -x -f - -C .kick-deploy
+socket_changed=no
+if ! sudo -n cmp -s .kick-deploy/kanban.socket /etc/systemd/system/kanban.socket; then
+  socket_changed=yes
+fi
+if [ \"$socket_changed\" = yes ]; then
+  sudo -n systemctl stop kanban 2>/dev/null || true
+  sudo -n systemctl stop kanban.socket 2>/dev/null || true
+fi
+sudo -n mkdir -p /usr/local/bin
+sudo -n install -m 0755 .kick-deploy/kanban /usr/local/bin/kanban
+sudo -n mkdir -p /etc/systemd/system
+reload=no
+if ! sudo -n cmp -s .kick-deploy/kanban.service /etc/systemd/system/kanban.service; then
+  sudo -n install -m 0644 .kick-deploy/kanban.service /etc/systemd/system/kanban.service
+  reload=yes
+fi
+if [ \"$socket_changed\" = yes ]; then
+  sudo -n install -m 0644 .kick-deploy/kanban.socket /etc/systemd/system/kanban.socket
+  reload=yes
+fi
+if [ \"$reload\" = yes ]; then
+  sudo -n systemctl daemon-reload
+fi
+sudo -n systemctl enable --now kanban.socket
+sudo -n systemctl restart kanban
+rm -f .kick-deploy/kanban
+rm -f .kick-deploy/kanban.service
+rm -f .kick-deploy/kanban.socket
+";
+
+        assert_eq!(script, expected);
+    }
+
+    /// Without restarting, the units are still installed and the socket is
+    /// still enabled, but nothing is stopped or started.
+    #[test]
+    fn socket_script_without_restart() {
+        let config = user_unit();
+
+        let opts = Opts {
+            no_restart: true,
+            ..Opts::default()
+        };
+
+        let script = script(
+            &config,
+            &opts,
+            &[],
+            ScriptOpts {
+                sudo: "",
+                scope: SystemdScope::User,
+                binary: "kanban",
+                bin_dir: "/bin",
+                unit_dir: "/units",
+                sources: Sources::Staged("s"),
+                unit: Some(("kanban", "kanban.service")),
+                socket: Some("kanban.socket"),
+            },
+        )
+        .unwrap();
+
+        assert!(!script.contains(" stop "), "{script}");
+        assert!(!script.contains(" start "), "{script}");
+        assert!(!script.contains(" restart "), "{script}");
+        assert!(!script.contains("--now"), "{script}");
+        assert!(
+            script.contains("systemctl --user enable kanban.socket\n"),
+            "{script}"
+        );
+        assert!(!script.contains("enable kanban\n"), "{script}");
     }
 
     #[test]

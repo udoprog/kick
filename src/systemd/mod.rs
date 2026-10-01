@@ -1,4 +1,4 @@
-//! The systemd unit installed as part of a deployment.
+//! The systemd units installed as part of a deployment.
 //!
 //! Units are rendered from a [minijinja] template, either a built-in one or one
 //! provided by the project being deployed.
@@ -10,6 +10,10 @@ use serde::Serialize;
 
 /// The template used when a deployment asks for a unit without providing one.
 pub(crate) const DEFAULT_TEMPLATE: &str = include_str!("default.service");
+
+/// The template used when a deployment asks for a socket unit without
+/// providing one.
+pub(crate) const DEFAULT_SOCKET_TEMPLATE: &str = include_str!("default.socket");
 
 /// The name a template is registered under, which is what shows up in errors.
 const NAME: &str = "unit";
@@ -58,7 +62,7 @@ fn env() -> minijinja::Environment<'static> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{DEFAULT_TEMPLATE, render, validate};
+    use super::{DEFAULT_SOCKET_TEMPLATE, DEFAULT_TEMPLATE, render, validate};
 
     /// The built-in template has to render with nothing but the variables which
     /// are always defined, since everything else is optional.
@@ -147,6 +151,90 @@ mod tests {
         assert!(unit.contains("After=network-online.target\n"), "{unit}");
         assert!(unit.contains("Wants=network-online.target\n"), "{unit}");
         assert!(unit.contains("WantedBy=multi-user.target\n"), "{unit}");
+    }
+
+    /// A service activated by a socket requires it and is ordered after it.
+    #[test]
+    fn default_template_with_socket() {
+        let ctx = BTreeMap::from([
+            ("name", "kanban"),
+            ("exec", "/home/me/.cargo/bin/kanban"),
+            ("scope", "user"),
+            ("socket", "kanban.socket"),
+        ]);
+
+        let unit = render(DEFAULT_TEMPLATE, &ctx).unwrap();
+
+        assert!(unit.contains("Requires=kanban.socket\n"), "{unit}");
+        assert!(unit.contains("After=kanban.socket\n"), "{unit}");
+    }
+
+    /// The built-in socket template only needs what to listen on.
+    #[test]
+    fn default_socket_template() {
+        validate(DEFAULT_SOCKET_TEMPLATE).unwrap();
+
+        let ctx = BTreeMap::from([
+            ("name", minijinja::Value::from("kanban")),
+            ("service", minijinja::Value::from("kanban.service")),
+            (
+                "listen_stream",
+                minijinja::Value::from("%t/kanban/kanban.sock"),
+            ),
+        ]);
+
+        let unit = render(DEFAULT_SOCKET_TEMPLATE, &ctx).unwrap();
+
+        let expected = "\
+[Unit]
+Description=kanban socket
+
+[Socket]
+ListenStream=%t/kanban/kanban.sock
+
+[Install]
+WantedBy=sockets.target
+";
+
+        assert_eq!(unit, expected);
+
+        let ctx = BTreeMap::from([
+            ("name", minijinja::Value::from("kanban-api")),
+            ("service", minijinja::Value::from("kanban.service")),
+            (
+                "listen_stream",
+                minijinja::Value::from(vec!["/run/kanban/kanban.sock", "127.0.0.1:3000"]),
+            ),
+            ("socket_mode", minijinja::Value::from("0660")),
+            ("socket_group", minijinja::Value::from("kanban")),
+            ("directory_mode", minijinja::Value::from("0750")),
+            ("remove_on_stop", minijinja::Value::from(true)),
+        ]);
+
+        let unit = render(DEFAULT_SOCKET_TEMPLATE, &ctx).unwrap();
+
+        let expected = "\
+[Unit]
+Description=kanban-api socket
+
+[Socket]
+ListenStream=/run/kanban/kanban.sock
+ListenStream=127.0.0.1:3000
+SocketGroup=kanban
+SocketMode=0660
+DirectoryMode=0750
+RemoveOnStop=yes
+Service=kanban.service
+
+[Install]
+WantedBy=sockets.target
+";
+
+        assert_eq!(unit, expected);
+
+        // Without anything to listen on the socket is broken.
+        let ctx = BTreeMap::from([("name", "kanban"), ("service", "kanban.service")]);
+        assert!(render(DEFAULT_SOCKET_TEMPLATE, &ctx).is_err());
     }
 
     /// Referring to something undefined is an error rather than an empty

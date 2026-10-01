@@ -9,6 +9,10 @@ Wants={{ wants | default("network-online.target") }}
 {%- if requires is defined %}
 Requires={{ requires }}
 {%- endif %}
+{%- if socket is defined %}
+Requires={{ socket }}
+After={{ socket }}
+{%- endif %}
 {%- if start_limit_interval_sec is defined %}
 StartLimitIntervalSec={{ start_limit_interval_sec }}
 {%- endif %}
