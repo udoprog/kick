@@ -88,6 +88,24 @@ pub(crate) fn detect<'a>(
     })
 }
 
+/// Detect if `current` is inside of a git worktree of the repo whose main
+/// checkout is the root itself, nested strictly below it.
+///
+/// This is the case for a standalone repo, whose `Kick.toml` sits at its
+/// checkout root and which has no registered repos. Returns the path to the
+/// worktree, or `None` for anything else, such as a nested clone or a broken
+/// worktree.
+pub(crate) fn detect_root(root: &Path, current: &RelativePath) -> Option<RelativePathBuf> {
+    let checkout = crate::unregistered_git_checkout(root, current)?;
+
+    let CommonDir::Found(common) = common_dir(&checkout.to_path(root)) else {
+        return None;
+    };
+
+    let root_git = root.join(".git").canonicalize().ok()?;
+    (common == root_git).then(|| checkout.to_owned())
+}
+
 /// Resolve the canonical git common directory of the checkout at `dir`, which
 /// for a worktree is the `.git` directory of its main checkout.
 fn common_dir(dir: &Path) -> CommonDir {
@@ -175,16 +193,16 @@ pub(crate) fn broken_worktree_message(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::fs;
     use std::path::Path;
     use std::process::Command;
 
     use relative_path::RelativePath;
 
-    use super::{Nested, broken_worktree_message, detect};
+    use super::{Nested, broken_worktree_message, detect, detect_root};
 
-    fn git(dir: &Path, args: &[&str]) {
+    pub(crate) fn git(dir: &Path, args: &[&str]) {
         let status = Command::new("git")
             .args(["-c", "user.name=test", "-c", "user.email=test@example.com"])
             .args([
@@ -205,7 +223,7 @@ mod tests {
         );
     }
 
-    fn init(dir: &Path) {
+    pub(crate) fn init(dir: &Path) {
         fs::create_dir_all(dir).unwrap();
         git(dir, &["init", "-q"]);
         fs::write(dir.join("README"), "hello").unwrap();
@@ -301,6 +319,34 @@ mod tests {
         assert_eq!(check(""), None);
         // Sibling worktrees are left to the unregistered checkout check.
         assert_eq!(check("repos/track-sibling"), None);
+    }
+
+    #[test]
+    fn detects_worktrees_of_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        init(root);
+        fs::create_dir_all(root.join("src")).unwrap();
+        git(root, &["worktree", "add", "-q", ".claude/worktrees/wt"]);
+        fs::create_dir_all(root.join(".claude/worktrees/wt/src")).unwrap();
+        init(&root.join("vendor/clone"));
+        git(root, &["worktree", "add", "-q", ".claude/worktrees/stale"]);
+        fs::write(
+            root.join(".claude/worktrees/stale/.git"),
+            "gitdir: /nonexistent-kick-gitdir\n",
+        )
+        .unwrap();
+
+        let check = |p: &str| detect_root(root, RelativePath::new(p)).map(|p| p.to_string());
+
+        let wt = Some(String::from(".claude/worktrees/wt"));
+        assert_eq!(check(".claude/worktrees/wt"), wt);
+        assert_eq!(check(".claude/worktrees/wt/src"), wt);
+        assert_eq!(check(".claude/worktrees/stale"), None);
+        assert_eq!(check("vendor/clone"), None);
+        assert_eq!(check("src"), None);
+        assert_eq!(check(""), None);
     }
 
     #[test]

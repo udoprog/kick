@@ -1163,10 +1163,17 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     }
 
     if let Some((repo, checkout)) = &worktree
-        && repos.iter().any(|r| r.path() == repo && !r.is_disabled())
+        && repos
+            .iter()
+            .any(|r| r.path().normalize() == repo.normalize() && !r.is_disabled())
     {
         let dir = checkout.to_path(&root);
         let dir = dir.canonicalize().unwrap_or(dir);
+        let repo = if repo.as_str().is_empty() {
+            RelativePath::new(".")
+        } else {
+            repo.as_relative_path()
+        };
         tracing::info!("using worktree {} for repo {repo}", dir.display());
     }
 
@@ -1364,18 +1371,35 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
 /// Returns the `(repo, worktree)` pair to redirect if it is a worktree of that
 /// same repo, and errors if it is some other checkout and no repos were
 /// selected explicitly. `--all` disables the detection.
+///
+/// Without registered repos, the repo is the git checkout at the root itself
+/// (a standalone repo with its `Kick.toml` at the checkout root). Then only a
+/// worktree of it is redirected, with the root as the repo (an empty path),
+/// and any other nested checkout is left alone as before.
 fn nested_worktree(
     paths: Paths<'_>,
     repo_opts: Option<&RepoOptions>,
     repos: &[Repo],
     from_group: bool,
 ) -> Result<Option<(RelativePathBuf, RelativePathBuf)>> {
-    let (true, Some(opts), Some(current)) = (from_group, repo_opts, paths.current) else {
+    let (Some(opts), Some(current)) = (repo_opts, paths.current) else {
         return Ok(None);
     };
 
     if opts.all {
         return Ok(None);
+    }
+
+    if !from_group {
+        if !repos
+            .iter()
+            .any(|r| r.path().normalize().as_str().is_empty())
+        {
+            return Ok(None);
+        }
+
+        let checkout = worktree::detect_root(paths.root, current);
+        return Ok(checkout.map(|checkout| (RelativePathBuf::new(), checkout)));
     }
 
     let explicit = !opts.repos.is_empty() || !opts.set.iter().all(|s| s.is_empty());
@@ -1827,9 +1851,184 @@ mod tests {
     use relative_path::RelativePath;
 
     use super::{
-        unmatched_path_filters_message, unregistered_checkout_message, unregistered_git_checkout,
+        RepoOptions, nested_worktree, unmatched_path_filters_message,
+        unregistered_checkout_message, unregistered_git_checkout,
     };
+    use crate::config;
+    use crate::ctxt::{Paths, Redirect};
     use crate::glob::Fragment;
+    use crate::model::{Repo, RepoSource};
+    use crate::templates::Templating;
+    use crate::worktree::tests::{git, init};
+
+    /// Load the configuration the way `entry` does when running from
+    /// `current`, returning the worktree redirect, if any, and the deploy
+    /// user of each repo.
+    fn load_from(root: &Path, current: &str) -> (Option<String>, Vec<(String, Option<String>)>) {
+        let templating = Templating::new().unwrap();
+        let defaults = config::defaults();
+
+        // Paths relative to `current` are resolved from the working
+        // directory, so only use it to detect the worktree and resolve
+        // everything else from the root.
+        let paths = Paths {
+            root,
+            current: None,
+            config: None,
+            cache: None,
+            redirect: None,
+        };
+
+        let config = config::load(paths, &templating, [], &defaults).unwrap();
+        let url = url::Url::parse("https://example.com/repo").unwrap();
+
+        let mut repos = config
+            .repos
+            .keys()
+            .map(|path| {
+                Repo::new(
+                    [RepoSource::Config(path.clone())],
+                    path.clone(),
+                    url.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let from_group = !repos.is_empty();
+
+        if !from_group {
+            repos.push(Repo::new([RepoSource::Git], ".".into(), url));
+        }
+
+        let opts = RepoOptions::default();
+        let detect = Paths {
+            current: Some(RelativePath::new(current)),
+            ..paths
+        };
+
+        let worktree = nested_worktree(detect, Some(&opts), &repos, from_group).unwrap();
+
+        let (redirect, config) = match &worktree {
+            Some((repo, checkout)) => {
+                let paths = Paths {
+                    redirect: Some(Redirect {
+                        repo,
+                        worktree: checkout,
+                    }),
+                    ..paths
+                };
+
+                let config = config::load(paths, &templating, [], &defaults).unwrap();
+                (Some(format!("{repo} -> {checkout}")), config)
+            }
+            None => (None, config),
+        };
+
+        let users = repos
+            .iter()
+            .map(|repo| (repo.path().to_string(), config.deploy(repo).user))
+            .collect();
+
+        (redirect, users)
+    }
+
+    fn users(users: &[(&str, &str)]) -> Vec<(String, Option<String>)> {
+        users
+            .iter()
+            .map(|(repo, user)| ((*repo).to_owned(), Some((*user).to_owned())))
+            .collect()
+    }
+
+    #[test]
+    fn standalone_repo_worktree_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        init(root);
+        fs::write(root.join("Kick.toml"), "[deploy]\nuser = \"main\"\n").unwrap();
+        git(root, &["add", "Kick.toml"]);
+        git(root, &["commit", "-q", "-m", "kick"]);
+        git(root, &["worktree", "add", "-q", ".claude/worktrees/wt"]);
+        fs::create_dir_all(root.join(".claude/worktrees/wt/src")).unwrap();
+        fs::write(
+            root.join(".claude/worktrees/wt/Kick.toml"),
+            "[deploy]\nuser = \"worktree\"\n",
+        )
+        .unwrap();
+        // A nested clone which is not a worktree.
+        init(&root.join("vendor/clone"));
+
+        let worktree = Some(String::from(" -> .claude/worktrees/wt"));
+
+        assert_eq!(
+            load_from(root, ".claude/worktrees/wt"),
+            (worktree.clone(), users(&[(".", "worktree")]))
+        );
+        assert_eq!(
+            load_from(root, ".claude/worktrees/wt/src"),
+            (worktree, users(&[(".", "worktree")]))
+        );
+        assert_eq!(load_from(root, ""), (None, users(&[(".", "main")])));
+        assert_eq!(
+            load_from(root, "vendor/clone"),
+            (None, users(&[(".", "main")]))
+        );
+
+        // Running from the worktree as root, as with `--root .`.
+        let worktree = root.join(".claude/worktrees/wt");
+        assert_eq!(
+            load_from(&worktree, ""),
+            (None, users(&[(".", "worktree")]))
+        );
+    }
+
+    #[test]
+    fn registered_repo_worktree_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let track = root.join("repos/track");
+
+        fs::write(
+            root.join("Kick.toml"),
+            "[repo.\"repos/track\"]\nurl = \"https://example.com/track\"\n\
+             [repo.\"repos/other\"]\nurl = \"https://example.com/other\"\n",
+        )
+        .unwrap();
+
+        init(&track);
+        init(&root.join("repos/other"));
+        fs::write(track.join("Kick.toml"), "[deploy]\nuser = \"main\"\n").unwrap();
+        fs::write(
+            root.join("repos/other/Kick.toml"),
+            "[deploy]\nuser = \"other\"\n",
+        )
+        .unwrap();
+        git(&track, &["add", "Kick.toml"]);
+        git(&track, &["commit", "-q", "-m", "kick"]);
+        git(&track, &["worktree", "add", "-q", ".claude/worktrees/wt"]);
+        fs::write(
+            track.join(".claude/worktrees/wt/Kick.toml"),
+            "[deploy]\nuser = \"worktree\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            load_from(root, "repos/track/.claude/worktrees/wt"),
+            (
+                Some(String::from(
+                    "repos/track -> repos/track/.claude/worktrees/wt"
+                )),
+                users(&[("repos/other", "other"), ("repos/track", "worktree")])
+            )
+        );
+        assert_eq!(
+            load_from(root, "repos/track"),
+            (
+                None,
+                users(&[("repos/other", "other"), ("repos/track", "main")])
+            )
+        );
+    }
 
     fn path_filters_message(filters: &[&str], repos: &[&str]) -> Option<String> {
         let raw = filters.iter().map(|f| f.to_string()).collect::<Vec<_>>();

@@ -32,6 +32,9 @@ pub(crate) struct Paths<'a> {
 
 /// A registered repo whose working directory is a git worktree of it located
 /// elsewhere. Both paths are relative to the root.
+///
+/// The repo may be the root itself (an empty path or `.`), as for a
+/// standalone repo whose `Kick.toml` is at its checkout root.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Redirect<'a> {
     pub(crate) repo: &'a RelativePath,
@@ -44,11 +47,16 @@ impl Redirect<'_> {
     /// Returns `None` if the path is not under the repo, or already under the
     /// worktree.
     pub(crate) fn rewrite(self, path: &RelativePath) -> Option<RelativePathBuf> {
-        if path.starts_with(self.worktree) {
+        // Normalize so that paths like `./Kick.toml` are matched against a
+        // repo at the root, while paths escaping the root never are.
+        let path = path.normalize();
+        let repo = self.repo.normalize();
+
+        if path.starts_with("..") || path.starts_with(self.worktree.normalize()) {
             return None;
         }
 
-        let rest = path.strip_prefix(self.repo).ok()?;
+        let rest = path.strip_prefix(&repo).ok()?;
 
         if rest.as_str().is_empty() {
             return Some(self.worktree.to_owned());
@@ -317,6 +325,50 @@ mod tests {
         assert_eq!(rewrite("repos/kick"), None);
         assert_eq!(rewrite("repos/tracker"), None);
         assert_eq!(rewrite(""), None);
+    }
+
+    #[test]
+    fn redirect_rewrite_root_repo() {
+        for repo in ["", "."] {
+            let redirect = Redirect {
+                repo: RelativePath::new(repo),
+                worktree: RelativePath::new(".claude/worktrees/wt"),
+            };
+
+            let rewrite = |p: &str| {
+                redirect
+                    .rewrite(RelativePath::new(p))
+                    .map(|p| p.to_string())
+            };
+
+            assert_eq!(rewrite("").as_deref(), Some(".claude/worktrees/wt"));
+            assert_eq!(rewrite(".").as_deref(), Some(".claude/worktrees/wt"));
+            assert_eq!(
+                rewrite("Kick.toml").as_deref(),
+                Some(".claude/worktrees/wt/Kick.toml")
+            );
+            assert_eq!(
+                rewrite("./Cargo.toml").as_deref(),
+                Some(".claude/worktrees/wt/Cargo.toml")
+            );
+            assert_eq!(rewrite(".claude/worktrees/wt/Kick.toml"), None);
+            assert_eq!(rewrite("./.claude/worktrees/wt"), None);
+            assert_eq!(rewrite("../elsewhere"), None);
+        }
+
+        let p = Paths {
+            root: Path::new("../../.."),
+            current: Some(RelativePath::new(".claude/worktrees/wt/src")),
+            config: None,
+            cache: None,
+            redirect: Some(Redirect {
+                repo: RelativePath::new(""),
+                worktree: RelativePath::new(".claude/worktrees/wt"),
+            }),
+        };
+
+        assert_eq!(p.to_path("Kick.toml"), PathBuf::from("../Kick.toml"));
+        assert_eq!(p.to_path("."), PathBuf::from(".."));
     }
 
     #[test]
