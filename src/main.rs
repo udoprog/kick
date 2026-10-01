@@ -349,22 +349,27 @@
 //! the build needs can be passed along:
 //!
 //! ```sh
-//! kick deploy --host moore docular --pre-build "trunk build --release" --build-features bundle
+//! kick deploy --host moore docular --pre-build "trunk build --release" --features bundle
 //! ```
 //!
-//! The same things go in a `[deploy]` section once they stop fitting on a command
-//! line, or when they belong to the project rather than to one deployment:
+//! The same things go in the configuration once they stop fitting on a command
+//! line, or when they belong to the project rather than to one deployment. How the
+//! project is built goes in `[build]`, which [`kick install`][install-config]
+//! shares to build and install the binary into `~/.cargo/bin`, and where it goes in
+//! `[deploy]`:
 //!
 //! ```toml
-//! [variables]
-//! args = ["--bind", "0.0.0.0:3004"]
-//! user = "track"
-//! group = "track"
+//! [build]
+//! pre_build = ["trunk build --release"]
+//! features = ["bundle"]
 //!
 //! [deploy]
 //! host = "integration@moore"
-//! pre_build = ["trunk build --release"]
-//! build_features = ["bundle"]
+//!
+//! [deploy.systemd]
+//! args = ["--bind", "0.0.0.0:3004"]
+//! user = "track"
+//! group = "track"
 //! ```
 //!
 //! The host can also be left out of the configuration, typically in a
@@ -381,9 +386,8 @@
 //! unit is compared against the installed one first, so systemd is only reloaded
 //! when it actually changed.
 //!
-//! The unit comes from a built-in template which is filled in from your
-//! [variables][variables-config], so there is nothing to write to get a working
-//! service. When you need something it doesn't cover, point `systemd` at a unit file
+//! The unit comes from a built-in template which is filled in from the variables
+//! in `[deploy.systemd]`, so there is nothing to write to get a working service. When you need something it doesn't cover, point `systemd` at a unit file
 //! of your own instead — they are [minijinja] templates, so
 //! `ExecStart={{ exec }} {{ args | join(" ") }}` picks up the remote path of the
 //! binary along with anything else you have defined.
@@ -462,7 +466,7 @@
 //! [config]: https://github.com/udoprog/kick/blob/main/config.md
 //! [deploy-config]: https://github.com/udoprog/kick/blob/main/config/deploy.md
 //! [deploy-profiles]: https://github.com/udoprog/kick/blob/main/config/deploy.md#profiles
-//! [variables-config]: https://github.com/udoprog/kick/blob/main/config/variables.md
+//! [install-config]: https://github.com/udoprog/kick/blob/main/config/install.md
 //! [wobbly-versions]: https://github.com/udoprog/kick/blob/main/WOBBLY_VERSIONS.md
 
 #![allow(clippy::too_many_arguments)]

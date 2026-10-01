@@ -5,13 +5,19 @@ lightweight way to deploy a project to a server over ssh, or to the machine
 `kick` is running on through a [local deployment](#local-deployments). A project
 which is deployed in more than one way defines [profiles](#profiles).
 
+`kick deploy` shares how the project is built with
+[`kick install`](./install.md) through the [`[build]` section](./build.md), and
+an install is the simple case of a local deployment, so the two take the same
+options. Everything here applies to `[install]` too, unless it says otherwise.
+
 Deploying performs the following steps:
 
 * Every remote host is [checked for access](#access-check) before any work is
   done.
-* The project is [built](#building) locally, once regardless of how many hosts
+* The project is [built](./build.md) locally, once regardless of how many hosts
   are being deployed to.
-* The binary to deploy is located in `target/<profile>/<binary>`.
+* The binary to deploy is located in `<target>/<profile>/<binary>`, where
+  `<target>` is the target directory cargo reports.
 * Then, for each host in turn, a single `ssh` invocation:
   * Receives the binary, any [extra files](#deployfiles) and the rendered
     [systemd unit](#systemd), along with its [socket unit](#socket-units) if it
@@ -71,21 +77,25 @@ kick deploy --host moore --user integration docular --service-user docular
 Anything else the build needs can be passed along:
 
 ```sh
-kick deploy --host moore docular --pre-build "trunk build --release" --build-features bundle
+kick deploy --host moore docular --pre-build "trunk build --release" --features bundle
 ```
 
 Which builds with `trunk build --release` followed by
 `cargo build --release --features bundle`.
 
-Put the same things in a `[deploy]` section once they stop fitting on a command
-line, or when they are a property of the project rather than of one deployment:
+Put the same things in the configuration once they stop fitting on a command
+line, or when they are a property of the project rather than of one deployment.
+How the project is built goes in the [`[build]` section](./build.md), which
+`kick install` uses too, and where it is deployed to in `[deploy]`:
 
 ```toml
+[build]
+pre_build = ["trunk build --release"]
+features = ["bundle"]
+
 [deploy]
 host = "moore"
 user = "integration"
-pre_build = ["trunk build --release"]
-build_features = ["bundle"]
 ```
 
 Use `kick deploy --dry-run` to print the unit which would be installed and every
@@ -124,8 +134,10 @@ The following options are available:
   deploying as `root`. See [sudo and interactivity](#sudo-and-interactivity),
   since sudo must not require a password over ssh.
 * `bin_dir` the directory the binary is installed into. Defaults to
-  `/usr/local/bin`. A leading `~` [expands](#home-directories) to the home
-  directory of the user deploying.
+  `/usr/local/bin` over ssh, and to `$CARGO_HOME/bin` or `~/.cargo/bin` for a
+  [local deployment](#local-deployments). A leading `~`
+  [expands](#home-directories) to the home directory of the user deploying.
+  Also available as `--bin-dir <dir>`.
 * `unit_dir` the directory the systemd unit is installed into. Defaults to
   `/etc/systemd/system`, or `~/.config/systemd/user` for a
   [user unit](#user-units).
@@ -133,16 +145,11 @@ The following options are available:
   installed. Defaults to `.kick-deploy`, which is relative to the home directory
   of the user being logged in as. A leading `~` [expands](#home-directories)
   like it does for `bin_dir`. Not used by a local deployment.
-* `binary` the name of the binary to deploy. Defaults to the name of the primary
-  crate in the project, and can be given as an argument to `kick deploy`.
-* `profile` the *cargo* build profile the binary is picked up from. Defaults to
-  `release`, and can be overridden with `--profile <profile>`. This has nothing
-  to do with [deploy profiles](#profiles), which are selected with `--to`.
-* `pre_build`, `build` and `build_features` control how the project is
-  [built](#building).
+* `build` a table which is [layered](./build.md#layering) over the `[build]`
+  section, for anything about the build which is particular to deploying.
 * `files` a list of [extra files](#deployfiles) to install.
-* `pre_start` and `post_start` [commands](#start-commands) run on the target
-  before and after the service is started.
+* `post_install` and `post_start` [commands](#target-commands) run on the
+  target once everything is installed, and once the service has been started.
 * `systemd` the [systemd unit](#systemd) to install, along with the
   [variables](#template-variables) it is rendered with. Defaults to the built-in
   unit template.
@@ -211,16 +218,17 @@ A project which is deployed in more than one way, such as to a server and to the
 machine you are working on, defines each way as a named profile in a
 `[deploy.profiles.<name>]` section. A profile takes every option `[deploy]` does
 other than `default_profile` and `profiles`, and is layered over the rest of the
-`[deploy]` section: what the profile sets wins, lists like `pre_build` and
-`files` are added to, and `[deploy.profiles.<name>.systemd]` overrides
-individual options and variables of `[deploy.systemd]`. So `[deploy]` holds what
-the profiles share, and each profile what is particular to it:
+`[deploy]` section: what the profile sets wins, lists like `files` and
+`post_install` are added to, `[deploy.profiles.<name>.build]` is layered over
+the [build](./build.md#layering), and `[deploy.profiles.<name>.systemd]`
+overrides individual options and variables of `[deploy.systemd]`. So `[deploy]`
+holds what the profiles share, and each profile what is particular to it:
 
 ```toml
-[deploy]
+[build]
 binary = "track"
 pre_build = ["trunk build --release"]
-build_features = ["bundle"]
+features = ["bundle"]
 
 [deploy.profiles.production]
 host = ["moore", "dahl"]
@@ -232,8 +240,6 @@ user = "integration"
 
 [deploy.profiles.local]
 kind = "local"
-bin_dir = "~/.local/bin"
-systemd = { scope = "user" }
 ```
 
 The profile being deployed is picked as follows:
@@ -254,8 +260,11 @@ A `[deploy]` section without any profiles is deployed as it is, which is how
 every deployment worked before profiles existed.
 
 Note that `--to` and `default_profile` refer to deploy profiles, while
-`--profile` and the `profile` option are the cargo build profile the binary is
-picked up from.
+`--profile` and the `profile` option in `[build]` are the cargo build profile
+the binary is picked up from.
+
+`[install]` takes profiles the same way, which are selected with
+`kick install --to <name>`.
 
 #### Leaving the host to the command line
 
@@ -263,7 +272,7 @@ A profile doesn't have to say where it deploys to. One which describes *how* the
 project is deployed to a server, but not *which* server, leaves `host` out:
 
 ```toml
-[deploy]
+[build]
 binary = "track"
 
 [deploy.profiles.remote]
@@ -271,8 +280,6 @@ user = "integration"
 
 [deploy.profiles.local]
 kind = "local"
-bin_dir = "~/.local/bin"
-systemd = { scope = "user" }
 ```
 
 The host is then given when deploying, so the same project can be put on any
@@ -307,9 +314,14 @@ rather than over ssh:
 * `sudo` defaults to `false`, since installing locally usually means installing
   into your own home directory. When it is enabled, sudo is run without `-n`,
   since there is a terminal to prompt on.
+* `bin_dir` defaults to `$CARGO_HOME/bin`, or `~/.cargo/bin`, the same as for
+  [`kick install`](./install.md).
+* The unit is a [user unit](#user-units) unless `scope` says otherwise, since
+  it needs neither root nor sudo.
 
-Local deployments pair naturally with a [user unit](#user-units), which needs
-neither root nor sudo.
+So a local deployment installs into your own home directory without any
+further configuration, and the only difference between `kick install` and a
+local deployment is that the deployment installs a systemd unit by default.
 
 <br>
 
@@ -320,17 +332,15 @@ frontend is built by `trunk` and bundled into the binary, which is installed
 into `~/.cargo/bin` and started with `kanban serve` from the checkout:
 
 ```toml
-[deploy]
+[build]
 binary = "kanban"
 pre_build = ["trunk build --release"]
-build_features = ["bundle"]
+features = ["bundle"]
 
 [deploy.profiles.local]
 kind = "local"
-bin_dir = "~/.cargo/bin"
 
 [deploy.profiles.local.systemd]
-scope = "user"
 description = "Kanban Web UI"
 after = "network.target"
 working_directory = "~/repo/kanban"
@@ -407,58 +417,13 @@ is left alone.
 
 ### Building
 
-Unless told otherwise, `kick deploy` builds the project with `cargo build`
-before deploying it. Three options shape what that means:
-
-* `pre_build` a list of commands run before the build, for anything cargo
-  doesn't do on its own. Also available as `--pre-build <command>`, which can be
-  used more than once.
-* `build_features` a list of features to enable in the build. Also available as
-  `--build-features <features>`, which can be used more than once and accepts
-  comma-separated lists.
-* `build` a list of commands which *replaces* the generated build command, for
-  when the build is not a plain `cargo build`. `pre_build` still runs, and
-  `build_features` is ignored with a warning.
-
-The generated build command follows the `profile` option, so the default
-`release` profile builds with `cargo build --release`, and any other profile
-builds with `cargo build --profile <profile>`.
+How the project is built is configured in the [`[build]` section](./build.md),
+which is shared with `kick install`. `[deploy.build]` and
+`[deploy.profiles.<name>.build]` adjust it for deployments alone, see
+[layering](./build.md#layering).
 
 Building is skipped entirely with `--no-build`, which is what you want when the
 binary has already been built by something else.
-
-Commands in `pre_build` and `build` are either a string, which is split on
-whitespace, or a list of arguments in case an argument contains whitespace. Note
-that these are *not* run through a shell, so shell syntax such as `&&` or `$VAR`
-is not available.
-
-<br>
-
-#### Examples
-
-Deploying a project whose frontend is built by `trunk` and whose binary bundles
-the result:
-
-```toml
-[deploy]
-pre_build = ["trunk build --release"]
-build_features = ["bundle"]
-```
-
-Which builds with:
-
-```sh
-trunk build --release
-cargo build --release --features bundle
-```
-
-Replacing the build command outright:
-
-```toml
-[deploy]
-pre_build = ["trunk build --release"]
-build = [["cargo", "xtask", "build", "--dist"]]
-```
 
 <br>
 
@@ -495,30 +460,33 @@ dest = "/etc/track.toml"
 
 <br>
 
-### Start commands
+### Target commands
 
-`pre_start` and `post_start` are lists of commands which are run on the machine
-being deployed to, as part of the script which installs the deployment. Use
-them for anything which has to happen next to the service rather than before
-the build, like migrating a database with the new binary or creating a system
-user.
+`post_install` and `post_start` are lists of commands which are run on the
+machine being deployed to, as part of the script which installs the deployment.
+Use them for anything which has to happen next to the installed binary rather
+than before the build, like migrating a database with the new binary or
+creating a system user.
 
-* `pre_start` runs after the binary, the files and the units have been
+* `post_install` runs after the binary, the files and the units have been
   installed and systemd has been reloaded, but before the socket or the service
   is enabled and started.
 * `post_start` runs after the service has been started (or the socket enabled
   and the service restarted).
 
-Without a systemd unit (`systemd = false` or `--no-systemd`) there is nothing to
-start, so both run once everything has been installed, `pre_start` first.
-Since they are part of starting the service, `--no-restart` skips them.
+Without a systemd unit (`systemd = false`, `--no-systemd`, or an install which
+has none) there is nothing to start, so both run once everything has been
+installed, `post_install` first. Since they are part of starting the service,
+`--no-restart` skips them.
 
-An entry is either a string or a table:
+An entry is [configured](./build.md#commands) as a string, a list of arguments
+or a table:
 
 * A string is a command line which is run by the shell executing the script,
   exactly as written. Quoting, `~` and `$HOME` work like they do in the shell of
   the user deploying.
-* A table takes the command line as `command`, and `sudo = true` to run it
+* A list of arguments is quoted for that shell, so nothing in it is expanded.
+* A table takes either of the above as `command`, and `sudo = true` to run it
   under the same `sudo` prefix as the rest of the deployment (see
   [sudo and interactivity](#sudo-and-interactivity)). The prefix is put in front
   of the command line, so the shell of the deploying user still expands `~`
@@ -526,10 +494,10 @@ An entry is either a string or a table:
   `sh -c '...'` to run something like a pipeline under sudo. With `sudo = false`
   in the `[deploy]` section, there is no prefix.
 
-Like `pre_build`, the commands of a [profile](#profiles) are added after the
-ones in `[deploy]`. The script runs with `set -eu`, so a command which fails
-fails the deployment, and they show up in the script printed by `--dry-run` and
-`-V`. They run over the same connection as the rest of the deployment.
+The commands of a [profile](#profiles) are added after the ones in `[deploy]`.
+The script runs with `set -eu`, so a command which fails fails the deployment,
+and they show up in the script printed by `--dry-run` and `-V`. They run over
+the same connection as the rest of the deployment.
 
 <br>
 
@@ -541,7 +509,7 @@ the new binary before the service restarts:
 
 ```toml
 [deploy.profiles.server]
-pre_start = [
+post_install = [
     { command = "systemd-sysusers", sudo = true },
     { command = "/usr/local/bin/kanban --db /var/lib/kanban/kanban.db install", sudo = true },
 ]
@@ -610,8 +578,10 @@ enable = false
 * `name` the name of the unit. Defaults to the name of the binary.
 * `enable` whether `systemctl enable` is run so that the service starts on boot.
   Defaults to `true`.
-* `scope` which systemd instance the unit is installed into, either `system`
-  (the default) or `user`. See [user units](#user-units).
+* `scope` which systemd instance the unit is installed into, either `system` or
+  `user`. Defaults to `system` over ssh, and to `user` for a
+  [local deployment](#local-deployments) or an install. See
+  [user units](#user-units).
 * `socket` a socket unit which activates the service, see [socket
   units](#socket-units).
 
@@ -706,11 +676,11 @@ unit, the deployment:
   isn't installed yet, the service and then the socket are stopped.
 * Installs the binary, the service unit and, if it changed, the socket unit, and
   runs `systemctl daemon-reload` once if either unit was written.
-* Runs any [`pre_start`](#start-commands) commands.
+* Runs any [`post_install`](#target-commands) commands.
 * Runs `systemctl enable --now <name>.socket`. It is the socket which is
   enabled, not the service. With `enable = false` the socket is only started.
 * Runs `systemctl restart <service>`, followed by any
-  [`post_start`](#start-commands) commands.
+  [`post_start`](#target-commands) commands.
 
 So a deployment which only changes the binary leaves an active socket alone and
 only restarts the service, and anything connecting in the meantime is queued by
@@ -772,7 +742,7 @@ the socket lives in the runtime directory of the user, and on a server it is
 shared with the members of the `kanban` group:
 
 ```toml
-[deploy]
+[build]
 binary = "kanban"
 
 [deploy.systemd]
@@ -783,10 +753,6 @@ remove_on_stop = true
 
 [deploy.profiles.local]
 kind = "local"
-bin_dir = "~/.cargo/bin"
-
-[deploy.profiles.local.systemd]
-scope = "user"
 
 [deploy.profiles.local.systemd.socket]
 listen_stream = "%t/kanban/kanban.sock"
@@ -1023,10 +989,12 @@ copy.
 The following configuration:
 
 ```toml
+[build]
+binary = "track"
+
 [deploy]
 host = "moore"
 user = "integration"
-binary = "track"
 
 [deploy.systemd]
 description = "Track Service"
@@ -1161,7 +1129,9 @@ passphrase or a login password still works as usual.
 ### Options
 
 The `kick deploy` action takes the name of the binary to deploy as an argument,
-which overrides the `binary` option, along with the following options:
+which overrides the `binary` option in `[build]`, along with the following
+options. All of them except `--host`, `--user` and `--no-check` are also taken
+by `kick install`:
 
 * `--to <profile>` selects the [profile](#profiles) to deploy, overriding the
   `default_profile` option.
@@ -1179,18 +1149,14 @@ which overrides the `binary` option, along with the following options:
   `[deploy.systemd]`.
 * `--args <args>` sets the `args` variable, which the unit appends to
   `ExecStart`. Can be used more than once, and each use is split on whitespace.
-* `--profile <profile>` overrides the `profile` option, which is the cargo
-  build profile and not a [deploy profile](#profiles).
-* `--pre-build <command>` adds a command to `pre_build`, can be used more than
-  once.
-* `--build-features <features>` adds features to `build_features`, can be used
-  more than once.
+* `--bin-dir <dir>` overrides the `bin_dir` option.
+* The [build options](./build.md#options) `--profile`, `--package`,
+  `--features`, `--pre-build` and `--no-build`.
 * `--no-check` skips the [access check](#access-check).
-* `--no-build` skips [building](#building) altogether.
 * `--no-systemd` skips installing the systemd unit, and by extension restarting
   the service.
 * `--no-restart` installs everything without stopping or starting the service,
-  and skips the [start commands](#start-commands).
+  and skips the [target commands](#target-commands).
 * `--dry-run` prints the profile being deployed, the unit which would be
   installed and every command which would be run without changing anything.
 * `--verbose` / `-V` prints the deployment plan, the unit being installed and
@@ -1217,3 +1183,52 @@ Every remote host being deployed to is expected to:
   tar, bsdtar and busybox tar will do.
 * Have `systemd` and `cmp` available if the `systemd` option is in use. The
   latter is part of diffutils.
+
+<br>
+
+### Migrating
+
+How the project is built moved out of `[deploy]` into the
+[`[build]` section](./build.md) which `kick install` shares, and `pre_start`
+was renamed to `post_install`, which says when it runs for an install too:
+
+| Before                              | After                                 |
+|-------------------------------------|---------------------------------------|
+| `[deploy] binary`                   | `[build] binary`                      |
+| `[deploy] profile`                  | `[build] profile`                     |
+| `[deploy] pre_build`                | `[build] pre_build`                   |
+| `[deploy] build`                    | `[build] commands`                    |
+| `[deploy] build_features`           | `[build] features`                    |
+| `pre_start`                         | `post_install`                        |
+| `--build-features`                  | `--features`                          |
+
+Options which were set in a profile move to `[deploy.profiles.<name>.build]`.
+kick reports each of the old options with where it went. A local deployment
+now defaults to `bin_dir = "~/.cargo/bin"` and a user unit, so those can be
+removed from a `kind = "local"` profile:
+
+```toml
+# Before.
+[deploy]
+binary = "kanban"
+pre_build = ["trunk build --release"]
+build_features = ["bundle"]
+
+[deploy.profiles.local]
+kind = "local"
+bin_dir = "~/.cargo/bin"
+pre_start = ["~/.cargo/bin/kanban install"]
+
+[deploy.profiles.local.systemd]
+scope = "user"
+
+# After.
+[build]
+binary = "kanban"
+pre_build = ["trunk build --release"]
+features = ["bundle"]
+
+[deploy.profiles.local]
+kind = "local"
+post_install = ["~/.cargo/bin/kanban install"]
+```
