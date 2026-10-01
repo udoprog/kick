@@ -139,6 +139,8 @@ The following options are available:
 * `pre_build`, `build` and `build_features` control how the project is
   [built](#building).
 * `files` a list of [extra files](#deployfiles) to install.
+* `pre_start` and `post_start` [commands](#start-commands) run on the target
+  before and after the service is started.
 * `systemd` the [systemd unit](#systemd) to install, along with the
   [variables](#template-variables) it is rendered with. Defaults to the built-in
   unit template.
@@ -460,6 +462,74 @@ dest = "/etc/track.toml"
 
 <br>
 
+### Start commands
+
+`pre_start` and `post_start` are lists of commands which are run on the machine
+being deployed to, as part of the script which installs the deployment. Use
+them for anything which has to happen next to the service rather than before
+the build, like migrating a database with the new binary or creating a system
+user.
+
+* `pre_start` runs after the binary, the files and the units have been
+  installed and systemd has been reloaded, but before the socket or the service
+  is enabled and started.
+* `post_start` runs after the service has been started (or the socket enabled
+  and the service restarted).
+
+Without a systemd unit (`systemd = false` or `--no-systemd`) there is nothing to
+start, so both run once everything has been installed, `pre_start` first.
+Since they are part of starting the service, `--no-restart` skips them.
+
+An entry is either a string or a table:
+
+* A string is a command line which is run by the shell executing the script,
+  exactly as written. Quoting, `~` and `$HOME` work like they do in the shell of
+  the user deploying.
+* A table takes the command line as `command`, and `sudo = true` to run it
+  under the same `sudo` prefix as the rest of the deployment (see
+  [sudo and interactivity](#sudo-and-interactivity)). The prefix is put in front
+  of the command line, so the shell of the deploying user still expands `~`
+  before sudo runs, and it only applies to the first command in it. Use
+  `sh -c '...'` to run something like a pipeline under sudo. With `sudo = false`
+  in the `[deploy]` section, there is no prefix.
+
+Like `pre_build`, the commands of a [profile](#profiles) are added after the
+ones in `[deploy]`. The script runs with `set -eu`, so a command which fails
+fails the deployment, and they show up in the script printed by `--dry-run` and
+`-V`. They run over the same connection as the rest of the deployment.
+
+<br>
+
+#### Example
+
+A system deployment of the kanban board creates the `kanban` group its socket
+is shared with before the socket starts, and refreshes the skills bundled with
+the new binary before the service restarts:
+
+```toml
+[deploy.profiles.server]
+pre_start = [
+    { command = "systemd-sysusers", sudo = true },
+    { command = "/usr/local/bin/kanban --db /var/lib/kanban/kanban.db install", sudo = true },
+]
+
+[[deploy.profiles.server.files]]
+source = "dist/sysusers.conf"
+dest = "/etc/sysusers.d/kanban.conf"
+mode = "644"
+```
+
+Which adds the following to the script, right before the socket is enabled:
+
+```sh
+sudo -n systemd-sysusers
+sudo -n /usr/local/bin/kanban --db /var/lib/kanban/kanban.db install
+sudo -n systemctl enable --now kanban.socket
+sudo -n systemctl restart kanban
+```
+
+<br>
+
 ### `systemd`
 
 The unit which is installed and restarted as part of the deployment.
@@ -603,9 +673,11 @@ unit, the deployment:
   isn't installed yet, the service and then the socket are stopped.
 * Installs the binary, the service unit and, if it changed, the socket unit, and
   runs `systemctl daemon-reload` once if either unit was written.
+* Runs any [`pre_start`](#start-commands) commands.
 * Runs `systemctl enable --now <name>.socket`. It is the socket which is
   enabled, not the service. With `enable = false` the socket is only started.
-* Runs `systemctl restart <service>`.
+* Runs `systemctl restart <service>`, followed by any
+  [`post_start`](#start-commands) commands.
 
 So a deployment which only changes the binary leaves an active socket alone and
 only restarts the service, and anything connecting in the meantime is queued by
@@ -1084,7 +1156,8 @@ which overrides the `binary` option, along with the following options:
 * `--no-build` skips [building](#building) altogether.
 * `--no-systemd` skips installing the systemd unit, and by extension restarting
   the service.
-* `--no-restart` installs everything without stopping or starting the service.
+* `--no-restart` installs everything without stopping or starting the service,
+  and skips the [start commands](#start-commands).
 * `--dry-run` prints the profile being deployed, the unit which would be
   installed and every command which would be run without changing anything.
 * `--verbose` / `-V` prints the deployment plan, the unit being installed and

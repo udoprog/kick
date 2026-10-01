@@ -220,6 +220,16 @@ pub(crate) struct DeployFile {
     pub(crate) mode: Option<Mode>,
 }
 
+/// A command which is run on the machine being deployed to, around the start
+/// of the service.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeployCommand {
+    /// The command line, which is run by the shell of the deployment script.
+    pub(crate) command: String,
+    /// Whether the command is run under the sudo prefix of the deployment.
+    pub(crate) sudo: bool,
+}
+
 /// How a deployment reaches the machine it is installed on.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeployKind {
@@ -330,6 +340,12 @@ pub(crate) struct Deploy {
     pub(crate) build_features: Vec<String>,
     /// Extra files to install.
     pub(crate) files: Vec<DeployFile>,
+    /// Commands which are run on the target after everything has been
+    /// installed and before the service is started.
+    pub(crate) pre_start: Vec<DeployCommand>,
+    /// Commands which are run on the target after the service has been
+    /// started.
+    pub(crate) post_start: Vec<DeployCommand>,
     /// The systemd unit to install.
     pub(crate) systemd: Option<Systemd>,
 }
@@ -388,6 +404,8 @@ impl Deploy {
         self.build.append(&mut other.build);
         self.build_features.append(&mut other.build_features);
         self.files.append(&mut other.files);
+        self.pre_start.append(&mut other.pre_start);
+        self.post_start.append(&mut other.post_start);
 
         match (&mut self.systemd, other.systemd) {
             (Some(systemd), Some(other)) => systemd.merge_with(other),
@@ -1977,6 +1995,25 @@ impl<'a> Cx<'a> {
         })
     }
 
+    /// A command run on the target, either a command line or a table of the
+    /// command line and whether it is run under sudo.
+    fn deploy_command(&self, value: toml::Value) -> Result<DeployCommand, ErrorMarker> {
+        let (command, sudo) = match value {
+            value @ toml::Value::String(..) => (self.string(value)?, false),
+            value => self.with_table(value, |cx, table| {
+                let command = cx.require_key(table, "command", Self::string);
+                let sudo = cx.in_key(table, "sudo", Self::boolean);
+                Ok((command?, sudo?.unwrap_or_default()))
+            })?,
+        };
+
+        if command.trim().is_empty() {
+            return Err(self.capture("expected a non-empty command"));
+        }
+
+        Ok(DeployCommand { command, sudo })
+    }
+
     /// Read and validate a unit template stored at the given path.
     fn unit_template(&self, value: toml::Value) -> Result<Box<str>, ErrorMarker> {
         let source = self.read_template(value)?;
@@ -2095,6 +2132,8 @@ impl<'a> Cx<'a> {
         let build = cx.in_array(table, "build", None, Self::config_command);
         let build_features = cx.in_array(table, "build_features", None, Self::string);
         let files = cx.in_array(table, "files", None, Self::deploy_file);
+        let pre_start = cx.in_array(table, "pre_start", None, Self::deploy_command);
+        let post_start = cx.in_array(table, "post_start", None, Self::deploy_command);
         let systemd = cx.in_key(table, "systemd", Self::systemd);
 
         Ok(Deploy {
@@ -2116,6 +2155,8 @@ impl<'a> Cx<'a> {
             build: build?,
             build_features: build_features?,
             files: files?,
+            pre_start: pre_start?,
+            post_start: post_start?,
             systemd: systemd?,
         })
     }
@@ -2334,7 +2375,7 @@ mod tests {
 
     use relative_path::RelativePath;
 
-    use super::{ConfigCommand, Cx, Deploy, DeployKind, Install, SystemdScope};
+    use super::{ConfigCommand, Cx, Deploy, DeployCommand, DeployKind, Install, SystemdScope};
     use crate::ctxt::Paths;
     use crate::templates::Templating;
 
@@ -2495,6 +2536,55 @@ socket = 42
         );
 
         assert_eq!(errors, 1);
+    }
+
+    #[test]
+    fn deploy_start_commands() {
+        let (deploy, errors) = parse_deploy(
+            r#"
+pre_start = ["kanban --db /var/lib/kanban/kanban.db install"]
+
+[profiles.system]
+pre_start = [{ command = "systemd-sysusers", sudo = true }]
+post_start = [{ command = "echo done" }]
+"#,
+        );
+
+        assert_eq!(errors, 0);
+
+        let system = deploy.unwrap().with_profile("system").unwrap();
+
+        assert_eq!(
+            system.pre_start,
+            [
+                DeployCommand {
+                    command: String::from("kanban --db /var/lib/kanban/kanban.db install"),
+                    sudo: false,
+                },
+                DeployCommand {
+                    command: String::from("systemd-sysusers"),
+                    sudo: true,
+                },
+            ]
+        );
+
+        assert_eq!(
+            system.post_start,
+            [DeployCommand {
+                command: String::from("echo done"),
+                sudo: false,
+            }]
+        );
+
+        for source in [
+            r#"pre_start = [""]"#,
+            r#"pre_start = [42]"#,
+            r#"post_start = [{ sudo = true }]"#,
+            r#"post_start = [{ command = "x", user = "root" }]"#,
+        ] {
+            let (_, errors) = parse_deploy(source);
+            assert_eq!(errors, 1, "{source}");
+        }
     }
 
     #[test]

@@ -10,7 +10,7 @@ use clap::Parser;
 use termcolor::{ColorChoice, StandardStream};
 
 use crate::cli::WithRepos;
-use crate::config::{ConfigCommand, Deploy, DeployKind, SystemdScope};
+use crate::config::{ConfigCommand, Deploy, DeployCommand, DeployKind, SystemdScope};
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::model::Repo;
@@ -1191,6 +1191,24 @@ fn script(
         SystemdScope::User => ("", String::from("systemctl --user")),
     };
 
+    // NB: The commands are part of starting the service, so a deployment
+    // which leaves the service alone skips them too. They are command lines
+    // for the shell running the script, so they are used as written and the
+    // sudo prefix goes in front of them. That way the shell expands `~` and
+    // `$HOME` for the user being deployed as before sudo runs.
+    let commands = |script: &mut String, commands: &[DeployCommand]| -> Result<()> {
+        if opts.no_restart {
+            return Ok(());
+        }
+
+        for c in commands {
+            let sudo = if c.sudo { sudo } else { "" };
+            writeln!(script, "{sudo}{}", c.command)?;
+        }
+
+        Ok(())
+    };
+
     let mut script = String::new();
 
     // NB: Tracing the script is the only insight into the remote half of the
@@ -1315,6 +1333,8 @@ fn script(
             writeln!(script, "  {systemctl} daemon-reload")?;
             writeln!(script, "fi")?;
 
+            commands(&mut script, &config.pre_start)?;
+
             // NB: It is the socket which is enabled rather than the service,
             // since the service is started by connections to the socket.
             match (enable, opts.no_restart) {
@@ -1335,6 +1355,8 @@ fn script(
             if !opts.no_restart {
                 writeln!(script, "{systemctl} restart {}", shell.escape(name))?;
             }
+
+            commands(&mut script, &config.post_start)?;
         } else {
             // NB: Installing the unit unconditionally would touch it on every
             // deployment, so only do it when it actually changed. This also
@@ -1354,6 +1376,8 @@ fn script(
             writeln!(script, "  {systemctl} daemon-reload")?;
             writeln!(script, "fi")?;
 
+            commands(&mut script, &config.pre_start)?;
+
             if enable {
                 writeln!(script, "{systemctl} enable {}", shell.escape(name))?;
             }
@@ -1361,7 +1385,14 @@ fn script(
             if !opts.no_restart {
                 writeln!(script, "{systemctl} start {}", shell.escape(name))?;
             }
+
+            commands(&mut script, &config.post_start)?;
         }
+    } else {
+        // NB: Without a unit there is nothing to start, so the commands run
+        // back to back once everything has been installed.
+        commands(&mut script, &config.pre_start)?;
+        commands(&mut script, &config.post_start)?;
     }
 
     // NB: Only staged copies are removed, a local deployment installs from the
@@ -1741,7 +1772,7 @@ fn trim_dir(dir: &str) -> &str {
 mod tests {
     use std::path::PathBuf;
 
-    use crate::config::{Deploy, DeployKind, Systemd, SystemdScope};
+    use crate::config::{Deploy, DeployCommand, DeployKind, Systemd, SystemdScope};
     use crate::packaging::Mode;
 
     use super::{
@@ -2210,6 +2241,136 @@ rm -f .kick-deploy/kanban.socket
             "{script}"
         );
         assert!(!script.contains("enable kanban\n"), "{script}");
+    }
+
+    fn start_commands() -> Deploy {
+        Deploy {
+            pre_start: vec![
+                DeployCommand {
+                    command: String::from("systemd-sysusers"),
+                    sudo: true,
+                },
+                DeployCommand {
+                    command: String::from("/usr/local/bin/kanban --db ~/kanban.db install"),
+                    sudo: false,
+                },
+            ],
+            post_start: vec![DeployCommand {
+                command: String::from("echo started"),
+                sudo: false,
+            }],
+            ..Deploy::default()
+        }
+    }
+
+    /// Commands run after the units are installed, around the start of the
+    /// socket and the service.
+    #[test]
+    fn ssh_script_with_start_commands() {
+        let config = start_commands();
+        let opts = Opts::default();
+
+        let script = script(
+            &config,
+            &opts,
+            &[],
+            ScriptOpts {
+                sudo: "sudo -n ",
+                scope: SystemdScope::System,
+                binary: "kanban",
+                bin_dir: "/usr/local/bin",
+                unit_dir: "/etc/systemd/system",
+                sources: Sources::Staged(".kick-deploy"),
+                unit: Some(("kanban", "kanban.service")),
+                socket: Some("kanban.socket"),
+            },
+        )
+        .unwrap();
+
+        let expected = "\
+if [ \"$reload\" = yes ]; then
+  sudo -n systemctl daemon-reload
+fi
+sudo -n systemd-sysusers
+/usr/local/bin/kanban --db ~/kanban.db install
+sudo -n systemctl enable --now kanban.socket
+sudo -n systemctl restart kanban
+echo started
+rm -f .kick-deploy/kanban
+";
+
+        assert!(script.contains(expected), "{script}");
+
+        let script = super::script(
+            &config,
+            &opts,
+            &[],
+            ScriptOpts {
+                sudo: "sudo -n ",
+                scope: SystemdScope::System,
+                binary: "kanban",
+                bin_dir: "/usr/local/bin",
+                unit_dir: "/etc/systemd/system",
+                sources: Sources::Staged(".kick-deploy"),
+                unit: Some(("kanban", "kanban.service")),
+                socket: None,
+            },
+        )
+        .unwrap();
+
+        let expected = "\
+  sudo -n systemctl daemon-reload
+fi
+sudo -n systemd-sysusers
+/usr/local/bin/kanban --db ~/kanban.db install
+sudo -n systemctl enable kanban
+sudo -n systemctl start kanban
+echo started
+rm -f .kick-deploy/kanban
+";
+
+        assert!(script.contains(expected), "{script}");
+    }
+
+    /// Without a unit the commands run once everything is installed, and a
+    /// deployment which doesn't restart anything skips them.
+    #[test]
+    fn local_script_with_start_commands() {
+        let config = start_commands();
+        let uploads = vec![(PathBuf::from("/src/kanban"), String::from("kanban"))];
+
+        let s = || ScriptOpts {
+            sudo: "sudo ",
+            scope: SystemdScope::System,
+            binary: "kanban",
+            bin_dir: "/usr/local/bin",
+            unit_dir: "/etc/systemd/system",
+            sources: Sources::Local(&uploads),
+            unit: None,
+            socket: None,
+        };
+
+        let script = script(&config, &Opts::default(), &[], s()).unwrap();
+
+        let expected = "\
+set -eu
+sudo mkdir -p /usr/local/bin
+sudo install -m 0755 /src/kanban /usr/local/bin/kanban
+sudo systemd-sysusers
+/usr/local/bin/kanban --db ~/kanban.db install
+echo started
+";
+
+        assert_eq!(script, expected);
+
+        let opts = Opts {
+            no_restart: true,
+            ..Opts::default()
+        };
+
+        let script = super::script(&config, &opts, &[], s()).unwrap();
+        assert!(!script.contains("sysusers"), "{script}");
+        assert!(!script.contains("echo started"), "{script}");
     }
 
     #[test]
