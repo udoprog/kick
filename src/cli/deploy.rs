@@ -63,6 +63,9 @@ pub(crate) struct Opts {
     /// This replaces the `host` option in the `[deploy]` section rather than
     /// adding to it, and each host is deployed to in turn. A login user can be
     /// spelled out as part of the host, in which case it wins over `--user`.
+    ///
+    /// It is required when deploying over ssh with a configuration which sets no
+    /// host, such as `kick deploy --to remote --host moore`.
     #[arg(long = "host", value_name = "HOST")]
     host: Vec<String>,
     /// The user to log into the hosts as, overrides the `user` option in the
@@ -454,34 +457,7 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
     let scope = systemd_config.scope.unwrap_or_default();
 
     let targets = match kind {
-        DeployKind::Ssh => {
-            // NB: Hosts given on the command line replace the configured ones
-            // rather than adding to them, since `--host` is how you deploy
-            // somewhere other than where the project usually goes.
-            let hosts = if opts.host.is_empty() {
-                &config.host[..]
-            } else {
-                &opts.host[..]
-            };
-
-            if hosts.is_empty() {
-                match &selected {
-                    Some(name) => bail!(
-                        "Missing host to deploy to, specify `host` in the `[deploy.profiles.{name}]` section or pass `--host <host>`"
-                    ),
-                    None => bail!(
-                        "Missing host to deploy to, specify `host` in the `[deploy]` section or pass `--host <host>`"
-                    ),
-                }
-            }
-
-            let login = opts.user.as_deref().or(config.user.as_deref());
-
-            hosts
-                .iter()
-                .map(|host| Target::new(login, host))
-                .collect::<Vec<_>>()
-        }
+        DeployKind::Ssh => ssh_targets(&config, selected.as_deref(), opts)?,
         DeployKind::Local => {
             match &selected {
                 Some(name) => {
@@ -1068,7 +1044,39 @@ fn missing_home(target: &Target, value: &str) -> anyhow::Error {
     }
 }
 
+/// The hosts an ssh deployment goes to, from `--host` or else the `host`
+/// option of the deployment being performed.
+///
+/// A configuration can leave the host out entirely, in which case it has to be
+/// given with `--host`, so the same profile can be deployed to any machine.
+fn ssh_targets(config: &Deploy, selected: Option<&str>, opts: &Opts) -> Result<Vec<Target>> {
+    // NB: Hosts given on the command line replace the configured ones rather
+    // than adding to them, since `--host` is how you deploy somewhere other
+    // than where the project usually goes.
+    let hosts = if opts.host.is_empty() {
+        &config.host[..]
+    } else {
+        &opts.host[..]
+    };
+
+    if hosts.is_empty() {
+        match selected {
+            Some(name) => bail!(
+                "Missing host to deploy profile `{name}` to, deploy with `kick deploy --to {name} --host <host>` or set `host` in the `[deploy.profiles.{name}]` section"
+            ),
+            None => bail!(
+                "Missing host to deploy to, deploy with `kick deploy --host <host>` or set `host` in the `[deploy]` section"
+            ),
+        }
+    }
+
+    let login = opts.user.as_deref().or(config.user.as_deref());
+
+    Ok(hosts.iter().map(|host| Target::new(login, host)).collect())
+}
+
 /// A host being deployed to, along with the user we log into it as.
+#[derive(Debug)]
 struct Target {
     /// The argument handed to `ssh` and `scp`, which is `<user>@<host>` when
     /// there is a user to log in as.
@@ -1776,7 +1784,8 @@ mod tests {
     use crate::packaging::Mode;
 
     use super::{
-        Choice, Opts, ScriptOpts, Sources, choose_profile, expand_home, script, write_payload,
+        Choice, Opts, ScriptOpts, Sources, Target, choose_profile, expand_home, script,
+        ssh_targets, write_payload,
     };
 
     fn profiles(names: &[&str]) -> Deploy {
@@ -1891,6 +1900,90 @@ mod tests {
         assert!(local.default_profile.is_none());
 
         assert!(deploy.with_profile("missing").is_none());
+    }
+
+    /// A configuration with a `remote` ssh profile which names no host.
+    fn hostless_remote() -> Deploy {
+        let mut deploy = Deploy {
+            binary: Some(String::from("track")),
+            ..Deploy::default()
+        };
+
+        deploy.profiles.insert(
+            String::from("remote"),
+            Deploy {
+                kind: Some(DeployKind::Ssh),
+                user: Some(String::from("integration")),
+                ..Deploy::default()
+            },
+        );
+
+        deploy
+    }
+
+    fn hosts(targets: &[Target]) -> Vec<&str> {
+        targets.iter().map(|t| t.ssh.as_str()).collect()
+    }
+
+    #[test]
+    fn host_from_flag_for_hostless_profile() {
+        let config = hostless_remote().with_profile("remote").unwrap();
+
+        let opts = Opts {
+            host: vec![String::from("moore")],
+            ..Opts::default()
+        };
+
+        let targets = ssh_targets(&config, Some("remote"), &opts).unwrap();
+        assert_eq!(hosts(&targets), ["integration@moore"]);
+        assert_eq!(targets[0].host, "moore");
+    }
+
+    #[test]
+    fn host_missing_for_profile() {
+        let config = hostless_remote().with_profile("remote").unwrap();
+
+        let error = ssh_targets(&config, Some("remote"), &Opts::default()).unwrap_err();
+        let error = error.to_string();
+        assert!(error.contains("profile `remote`"), "{error}");
+        assert!(
+            error.contains("`kick deploy --to remote --host <host>`"),
+            "{error}"
+        );
+        assert!(error.contains("`[deploy.profiles.remote]`"), "{error}");
+    }
+
+    #[test]
+    fn host_missing_without_profile() {
+        let error = ssh_targets(&Deploy::default(), None, &Opts::default()).unwrap_err();
+        let error = error.to_string();
+        assert!(error.contains("`kick deploy --host <host>`"), "{error}");
+        assert!(error.contains("`[deploy]`"), "{error}");
+    }
+
+    #[test]
+    fn host_layers_from_base_into_profile() {
+        let mut deploy = hostless_remote();
+        deploy.host = vec![String::from("dahl")];
+
+        let config = deploy.with_profile("remote").unwrap();
+        let targets = ssh_targets(&config, Some("remote"), &Opts::default()).unwrap();
+        assert_eq!(hosts(&targets), ["integration@dahl"]);
+
+        // A host named on the command line replaces the layered one.
+        let opts = Opts {
+            host: vec![String::from("moore"), String::from("root@hilbert")],
+            ..Opts::default()
+        };
+
+        let targets = ssh_targets(&config, Some("remote"), &opts).unwrap();
+        assert_eq!(hosts(&targets), ["integration@moore", "root@hilbert"]);
+
+        // A host set by the profile wins over the one in `[deploy]`.
+        deploy.profiles.get_mut("remote").unwrap().host = vec![String::from("moore")];
+        let config = deploy.with_profile("remote").unwrap();
+        let targets = ssh_targets(&config, Some("remote"), &Opts::default()).unwrap();
+        assert_eq!(hosts(&targets), ["integration@moore"]);
     }
 
     #[test]

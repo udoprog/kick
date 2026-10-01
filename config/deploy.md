@@ -105,9 +105,11 @@ The following options are available:
   `--to`.
 * `profiles` named [profiles](#profiles), as `[deploy.profiles.<name>]`
   sections.
-* `host` the host to deploy to, such as `moore`. This is required, but can also
-  be specified with `--host <host>`. A list deploys to
-  [several hosts](#deploying-to-more-than-one-host) in turn.
+* `host` the host to deploy to, such as `moore`. A list deploys to
+  [several hosts](#deploying-to-more-than-one-host) in turn. `--host <host>`
+  replaces it, and an ssh deployment which doesn't set it takes its host from
+  the command line, see
+  [leaving the host to the command line](#leaving-the-host-to-the-command-line).
 * `user` the user to log into the hosts as, such as `integration`. This is the
   user the deployment is performed as, not the user the deployed service runs
   as, which is a [variable](#template-variables) in the `[deploy.systemd]`
@@ -254,6 +256,37 @@ every deployment worked before profiles existed.
 Note that `--to` and `default_profile` refer to deploy profiles, while
 `--profile` and the `profile` option are the cargo build profile the binary is
 picked up from.
+
+#### Leaving the host to the command line
+
+A profile doesn't have to say where it deploys to. One which describes *how* the
+project is deployed to a server, but not *which* server, leaves `host` out:
+
+```toml
+[deploy]
+binary = "track"
+
+[deploy.profiles.remote]
+user = "integration"
+
+[deploy.profiles.local]
+kind = "local"
+bin_dir = "~/.local/bin"
+systemd = { scope = "user" }
+```
+
+The host is then given when deploying, so the same project can be put on any
+machine without editing its `Kick.toml`:
+
+```sh
+kick deploy --to remote --host moore
+kick deploy --to remote --host dahl --host hilbert
+```
+
+Deploying such a profile without `--host` is an error which names the profile
+and the command to run instead. A `host` set in `[deploy]` is shared with every
+profile like any other option, so a profile only goes without one when neither
+it nor `[deploy]` sets it.
 
 <br>
 

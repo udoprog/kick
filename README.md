@@ -370,6 +370,14 @@ pre_build = ["trunk build --release"]
 build_features = ["bundle"]
 ```
 
+The host can also be left out of the configuration, typically in a
+[profile][deploy-profiles] which is meant for any machine, in which case it is
+given when deploying:
+
+```sh
+kick deploy --to remote --host moore
+```
+
 Either way `kick deploy` runs the build, and over a single `ssh` connection
 uploads the binary, stops the service, installs the binary into `/usr/local/bin`,
 installs the unit into `/etc/systemd/system`, and starts the service again. The
@@ -456,5 +464,6 @@ Note that version information is exported by default when specifying
 
 [config]: https://github.com/udoprog/kick/blob/main/config.md
 [deploy-config]: https://github.com/udoprog/kick/blob/main/config/deploy.md
+[deploy-profiles]: https://github.com/udoprog/kick/blob/main/config/deploy.md#profiles
 [variables-config]: https://github.com/udoprog/kick/blob/main/config/variables.md
 [wobbly-versions]: https://github.com/udoprog/kick/blob/main/WOBBLY_VERSIONS.md
