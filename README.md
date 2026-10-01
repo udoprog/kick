@@ -339,8 +339,8 @@ be used:
 
 The `deploy` action is a lightweight way of getting a project onto a server.
 
-It builds the project, uploads the binary with `scp`, installs it, and makes
-sure that a systemd unit is installed and running. The defaults are picked so
+It builds the project, sends the binary over `ssh`, installs it, and makes sure
+that a systemd unit is installed and running. The defaults are picked so
 that this needs no configuration at all:
 
 ```sh
@@ -370,8 +370,8 @@ pre_build = ["trunk build --release"]
 build_features = ["bundle"]
 ```
 
-Either way `kick deploy` runs the build, uploads the binary, and over a single
-`ssh` connection stops the service, installs the binary into `/usr/local/bin`,
+Either way `kick deploy` runs the build, and over a single `ssh` connection
+uploads the binary, stops the service, installs the binary into `/usr/local/bin`,
 installs the unit into `/etc/systemd/system`, and starts the service again. The
 unit is compared against the installed one first, so systemd is only reloaded
 when it actually changed.

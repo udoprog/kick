@@ -12,16 +12,18 @@ Deploying performs the following steps:
 * The project is [built](#building) locally, once regardless of how many hosts
   are being deployed to.
 * The binary to deploy is located in `target/<profile>/<binary>`.
-* Then, for each host in turn:
-  * The binary, any [extra files](#deployfiles) and the rendered
-    [systemd unit](#systemd) are uploaded with `scp` to the
-    [staging directory](#deploy-section) on the remote host.
-  * A single `ssh` invocation stops the service, installs everything into
-    place, and starts the service again. The unit is only written and systemd
-    only reloaded if the unit actually changed.
+* Then, for each host in turn, a single `ssh` invocation:
+  * Receives the binary, any [extra files](#deployfiles) and the rendered
+    [systemd unit](#systemd) as a `tar` archive streamed over its stdin, and
+    unpacks them into the [staging directory](#deploy-section) on the remote
+    host.
+  * Stops the service, installs everything into place, and starts the service
+    again. The unit is only written and systemd only reloaded if the unit
+    actually changed.
 
 Nothing is installed remotely unless the upload succeeded, and the staged files
-are removed once they've been installed.
+are removed once they've been installed. See
+[connections](#connections) for how many times each host is logged into.
 
 Hosts are deployed to in the order they are listed, and the first one which
 fails ends the deployment, so the hosts after it are left as they were.
@@ -109,10 +111,11 @@ The following options are available:
   user the deployment is performed as, not the user the deployed service runs
   as, which is a [variable](#template-variables) in the `[deploy.systemd]`
   section. Also available as `--user <user>`.
-* `port` the port to connect over. Passed to `ssh` with `-p` and to `scp` with
-  `-P`.
+* `port` the port to connect over. Passed to `ssh` with `-p`.
 * `identity_file` the identity file used to authenticate. Passed with `-i`.
-* `options` a list of extra options passed to `ssh` and `scp` with `-o`.
+* `options` a list of extra options passed to `ssh` with `-o`, such as the
+  ones which [share a connection](#connections) between the access check and
+  the deployment.
 * `sudo` whether privileged remote commands are prefixed with `sudo`. Defaults
   to `true` over ssh and `false` for a local deployment, set it to `false` when
   deploying as `root`. See [sudo and interactivity](#sudo-and-interactivity),
@@ -125,7 +128,8 @@ The following options are available:
   [user unit](#user-units).
 * `staging_dir` the remote directory files are uploaded to before they are
   installed. Defaults to `.kick-deploy`, which is relative to the home directory
-  of the user being logged in as. Not used by a local deployment.
+  of the user being logged in as. A leading `~` [expands](#home-directories)
+  like it does for `bin_dir`. Not used by a local deployment.
 * `binary` the name of the binary to deploy. Defaults to the name of the primary
   crate in the project, and can be given as an argument to `kick deploy`.
 * `profile` the *cargo* build profile the binary is picked up from. Defaults to
@@ -348,9 +352,9 @@ anything.
 
 ### Home directories
 
-A leading `~`, `$HOME` or `${HOME}` in `bin_dir`, `unit_dir` and the `dest` of
-[`[[deploy.files]]`](#deployfiles) expands to the home directory of the user
-deploying. For a local deployment that is the user running `kick`. Over ssh it
+A leading `~`, `$HOME` or `${HOME}` in `bin_dir`, `unit_dir`, `staging_dir`
+and the `dest` of [`[[deploy.files]]`](#deployfiles) expands to the home
+directory of the user deploying. For a local deployment that is the user running `kick`. Over ssh it
 is the user being logged in as, which the [access check](#access-check) finds
 out, so a path which needs expanding is an error with `--no-check`.
 
@@ -757,8 +761,8 @@ that:
 
 * We can log in over ssh at all, and that we end up as the user the `user`
   option asks for. Ending up as a different user is a warning, not an error.
-* `install` is available, along with `systemctl` and `cmp` if a unit is being
-  installed.
+* `install` and `tar` are available, along with `systemctl` and `cmp` if a unit
+  is being installed.
 * `sudo` can be used without being prompted for a password, when `sudo` is
   enabled. This is an error, see
   [sudo and interactivity](#sudo-and-interactivity) below.
@@ -769,6 +773,42 @@ which is what a leading `~` [expands](#home-directories) to.
 The check only reads state, it doesn't modify the remote host, so it is
 performed for `--dry-run` as well. It can be skipped with `--no-check`. A
 [local deployment](#local-deployments) has no access check.
+
+<br>
+
+### Connections
+
+Each host is logged into twice: once by the [access check](#access-check)
+before the build, and once to deploy, which sends the files and installs them
+over the same connection. With `--no-check` that is once per host.
+
+The access check is a separate connection on purpose, since it runs before what
+can be a lengthy build so that an unreachable host is found out about up front,
+and since the home directory it reports is needed to [expand](#home-directories)
+the paths being deployed to.
+
+If logging in is expensive, such as when it prompts for a password or a second
+factor, OpenSSH can share a single authenticated connection between the two
+through connection multiplexing. `kick` doesn't do this for you, since it isn't
+available everywhere (notably not in the OpenSSH which ships with Windows) and
+since it would override any multiplexing you have configured yourself, but it
+only takes a few `options`:
+
+```toml
+[deploy]
+host = "integration@moore"
+options = [
+    "ControlMaster=auto",
+    "ControlPath=~/.ssh/kick-%C",
+    "ControlPersist=10m",
+]
+```
+
+`ControlPersist` keeps the connection open in the background after the access
+check exits, and needs to outlive the build for the deployment to reuse it.
+The same thing can be done for every connection to a host with a `Host` block
+in `~/.ssh/config`. Run `ssh -O exit -o ControlPath=~/.ssh/kick-%C <host>` to
+close a shared connection early.
 
 <br>
 
@@ -841,7 +881,7 @@ which overrides the `binary` option, along with the following options:
 * `--verbose` / `-V` prints the deployment plan, the unit being installed and
   the script which is run remotely, and traces the remote script as it
   executes. Passing it twice (`-VV`) also prints the [access
-  check](#access-check) and makes `ssh` and `scp` verbose.
+  check](#access-check) and makes `ssh` verbose.
 
 <br>
 
@@ -858,5 +898,7 @@ Every remote host being deployed to is expected to:
   [sudo and interactivity](#sudo-and-interactivity).
 * Use a POSIX-compatible login shell.
 * Have `install` available, which is part of coreutils.
+* Have `tar` available, which the files being deployed are sent as. Any of GNU
+  tar, bsdtar and busybox tar will do.
 * Have `systemd` and `cmp` available if the `systemd` option is in use. The
   latter is part of diffutils.

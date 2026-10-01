@@ -33,7 +33,10 @@ const DEFAULT_STAGING_DIR: &str = ".kick-deploy";
 /// The build profile binaries are picked up from by default.
 const DEFAULT_PROFILE: &str = "release";
 /// Remote commands which are always needed.
-const REQUIRED_COMMANDS: &[&str] = &["install"];
+///
+/// `tar` unpacks the files being deployed, which are streamed to the remote
+/// host over the same ssh connection which installs them.
+const REQUIRED_COMMANDS: &[&str] = &["install", "tar"];
 /// Remote commands which are needed to install a systemd unit.
 const SYSTEMD_COMMANDS: &[&str] = &["systemctl", "cmp"];
 
@@ -145,7 +148,7 @@ pub(crate) struct Opts {
     /// One level `-V` prints the deployment plan, the systemd unit and the
     /// script which is run remotely, and traces the remote script as it
     /// executes. Two levels `-VV` additionally prints the access check and
-    /// passes `-v` to `ssh` and `scp`.
+    /// passes `-v` to `ssh`.
     #[arg(long, short = 'V', action = clap::ArgAction::Count)]
     verbose: u8,
 }
@@ -701,6 +704,7 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
 
         let bin_dir = expand(bin_dir)?;
         let unit_dir = expand(unit_dir)?;
+        let staging_dir = expand(staging_dir)?;
 
         let installs = installs
             .iter()
@@ -811,7 +815,7 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
         };
 
         let sources = match kind {
-            DeployKind::Ssh => Sources::Staged(staging_dir),
+            DeployKind::Ssh => Sources::Staged(&staging_dir),
             DeployKind::Local => Sources::Local(&uploads),
         };
 
@@ -893,7 +897,11 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
                     .map(|(path, name)| format!("{} -> {staging_dir}/{name}", path.display()))
                     .collect::<Vec<_>>();
 
-                details(o, "uploads", uploaded.iter().map(String::as_str))?;
+                details(
+                    o,
+                    "uploads (streamed as a tar archive to the remote script)",
+                    uploaded.iter().map(String::as_str),
+                )?;
             }
 
             let from = |name: &str| sources.display(name);
@@ -931,24 +939,13 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
 
         match kind {
             DeployKind::Ssh => {
-                let shell = Shell::Bash;
-
-                let mut command = ssh(opts, &config, target);
-                command.arg(format!("mkdir -p {}", shell.escape(staging_dir)));
-                run(o, opts, &mut command)?;
-
-                let mut command = scp(opts, &config);
-
-                for (path, _) in &uploads {
-                    command.arg(path);
-                }
-
-                command.arg(format!("{}:{staging_dir}/", target.ssh));
-                run(o, opts, &mut command)?;
-
+                // NB: Everything happens over a single connection. The files
+                // are streamed as a tar archive over the stdin of the remote
+                // script, which unpacks them into the staging directory before
+                // it installs anything.
                 let mut command = ssh(opts, &config, target);
                 command.arg(&script);
-                run(o, opts, &mut command)?;
+                run_with_payload(o, opts, &mut command, &uploads)?;
             }
             DeployKind::Local => {
                 let mut command = Command::new("sh");
@@ -1104,6 +1101,14 @@ fn script(
         writeln!(script, "set -eux")?;
     } else {
         writeln!(script, "set -eu")?;
+    }
+
+    // NB: The staged files arrive as a tar archive on stdin, and are unpacked
+    // before anything else so that a failed transfer leaves the running
+    // service alone.
+    if let Sources::Staged(dir) = sources {
+        writeln!(script, "mkdir -p {}", shell.escape(dir))?;
+        writeln!(script, "tar -x -f - -C {}", shell.escape(dir))?;
     }
 
     // Stop the service before its binary is replaced, the unit might not exist
@@ -1280,22 +1285,8 @@ fn ssh(opts: &Opts, config: &Deploy, target: &Target) -> Command {
     command
 }
 
-/// Construct an `scp` command.
-fn scp(opts: &Opts, config: &Deploy) -> Command {
-    let mut command = Command::new("scp");
-
-    if let Some(port) = config.port {
-        // NB: Unlike ssh, scp spells the port option with a capital `P`.
-        command.arg("-P");
-        command.arg(port.to_string());
-    }
-
-    options(&mut command, opts, config);
-    command
-}
-
 fn options(command: &mut Command, opts: &Opts, config: &Deploy) {
-    // NB: `ssh` and `scp` are only made verbose at the second level, since
+    // NB: `ssh` is only made verbose at the second level, since
     // what they print is about the connection rather than the deployment.
     if opts.verbose >= 2 {
         command.arg("-v");
@@ -1329,6 +1320,78 @@ fn run(o: &mut StandardStream, opts: &Opts, command: &mut Command) -> Result<()>
     }
 
     Ok(())
+}
+
+/// Run a command with the given files streamed to its stdin as a tar archive.
+///
+/// A dry run only prints the command, since the files being sent are listed
+/// with the rest of the deployment.
+fn run_with_payload(
+    o: &mut StandardStream,
+    opts: &Opts,
+    command: &mut Command,
+    files: &[(PathBuf, String)],
+) -> Result<()> {
+    let repr = command.display().to_string();
+
+    if opts.dry_run {
+        writeln!(o, "{repr} < <tar archive of the uploads>")?;
+        return Ok(());
+    }
+
+    tracing::info!("{repr}");
+
+    let mut child = command.stdin(Stdio::piped()).spawn()?;
+    let stdin = child.stdin()?;
+
+    // NB: The remote end hanging up while the archive is being written is
+    // reported through its exit status, which is the more useful of the two
+    // errors since it comes with whatever the remote script printed.
+    let written = write_payload(stdin, files).map(drop);
+    let status = child.wait_with_output()?.status;
+
+    if !status.success() {
+        bail!("Command failed with {status}: {repr}");
+    }
+
+    written.with_context(|| anyhow!("Sending files to: {repr}"))
+}
+
+/// Write the given files as a tar archive, each named by its staged name.
+///
+/// Entries are owned by uid and gid 0 and only readable by their owner. The
+/// owner only takes effect when the archive is unpacked as root, which is then
+/// who they should belong to, and the staged copies are only read by `install`
+/// which applies the mode they are actually installed with.
+fn write_payload<W>(out: W, files: &[(PathBuf, String)]) -> Result<W>
+where
+    W: std::io::Write,
+{
+    let mut builder = tar::Builder::new(out);
+
+    for (path, name) in files {
+        let file =
+            std::fs::File::open(path).with_context(|| anyhow!("Opening {}", path.display()))?;
+
+        let len = file
+            .metadata()
+            .with_context(|| anyhow!("Reading metadata of {}", path.display()))?
+            .len();
+
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_size(len);
+        header.set_mode(0o600);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_mtime(0);
+
+        builder
+            .append_data(&mut header, name, std::io::Read::take(file, len))
+            .with_context(|| anyhow!("Sending {}", path.display()))?;
+    }
+
+    Ok(builder.into_inner()?)
 }
 
 /// Check that the host being deployed to can actually be accessed before doing
@@ -1458,6 +1521,9 @@ fn check(
             "systemctl" => bail!(
                 "Missing `systemctl` on `{host}`, which is needed to install the systemd unit (pass `--no-systemd` to skip it)"
             ),
+            "tar" => bail!(
+                "Missing `tar` on `{host}`, which is needed to receive the files being deployed"
+            ),
             command => bail!(
                 "Missing `{command}` on `{host}`, which is needed to install the files being deployed"
             ),
@@ -1493,7 +1559,9 @@ mod tests {
     use crate::config::{Deploy, DeployKind, Systemd, SystemdScope};
     use crate::packaging::Mode;
 
-    use super::{Choice, Opts, ScriptOpts, Sources, choose_profile, expand_home, script};
+    use super::{
+        Choice, Opts, ScriptOpts, Sources, choose_profile, expand_home, script, write_payload,
+    };
 
     fn profiles(names: &[&str]) -> Deploy {
         let mut deploy = Deploy::default();
@@ -1728,6 +1796,8 @@ systemctl --user start kanban
         // unit does.
         let expected = "\
 set -eu
+mkdir -p .kick-deploy
+tar -x -f - -C .kick-deploy
 systemctl --user stop track 2>/dev/null || true
 sudo -n mkdir -p /usr/local/bin
 sudo -n install -m 0755 .kick-deploy/track /usr/local/bin/track
@@ -1768,6 +1838,8 @@ rm -f .kick-deploy/track.service
 
         let expected = "\
 set -eu
+mkdir -p .kick-deploy
+tar -x -f - -C .kick-deploy
 sudo -n systemctl stop track 2>/dev/null || true
 sudo -n mkdir -p /usr/local/bin
 sudo -n install -m 0755 .kick-deploy/track /usr/local/bin/track
@@ -1783,5 +1855,55 @@ rm -f .kick-deploy/track.service
 ";
 
         assert_eq!(script, expected);
+    }
+
+    #[test]
+    fn payload_round_trips() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        let binary = dir.path().join("track");
+        std::fs::write(&binary, b"\x7fELF binary").unwrap();
+
+        let unit = dir.path().join("track.service");
+        std::fs::write(&unit, b"[Service]\n").unwrap();
+
+        let long = "x".repeat(150);
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, b"").unwrap();
+
+        let files = vec![
+            (binary, String::from("track")),
+            (unit, String::from("track.service")),
+            (config, long.clone()),
+        ];
+
+        let archive = write_payload(Vec::new(), &files).unwrap();
+        assert_eq!(archive.len() % 512, 0);
+
+        let mut archive = tar::Archive::new(&archive[..]);
+        let mut entries = Vec::new();
+
+        for entry in archive.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let header = entry.header();
+            assert_eq!(header.entry_type(), tar::EntryType::Regular);
+            assert_eq!(header.mode().unwrap(), 0o600);
+            assert_eq!(header.uid().unwrap(), 0);
+            assert_eq!(header.gid().unwrap(), 0);
+
+            let path = entry.path().unwrap().to_string_lossy().into_owned();
+            let mut contents = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut contents).unwrap();
+            entries.push((path, contents));
+        }
+
+        assert_eq!(
+            entries,
+            [
+                (String::from("track"), b"\x7fELF binary".to_vec()),
+                (String::from("track.service"), b"[Service]\n".to_vec()),
+                (long, Vec::new()),
+            ]
+        );
     }
 }
