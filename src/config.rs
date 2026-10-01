@@ -160,50 +160,111 @@ impl Package {
     }
 }
 
-/// A command which is run locally, such as part of a deployment or an install.
+/// The command line of a configured command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CommandLine {
+    /// A command line as written, which is split on whitespace when it is run
+    /// by `kick` itself and handed to the shell as it is when it is part of an
+    /// install script.
+    Line(String),
+    /// A list of arguments, the first of which is the program. This is how an
+    /// argument which contains whitespace is specified.
+    Args(Vec<String>),
+}
+
+/// A configured command.
 ///
-/// In configuration this is either a string, which is split on whitespace, or
-/// an array of arguments in case an argument contains whitespace.
+/// In configuration this is either a string, a list of arguments, or a table
+/// of the form `{ command = <string or list>, sudo = <bool> }`. The same forms
+/// are accepted everywhere a command is, but where a command runs decides how
+/// a string is interpreted:
+///
+/// * Commands run by `kick` itself, like `pre_build`, are not run through a
+///   shell, so a string is split on whitespace.
+/// * Commands which are part of the script which installs the project, like
+///   `post_install`, are command lines for the shell running that script.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ConfigCommand {
-    /// The command to run.
-    pub(crate) command: String,
-    /// Arguments to pass to the command.
-    pub(crate) args: Vec<String>,
+    /// The command line.
+    pub(crate) line: CommandLine,
+    /// Whether the command is run under the sudo prefix of the install script.
+    pub(crate) sudo: bool,
 }
 
 impl ConfigCommand {
-    /// Construct a command from a string by splitting it on whitespace.
+    /// Construct a command from a command line.
     ///
     /// Returns `None` if the string is empty or only contains whitespace.
     pub(crate) fn split(command: &str) -> Option<Self> {
-        let mut it = command.split_whitespace();
-        let command = it.next()?.to_owned();
+        if command.trim().is_empty() {
+            return None;
+        }
 
         Some(Self {
-            command,
-            args: it.map(str::to_owned).collect(),
+            line: CommandLine::Line(command.to_owned()),
+            sudo: false,
         })
+    }
+
+    /// The program and its arguments, as `kick` runs the command itself.
+    pub(crate) fn argv(&self) -> Vec<&str> {
+        match &self.line {
+            CommandLine::Line(line) => line.split_whitespace().collect(),
+            CommandLine::Args(args) => args.iter().map(String::as_str).collect(),
+        }
     }
 
     /// Build a process command which runs this command in the given directory.
     pub(crate) fn to_command(&self, dir: &Path) -> process::Command {
-        let mut command = process::Command::new(&self.command);
-        command.args(&self.args);
+        let argv = self.argv();
+        let (program, args) = argv.split_first().map_or(("", &[][..]), |(p, a)| (*p, a));
+        let mut command = process::Command::new(program);
+        command.args(args.iter().copied());
         command.current_dir(dir);
         command
     }
+
+    /// The command as a line for the given shell.
+    ///
+    /// A line is used as it is, while a list of arguments is escaped.
+    pub(crate) fn to_shell(&self, shell: Shell) -> String {
+        match &self.line {
+            CommandLine::Line(line) => line.clone(),
+            CommandLine::Args(args) => args
+                .iter()
+                .map(|arg| shell.escape(arg).into_owned())
+                .collect::<Vec<_>>()
+                .join(" "),
+        }
+    }
 }
 
-/// Install configuration.
+/// How the project is built, which is shared by `kick install` and `kick
+/// deploy`.
 #[derive(Default, Debug, Clone)]
-pub(crate) struct Install {
-    /// Commands which are run in order to install the project.
+pub(crate) struct Build {
+    /// The name of the binary which is built and installed.
+    pub(crate) binary: Option<String>,
+    /// The cargo package which is built, passed as `--package`.
+    pub(crate) package: Option<String>,
+    /// The cargo profile the binary is built with.
+    pub(crate) profile: Option<String>,
+    /// Features to enable in the generated build command.
+    pub(crate) features: Vec<String>,
+    /// Commands which are run before the project is built.
+    pub(crate) pre_build: Vec<ConfigCommand>,
+    /// Commands which replace the build command which would otherwise be
+    /// generated.
     pub(crate) commands: Vec<ConfigCommand>,
 }
 
-impl Install {
-    fn merge_with(&mut self, mut other: Self) {
+impl Build {
+    pub(crate) fn merge_with(&mut self, mut other: Self) {
+        self.binary = other.binary.or(self.binary.take());
+        self.package = other.package.or(self.package.take());
+        self.profile = other.profile.or(self.profile.take());
+        self.features.append(&mut other.features);
+        self.pre_build.append(&mut other.pre_build);
         self.commands.append(&mut other.commands);
     }
 }
@@ -218,16 +279,6 @@ pub(crate) struct DeployFile {
     pub(crate) dest: String,
     /// The mode the file is installed with.
     pub(crate) mode: Option<Mode>,
-}
-
-/// A command which is run on the machine being deployed to, around the start
-/// of the service.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DeployCommand {
-    /// The command line, which is run by the shell of the deployment script.
-    pub(crate) command: String,
-    /// Whether the command is run under the sudo prefix of the deployment.
-    pub(crate) sudo: bool,
 }
 
 /// How a deployment reaches the machine it is installed on.
@@ -300,7 +351,40 @@ impl FromStr for SystemdScope {
     }
 }
 
-/// Deployment configuration.
+/// Options which used to be part of the `[install]` and `[deploy]` sections,
+/// and where they are configured now.
+const MOVED_TARGET_KEYS: &[(&str, &str)] = &[
+    ("binary", "`binary` in the `[build]` section"),
+    ("profile", "`profile` in the `[build]` section"),
+    ("pre_build", "`pre_build` in the `[build]` section"),
+    ("build_features", "`features` in the `[build]` section"),
+    ("pre_start", "`post_install`"),
+];
+
+/// Which section a target is configured in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Section {
+    /// The `[install]` section, which installs on the machine `kick` runs on.
+    Install,
+    /// The `[deploy]` section.
+    Deploy,
+}
+
+impl Section {
+    /// The name of the section, as used in configuration.
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Section::Install => "install",
+            Section::Deploy => "deploy",
+        }
+    }
+}
+
+/// Where and how a built project is installed, which is what the `[install]`
+/// and `[deploy]` sections both configure.
+///
+/// The `[install]` section takes everything except for the options which only
+/// make sense over ssh, and `commands` is only available there.
 #[derive(Default, Debug, Clone)]
 pub(crate) struct Deploy {
     /// How the deployment reaches the machine being deployed to.
@@ -317,35 +401,29 @@ pub(crate) struct Deploy {
     pub(crate) port: Option<u16>,
     /// The identity file to authenticate with.
     pub(crate) identity_file: Option<String>,
-    /// Extra options passed to `ssh` and `scp` through `-o`.
+    /// Extra options passed to `ssh` through `-o`.
     pub(crate) options: Vec<String>,
-    /// Whether privileged remote commands should be prefixed with `sudo`.
+    /// Whether privileged commands should be prefixed with `sudo`.
     pub(crate) sudo: Option<bool>,
-    /// The remote directory binaries are installed into.
+    /// The directory binaries are installed into.
     pub(crate) bin_dir: Option<String>,
-    /// The remote directory systemd units are installed into.
+    /// The directory systemd units are installed into.
     pub(crate) unit_dir: Option<String>,
     /// The remote directory files are uploaded to before being installed.
     pub(crate) staging_dir: Option<String>,
-    /// The name of the binary being deployed.
-    pub(crate) binary: Option<String>,
-    /// The build profile the binary being deployed is found in.
-    pub(crate) profile: Option<String>,
-    /// Commands which are run locally before the project is built.
-    pub(crate) pre_build: Vec<ConfigCommand>,
-    /// Commands which replace the build command which would otherwise be
-    /// generated.
-    pub(crate) build: Vec<ConfigCommand>,
-    /// Features to enable in the generated build command.
-    pub(crate) build_features: Vec<String>,
+    /// How the project is built, layered over the `[build]` section.
+    pub(crate) build: Build,
+    /// Commands which replace building and installing the binary, only
+    /// available in the `[install]` section.
+    pub(crate) commands: Vec<ConfigCommand>,
     /// Extra files to install.
     pub(crate) files: Vec<DeployFile>,
     /// Commands which are run on the target after everything has been
     /// installed and before the service is started.
-    pub(crate) pre_start: Vec<DeployCommand>,
+    pub(crate) post_install: Vec<ConfigCommand>,
     /// Commands which are run on the target after the service has been
     /// started.
-    pub(crate) post_start: Vec<DeployCommand>,
+    pub(crate) post_start: Vec<ConfigCommand>,
     /// The systemd unit to install.
     pub(crate) systemd: Option<Systemd>,
 }
@@ -398,13 +476,10 @@ impl Deploy {
         self.bin_dir = other.bin_dir.or(self.bin_dir.take());
         self.unit_dir = other.unit_dir.or(self.unit_dir.take());
         self.staging_dir = other.staging_dir.or(self.staging_dir.take());
-        self.binary = other.binary.or(self.binary.take());
-        self.profile = other.profile.or(self.profile.take());
-        self.pre_build.append(&mut other.pre_build);
-        self.build.append(&mut other.build);
-        self.build_features.append(&mut other.build_features);
+        self.build.merge_with(other.build);
+        self.commands.append(&mut other.commands);
         self.files.append(&mut other.files);
-        self.pre_start.append(&mut other.pre_start);
+        self.post_install.append(&mut other.post_install);
         self.post_start.append(&mut other.post_start);
 
         match (&mut self.systemd, other.systemd) {
@@ -835,10 +910,12 @@ pub(crate) struct RepoConfig {
     pub(crate) package: Package,
     /// Actions configuration.
     pub(crate) actions: Actions,
+    /// How the project is built.
+    pub(crate) build: Build,
     /// Deployment configuration.
     pub(crate) deploy: Deploy,
     /// Install configuration.
-    pub(crate) install: Install,
+    pub(crate) install: Deploy,
 }
 
 impl RepoConfig {
@@ -869,6 +946,7 @@ impl RepoConfig {
         self.upgrade.merge_with(other.upgrade);
         self.package.merge_with(other.package);
         self.actions.merge_with(other.actions);
+        self.build.merge_with(other.build);
         self.deploy.merge_with(other.deploy);
         self.install.merge_with(other.install);
 
@@ -1161,14 +1239,26 @@ impl Config<'_> {
     }
 
     /// Get the install configuration for the given repo.
-    pub(crate) fn install(&self, repo: &RepoRef) -> Install {
-        let mut install = Install::default();
+    pub(crate) fn install(&self, repo: &RepoRef) -> Deploy {
+        let mut install = Deploy::default();
 
         for repo in self.repos(repo) {
             install.merge_with(repo.install.clone());
         }
 
         install
+    }
+
+    /// Get the build configuration for the given repo, which is shared by
+    /// installs and deployments.
+    pub(crate) fn build(&self, repo: &RepoRef) -> Build {
+        let mut build = Build::default();
+
+        for repo in self.repos(repo) {
+            build.merge_with(repo.build.clone());
+        }
+
+        build
     }
 
     /// Get all denied actions.
@@ -1771,9 +1861,15 @@ impl<'a> Cx<'a> {
 
         let actions = self.in_key(table, "actions", Self::actions);
 
-        let deploy = self.in_key(table, "deploy", Self::deploy);
+        let build = self.in_key(table, "build", Self::build);
 
-        let install = self.in_key(table, "install", Self::install);
+        let deploy = self.in_key(table, "deploy", |cx, value| {
+            cx.target(value, Section::Deploy)
+        });
+
+        let install = self.in_key(table, "install", |cx, value| {
+            cx.target(value, Section::Install)
+        });
 
         Ok(RepoConfig {
             sources: BTreeSet::from_iter([RepoSource::Config(self.current.to_owned())]),
@@ -1798,6 +1894,7 @@ impl<'a> Cx<'a> {
             upgrade: upgrade?.unwrap_or_default(),
             package: package?.unwrap_or_default(),
             actions: actions?.unwrap_or_default(),
+            build: build?.unwrap_or_default(),
             deploy: deploy?.unwrap_or_default(),
             install: install?.unwrap_or_default(),
         })
@@ -1953,29 +2050,67 @@ impl<'a> Cx<'a> {
         }
     }
 
-    fn config_command(&self, value: toml::Value) -> Result<ConfigCommand, ErrorMarker> {
-        let parts = match value {
-            toml::Value::String(string) => string.split_whitespace().map(str::to_owned).collect(),
-            value => self.array(value, Self::string)?,
-        };
+    /// A command which `kick` runs itself, which cannot use sudo.
+    fn local_command(&self, value: toml::Value) -> Result<ConfigCommand, ErrorMarker> {
+        let command = self.config_command(value)?;
 
-        let mut it = parts.into_iter();
+        if command.sudo {
+            return Err(self.capture(
+                "`sudo` is only supported for commands which are part of the install script",
+            ));
+        }
 
-        let Some(command) = it.next() else {
-            return Err(self.capture("expected a non-empty command"));
-        };
-
-        Ok(ConfigCommand {
-            command,
-            args: it.collect(),
-        })
+        Ok(command)
     }
 
-    fn install(&self, value: toml::Value) -> Result<Install, ErrorMarker> {
-        self.with_table(value, |cx, table| {
-            let commands = cx.in_array(table, "commands", None, Self::config_command);
+    /// A command, either a command line, a list of arguments, or a table of
+    /// either one and whether it is run under sudo.
+    fn config_command(&self, value: toml::Value) -> Result<ConfigCommand, ErrorMarker> {
+        let (line, sudo) = match value {
+            value @ toml::Value::Table(..) => self.with_table(value, |cx, table| {
+                let line = cx.require_key(table, "command", Self::command_line);
+                let sudo = cx.in_key(table, "sudo", Self::boolean);
+                Ok((line?, sudo?.unwrap_or_default()))
+            })?,
+            value => (self.command_line(value)?, false),
+        };
 
-            Ok(Install {
+        Ok(ConfigCommand { line, sudo })
+    }
+
+    fn command_line(&self, value: toml::Value) -> Result<CommandLine, ErrorMarker> {
+        let line = match value {
+            value @ toml::Value::String(..) => CommandLine::Line(self.string(value)?),
+            value => CommandLine::Args(self.array(value, Self::string)?),
+        };
+
+        let empty = match &line {
+            CommandLine::Line(line) => line.trim().is_empty(),
+            CommandLine::Args(args) => args.is_empty(),
+        };
+
+        if empty {
+            return Err(self.capture("expected a non-empty command"));
+        }
+
+        Ok(line)
+    }
+
+    fn build(&self, value: toml::Value) -> Result<Build, ErrorMarker> {
+        self.with_table(value, |cx, table| {
+            let binary = cx.in_key(table, "binary", Self::string);
+            let package = cx.in_key(table, "package", Self::string);
+            let profile = cx.in_key(table, "profile", Self::string);
+            let features = cx.in_array(table, "features", None, Self::string);
+            let pre_build = cx.in_array(table, "pre_build", None, Self::local_command);
+            let commands = cx.in_array(table, "commands", None, Self::local_command);
+
+            Ok(Build {
+                binary: binary?,
+                package: package?,
+                profile: profile?,
+                features: features?,
+                pre_build: pre_build?,
                 commands: commands?,
             })
         })
@@ -1993,25 +2128,6 @@ impl<'a> Cx<'a> {
                 mode: mode?,
             })
         })
-    }
-
-    /// A command run on the target, either a command line or a table of the
-    /// command line and whether it is run under sudo.
-    fn deploy_command(&self, value: toml::Value) -> Result<DeployCommand, ErrorMarker> {
-        let (command, sudo) = match value {
-            value @ toml::Value::String(..) => (self.string(value)?, false),
-            value => self.with_table(value, |cx, table| {
-                let command = cx.require_key(table, "command", Self::string);
-                let sudo = cx.in_key(table, "sudo", Self::boolean);
-                Ok((command?, sudo?.unwrap_or_default()))
-            })?,
-        };
-
-        if command.trim().is_empty() {
-            return Err(self.capture("expected a non-empty command"));
-        }
-
-        Ok(DeployCommand { command, sudo })
     }
 
     /// Read and validate a unit template stored at the given path.
@@ -2093,69 +2209,93 @@ impl<'a> Cx<'a> {
         }
     }
 
-    fn deploy(&self, value: toml::Value) -> Result<Deploy, ErrorMarker> {
+    /// The `[install]` or `[deploy]` section.
+    fn target(&self, value: toml::Value, section: Section) -> Result<Deploy, ErrorMarker> {
         self.with_table(value, |cx, table| {
             let default_profile = cx.in_key(table, "default_profile", Self::string);
             let profiles = cx.in_table(table, "profiles", |cx, name, value| {
-                Ok((name, cx.deploy_profile(value)?))
+                let profile = cx.with_table(value, |cx, table| cx.target_table(table, section))?;
+                Ok((name, profile))
             });
 
-            let mut deploy = cx.deploy_table(table)?;
+            let mut deploy = cx.target_table(table, section)?;
             deploy.default_profile = default_profile?;
             deploy.profiles = profiles?;
             Ok(deploy)
         })
     }
 
-    /// A profile in `[deploy.profiles]`, which takes everything `[deploy]`
-    /// does except for profiles of its own.
-    fn deploy_profile(&self, value: toml::Value) -> Result<Deploy, ErrorMarker> {
-        self.with_table(value, Self::deploy_table)
-    }
-
-    fn deploy_table(&self, table: &mut toml::Table) -> Result<Deploy, ErrorMarker> {
+    /// The options shared by a target section and its profiles.
+    ///
+    /// The options which only apply over ssh are only read for `[deploy]`, so
+    /// that they are reported as unsupported in `[install]`.
+    fn target_table(
+        &self,
+        table: &mut toml::Table,
+        section: Section,
+    ) -> Result<Deploy, ErrorMarker> {
         let cx = self;
 
-        let kind = cx.in_key(table, "kind", Self::parse);
-        let host = cx.in_key(table, "host", Self::deploy_hosts);
-        let user = cx.in_key(table, "user", Self::string);
-        let port = cx.in_key(table, "port", Self::port);
-        let identity_file = cx.in_key(table, "identity_file", Self::string);
-        let options = cx.in_array(table, "options", None, Self::string);
+        // NB: Options which have moved are reported with where they went,
+        // since a configuration written for an older kick is the most likely
+        // source of them.
+        let mut moved = Ok(());
+
+        for (old, new) in MOVED_TARGET_KEYS {
+            let moved_to = cx.in_key(table, old, |cx, _| {
+                Err::<(), _>(cx.capture(format_args!("`{old}` has moved, use {new} instead")))
+            });
+
+            if moved_to.is_err() {
+                moved = Err(ErrorMarker);
+            }
+        }
+
+        let remote = section == Section::Deploy;
+
+        let kind = remote.then(|| cx.in_key(table, "kind", Self::parse));
+        let host = remote.then(|| cx.in_key(table, "host", Self::deploy_hosts));
+        let user = remote.then(|| cx.in_key(table, "user", Self::string));
+        let port = remote.then(|| cx.in_key(table, "port", Self::port));
+        let identity_file = remote.then(|| cx.in_key(table, "identity_file", Self::string));
+        let options = remote.then(|| cx.in_array(table, "options", None, Self::string));
+        let staging_dir = remote.then(|| cx.in_key(table, "staging_dir", Self::string));
+        let commands = (section == Section::Install)
+            .then(|| cx.in_array(table, "commands", None, Self::local_command));
+
         let sudo = cx.in_key(table, "sudo", Self::boolean);
         let bin_dir = cx.in_key(table, "bin_dir", Self::string);
         let unit_dir = cx.in_key(table, "unit_dir", Self::string);
-        let staging_dir = cx.in_key(table, "staging_dir", Self::string);
-        let binary = cx.in_key(table, "binary", Self::string);
-        let profile = cx.in_key(table, "profile", Self::string);
-        let pre_build = cx.in_array(table, "pre_build", None, Self::config_command);
-        let build = cx.in_array(table, "build", None, Self::config_command);
-        let build_features = cx.in_array(table, "build_features", None, Self::string);
+        let build = cx.in_key(table, "build", |cx, value| match value {
+            toml::Value::Array(..) => Err(cx.capture(
+                "`build` as a list of commands has moved, use `commands` in the `[build]` section instead",
+            )),
+            value => cx.build(value),
+        });
         let files = cx.in_array(table, "files", None, Self::deploy_file);
-        let pre_start = cx.in_array(table, "pre_start", None, Self::deploy_command);
-        let post_start = cx.in_array(table, "post_start", None, Self::deploy_command);
+        let post_install = cx.in_array(table, "post_install", None, Self::config_command);
+        let post_start = cx.in_array(table, "post_start", None, Self::config_command);
         let systemd = cx.in_key(table, "systemd", Self::systemd);
 
+        moved?;
+
         Ok(Deploy {
-            kind: kind?,
+            kind: kind.transpose()?.flatten(),
             default_profile: None,
             profiles: BTreeMap::new(),
-            host: host?.unwrap_or_default(),
-            user: user?,
-            port: port?,
-            identity_file: identity_file?,
-            options: options?,
+            host: host.transpose()?.flatten().unwrap_or_default(),
+            user: user.transpose()?.flatten(),
+            port: port.transpose()?.flatten(),
+            identity_file: identity_file.transpose()?.flatten(),
+            options: options.transpose()?.unwrap_or_default(),
             sudo: sudo?,
             bin_dir: bin_dir?,
             unit_dir: unit_dir?,
-            staging_dir: staging_dir?,
-            binary: binary?,
-            profile: profile?,
-            pre_build: pre_build?,
-            build: build?,
-            build_features: build_features?,
+            staging_dir: staging_dir.transpose()?.flatten(),
+            build: build?.unwrap_or_default(),
+            commands: commands.transpose()?.unwrap_or_default(),
             files: files?,
-            pre_start: pre_start?,
+            post_install: post_install?,
             post_start: post_start?,
             systemd: systemd?,
         })
@@ -2375,18 +2515,26 @@ mod tests {
 
     use relative_path::RelativePath;
 
-    use super::{ConfigCommand, Cx, Deploy, DeployCommand, DeployKind, Install, SystemdScope};
+    use super::{Build, CommandLine, ConfigCommand, Cx, Deploy, DeployKind, Section, SystemdScope};
     use crate::ctxt::Paths;
+    use crate::shell::Shell;
     use crate::templates::Templating;
 
-    fn command(command: &str, args: &[&str]) -> ConfigCommand {
+    fn line(line: &str, sudo: bool) -> ConfigCommand {
         ConfigCommand {
-            command: command.to_owned(),
-            args: args.iter().map(|a| (*a).to_owned()).collect(),
+            line: CommandLine::Line(line.to_owned()),
+            sudo,
         }
     }
 
-    fn parse_install(source: &str) -> (Option<Install>, usize) {
+    fn args(args: &[&str]) -> ConfigCommand {
+        ConfigCommand {
+            line: CommandLine::Args(args.iter().map(|a| (*a).to_owned()).collect()),
+            sudo: false,
+        }
+    }
+
+    fn parse_build(source: &str) -> (Option<Build>, usize) {
         let templating = Templating::new().unwrap();
 
         let paths = Paths {
@@ -2399,12 +2547,20 @@ mod tests {
 
         let cx = Cx::new(paths, RelativePath::new(""), &templating);
         let value: toml::Value = toml::from_str(source).unwrap();
-        let install = cx.install(value).ok();
+        let build = cx.build(value).ok();
         let errors = cx.errors.borrow().len();
-        (install, errors)
+        (build, errors)
+    }
+
+    fn parse_install(source: &str) -> (Option<Deploy>, usize) {
+        parse_target(source, Section::Install)
     }
 
     fn parse_deploy(source: &str) -> (Option<Deploy>, usize) {
+        parse_target(source, Section::Deploy)
+    }
+
+    fn parse_target(source: &str, section: Section) -> (Option<Deploy>, usize) {
         let templating = Templating::new().unwrap();
 
         let paths = Paths {
@@ -2417,7 +2573,7 @@ mod tests {
 
         let cx = Cx::new(paths, RelativePath::new(""), &templating);
         let value: toml::Value = toml::from_str(source).unwrap();
-        let deploy = cx.deploy(value).ok();
+        let deploy = cx.target(value, section).ok();
         let errors = cx.errors.borrow().len();
         (deploy, errors)
     }
@@ -2426,7 +2582,6 @@ mod tests {
     fn deploy_profiles() {
         let (deploy, errors) = parse_deploy(
             r#"
-binary = "kanban"
 default_profile = "local"
 
 [profiles.local]
@@ -2542,11 +2697,11 @@ socket = 42
     fn deploy_start_commands() {
         let (deploy, errors) = parse_deploy(
             r#"
-pre_start = ["kanban --db /var/lib/kanban/kanban.db install"]
+post_install = ["kanban --db /var/lib/kanban/kanban.db install"]
 
 [profiles.system]
-pre_start = [{ command = "systemd-sysusers", sudo = true }]
-post_start = [{ command = "echo done" }]
+post_install = [{ command = "systemd-sysusers", sudo = true }]
+post_start = [{ command = ["echo", "all done"] }]
 "#,
         );
 
@@ -2555,32 +2710,30 @@ post_start = [{ command = "echo done" }]
         let system = deploy.unwrap().with_profile("system").unwrap();
 
         assert_eq!(
-            system.pre_start,
+            system.post_install,
             [
-                DeployCommand {
-                    command: String::from("kanban --db /var/lib/kanban/kanban.db install"),
-                    sudo: false,
-                },
-                DeployCommand {
-                    command: String::from("systemd-sysusers"),
-                    sudo: true,
-                },
+                line("kanban --db /var/lib/kanban/kanban.db install", false),
+                line("systemd-sysusers", true),
             ]
         );
 
-        assert_eq!(
-            system.post_start,
-            [DeployCommand {
-                command: String::from("echo done"),
-                sudo: false,
-            }]
-        );
+        assert_eq!(system.post_start, [args(&["echo", "all done"])]);
 
         for source in [
-            r#"pre_start = [""]"#,
-            r#"pre_start = [42]"#,
+            r#"post_install = [""]"#,
+            r#"post_install = [42]"#,
+            r#"post_install = [[]]"#,
             r#"post_start = [{ sudo = true }]"#,
             r#"post_start = [{ command = "x", user = "root" }]"#,
+            // Renamed to `post_install`.
+            r#"pre_start = ["x"]"#,
+            // Moved into `[build]`.
+            r#"pre_build = ["x"]"#,
+            r#"binary = "x""#,
+            r#"build = ["x"]"#,
+            r#"build_features = ["x"]"#,
+            // Only available in `[install]`.
+            r#"commands = ["x"]"#,
         ] {
             let (_, errors) = parse_deploy(source);
             assert_eq!(errors, 1, "{source}");
@@ -2669,55 +2822,122 @@ host = "moore"
     }
 
     #[test]
-    fn install_commands() {
+    fn build_section() {
+        let (build, errors) = parse_build(
+            r#"
+binary = "kanban"
+package = "kanban"
+profile = "release-lto"
+features = ["bundle"]
+pre_build = ["trunk build --release", ["sh", "-c", "echo a b"]]
+commands = [{ command = "cargo xtask dist" }]
+"#,
+        );
+
+        assert_eq!(errors, 0);
+
+        let build = build.unwrap();
+        assert_eq!(build.binary.as_deref(), Some("kanban"));
+        assert_eq!(build.package.as_deref(), Some("kanban"));
+        assert_eq!(build.profile.as_deref(), Some("release-lto"));
+        assert_eq!(build.features, ["bundle"]);
+        assert_eq!(
+            build.pre_build,
+            [
+                line("trunk build --release", false),
+                args(&["sh", "-c", "echo a b"])
+            ]
+        );
+        assert_eq!(build.commands, [line("cargo xtask dist", false)]);
+
+        // NB: Nothing which kick runs itself goes through sudo.
+        for source in [
+            r#"pre_build = [{ command = "x", sudo = true }]"#,
+            r#"build_features = ["x"]"#,
+        ] {
+            let (_, errors) = parse_build(source);
+            assert_eq!(errors, 1, "{source}");
+        }
+    }
+
+    #[test]
+    fn build_layers_into_targets() {
+        let (deploy, errors) = parse_deploy(
+            r#"
+[build]
+features = ["a"]
+
+[profiles.local.build]
+profile = "dev"
+features = ["b"]
+"#,
+        );
+
+        assert_eq!(errors, 0);
+
+        let mut build = Build {
+            binary: Some(String::from("kanban")),
+            ..Build::default()
+        };
+
+        build.merge_with(deploy.unwrap().with_profile("local").unwrap().build);
+        assert_eq!(build.binary.as_deref(), Some("kanban"));
+        assert_eq!(build.profile.as_deref(), Some("dev"));
+        assert_eq!(build.features, ["a", "b"]);
+    }
+
+    #[test]
+    fn install_section() {
         let (install, errors) = parse_install(
-            r#"commands = ["trunk build --release", ["cargo", "install", "--path", "."]]"#,
+            r#"
+commands = ["cargo install --path . --locked"]
+post_install = ["kanban install"]
+bin_dir = "~/bin"
+
+[profiles.service.systemd]
+args = ["serve"]
+"#,
         );
 
         assert_eq!(errors, 0);
 
         let install = install.unwrap();
-
         assert_eq!(
             install.commands,
-            [
-                command("trunk", &["build", "--release"]),
-                command("cargo", &["install", "--path", "."]),
-            ]
+            [line("cargo install --path . --locked", false)]
         );
+        assert_eq!(install.post_install, [line("kanban install", false)]);
+        assert_eq!(install.bin_dir.as_deref(), Some("~/bin"));
+        assert!(install.profiles["service"].systemd.is_some());
     }
 
     #[test]
-    fn install_rejects_bad_config() {
-        let (_, errors) = parse_install(r#"commands = [""]"#);
-        assert_eq!(errors, 1);
-
-        let (_, errors) = parse_install(
-            r#"commands = []
-unknown = 1"#,
-        );
-        assert_eq!(errors, 1);
+    fn install_rejects_remote_options() {
+        for source in [
+            r#"commands = [""]"#,
+            r#"commands = [{ command = "x", sudo = true }]"#,
+            r#"kind = "local""#,
+            r#"host = "moore""#,
+            r#"user = "integration""#,
+            r#"staging_dir = "x""#,
+            r#"unknown = 1"#,
+            "[profiles.a]
+host = \"moore\"",
+        ] {
+            let (_, errors) = parse_install(source);
+            assert_eq!(errors, 1, "{source}");
+        }
     }
 
     #[test]
-    fn install_merges_by_appending() {
-        let mut install = Install {
-            commands: vec![command("a", &[])],
-        };
-
-        install.merge_with(Install {
-            commands: vec![command("b", &["c"])],
-        });
-
-        assert_eq!(install.commands, [command("a", &[]), command("b", &["c"])]);
-    }
-
-    #[test]
-    fn split_command() {
-        assert_eq!(
-            ConfigCommand::split("  cargo  install --path . "),
-            Some(command("cargo", &["install", "--path", "."]))
-        );
+    fn command_forms() {
+        let command = ConfigCommand::split("  cargo  install --path . ").unwrap();
+        assert_eq!(command.argv(), ["cargo", "install", "--path", "."]);
+        assert_eq!(command.to_shell(Shell::Bash), "  cargo  install --path . ");
         assert_eq!(ConfigCommand::split("   "), None);
+
+        let command = args(&["echo", "a b", "$HOME"]);
+        assert_eq!(command.argv(), ["echo", "a b", "$HOME"]);
+        assert_eq!(command.to_shell(Shell::Bash), r#"echo "a b" "\$HOME""#);
     }
 }

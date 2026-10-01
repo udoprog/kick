@@ -2,15 +2,16 @@ use std::collections::{HashMap, HashSet};
 use std::env::consts::EXE_EXTENSION;
 use std::fmt::Write as _;
 use std::io::{IsTerminal as _, Write as _};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::Parser;
+use clap::{Args, Parser};
 use termcolor::{ColorChoice, StandardStream};
 
 use crate::cli::WithRepos;
-use crate::config::{ConfigCommand, Deploy, DeployCommand, DeployKind, SystemdScope};
+use crate::config::{Build, ConfigCommand, Deploy, DeployKind, Section, SystemdScope};
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::model::Repo;
@@ -21,6 +22,9 @@ use crate::systemd;
 
 /// The remote directory binaries are installed into by default.
 const DEFAULT_BIN_DIR: &str = "/usr/local/bin";
+/// The directory a local install puts binaries into by default, unless
+/// `CARGO_HOME` says otherwise.
+const DEFAULT_CARGO_BIN_DIR: &str = "~/.cargo/bin";
 /// The directory system units are installed into by default.
 const DEFAULT_UNIT_DIR: &str = "/etc/systemd/system";
 /// The directory user units are installed into by default.
@@ -40,24 +44,123 @@ const REQUIRED_COMMANDS: &[&str] = &["install", "tar"];
 /// Remote commands which are needed to install a systemd unit.
 const SYSTEMD_COMMANDS: &[&str] = &["systemctl", "cmp"];
 
-#[derive(Default, Debug, Parser)]
-pub(crate) struct Opts {
-    /// The name of the binary to deploy.
+/// The options shared by `kick install` and `kick deploy`.
+#[derive(Default, Debug, Clone, Args)]
+pub(crate) struct Common {
+    /// The name of the binary to install.
     ///
-    /// This overrides the `binary` option in the `[deploy]` section, and
-    /// defaults to the name of the primary crate in the project.
-    binary: Option<String>,
-    /// The deploy profile to use, as defined in a `[deploy.profiles.<name>]`
-    /// section.
+    /// This overrides the `binary` option in the `[build]` section, and
+    /// defaults to the `package` being built or the name of the primary crate
+    /// in the project.
+    pub(crate) binary: Option<String>,
+    /// The profile to use, as defined in a `profiles.<name>` section.
     ///
-    /// Defaults to the `default_profile` option in the `[deploy]` section, or
-    /// the only profile if there is just one. With several profiles and no
-    /// default, you are asked which one to use when running in a terminal.
+    /// Defaults to the `default_profile` option of the section, or the only
+    /// profile if there is just one. With several profiles and no default, you
+    /// are asked which one to use when running in a terminal.
     ///
     /// Note that this is not the same as `--profile`, which is the cargo build
     /// profile.
     #[arg(long = "to", value_name = "PROFILE")]
-    to: Option<String>,
+    pub(crate) to: Option<String>,
+    /// The cargo build profile, overrides the `profile` option in the
+    /// `[build]` section.
+    #[arg(long)]
+    pub(crate) profile: Option<String>,
+    /// The cargo package to build, overrides the `package` option in the
+    /// `[build]` section.
+    #[arg(long, value_name = "PACKAGE")]
+    pub(crate) package: Option<String>,
+    /// A feature to enable when building, can be used more than once and takes
+    /// comma-separated lists.
+    ///
+    /// This is added to the `features` option in the `[build]` section, and
+    /// has no effect if the build command is replaced through `commands`.
+    #[arg(long = "features", value_name = "FEATURES")]
+    pub(crate) features: Vec<String>,
+    /// A command to run before the project is built, can be used more than
+    /// once.
+    ///
+    /// This is added to the `pre_build` option in the `[build]` section.
+    #[arg(long = "pre-build", value_name = "COMMAND")]
+    pub(crate) pre_build: Vec<String>,
+    /// Do not build the project, which is what you want when the binary has
+    /// already been built.
+    #[arg(long)]
+    pub(crate) no_build: bool,
+    /// The directory the binary is installed into, overrides the `bin_dir`
+    /// option.
+    #[arg(long = "bin-dir", value_name = "DIR")]
+    pub(crate) bin_dir: Option<String>,
+    /// The arguments the installed service is started with.
+    ///
+    /// Can be used more than once, and each use is split on whitespace. This
+    /// defines the `args` variable, which the built-in unit template appends
+    /// to `ExecStart`, and overrides `args` in the `systemd` section. An
+    /// argument which itself contains whitespace has to be specified through
+    /// the variable instead.
+    ///
+    /// Since service arguments tend to start with `-`, values are taken as
+    /// they are given, which means that `--args --user x` passes `--user x` to
+    /// the service rather than being read as an option to `kick`.
+    #[arg(long = "args", value_name = "ARGS", allow_hyphen_values = true)]
+    pub(crate) args: Vec<String>,
+    /// The user the installed service runs as.
+    ///
+    /// This defines the `user` variable, which the built-in unit template
+    /// installs as a `User=` directive, and overrides `user` in the `systemd`
+    /// section. Without it a system service runs as `root`, which is what
+    /// systemd does in the absence of a `User=` directive.
+    ///
+    /// This is the user the service runs as, not the user a deployment logs in
+    /// as, which is `--user`.
+    #[arg(long = "service-user", value_name = "USER")]
+    pub(crate) service_user: Option<String>,
+    /// The group the installed service runs as.
+    ///
+    /// This defines the `group` variable, which the built-in unit template
+    /// installs as a `Group=` directive. It defaults to `--service-user`,
+    /// since a service which runs as a dedicated user conventionally has a
+    /// group of the same name, unless `group` is set in the `systemd` section.
+    #[arg(long)]
+    pub(crate) group: Option<String>,
+    /// Do not install the systemd unit.
+    #[arg(long)]
+    pub(crate) no_systemd: bool,
+    /// Do not stop or start the service, which also skips the `post_install`
+    /// and `post_start` commands.
+    #[arg(long)]
+    pub(crate) no_restart: bool,
+    /// Print the commands which would be run instead of running them.
+    ///
+    /// Note that the access check of a deployment is still performed, since
+    /// it does not modify the remote host.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+    /// Print verbose information about what is being done.
+    ///
+    /// One level `-V` prints the plan, the systemd unit and the install
+    /// script, and traces the script as it executes. Two levels `-VV`
+    /// additionally prints the access check of a deployment and passes `-v`
+    /// to `ssh`.
+    #[arg(long, short = 'V', action = clap::ArgAction::Count)]
+    pub(crate) verbose: u8,
+}
+
+impl Common {
+    /// Whether details about what is being done should be printed.
+    ///
+    /// A dry run is verbose by definition, since printing what would be done
+    /// is the only thing it does.
+    fn details(&self) -> bool {
+        self.verbose >= 1 || self.dry_run
+    }
+}
+
+#[derive(Default, Debug, Parser)]
+pub(crate) struct Opts {
+    #[command(flatten)]
+    pub(crate) common: Common,
     /// A host to deploy to, can be used more than once.
     ///
     /// This replaces the `host` option in the `[deploy]` section rather than
@@ -76,93 +179,27 @@ pub(crate) struct Opts {
     /// a host which spells out a user of its own.
     #[arg(long)]
     user: Option<String>,
-    /// The arguments the deployed service is started with.
-    ///
-    /// Can be used more than once, and each use is split on whitespace. This
-    /// defines the `args` variable, which the built-in unit template appends
-    /// to `ExecStart`, and overrides `args` in the `[deploy.systemd]` section.
-    /// An argument which itself contains whitespace has to be specified
-    /// through the variable instead.
-    ///
-    /// Since service arguments tend to start with `-`, values are taken as
-    /// they are given, which means that `--args --user x` passes `--user x` to
-    /// the service rather than being read as an option to `kick`.
-    #[arg(long = "args", value_name = "ARGS", allow_hyphen_values = true)]
-    args: Vec<String>,
-    /// The user the deployed service runs as.
-    ///
-    /// This defines the `user` variable, which the built-in unit template
-    /// installs as a `User=` directive, and overrides `user` in the
-    /// `[deploy.systemd]` section. Without it the service runs as `root`,
-    /// which is what systemd does in the absence of a `User=` directive.
-    ///
-    /// This is the user the service runs as, not the user the deployment is
-    /// performed as, which is `--user`.
-    #[arg(long = "service-user", value_name = "USER")]
-    service_user: Option<String>,
-    /// The group the deployed service runs as.
-    ///
-    /// This defines the `group` variable, which the built-in unit template
-    /// installs as a `Group=` directive. It defaults to `--service-user`,
-    /// since a service which runs as a dedicated user conventionally has a
-    /// group of the same name, unless `group` is set in the `[deploy.systemd]`
-    /// section.
-    #[arg(long)]
-    group: Option<String>,
-    /// A command to run before the project is built, can be used more than
-    /// once.
-    ///
-    /// This is added to whatever the `pre_build` option in the `[deploy]`
-    /// section specifies.
-    #[arg(long = "pre-build", value_name = "COMMAND")]
-    pre_build: Vec<String>,
-    /// A feature to enable when building, can be used more than once.
-    ///
-    /// This is added to whatever the `build_features` option in the `[deploy]`
-    /// section specifies, and has no effect if the build command is specified
-    /// in full through the `build` option.
-    #[arg(long = "build-features", value_name = "FEATURES")]
-    build_features: Vec<String>,
-    /// The build profile the binary being deployed is found in, overrides the
-    /// `profile` option in the `[deploy]` section.
-    #[arg(long)]
-    profile: Option<String>,
-    /// Do not run the commands specified in the `build` option of the
-    /// `[deploy]` section.
-    #[arg(long)]
-    no_build: bool,
-    /// Do not install the systemd unit associated with the deployment.
-    #[arg(long)]
-    no_systemd: bool,
-    /// Do not stop or start the service being deployed.
-    #[arg(long)]
-    no_restart: bool,
     /// Do not check that the remote host can be accessed before deploying.
     #[arg(long)]
     no_check: bool,
-    /// Print the commands which would be run instead of running them.
-    ///
-    /// Note that the access check is still performed, since it does not modify
-    /// the remote host.
-    #[arg(long)]
-    dry_run: bool,
-    /// Print verbose information about what is being done.
-    ///
-    /// One level `-V` prints the deployment plan, the systemd unit and the
-    /// script which is run remotely, and traces the remote script as it
-    /// executes. Two levels `-VV` additionally prints the access check and
-    /// passes `-v` to `ssh`.
-    #[arg(long, short = 'V', action = clap::ArgAction::Count)]
-    verbose: u8,
 }
 
 impl Opts {
-    /// Whether details about what is being done should be printed.
-    ///
-    /// A dry run is verbose by definition, since printing what would be done
-    /// is the only thing it does.
-    fn details(&self) -> bool {
-        self.verbose >= 1 || self.dry_run
+    /// Options for an install, which has no remote options.
+    pub(crate) fn local(common: Common) -> Self {
+        Self {
+            common,
+            ..Self::default()
+        }
+    }
+}
+
+impl Deref for Opts {
+    type Target = Common;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.common
     }
 }
 
@@ -189,7 +226,7 @@ pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Re
     let mut o = StandardStream::stdout(ColorChoice::Auto);
 
     with_repos.run("deploy", format_args!("deploy: {opts:?}"), |cx, repo| {
-        deploy(&mut o, cx, opts, repo)
+        deploy(&mut o, cx, opts, repo, Section::Deploy)
     })?;
 
     Ok(())
@@ -224,19 +261,22 @@ fn profile_names(config: &Deploy) -> String {
 /// is asked if `interactive` is set, and it is an error otherwise.
 fn choose_profile<'a>(
     config: &'a Deploy,
+    section: Section,
     to: Option<&'a str>,
     interactive: bool,
 ) -> Result<Choice<'a>> {
+    let section = section.as_str();
+
     if let Some(to) = to {
         if config.profiles.is_empty() {
             bail!(
-                "Cannot deploy to `{to}` since no profiles are defined, add a `[deploy.profiles.{to}]` section"
+                "Cannot use profile `{to}` since no profiles are defined, add a `[{section}.profiles.{to}]` section"
             );
         }
 
         if !config.profiles.contains_key(to) {
             bail!(
-                "No deploy profile named `{to}`, the defined profiles are: {}",
+                "No profile named `{to}` in `[{section}]`, the defined profiles are: {}",
                 profile_names(config)
             );
         }
@@ -247,7 +287,7 @@ fn choose_profile<'a>(
     if config.profiles.is_empty() {
         if let Some(default) = &config.default_profile {
             bail!(
-                "The `default_profile` in `[deploy]` is `{default}`, but no profiles are defined, add a `[deploy.profiles.{default}]` section"
+                "The `default_profile` in `[{section}]` is `{default}`, but no profiles are defined, add a `[{section}.profiles.{default}]` section"
             );
         }
 
@@ -257,7 +297,7 @@ fn choose_profile<'a>(
     if let Some(default) = &config.default_profile {
         if !config.profiles.contains_key(default) {
             bail!(
-                "The `default_profile` in `[deploy]` is `{default}`, which is not a defined profile, the defined profiles are: {}",
+                "The `default_profile` in `[{section}]` is `{default}`, which is not a defined profile, the defined profiles are: {}",
                 profile_names(config)
             );
         }
@@ -278,7 +318,7 @@ fn choose_profile<'a>(
     }
 
     bail!(
-        "Multiple deploy profiles are defined and none is selected, pass `--to <profile>` or set `default_profile` in `[deploy]`. The defined profiles are: {}",
+        "Multiple profiles are defined in `[{section}]` and none is selected, pass `--to <profile>` or set `default_profile` in `[{section}]`. The defined profiles are: {}",
         profile_names(config)
     )
 }
@@ -288,20 +328,20 @@ fn ask_profile<'a>(names: &[&'a str]) -> Result<&'a str> {
     let stdin = std::io::stdin();
     let mut stderr = std::io::stderr();
 
-    writeln!(stderr, "Multiple deploy profiles are defined:")?;
+    writeln!(stderr, "Multiple profiles are defined:")?;
 
     for (index, name) in names.iter().enumerate() {
         writeln!(stderr, "  {}) {name}", index + 1)?;
     }
 
     loop {
-        write!(stderr, "Profile to deploy [1-{}]: ", names.len())?;
+        write!(stderr, "Profile to use [1-{}]: ", names.len())?;
         stderr.flush()?;
 
         let mut line = String::new();
 
         if stdin.read_line(&mut line)? == 0 {
-            bail!("No deploy profile selected, pass `--to <profile>` to select one");
+            bail!("No profile selected, pass `--to <profile>` to select one");
         }
 
         let line = line.trim();
@@ -432,13 +472,24 @@ fn local_home() -> Option<String> {
     Some(dirs.home_dir().to_string_lossy().into_owned())
 }
 
+/// Run an install or a deployment, depending on the section which configures
+/// it.
 #[tracing::instrument(skip_all)]
-fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
-    let base = cx.config.deploy(repo);
+pub(crate) fn deploy(
+    o: &mut StandardStream,
+    cx: &Ctxt<'_>,
+    opts: &Opts,
+    repo: &Repo,
+    section: Section,
+) -> Result<()> {
+    let base = match section {
+        Section::Install => cx.config.install(repo),
+        Section::Deploy => cx.config.deploy(repo),
+    };
 
     let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
 
-    let selected = match choose_profile(&base, opts.to.as_deref(), interactive)? {
+    let selected = match choose_profile(&base, section, opts.to.as_deref(), interactive)? {
         Choice::Base => None,
         Choice::Profile(name) => Some(name.to_owned()),
         Choice::Ask(names) => Some(ask_profile(&names)?.to_owned()),
@@ -447,14 +498,28 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
     let config = match &selected {
         Some(name) => base
             .with_profile(name)
-            .with_context(|| anyhow!("Missing deploy profile `{name}`"))?,
+            .with_context(|| anyhow!("Missing profile `{name}`"))?,
         None => base.clone(),
     };
 
-    let kind = config.kind.unwrap_or_default();
+    // NB: An install always happens on the machine kick is running on.
+    let kind = match section {
+        Section::Install => DeployKind::Local,
+        Section::Deploy => config.kind.unwrap_or_default(),
+    };
 
     let systemd_config = config.systemd.clone().unwrap_or_default();
-    let scope = systemd_config.scope.unwrap_or_default();
+
+    // NB: Installing locally happens as the user running kick, whose own
+    // systemd instance is the one which needs neither root nor sudo.
+    let scope = systemd_config.scope.unwrap_or(match kind {
+        DeployKind::Ssh => SystemdScope::System,
+        DeployKind::Local => SystemdScope::User,
+    });
+
+    let mut build = cx.config.build(repo);
+    build.merge_with(config.build.clone());
+    let build = build;
 
     let targets = match kind {
         DeployKind::Ssh => ssh_targets(&config, selected.as_deref(), opts)?,
@@ -465,11 +530,11 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
                         warn_ignored_for_local(
                             profile,
                             opts,
-                            &format!("`[deploy.profiles.{name}]`"),
+                            &format!("`[{}.profiles.{name}]`", section.as_str()),
                         );
                     }
                 }
-                None => warn_ignored_for_local(&config, opts, "`[deploy]`"),
+                None => warn_ignored_for_local(&config, opts, &format!("`[{}]`", section.as_str())),
             }
 
             vec![Target::local()]
@@ -479,9 +544,16 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
     let root = cx.to_path(repo.path());
 
     // NB: Deploying a service without a unit to run it is rarely what anyone
-    // wants, so the built-in template applies unless it is turned off.
-    let systemd =
-        (systemd_config.enabled.unwrap_or(true) && !opts.no_systemd).then_some(systemd_config);
+    // wants, so the built-in template applies unless it is turned off. Most
+    // things which are installed are not services, so an install only has a
+    // unit when it is configured with one.
+    let systemd_default = match section {
+        Section::Install => config.systemd.is_some(),
+        Section::Deploy => true,
+    };
+
+    let systemd = (systemd_config.enabled.unwrap_or(systemd_default) && !opts.no_systemd)
+        .then_some(systemd_config);
 
     if systemd.is_none() {
         if opts.service_user.is_some() {
@@ -535,49 +607,85 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
     let profile = opts
         .profile
         .as_deref()
-        .or(config.profile.as_deref())
+        .or(build.profile.as_deref())
         .unwrap_or(DEFAULT_PROFILE);
 
-    if !opts.no_build {
-        build(o, opts, &config, &root, profile)?;
-    }
+    let package = opts.package.as_deref().or(build.package.as_deref());
 
-    let binary = match opts.binary.as_deref().or(config.binary.as_deref()) {
-        Some(binary) => binary.to_owned(),
-        None => {
-            let workspace = repo.workspace(cx)?;
-            let package = workspace.primary_package()?.ensure_package()?;
-            package.name()?.to_owned()
-        }
+    // NB: Commands replace building and installing the binary, so a binary is
+    // only needed when it is installed or when a unit runs it.
+    let custom = !config.commands.is_empty();
+
+    let binary = match opts
+        .binary
+        .as_deref()
+        .or(build.binary.as_deref())
+        .or(package)
+    {
+        Some(binary) => Some(binary.to_owned()),
+        None if !custom || systemd.is_some() => Some(default_binary(cx, repo)?),
+        None => None,
     };
 
-    let mut source = repo.path().to_owned();
-    source.push("target");
-    source.push(profile_dir(profile));
-    source.push(&binary);
-    source.set_extension(EXE_EXTENSION);
+    let manifest_dir = manifest_dir(cx, repo);
 
-    let binary_path = cx.to_path(&source);
+    if !opts.no_build {
+        pre_build(o, opts, &build, &root)?;
 
-    // NB: The build is only printed during a dry run, so the binary is only
-    // required to exist when it will actually be installed.
-    if !binary_path.is_file() {
-        if opts.dry_run && !opts.no_build {
-            tracing::warn!(
-                "Missing binary to deploy: {} (it would be built first)",
-                binary_path.display()
-            );
+        if custom {
+            for command in &config.commands {
+                run(o, opts, &mut command.to_command(&root))?;
+            }
         } else {
-            bail!("Missing binary to deploy: {}", binary_path.display());
+            cargo_build(o, opts, &build, &root, &manifest_dir, profile, package)?;
         }
     }
+
+    // NB: The binary which is installed, if kick installs it rather than the
+    // configured commands.
+    let binary_path = match (&binary, custom) {
+        (Some(binary), false) => {
+            let mut path = target_dir(&manifest_dir);
+            path.push(profile_dir(profile));
+            path.push(binary);
+            path.set_extension(EXE_EXTENSION);
+
+            // NB: The build is only printed during a dry run, so the binary is
+            // only required to exist when it will actually be installed.
+            if !path.is_file() {
+                if opts.dry_run && !opts.no_build {
+                    tracing::warn!(
+                        "Missing binary to install: {} (it would be built first)",
+                        path.display()
+                    );
+                } else {
+                    bail!("Missing binary to install: {}", path.display());
+                }
+            }
+
+            Some(path)
+        }
+        _ => None,
+    };
+
+    let installed_binary = binary_path.as_ref().and(binary.as_deref());
 
     let default_unit_dir = match scope {
         SystemdScope::System => DEFAULT_UNIT_DIR,
         SystemdScope::User => DEFAULT_USER_UNIT_DIR,
     };
 
-    let bin_dir = trim_dir(config.bin_dir.as_deref().unwrap_or(DEFAULT_BIN_DIR));
+    let default_bin_dir = match kind {
+        DeployKind::Ssh => DEFAULT_BIN_DIR.to_owned(),
+        DeployKind::Local => cargo_bin_dir(),
+    };
+
+    let bin_dir = trim_dir(
+        opts.bin_dir
+            .as_deref()
+            .or(config.bin_dir.as_deref())
+            .unwrap_or(&default_bin_dir),
+    );
     let unit_dir = trim_dir(config.unit_dir.as_deref().unwrap_or(default_unit_dir));
     let staging_dir = trim_dir(config.staging_dir.as_deref().unwrap_or(DEFAULT_STAGING_DIR));
 
@@ -587,7 +695,9 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
     // Files to install, as `(staged file name, destination, mode)`.
     let mut installs = Vec::new();
 
-    uploads.push((binary_path, binary.clone()));
+    if let (Some(path), Some(binary)) = (&binary_path, installed_binary) {
+        uploads.push((path.clone(), binary.to_owned()));
+    }
 
     for file in &config.files {
         let glob = Glob::new(&root, &file.source);
@@ -633,9 +743,10 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
         }
     }
 
-    let unit_name = systemd
-        .as_ref()
-        .map(|systemd| systemd.name.as_deref().unwrap_or(&binary).to_owned());
+    let unit_name = match (&systemd, &binary) {
+        (Some(systemd), Some(binary)) => Some(systemd.name.as_deref().unwrap_or(binary).to_owned()),
+        _ => None,
+    };
 
     // NB: A socket unit is only installed alongside the service it activates,
     // and is named after it unless told otherwise, which is what lets systemd
@@ -715,8 +826,8 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
 
         let mut socket_unit = None;
 
-        let unit = match (&systemd, &unit_name) {
-            (Some(systemd), Some(name)) => {
+        let unit = match (&systemd, &unit_name, &binary) {
+            (Some(systemd), Some(name), Some(binary)) => {
                 let file_name = format!("{name}.service");
                 let dir = temp.path().join(index.to_string());
 
@@ -868,6 +979,17 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
             _ => None,
         };
 
+        // NB: With `commands` installing the binary there might be nothing
+        // left for the script to do.
+        if installed_binary.is_none()
+            && installs.is_empty()
+            && unit.is_none()
+            && config.post_install.is_empty()
+            && config.post_start.is_empty()
+        {
+            continue;
+        }
+
         let sources = match kind {
             DeployKind::Ssh => Sources::Staged(&staging_dir),
             DeployKind::Local => Sources::Local(&uploads),
@@ -890,7 +1012,7 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
                     (true, DeployKind::Local) => "sudo ",
                 },
                 scope,
-                binary: &binary,
+                binary: installed_binary,
                 bin_dir: &bin_dir,
                 unit_dir: &unit_dir,
                 sources,
@@ -905,17 +1027,19 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
             let mut plan = Vec::new();
 
             if let Some(name) = &selected {
-                plan.push(format!("deploy profile: {name}"));
+                plan.push(format!("profile: {name}"));
             }
 
             if !base.profiles.is_empty() {
                 plan.push(format!(
-                    "deploy profiles: {}",
+                    "profiles: {}",
                     base.profiles.keys().cloned().collect::<Vec<_>>().join(", ")
                 ));
             }
 
-            plan.push(format!("kind: {kind}"));
+            if section == Section::Deploy {
+                plan.push(format!("kind: {kind}"));
+            }
 
             if kind == DeployKind::Ssh {
                 plan.push(format!("host: {}", target.host));
@@ -929,8 +1053,20 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
                 }
             }
 
-            plan.push(format!("binary: {binary}"));
-            plan.push(format!("profile: {profile}"));
+            if let Some(binary) = &binary {
+                plan.push(format!("binary: {binary}"));
+            }
+
+            if custom {
+                plan.push(String::from("build: replaced by `commands`"));
+            } else {
+                if let Some(package) = package {
+                    plan.push(format!("package: {package}"));
+                }
+
+                plan.push(format!("cargo profile: {profile}"));
+            }
+
             plan.push(format!("sudo: {}", if use_sudo { "yes" } else { "no" }));
             plan.push(format!("bin_dir: {bin_dir}"));
 
@@ -949,7 +1085,12 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
                 plan.push(format!("staging_dir: {staging_dir}"));
             }
 
-            details(o, "deployment", plan.iter().map(String::as_str))?;
+            let title = match section {
+                Section::Install => "install",
+                Section::Deploy => "deployment",
+            };
+
+            details(o, title, plan.iter().map(String::as_str))?;
 
             if kind == DeployKind::Ssh {
                 let uploaded = uploads
@@ -966,7 +1107,11 @@ fn deploy(o: &mut StandardStream, cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Re
 
             let from = |name: &str| sources.display(name);
 
-            let mut installed = vec![format!("{} -> {bin_dir}/{binary} (0755)", from(&binary))];
+            let mut installed = Vec::new();
+
+            if let Some(binary) = installed_binary {
+                installed.push(format!("{} -> {bin_dir}/{binary} (0755)", from(binary)));
+            }
 
             for (name, dest, mode) in &installs {
                 installed.push(format!(
@@ -1159,7 +1304,8 @@ impl Sources<'_> {
 struct ScriptOpts<'a> {
     sudo: &'a str,
     scope: SystemdScope,
-    binary: &'a str,
+    /// The binary being installed, unless it is installed by `commands`.
+    binary: Option<&'a str>,
     bin_dir: &'a str,
     unit_dir: &'a str,
     sources: Sources<'a>,
@@ -1204,14 +1350,14 @@ fn script(
     // for the shell running the script, so they are used as written and the
     // sudo prefix goes in front of them. That way the shell expands `~` and
     // `$HOME` for the user being deployed as before sudo runs.
-    let commands = |script: &mut String, commands: &[DeployCommand]| -> Result<()> {
+    let commands = |script: &mut String, commands: &[ConfigCommand]| -> Result<()> {
         if opts.no_restart {
             return Ok(());
         }
 
         for c in commands {
             let sudo = if c.sudo { sudo } else { "" };
-            writeln!(script, "{sudo}{}", c.command)?;
+            writeln!(script, "{sudo}{}", c.to_shell(shell))?;
         }
 
         Ok(())
@@ -1280,14 +1426,16 @@ fn script(
         _ => {}
     }
 
-    writeln!(script, "{sudo}mkdir -p {}", shell.escape(bin_dir))?;
+    if let Some(binary) = binary {
+        writeln!(script, "{sudo}mkdir -p {}", shell.escape(bin_dir))?;
 
-    writeln!(
-        script,
-        "{sudo}install -m 0755 {} {}",
-        source(binary),
-        escape(&format!("{bin_dir}/{binary}"))
-    )?;
+        writeln!(
+            script,
+            "{sudo}install -m 0755 {} {}",
+            source(binary),
+            escape(&format!("{bin_dir}/{binary}"))
+        )?;
+    }
 
     for (name, dest, mode) in installs {
         writeln!(
@@ -1341,7 +1489,7 @@ fn script(
             writeln!(script, "  {systemctl} daemon-reload")?;
             writeln!(script, "fi")?;
 
-            commands(&mut script, &config.pre_start)?;
+            commands(&mut script, &config.post_install)?;
 
             // NB: It is the socket which is enabled rather than the service,
             // since the service is started by connections to the socket.
@@ -1384,7 +1532,7 @@ fn script(
             writeln!(script, "  {systemctl} daemon-reload")?;
             writeln!(script, "fi")?;
 
-            commands(&mut script, &config.pre_start)?;
+            commands(&mut script, &config.post_install)?;
 
             if enable {
                 writeln!(script, "{systemctl} enable {}", shell.escape(name))?;
@@ -1399,14 +1547,14 @@ fn script(
     } else {
         // NB: Without a unit there is nothing to start, so the commands run
         // back to back once everything has been installed.
-        commands(&mut script, &config.pre_start)?;
+        commands(&mut script, &config.post_install)?;
         commands(&mut script, &config.post_start)?;
     }
 
     // NB: Only staged copies are removed, a local deployment installs from the
     // originals.
     if let Sources::Staged(dir) = sources {
-        let mut names = vec![binary];
+        let mut names = Vec::from_iter(binary);
         names.extend(installs.iter().map(|(name, _, _)| name.as_str()));
         names.extend(unit.map(|(_, file_name)| file_name));
         names.extend(socket);
@@ -1419,45 +1567,51 @@ fn script(
     Ok(script)
 }
 
-/// Build the project locally.
-///
-/// Anything in `pre_build` is run first, followed by the build command. The
-/// build command is generated from the profile and the features being enabled
-/// unless it has been specified in full.
-fn build(
-    o: &mut StandardStream,
-    opts: &Opts,
-    config: &Deploy,
-    root: &Path,
-    profile: &str,
-) -> Result<()> {
+/// Run the `pre_build` commands, followed by any passed with `--pre-build`.
+fn pre_build(o: &mut StandardStream, opts: &Opts, build: &Build, root: &Path) -> Result<()> {
     let extra = opts
         .pre_build
         .iter()
         .filter_map(|c| ConfigCommand::split(c));
 
-    for pre_build in config.pre_build.iter().cloned().chain(extra) {
+    for pre_build in build.pre_build.iter().cloned().chain(extra) {
         run(o, opts, &mut pre_build.to_command(root))?;
     }
 
-    let features = config
-        .build_features
+    Ok(())
+}
+
+/// Build the project.
+///
+/// The build command is generated from the profile, the package and the
+/// features being enabled unless it has been replaced through `commands`.
+fn cargo_build(
+    o: &mut StandardStream,
+    opts: &Opts,
+    build: &Build,
+    root: &Path,
+    manifest_dir: &Path,
+    profile: &str,
+    package: Option<&str>,
+) -> Result<()> {
+    let features = build
+        .features
         .iter()
-        .chain(&opts.build_features)
+        .chain(&opts.features)
         .flat_map(|f| f.split([',', ' ']))
         .filter(|f| !f.is_empty())
         .collect::<Vec<_>>()
         .join(",");
 
-    if !config.build.is_empty() {
+    if !build.commands.is_empty() {
         if !features.is_empty() {
             tracing::warn!(
-                "Ignoring features `{features}` since the build command is specified in full"
+                "Ignoring features `{features}` since the build command is replaced by `commands`"
             );
         }
 
-        for build in &config.build {
-            run(o, opts, &mut build.to_command(root))?;
+        for command in &build.commands {
+            run(o, opts, &mut command.to_command(root))?;
         }
 
         return Ok(());
@@ -1477,13 +1631,89 @@ fn build(
         }
     }
 
+    if let Some(package) = package {
+        command.arg("--package");
+        command.arg(package);
+    }
+
     if !features.is_empty() {
         command.arg("--features");
         command.arg(&features);
     }
 
-    command.current_dir(root);
+    command.current_dir(manifest_dir);
     run(o, opts, &mut command)
+}
+
+/// The binary installed when none is configured, which is the name of the
+/// primary crate of the project, or else the package at its root.
+fn default_binary(cx: &Ctxt<'_>, repo: &Repo) -> Result<String> {
+    let workspace = repo.workspace(cx)?;
+
+    let manifest = match workspace.primary_package() {
+        Ok(manifest) => manifest,
+        Err(error) => match workspace.manifests().next() {
+            Some(manifest) if manifest.is_package() => manifest,
+            _ => {
+                return Err(error.context(
+                    "Cannot determine the binary to install, set `binary` in the `[build]` section",
+                ));
+            }
+        },
+    };
+
+    Ok(manifest.ensure_package()?.name()?.to_owned())
+}
+
+/// The directory cargo is run in, which is where `cargo_toml` points to if it
+/// is set.
+fn manifest_dir(cx: &Ctxt<'_>, repo: &Repo) -> PathBuf {
+    let path = match cx
+        .config
+        .cargo_toml(repo)
+        .and_then(|manifest| manifest.parent())
+    {
+        Some(dir) => repo.path().join(dir),
+        None => repo.path().to_owned(),
+    };
+
+    cx.to_path(path)
+}
+
+/// The target directory cargo builds into.
+///
+/// This asks cargo, since a workspace, `CARGO_TARGET_DIR` and the
+/// `build.target-dir` setting all change it, and falls back to `target` in
+/// the manifest directory.
+fn target_dir(manifest_dir: &Path) -> PathBuf {
+    let output = Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .current_dir(manifest_dir)
+        .stderr(Stdio::null())
+        .output();
+
+    #[derive(serde::Deserialize)]
+    struct Metadata {
+        target_directory: PathBuf,
+    }
+
+    if let Ok(output) = output
+        && output.status.success()
+        && let Ok(metadata) = serde_json::from_slice::<Metadata>(&output.stdout)
+    {
+        return metadata.target_directory;
+    }
+
+    manifest_dir.join("target")
+}
+
+/// The directory cargo installs binaries into, which is where something
+/// installed on the machine kick runs on goes by default.
+fn cargo_bin_dir() -> String {
+    match std::env::var("CARGO_HOME") {
+        Ok(home) if !home.is_empty() => format!("{}/bin", home.trim_end_matches('/')),
+        _ => String::from(DEFAULT_CARGO_BIN_DIR),
+    }
 }
 
 /// The directory under `target` which cargo puts the given profile in.
@@ -1780,11 +2010,13 @@ fn trim_dir(dir: &str) -> &str {
 mod tests {
     use std::path::PathBuf;
 
-    use crate::config::{Deploy, DeployCommand, DeployKind, Systemd, SystemdScope};
+    use crate::config::{
+        Build, CommandLine, ConfigCommand, Deploy, DeployKind, Section, Systemd, SystemdScope,
+    };
     use crate::packaging::Mode;
 
     use super::{
-        Choice, Opts, ScriptOpts, Sources, Target, choose_profile, expand_home, script,
+        Choice, Common, Opts, ScriptOpts, Sources, Target, choose_profile, expand_home, script,
         ssh_targets, write_payload,
     };
 
@@ -1803,10 +2035,16 @@ mod tests {
     #[test]
     fn profile_without_profiles_is_the_base() {
         let deploy = Deploy::default();
-        assert_eq!(choose_profile(&deploy, None, false).unwrap(), Choice::Base);
-        assert_eq!(choose_profile(&deploy, None, true).unwrap(), Choice::Base);
+        assert_eq!(
+            choose_profile(&deploy, Section::Deploy, None, false).unwrap(),
+            Choice::Base
+        );
+        assert_eq!(
+            choose_profile(&deploy, Section::Deploy, None, true).unwrap(),
+            Choice::Base
+        );
 
-        let error = choose_profile(&deploy, Some("local"), false).unwrap_err();
+        let error = choose_profile(&deploy, Section::Deploy, Some("local"), false).unwrap_err();
         assert!(error.to_string().contains("no profiles are defined"));
     }
 
@@ -1816,7 +2054,7 @@ mod tests {
         deploy.default_profile = Some(String::from("remote"));
 
         assert_eq!(
-            choose_profile(&deploy, Some("local"), false).unwrap(),
+            choose_profile(&deploy, Section::Deploy, Some("local"), false).unwrap(),
             Choice::Profile("local")
         );
     }
@@ -1827,12 +2065,12 @@ mod tests {
         deploy.default_profile = Some(String::from("remote"));
 
         assert_eq!(
-            choose_profile(&deploy, None, false).unwrap(),
+            choose_profile(&deploy, Section::Deploy, None, false).unwrap(),
             Choice::Profile("remote")
         );
 
         deploy.default_profile = Some(String::from("missing"));
-        let error = choose_profile(&deploy, None, false).unwrap_err();
+        let error = choose_profile(&deploy, Section::Deploy, None, false).unwrap_err();
         assert!(error.to_string().contains("`local`, `remote`"));
     }
 
@@ -1841,7 +2079,7 @@ mod tests {
         let deploy = profiles(&["local"]);
 
         assert_eq!(
-            choose_profile(&deploy, None, false).unwrap(),
+            choose_profile(&deploy, Section::Deploy, None, false).unwrap(),
             Choice::Profile("local")
         );
     }
@@ -1850,14 +2088,14 @@ mod tests {
     fn profile_ambiguous() {
         let deploy = profiles(&["local", "remote"]);
 
-        let error = choose_profile(&deploy, None, false).unwrap_err();
+        let error = choose_profile(&deploy, Section::Deploy, None, false).unwrap_err();
         let error = error.to_string();
         assert!(error.contains("--to <profile>"), "{error}");
         assert!(error.contains("default_profile"), "{error}");
         assert!(error.contains("`local`, `remote`"), "{error}");
 
         assert_eq!(
-            choose_profile(&deploy, None, true).unwrap(),
+            choose_profile(&deploy, Section::Deploy, None, true).unwrap(),
             Choice::Ask(vec!["local", "remote"])
         );
     }
@@ -1866,7 +2104,7 @@ mod tests {
     fn profile_unknown() {
         let deploy = profiles(&["local", "remote"]);
 
-        let error = choose_profile(&deploy, Some("nope"), true).unwrap_err();
+        let error = choose_profile(&deploy, Section::Deploy, Some("nope"), true).unwrap_err();
         let error = error.to_string();
         assert!(error.contains("`nope`"), "{error}");
         assert!(error.contains("`local`, `remote`"), "{error}");
@@ -1875,8 +2113,11 @@ mod tests {
     #[test]
     fn profile_layers_over_base() {
         let mut deploy = Deploy {
-            binary: Some(String::from("kanban")),
-            build_features: vec![String::from("bundle")],
+            build: Build {
+                binary: Some(String::from("kanban")),
+                features: vec![String::from("bundle")],
+                ..Build::default()
+            },
             bin_dir: Some(String::from("/usr/local/bin")),
             default_profile: Some(String::from("local")),
             ..Deploy::default()
@@ -1893,8 +2134,8 @@ mod tests {
 
         let local = deploy.with_profile("local").unwrap();
         assert_eq!(local.kind, Some(DeployKind::Local));
-        assert_eq!(local.binary.as_deref(), Some("kanban"));
-        assert_eq!(local.build_features, ["bundle"]);
+        assert_eq!(local.build.binary.as_deref(), Some("kanban"));
+        assert_eq!(local.build.features, ["bundle"]);
         assert_eq!(local.bin_dir.as_deref(), Some("~/.cargo/bin"));
         assert!(local.profiles.is_empty());
         assert!(local.default_profile.is_none());
@@ -1904,10 +2145,7 @@ mod tests {
 
     /// A configuration with a `remote` ssh profile which names no host.
     fn hostless_remote() -> Deploy {
-        let mut deploy = Deploy {
-            binary: Some(String::from("track")),
-            ..Deploy::default()
-        };
+        let mut deploy = Deploy::default();
 
         deploy.profiles.insert(
             String::from("remote"),
@@ -2053,7 +2291,7 @@ mod tests {
             ScriptOpts {
                 sudo: "",
                 scope: SystemdScope::User,
-                binary: "kanban",
+                binary: Some("kanban"),
                 bin_dir: "/home/me/.cargo/bin",
                 unit_dir: "/home/me/.config/systemd/user",
                 sources: Sources::Local(&uploads),
@@ -2093,7 +2331,7 @@ systemctl --user start kanban
             ScriptOpts {
                 sudo: "sudo -n ",
                 scope: SystemdScope::User,
-                binary: "track",
+                binary: Some("track"),
                 bin_dir: "/usr/local/bin",
                 unit_dir: "/home/integration/.config/systemd/user",
                 sources: Sources::Staged(".kick-deploy"),
@@ -2138,7 +2376,7 @@ rm -f .kick-deploy/track.service
             ScriptOpts {
                 sudo: "sudo -n ",
                 scope: SystemdScope::System,
-                binary: "track",
+                binary: Some("track"),
                 bin_dir: "/usr/local/bin",
                 unit_dir: "/etc/systemd/system",
                 sources: Sources::Staged(".kick-deploy"),
@@ -2196,7 +2434,7 @@ rm -f .kick-deploy/track.service
             ScriptOpts {
                 sudo: "",
                 scope: SystemdScope::User,
-                binary: "kanban",
+                binary: Some("kanban"),
                 bin_dir: "/home/me/.cargo/bin",
                 unit_dir: "/home/me/.config/systemd/user",
                 sources: Sources::Local(&uploads),
@@ -2250,7 +2488,7 @@ systemctl --user restart kanban
             ScriptOpts {
                 sudo: "sudo -n ",
                 scope: SystemdScope::System,
-                binary: "kanban",
+                binary: Some("kanban"),
                 bin_dir: "/usr/local/bin",
                 unit_dir: "/etc/systemd/system",
                 sources: Sources::Staged(".kick-deploy"),
@@ -2303,10 +2541,10 @@ rm -f .kick-deploy/kanban.socket
     fn socket_script_without_restart() {
         let config = user_unit();
 
-        let opts = Opts {
+        let opts = Opts::local(Common {
             no_restart: true,
-            ..Opts::default()
-        };
+            ..Common::default()
+        });
 
         let script = script(
             &config,
@@ -2315,7 +2553,7 @@ rm -f .kick-deploy/kanban.socket
             ScriptOpts {
                 sudo: "",
                 scope: SystemdScope::User,
-                binary: "kanban",
+                binary: Some("kanban"),
                 bin_dir: "/bin",
                 unit_dir: "/units",
                 sources: Sources::Staged("s"),
@@ -2336,20 +2574,59 @@ rm -f .kick-deploy/kanban.socket
         assert!(!script.contains("enable kanban\n"), "{script}");
     }
 
+    /// When `commands` install the binary, the script only installs what
+    /// is left, such as files and hooks.
+    #[test]
+    fn local_script_without_binary() {
+        let config = start_commands();
+        let opts = Opts::default();
+
+        let script = script(
+            &config,
+            &opts,
+            &[(
+                String::from("kanban.conf"),
+                String::from("/etc/kanban.conf"),
+                Mode::READ_WRITE,
+            )],
+            ScriptOpts {
+                sudo: "",
+                scope: SystemdScope::User,
+                binary: None,
+                bin_dir: "/home/me/.cargo/bin",
+                unit_dir: "/units",
+                sources: Sources::Staged("s"),
+                unit: None,
+                socket: None,
+            },
+        )
+        .unwrap();
+
+        assert!(!script.contains(".cargo/bin"), "{script}");
+        assert!(
+            script.contains("install -D -m 0644 s/kanban.conf /etc/kanban.conf\n"),
+            "{script}"
+        );
+        assert!(script.contains("\necho started\n"), "{script}");
+        assert!(!script.contains("rm -f s/kanban\n"), "{script}");
+    }
+
     fn start_commands() -> Deploy {
         Deploy {
-            pre_start: vec![
-                DeployCommand {
-                    command: String::from("systemd-sysusers"),
+            post_install: vec![
+                ConfigCommand {
+                    line: CommandLine::Line(String::from("systemd-sysusers")),
                     sudo: true,
                 },
-                DeployCommand {
-                    command: String::from("/usr/local/bin/kanban --db ~/kanban.db install"),
+                ConfigCommand {
+                    line: CommandLine::Line(String::from(
+                        "/usr/local/bin/kanban --db ~/kanban.db install",
+                    )),
                     sudo: false,
                 },
             ],
-            post_start: vec![DeployCommand {
-                command: String::from("echo started"),
+            post_start: vec![ConfigCommand {
+                line: CommandLine::Args(vec![String::from("echo"), String::from("started")]),
                 sudo: false,
             }],
             ..Deploy::default()
@@ -2370,7 +2647,7 @@ rm -f .kick-deploy/kanban.socket
             ScriptOpts {
                 sudo: "sudo -n ",
                 scope: SystemdScope::System,
-                binary: "kanban",
+                binary: Some("kanban"),
                 bin_dir: "/usr/local/bin",
                 unit_dir: "/etc/systemd/system",
                 sources: Sources::Staged(".kick-deploy"),
@@ -2401,7 +2678,7 @@ rm -f .kick-deploy/kanban
             ScriptOpts {
                 sudo: "sudo -n ",
                 scope: SystemdScope::System,
-                binary: "kanban",
+                binary: Some("kanban"),
                 bin_dir: "/usr/local/bin",
                 unit_dir: "/etc/systemd/system",
                 sources: Sources::Staged(".kick-deploy"),
@@ -2435,7 +2712,7 @@ rm -f .kick-deploy/kanban
         let s = || ScriptOpts {
             sudo: "sudo ",
             scope: SystemdScope::System,
-            binary: "kanban",
+            binary: Some("kanban"),
             bin_dir: "/usr/local/bin",
             unit_dir: "/etc/systemd/system",
             sources: Sources::Local(&uploads),
@@ -2456,10 +2733,10 @@ echo started
 
         assert_eq!(script, expected);
 
-        let opts = Opts {
+        let opts = Opts::local(Common {
             no_restart: true,
-            ..Opts::default()
-        };
+            ..Common::default()
+        });
 
         let script = super::script(&config, &opts, &[], s()).unwrap();
         assert!(!script.contains("sysusers"), "{script}");
