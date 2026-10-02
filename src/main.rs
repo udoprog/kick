@@ -101,6 +101,18 @@
 //! Kick optionally reads `Kick.toml`, for how to configure projects. See the
 //! [configuration documentation][config].
 //!
+//! To see which configuration kick loaded and which repos it would act on from
+//! the current directory, run `kick inspect`. It lists every `Kick.toml` which
+//! was looked for in load order (with the keys and `[repo."<path>"]` sections
+//! each one sets, or that it is missing), any errors loading them, every repo
+//! and why the selection includes or excludes it, and the effective `[build]`,
+//! `[install]` and `[deploy]` configuration of the selected repos, including the
+//! profile `kick deploy` would pick and the absolute paths of files and unit
+//! templates. It takes the same selection options as other commands, such as
+//! `--all`, `-p` and `--set`, `--to <profile>` to report on a specific profile,
+//! and `--json` for scripting. It exits with an error if the configuration or the
+//! selection would make other commands refuse to run.
+//!
 //! <br>
 //!
 //! ## Tour of commands
@@ -511,6 +523,7 @@ mod worktree;
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashSet};
+use std::fmt;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 use std::str::{Chars, FromStr};
@@ -581,6 +594,14 @@ enum Command {
     Gzip(SharedAction<cli::compress::Opts>),
     /// List paths used by kick.
     Info(SharedOptions),
+    /// Show the configuration kick loaded and the repos it would act on.
+    ///
+    /// This takes the same repo selection options as other commands, such as
+    /// `--all`, `-p` and `--set`, and reports every configuration file which
+    /// was looked for in load order, load errors, every repo and whether the
+    /// selection includes it, and the effective configuration of selected
+    /// repos.
+    Inspect(SharedAction<cli::inspect::Opts>),
     /// Install a project locally by running its install commands.
     Install(SharedAction<cli::install::Opts>),
     /// Configure github authentication.
@@ -631,6 +652,7 @@ impl Command {
             Command::GithubAction(c) => &c.shared,
             Command::Gzip(c) => &c.shared,
             Command::Info(shared) => shared,
+            Command::Inspect(c) => &c.shared,
             Command::Install(c) => &c.shared,
             Command::Login(c) => &c.shared,
             Command::Msi(c) => &c.shared,
@@ -658,6 +680,7 @@ impl Command {
             Command::GithubAction(c) => Some(&c.repo),
             Command::Gzip(c) => Some(&c.repo),
             Command::Info(..) => None,
+            Command::Inspect(c) => Some(&c.repo),
             Command::Install(c) => Some(&c.repo),
             Command::Login(..) => None,
             Command::Msi(c) => Some(&c.repo),
@@ -892,6 +915,31 @@ impl SetOperations {
     }
 }
 
+impl fmt::Display for SetOperations {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, (op, set)) in self.sets.iter().enumerate() {
+            match (index, op) {
+                (0, SetOp::Add) => {}
+                (_, SetOp::Add) => f.write_str(" + ")?,
+                (_, SetOp::Sub) => f.write_str(" - ")?,
+                (_, SetOp::Difference) => f.write_str(" ^ ")?,
+                (_, SetOp::Intersection) => f.write_str(" & ")?,
+            }
+
+            match set {
+                Set::All => f.write_str("@all")?,
+                Set::Dirty => f.write_str("@dirty")?,
+                Set::Outdated => f.write_str("@outdated")?,
+                Set::Cached => f.write_str("@cached")?,
+                Set::Unreleased => f.write_str("@unreleased")?,
+                Set::Named(name) => f.write_str(name)?,
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum SetOp {
     Add,
@@ -1047,8 +1095,11 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     let templating = templates::Templating::new()?;
     let defaults = config::defaults();
 
-    let config =
-        config::load(paths, &templating, &defaults).context("Loading kick configuration")?;
+    // NB: `inspect` reports configuration errors instead of failing on them.
+    let inspecting = matches!(opts.action, Command::Inspect(..));
+    let mut report = cli::inspect::Collected::default();
+
+    let config = load_config(paths, &templating, &defaults, inspecting, &mut report)?;
 
     let os = match std::env::consts::OS {
         "linux" => Os::Linux,
@@ -1083,13 +1134,27 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         tracing::debug!("Os: {os}, Dist: {dist}");
     }
 
-    let (repos, from_group) = collect_repos(&config, &root, system.git.first())?;
+    let (repos, from_group) = match collect_repos(&config, &root, system.git.first()) {
+        Ok(collected) => collected,
+        Err(error) if inspecting => {
+            report.selection_error = Some(format!("{error:#}"));
+            (Vec::new(), false)
+        }
+        Err(error) => return Err(error),
+    };
 
     let mut sets = repo_sets::RepoSets::new(root.join("sets"))?;
 
     // When running from a git worktree nested inside of a registered repo, use
     // the worktree as that repo's working directory.
-    let worktree = nested_worktree(paths, repo_opts, &repos, from_group)?;
+    let worktree = match nested_worktree(paths, repo_opts, &repos, from_group) {
+        Ok(worktree) => worktree,
+        Err(error) if inspecting => {
+            report.selection_error = Some(error.to_string());
+            None
+        }
+        Err(error) => return Err(error),
+    };
 
     let (paths, config) = match &worktree {
         Some((repo, checkout)) => {
@@ -1103,8 +1168,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
 
             // Reload the configuration so that repo configuration and
             // templates are read from the worktree.
-            let config = config::load(paths, &templating, &defaults)
-                .context("Loading kick configuration")?;
+            let config = load_config(paths, &templating, &defaults, inspecting, &mut report)?;
             (paths, config)
         }
         None => (paths, config),
@@ -1117,7 +1181,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         .is_some_and(|p| repos.iter().any(|m| p.starts_with(m.path())));
 
     if let Some(opts) = repo_opts {
-        apply_repo_options(
+        let result = apply_repo_options(
             opts,
             paths,
             &config,
@@ -1127,7 +1191,35 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             &sets,
             in_repo_path,
             from_group,
-        )?;
+        );
+
+        match result {
+            Ok(exclusions) => {
+                report.exclusions = exclusions;
+            }
+            Err(error) if inspecting && report.selection_error.is_none() => {
+                report.selection_error = Some(error.to_string());
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    if let Command::Inspect(inspect) = &opts.action {
+        let cx = cli::inspect::Inspect {
+            paths,
+            worktree: worktree
+                .as_ref()
+                .map(|(r, c)| (r.as_relative_path(), c.as_relative_path())),
+            config: &config,
+            repos: &repos,
+            from_group,
+            in_repo_path,
+            repo_opts: &inspect.repo,
+            os: &os,
+            collected: report,
+        };
+
+        return cli::inspect::entry(&cx, &inspect.action);
     }
 
     if let Some((repo, checkout)) = &worktree
@@ -1182,6 +1274,9 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     match &opts.action {
         Command::Check(opts) => {
             cli::check::entry(&mut with_repos, &opts.action).await?;
+        }
+        Command::Inspect(..) => {
+            unreachable!("inspect is handled before repos are processed")
         }
         Command::Info(..) => {
             println!("Os: {}", with_repos.cx.os);
@@ -1333,6 +1428,25 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     Ok(outcome)
 }
 
+/// Load configuration, failing on errors unless `inspecting`, in which case
+/// the files which were looked for and the errors are recorded in `report`.
+fn load_config<'a>(
+    paths: Paths<'a>,
+    templating: &templates::Templating,
+    defaults: &'a toml::Table,
+    inspecting: bool,
+    report: &mut cli::inspect::Collected,
+) -> Result<Config<'a>> {
+    if !inspecting {
+        return config::load(paths, templating, defaults).context("Loading kick configuration");
+    }
+
+    let loaded = config::load_all(paths, templating, defaults);
+    report.sources = loaded.sources;
+    report.errors = loaded.errors;
+    Ok(loaded.config)
+}
+
 /// Detect if the current directory is inside a git checkout nested in a
 /// registered repo.
 ///
@@ -1450,7 +1564,7 @@ fn apply_repo_options(
     sets: &repo_sets::RepoSets,
     in_repo_path: bool,
     from_group: bool,
-) -> Result<()> {
+) -> Result<Vec<Option<Exclusion>>> {
     let has_set = !repo_opts.set.iter().all(|s| s.is_empty());
 
     // Refuse to guess when there is no explicit selection and we're running
@@ -1589,9 +1703,7 @@ fn apply_repo_options(
         &filters,
         set.as_ref(),
         os,
-    )?;
-
-    Ok(())
+    )
 }
 
 /// Number of example repo paths to show when `-p` filters match nothing.
@@ -1706,7 +1818,45 @@ fn unregistered_git_checkout<'a>(
     None
 }
 
+/// Why the repo selection excludes a repo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Exclusion {
+    /// The repo is not in the sets selected with `--set`.
+    NotInSet,
+    /// The current directory is inside of another repo.
+    OutsideCurrent(RelativePathBuf),
+    /// The repo matches none of the `-p`/`--path` filters.
+    NoPathMatch,
+    /// The repo does not support the current operating system, and
+    /// `--supported-os` was passed.
+    UnsupportedOs(Vec<String>),
+    /// The repo was disabled before filtering.
+    Disabled,
+}
+
+impl fmt::Display for Exclusion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Exclusion::NotInSet => write!(f, "not in the sets selected with `--set`"),
+            Exclusion::OutsideCurrent(current) => write!(
+                f,
+                "the current directory `{current}` is in another repo, pass `--all` to include it"
+            ),
+            Exclusion::NoPathMatch => write!(f, "matches none of the `-p`/`--path` filters"),
+            Exclusion::UnsupportedOs(os) => write!(
+                f,
+                "`--supported-os` was passed and it only supports {}",
+                os.join(", ")
+            ),
+            Exclusion::Disabled => write!(f, "disabled"),
+        }
+    }
+}
+
 /// Perform more advanced filtering over modules.
+///
+/// Returns why each repo was excluded, in the same order as `repos`, or
+/// `None` for repos which are selected.
 fn filter_repos(
     config: &Config,
     in_current_path: Option<&RelativePath>,
@@ -1715,48 +1865,63 @@ fn filter_repos(
     filters: &[Fragment<'_>],
     set: Option<&HashSet<RelativePathBuf>>,
     expected: &Os,
-) -> Result<()> {
+) -> Result<Vec<Option<Exclusion>>> {
     // Test if repo should be skipped.
-    let should_disable = |repo: &Repo| -> bool {
+    let should_disable = |repo: &Repo| -> Option<Exclusion> {
         if let Some(set) = set
             && !set.contains(repo.path())
         {
-            return true;
+            return Some(Exclusion::NotInSet);
         }
 
         if filters.is_empty() {
-            if let Some(path) = in_current_path {
-                return !path.starts_with(repo.path());
+            if let Some(path) = in_current_path
+                && !path.starts_with(repo.path())
+            {
+                return Some(Exclusion::OutsideCurrent(path.to_owned()));
             }
 
-            return false;
+            return None;
         }
 
-        !filters
+        if filters
             .iter()
             .any(|filter| filter.is_match(repo.path().as_str()))
+        {
+            None
+        } else {
+            Some(Exclusion::NoPathMatch)
+        }
     };
 
+    let mut exclusions = Vec::with_capacity(repos.len());
+
     for repo in repos {
-        if should_disable(repo) {
-            repo.disable();
-        }
+        let mut exclusion = if repo.is_disabled() {
+            Some(Exclusion::Disabled)
+        } else {
+            should_disable(repo)
+        };
 
-        if repo.is_disabled() {
-            continue;
-        }
-
-        if repo_opts.supported_os {
+        if exclusion.is_none() && repo_opts.supported_os {
             let os = config.os(repo);
 
             if !os.is_empty() && !os.contains(expected) {
                 tracing::trace!("Operating systems {os:?} does not contain {expected:?}");
-                repo.disable();
+                exclusion = Some(Exclusion::UnsupportedOs(
+                    os.iter().map(|os| os.to_string()).collect(),
+                ));
             }
         }
+
+        if exclusion.is_some() {
+            repo.disable();
+        }
+
+        exclusions.push(exclusion);
     }
 
-    Ok(())
+    Ok(exclusions)
 }
 
 /// Find root path to use.

@@ -234,7 +234,7 @@ pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Re
 
 /// Which profile a deployment uses.
 #[derive(Debug, PartialEq, Eq)]
-enum Choice<'a> {
+pub(crate) enum Choice<'a> {
     /// No profiles are defined, so the `[deploy]` section is used as it is.
     Base,
     /// The named profile.
@@ -259,7 +259,7 @@ fn profile_names(config: &Deploy) -> String {
 /// `--to` wins, followed by `default_profile`, followed by the only profile
 /// there is. With several profiles and nothing to pick between them, the user
 /// is asked if `interactive` is set, and it is an error otherwise.
-fn choose_profile<'a>(
+pub(crate) fn choose_profile<'a>(
     config: &'a Deploy,
     section: Section,
     to: Option<&'a str>,
@@ -897,7 +897,8 @@ pub(crate) fn deploy(
 
                     let template = socket
                         .template
-                        .as_deref()
+                        .as_ref()
+                        .map(|t| &*t.source)
                         .unwrap_or(systemd::DEFAULT_SOCKET_TEMPLATE);
 
                     let contents = systemd::render(template, &variables).with_context(|| {
@@ -961,7 +962,8 @@ pub(crate) fn deploy(
 
                 let template = systemd
                     .template
-                    .as_deref()
+                    .as_ref()
+                    .map(|t| &*t.source)
                     .unwrap_or(systemd::DEFAULT_TEMPLATE);
 
                 let contents = systemd::render(template, &variables).with_context(|| {

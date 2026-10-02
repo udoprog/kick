@@ -490,15 +490,25 @@ impl Deploy {
     }
 }
 
+/// A unit template read from a file, which is resolved relative to the
+/// directory of the `Kick.toml` which configured it.
+#[derive(Debug, Clone)]
+pub(crate) struct UnitTemplate {
+    /// The path the template was read from.
+    pub(crate) path: PathBuf,
+    /// The source of the template.
+    pub(crate) source: Box<str>,
+}
+
 /// The systemd unit associated with a deployment.
 #[derive(Debug, Clone)]
 pub(crate) struct Systemd {
     /// Whether a unit should be installed at all, which is how `systemd =
     /// false` is represented. Defaults to `true`.
     pub(crate) enabled: Option<bool>,
-    /// The source of the template which is rendered into the unit being
-    /// installed, or `None` for the built-in template.
-    pub(crate) template: Option<Box<str>>,
+    /// The template which is rendered into the unit being installed, or
+    /// `None` for the built-in template.
+    pub(crate) template: Option<UnitTemplate>,
     /// The name of the unit, defaults to the name of the binary.
     pub(crate) name: Option<String>,
     /// Whether the unit should be enabled so that it starts on boot.
@@ -558,9 +568,9 @@ pub(crate) struct SystemdSocket {
     /// Whether a socket unit should be installed at all, which is how `socket
     /// = false` is represented. Defaults to `true` once the section is present.
     pub(crate) enabled: Option<bool>,
-    /// The source of the template which is rendered into the socket unit, or
-    /// `None` for the built-in template.
-    pub(crate) template: Option<Box<str>>,
+    /// The template which is rendered into the socket unit, or `None` for the
+    /// built-in template.
+    pub(crate) template: Option<UnitTemplate>,
     /// The name of the socket unit, defaults to the name of the service.
     pub(crate) name: Option<String>,
     /// The variables the socket template is rendered with.
@@ -1397,6 +1407,50 @@ impl ConfigBadge {
     }
 }
 
+/// The state of a configuration file which was looked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SourceState {
+    /// The file was read and parsed.
+    Loaded,
+    /// The file does not exist.
+    Missing,
+    /// The file could not be read or is not valid TOML.
+    Invalid,
+}
+
+/// A configuration file which was looked for while loading configuration, in
+/// the order they were looked for.
+#[derive(Debug, Clone)]
+pub(crate) struct ConfigSource {
+    /// The directory, relative to the root, which the file configures. This is
+    /// empty for the root `Kick.toml` and the repo path for a repo's own.
+    pub(crate) dir: RelativePathBuf,
+    /// The path of the file, relative to the root.
+    pub(crate) config_path: RelativePathBuf,
+    /// The path the file was read from, which accounts for worktree redirects.
+    pub(crate) path: PathBuf,
+    /// The state of the file.
+    pub(crate) state: SourceState,
+    /// The top-level keys the file sets, except for `repo`.
+    pub(crate) keys: Vec<String>,
+    /// The `[repo."<path>"]` sections the file declares, with the keys each
+    /// one sets.
+    pub(crate) repos: Vec<(RelativePathBuf, Vec<String>)>,
+    /// Errors raised while loading the file.
+    pub(crate) errors: Vec<String>,
+}
+
+/// Configuration loaded with [`load_all`], which keeps going past errors.
+pub(crate) struct Loaded<'a> {
+    /// The configuration which was loaded. Sections which failed to load are
+    /// left out of it.
+    pub(crate) config: Config<'a>,
+    /// Every configuration file which was looked for, in load order.
+    pub(crate) sources: Vec<ConfigSource>,
+    /// Errors raised while loading configuration.
+    pub(crate) errors: Vec<Error>,
+}
+
 /// Context used when parsing configuration.
 struct Cx<'a> {
     paths: Paths<'a>,
@@ -1405,6 +1459,7 @@ struct Cx<'a> {
     keys: Keys,
     templating: &'a Templating,
     errors: RefCell<Vec<Error>>,
+    sources: RefCell<Vec<ConfigSource>>,
 }
 
 impl<'a> Cx<'a> {
@@ -1416,11 +1471,41 @@ impl<'a> Cx<'a> {
             keys: Keys::default(),
             templating,
             errors: RefCell::new(Vec::new()),
+            sources: RefCell::new(Vec::new()),
         }
     }
 
-    /// Load the kick config.
+    /// Load the kick config, recording it as a source.
     fn config(&self) -> Result<Option<toml::Value>, ErrorMarker> {
+        self.sources.borrow_mut().push(ConfigSource {
+            dir: self.current.clone(),
+            config_path: self.config_path.clone(),
+            path: self.paths.to_path(&self.config_path),
+            state: SourceState::Invalid,
+            keys: Vec::new(),
+            repos: Vec::new(),
+            errors: Vec::new(),
+        });
+
+        let value = self.read_config();
+
+        if let Some(source) = self.sources.borrow_mut().last_mut() {
+            match &value {
+                Ok(Some(value)) => {
+                    source.state = SourceState::Loaded;
+                    (source.keys, source.repos) = top_level_keys(value);
+                }
+                Ok(None) => {
+                    source.state = SourceState::Missing;
+                }
+                Err(..) => {}
+            }
+        }
+
+        value
+    }
+
+    fn read_config(&self) -> Result<Option<toml::Value>, ErrorMarker> {
         let Some(string) = self
             .paths
             .read_to_string(&self.config_path)
@@ -1440,6 +1525,16 @@ impl<'a> Cx<'a> {
     }
 
     fn capture(&self, error: impl fmt::Display) -> ErrorMarker {
+        if let Some(source) = self
+            .sources
+            .borrow_mut()
+            .iter_mut()
+            .rev()
+            .find(|s| s.config_path == self.config_path)
+        {
+            source.errors.push(format!("{}: {error}", self.keys));
+        }
+
         self.errors.borrow_mut().push(anyhow!(
             "{path}: {}: {error}",
             self.keys,
@@ -1493,11 +1588,16 @@ impl<'a> Cx<'a> {
 
     /// Read the template stored at the given path.
     fn read_template(&self, value: toml::Value) -> Result<String, ErrorMarker> {
+        Ok(self.read_template_at(value)?.1)
+    }
+
+    /// Read a template, returning the path it was read from with it.
+    fn read_template_at(&self, value: toml::Value) -> Result<(PathBuf, String), ErrorMarker> {
         let path = self.relative_path(value)?;
         let path = self.paths.to_path(self.current.join(path));
 
         match fs::read_to_string(&path) {
-            Ok(template) => Ok(template),
+            Ok(template) => Ok((path, template)),
             Err(err) => Err(self.capture(format_args!("reading {}: {}", path.display(), err))),
         }
     }
@@ -2131,14 +2231,17 @@ impl<'a> Cx<'a> {
     }
 
     /// Read and validate a unit template stored at the given path.
-    fn unit_template(&self, value: toml::Value) -> Result<Box<str>, ErrorMarker> {
-        let source = self.read_template(value)?;
+    fn unit_template(&self, value: toml::Value) -> Result<UnitTemplate, ErrorMarker> {
+        let (path, source) = self.read_template_at(value)?;
 
         if let Err(error) = systemd::validate(&source) {
             return Err(self.capture(error));
         }
 
-        Ok(source.into())
+        Ok(UnitTemplate {
+            path,
+            source: source.into(),
+        })
     }
 
     fn systemd(&self, value: toml::Value) -> Result<Systemd, ErrorMarker> {
@@ -2345,11 +2448,47 @@ impl<'a> Cx<'a> {
 }
 
 /// Load a configuration from the given path.
+///
+/// This fails if any configuration file could not be loaded, after logging
+/// every error. Use [`load_all`] to inspect partially loaded configuration.
 pub(crate) fn load<'a>(
     paths: Paths<'a>,
     templating: &Templating,
     defaults: &'a toml::Table,
 ) -> Result<Config<'a>> {
+    let loaded = load_all(paths, templating, defaults);
+
+    if !loaded.errors.is_empty() {
+        let count = loaded.errors.len();
+
+        for error in loaded.errors {
+            tracing::error!("Error: {error}");
+
+            for e in error.chain().skip(1) {
+                tracing::error!("  Caused by: {e}");
+            }
+        }
+
+        let what = match count {
+            1 => "error",
+            _ => "errors",
+        };
+
+        return Err(anyhow!(
+            "{KICK_TOML}: Failed to load configuration due to {count} {what}"
+        ));
+    }
+
+    Ok(loaded.config)
+}
+
+/// Load configuration from the given path, keeping going past errors and
+/// recording every configuration file which was looked for.
+pub(crate) fn load_all<'a>(
+    paths: Paths<'a>,
+    templating: &Templating,
+    defaults: &'a toml::Table,
+) -> Loaded<'a> {
     let mut cx = Cx::new(paths, RelativePath::new(""), templating);
 
     let (base, mut repos) = 'out: {
@@ -2385,35 +2524,47 @@ pub(crate) fn load<'a>(
         config.urls.extend(urls);
     }
 
-    let errors = cx.errors.into_inner();
+    Loaded {
+        config: Config {
+            base,
+            repos,
+            defaults,
+        },
+        sources: cx.sources.into_inner(),
+        errors: cx.errors.into_inner(),
+    }
+}
 
-    if !errors.is_empty() {
-        let count = errors.len();
+/// The top-level keys of a configuration file other than `repo`, and the
+/// keys of each `[repo."<path>"]` section in it.
+#[allow(clippy::type_complexity)]
+fn top_level_keys(value: &toml::Value) -> (Vec<String>, Vec<(RelativePathBuf, Vec<String>)>) {
+    let mut keys = Vec::new();
+    let mut repos = Vec::new();
 
-        for error in errors {
-            tracing::error!("Error: {error}");
+    let Some(table) = value.as_table() else {
+        return (keys, repos);
+    };
 
-            for e in error.chain().skip(1) {
-                tracing::error!("  Caused by: {e}");
+    for (key, value) in table {
+        if key == "repo"
+            && let Some(sections) = value.as_table()
+        {
+            for (path, section) in sections {
+                let section_keys = section
+                    .as_table()
+                    .map(|t| t.keys().cloned().collect())
+                    .unwrap_or_default();
+                repos.push((RelativePathBuf::from(path.as_str()), section_keys));
             }
+
+            continue;
         }
 
-        let what = match count {
-            1 => "error",
-            _ => "errors",
-        };
-
-        return Err(anyhow!(
-            "{}: Failed to load configuration due to {count} {what}",
-            cx.config_path
-        ));
+        keys.push(key.clone());
     }
 
-    Ok(Config {
-        base,
-        repos,
-        defaults,
-    })
+    (keys, repos)
 }
 
 fn load_base(

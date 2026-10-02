@@ -104,6 +104,18 @@ documentation][config].
 Kick optionally reads `Kick.toml`, for how to configure projects. See the
 [configuration documentation][config].
 
+To see which configuration kick loaded and which repos it would act on from
+the current directory, run `kick inspect`. It lists every `Kick.toml` which
+was looked for in load order (with the keys and `[repo."<path>"]` sections
+each one sets, or that it is missing), any errors loading them, every repo
+and why the selection includes or excludes it, and the effective `[build]`,
+`[install]` and `[deploy]` configuration of the selected repos, including the
+profile `kick deploy` would pick and the absolute paths of files and unit
+templates. It takes the same selection options as other commands, such as
+`--all`, `-p` and `--set`, `--to <profile>` to report on a specific profile,
+and `--json` for scripting. It exits with an error if the configuration or the
+selection would make other commands refuse to run.
+
 <br>
 
 ## Tour of commands

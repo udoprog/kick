@@ -8,6 +8,11 @@ Configuration is loaded in a hierarchy, and each option can be extended or
 overriden on a per-repo basis. This is usually done through a `[repo."<name>"]`
 section.
 
+Run `kick inspect` to see the hierarchy kick loaded from the current directory:
+every `Kick.toml` in load order and what each one sets, load errors, the repos
+and whether they are selected, and the effective configuration of the selected
+repos. Use `kick inspect --json` for a machine-readable report.
+
 ```toml
 [repo."repos/OxidizeBot"]
 crate = "oxidize"

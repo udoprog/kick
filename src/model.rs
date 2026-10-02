@@ -280,6 +280,11 @@ impl Repo {
         self.inner.state.get()
     }
 
+    /// Iterate over the sources of a module.
+    pub(crate) fn source_list(&self) -> impl Iterator<Item = &RepoSource> {
+        self.inner.sources.iter()
+    }
+
     /// Get the sources of a module.
     pub(crate) fn sources(&self) -> impl fmt::Display + '_ {
         struct DisplaySources<'a>(&'a BTreeSet<RepoSource>);
