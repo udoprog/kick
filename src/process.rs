@@ -220,28 +220,31 @@ impl Command {
         self
     }
 
-    #[tracing::instrument(skip_all, fields(command = self.display().to_string(), current_dir = ?self.current_dir_repr()))]
+    #[tracing::instrument(skip_all, fields(command = self.display().abbreviated().to_string(), current_dir = ?self.current_dir_repr()))]
     pub(crate) fn spawn(&mut self) -> Result<Child> {
         let mut command = self.command();
         let result = command.spawn();
-        let child = result.with_context(|| anyhow!("Spawning `{}`", self.display()))?;
+        let child =
+            result.with_context(|| anyhow!("Spawning `{}`", self.display().abbreviated()))?;
         Ok(Child { child })
     }
 
-    #[tracing::instrument(skip_all, fields(command = self.display().to_string(), current_dir = ?self.current_dir_repr()))]
+    #[tracing::instrument(skip_all, fields(command = self.display().abbreviated().to_string(), current_dir = ?self.current_dir_repr()))]
     pub(crate) fn status(&mut self) -> Result<ExitStatus> {
         let mut command = self.command();
         let result = command.status();
-        let status = result.with_context(|| anyhow!("Executing `{}`", self.display()))?;
+        let status =
+            result.with_context(|| anyhow!("Executing `{}`", self.display().abbreviated()))?;
         tracing::trace!(status = status.to_string());
         Ok(status)
     }
 
-    #[tracing::instrument(skip_all, fields(command = self.display().to_string(), current_dir = ?self.current_dir_repr()))]
+    #[tracing::instrument(skip_all, fields(command = self.display().abbreviated().to_string(), current_dir = ?self.current_dir_repr()))]
     pub(crate) fn output(&mut self) -> Result<Output> {
         let mut command = self.command();
         let output = command.output();
-        let output = output.with_context(|| anyhow!("Executing `{}`", self.display()))?;
+        let output =
+            output.with_context(|| anyhow!("Executing `{}`", self.display().abbreviated()))?;
         tracing::trace!(status = output.status.to_string());
         Ok(output)
     }
@@ -316,6 +319,8 @@ impl Command {
             inner: self,
             shell,
             exposed: false,
+            abbreviate: false,
+            label: None,
         }
     }
 
@@ -355,16 +360,45 @@ impl Child {
     }
 }
 
+/// Arguments longer than this many bytes are abbreviated by
+/// [`Display::abbreviated`].
+const ABBREVIATE_LEN: usize = 100;
+
 pub(crate) struct Display<'a> {
     inner: &'a Command,
     shell: Shell,
     exposed: bool,
+    abbreviate: bool,
+    label: Option<&'a str>,
 }
 
-impl Display<'_> {
+impl<'a> Display<'a> {
     /// Configure display to be exposed.
     pub(crate) fn with_exposed(self, exposed: bool) -> Self {
         Self { exposed, ..self }
+    }
+
+    /// Abbreviate long arguments, such as scripts, as a placeholder like
+    /// `<1234 bytes>`.
+    ///
+    /// An argument is abbreviated if it spans multiple lines or is longer
+    /// than [`ABBREVIATE_LEN`] bytes. The result is meant for logs and errors,
+    /// so it is not a command which can be copied and run.
+    pub(crate) fn abbreviated(self) -> Self {
+        Self {
+            abbreviate: true,
+            ..self
+        }
+    }
+
+    /// Abbreviate long arguments with a label describing them, as a
+    /// placeholder like `<script, 1234 bytes>`.
+    pub(crate) fn abbreviated_as(self, label: &'a str) -> Self {
+        Self {
+            abbreviate: true,
+            label: Some(label),
+            ..self
+        }
     }
 }
 
@@ -393,10 +427,58 @@ impl fmt::Display for Display<'_> {
                 arg.to_string_lossy()
             };
 
+            if self.abbreviate && (lossy.len() > ABBREVIATE_LEN || lossy.contains('\n')) {
+                match self.label {
+                    Some(label) => write!(f, "<{label}, {} bytes>", lossy.len())?,
+                    None => write!(f, "<{} bytes>", lossy.len())?,
+                }
+
+                continue;
+            }
+
             let escaped = self.shell.escape(lossy.as_ref());
             f.write_str(&escaped)?;
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Command;
+    use crate::shell::Shell;
+
+    #[test]
+    fn abbreviate_long_arguments() {
+        let script = "set -e\necho hello\n";
+        let long = "x".repeat(101);
+
+        let mut command = Command::new("ssh");
+        command
+            .arg("host")
+            .arg(script)
+            .arg(&long)
+            .arg("x".repeat(100));
+
+        let literal = command.display_with(Shell::Bash).to_string();
+        assert!(literal.contains("echo hello"));
+        assert!(literal.contains(&long));
+
+        assert_eq!(
+            command.display_with(Shell::Bash).abbreviated().to_string(),
+            format!("ssh host <18 bytes> <101 bytes> {}", "x".repeat(100))
+        );
+
+        assert_eq!(
+            command
+                .display_with(Shell::Bash)
+                .abbreviated_as("remote script")
+                .to_string(),
+            format!(
+                "ssh host <remote script, 18 bytes> <remote script, 101 bytes> {}",
+                "x".repeat(100)
+            )
+        );
     }
 }

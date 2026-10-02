@@ -1220,14 +1220,19 @@ pub(crate) fn deploy(
                 // it installs anything.
                 let mut command = ssh(opts, &config, target);
                 command.arg(&script);
-                run_with_payload(o, opts, &mut command, &uploads)?;
+                let repr = command
+                    .display()
+                    .abbreviated_as("remote script")
+                    .to_string();
+                run_with_payload(o, opts, &mut command, &repr, &uploads)?;
             }
             DeployKind::Local => {
                 let mut command = Command::new("sh");
                 command.arg("-c");
                 command.arg(&script);
                 command.current_dir(&root);
-                run(o, opts, &mut command)?;
+                let repr = command.display().abbreviated_as("local script").to_string();
+                run_as(o, opts, &mut command, &repr)?;
             }
         }
     }
@@ -2108,9 +2113,17 @@ fn options(command: &mut Command, opts: &Opts, config: &Deploy) {
     }
 }
 
+/// Run a command, or only print it in a dry run.
+///
+/// Long arguments are abbreviated in what is printed and logged, see
+/// [`Display::abbreviated`](crate::process::Display::abbreviated).
 fn run(o: &mut StandardStream, opts: &Opts, command: &mut Command) -> Result<()> {
-    let repr = command.display().to_string();
+    let repr = command.display().abbreviated().to_string();
+    run_as(o, opts, command, &repr)
+}
 
+/// Run a command, printing and logging it as `repr`.
+fn run_as(o: &mut StandardStream, opts: &Opts, command: &mut Command, repr: &str) -> Result<()> {
     if opts.dry_run {
         writeln!(o, "{repr}")?;
         return Ok(());
@@ -2135,10 +2148,9 @@ fn run_with_payload(
     o: &mut StandardStream,
     opts: &Opts,
     command: &mut Command,
+    repr: &str,
     files: &[(PathBuf, String)],
 ) -> Result<()> {
-    let repr = command.display().to_string();
-
     if opts.dry_run {
         writeln!(o, "{repr} < <tar archive of the uploads>")?;
         return Ok(());
@@ -2261,10 +2273,12 @@ fn check(
     let mut command = ssh(opts, config, target);
     command.arg(&script);
 
+    let repr = command.display().abbreviated_as("access check").to_string();
+
     if opts.dry_run {
-        writeln!(o, "{}", command.display())?;
+        writeln!(o, "{repr}")?;
     } else {
-        tracing::debug!("{}", command.display());
+        tracing::debug!("{repr}");
         tracing::info!("Checking access to `{host}`");
     }
 

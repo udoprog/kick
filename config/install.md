@@ -139,7 +139,8 @@ following options which work the same as they do for
 * `--no-systemd`, `--no-restart`, `--service-user <user>`, `--group <group>`
   and `--args <args>` for an install with a [systemd unit](./deploy.md#systemd).
 * `--dry-run` prints what would be built, installed and run instead of doing
-  it.
+  it. The script is printed in full, and the command which runs it refers to
+  it by size, as in `sh -c <local script, 1446 bytes>`.
 * `--verbose` / `-V` prints the same while doing it.
 
 As with other actions, which repositories are installed is controlled by the

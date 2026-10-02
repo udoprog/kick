@@ -1318,6 +1318,9 @@ by `kick install`:
   and skips the [target commands](#target-commands).
 * `--dry-run` prints the profile being deployed, the unit which would be
   installed and every command which would be run without changing anything.
+  The script is printed in full, and the command which runs it refers to it
+  by size, as in `ssh moore <remote script, 3275 bytes>`. Logs and errors
+  abbreviate long arguments the same way.
 * `--verbose` / `-V` prints the deployment plan, the unit being installed and
   the script which is run remotely, and traces the remote script as it
   executes. Passing it twice (`-VV`) also prints the [access
