@@ -394,10 +394,21 @@ kick deploy --to remote --host moore
 ```
 
 Either way `kick deploy` runs the build, and over a single `ssh` connection
-uploads the binary, stops the service, installs the binary into `/usr/local/bin`,
-installs the unit into `/etc/systemd/system`, and starts the service again. The
-unit is compared against the installed one first, so systemd is only reloaded
-when it actually changed.
+uploads the binary and the unit, compares them with what is installed, and only
+installs what differs into `/usr/local/bin` and `/etc/systemd/system`. The
+service is only stopped and restarted when something changed, after which kick
+checks that it is active, so redeploying an unchanged build leaves it running.
+`--force` redeploys everything regardless. The deployment reports what it does
+as it goes:
+
+```text
+track: stopping (binary changed)
+/usr/local/bin/track: updated (changed)
+/etc/systemd/system/track.service: unchanged
+track: restarting (binary changed)
+track: restarted, active
+moore: changed 1 of 2 files, track restarted
+```
 
 The unit comes from a built-in template which is filled in from the variables
 in `[deploy.systemd]`, so there is nothing to write to get a working service. When you need something it doesn't cover, point `systemd` at a unit file

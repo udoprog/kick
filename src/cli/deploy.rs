@@ -40,9 +40,12 @@ const DEFAULT_PROFILE: &str = "release";
 ///
 /// `tar` unpacks the files being deployed, which are streamed to the remote
 /// host over the same ssh connection which installs them.
-const REQUIRED_COMMANDS: &[&str] = &["install", "tar"];
+///
+/// `cmp` and `stat` compare what is being deployed with what is installed, so
+/// that only what differs is installed.
+const REQUIRED_COMMANDS: &[&str] = &["install", "tar", "cmp", "stat"];
 /// Remote commands which are needed to install a systemd unit.
-const SYSTEMD_COMMANDS: &[&str] = &["systemctl", "cmp"];
+const SYSTEMD_COMMANDS: &[&str] = &["systemctl"];
 
 /// The options shared by `kick install` and `kick deploy`.
 #[derive(Default, Debug, Clone, Args)]
@@ -131,6 +134,14 @@ pub(crate) struct Common {
     /// and `post_start` commands.
     #[arg(long)]
     pub(crate) no_restart: bool,
+    /// Install everything and restart the service even if nothing differs
+    /// from what is already installed.
+    ///
+    /// Without it only the files which differ in contents or mode are
+    /// installed, and the service is only restarted and the `post_install`
+    /// and `post_start` commands only run when something changed.
+    #[arg(long)]
+    pub(crate) force: bool,
     /// Print the commands which would be run instead of running them.
     ///
     /// Note that the access check of a deployment is still performed, since
@@ -1002,6 +1013,7 @@ pub(crate) fn deploy(
             opts,
             &installs,
             ScriptOpts {
+                host: &target.host,
                 sudo: match (use_sudo, kind) {
                     (false, _) => "",
                     // NB: The script is run non-interactively over ssh, so
@@ -1304,6 +1316,8 @@ impl Sources<'_> {
 }
 
 struct ScriptOpts<'a> {
+    /// The host the script runs on, as it is named in the summary.
+    host: &'a str,
     sudo: &'a str,
     scope: SystemdScope,
     /// The binary being installed, unless it is installed by `commands`.
@@ -1316,7 +1330,37 @@ struct ScriptOpts<'a> {
     socket: Option<&'a str>,
 }
 
+/// Quote a value so that the shell passes it through literally, which is what
+/// the messages printed by the script need.
+fn quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+/// Something the script installs, which it only does if it differs from what
+/// is already installed.
+struct Item<'a> {
+    /// The shell variable which holds why the item is installed, which is
+    /// empty when it is unchanged.
+    var: String,
+    /// The escaped path the item is installed from.
+    source: String,
+    /// The path the item is installed to.
+    dest: String,
+    /// The mode the item is installed with.
+    mode: u32,
+    /// The sudo prefix needed to access the item.
+    sudo: &'a str,
+    /// What the item is called when it is why the service is restarted.
+    reason: String,
+}
+
 /// Build the script which installs the deployed files.
+///
+/// Everything is compared with what is installed before anything is touched,
+/// so that the script only installs what differs and only stops or restarts
+/// the service when something it depends on changed. The script reports what
+/// it does as it goes, which step failed if any, and ends with a one-line
+/// summary for the host.
 fn script(
     config: &Deploy,
     opts: &Opts,
@@ -1326,6 +1370,7 @@ fn script(
     let shell = Shell::Bash;
 
     let ScriptOpts {
+        host,
         sudo,
         scope,
         binary,
@@ -1342,215 +1387,414 @@ fn script(
     // NB: A user unit belongs to the user being deployed as, so neither it nor
     // its manager has any use for sudo, and `sudo systemctl --user` would talk
     // to the wrong manager.
-    let (unit_sudo, systemctl) = match scope {
-        SystemdScope::System => (sudo, format!("{sudo}systemctl")),
-        SystemdScope::User => ("", String::from("systemctl --user")),
+    let (unit_sudo, systemctl, journalctl) = match scope {
+        SystemdScope::System => (
+            sudo,
+            format!("{sudo}systemctl"),
+            format!("{sudo}journalctl"),
+        ),
+        SystemdScope::User => (
+            "",
+            String::from("systemctl --user"),
+            String::from("journalctl --user"),
+        ),
     };
 
-    // NB: The commands are part of starting the service, so a deployment
-    // which leaves the service alone skips them too. They are command lines
-    // for the shell running the script, so they are used as written and the
-    // sudo prefix goes in front of them. That way the shell expands `~` and
-    // `$HOME` for the user being deployed as before sudo runs.
-    let commands = |script: &mut String, commands: &[ConfigCommand]| -> Result<()> {
-        if opts.no_restart {
-            return Ok(());
-        }
+    let mut items = Vec::new();
 
-        for c in commands {
-            let sudo = if c.sudo { sudo } else { "" };
-            writeln!(script, "{sudo}{}", c.to_shell(shell))?;
-        }
+    if let Some(binary) = binary {
+        items.push(Item {
+            var: String::from("kick_bin"),
+            source: source(binary),
+            dest: format!("{bin_dir}/{binary}"),
+            mode: 0o755,
+            sudo,
+            reason: String::from("binary"),
+        });
+    }
 
-        Ok(())
-    };
+    for (index, (name, dest, mode)) in installs.iter().enumerate() {
+        items.push(Item {
+            var: format!("kick_file{index}"),
+            source: source(name),
+            dest: dest.clone(),
+            mode: mode.permissions(),
+            sudo,
+            reason: dest.clone(),
+        });
+    }
+
+    if let Some((_, file_name)) = unit {
+        items.push(Item {
+            var: String::from("kick_unit"),
+            source: source(file_name),
+            dest: format!("{unit_dir}/{file_name}"),
+            mode: 0o644,
+            sudo: unit_sudo,
+            reason: file_name.to_owned(),
+        });
+
+        if let Some(socket) = socket {
+            items.push(Item {
+                var: String::from("kick_socket"),
+                source: source(socket),
+                dest: format!("{unit_dir}/{socket}"),
+                mode: 0o644,
+                sudo: unit_sudo,
+                reason: socket.to_owned(),
+            });
+        }
+    }
+
+    // NB: The service is only touched when it is installed and the deployment
+    // is allowed to restart it.
+    let service = unit.map(|(name, _)| name).filter(|_| !opts.no_restart);
 
     let mut script = String::new();
 
-    // NB: Tracing the script is the only insight into the remote half of the
-    // deployment, since it is run non-interactively over ssh.
+    // NB: Tracing the script is the most detailed insight into the remote
+    // half of the deployment, since it is run non-interactively over ssh.
     if opts.verbose >= 1 {
         writeln!(script, "set -eux")?;
     } else {
         writeln!(script, "set -eu")?;
     }
 
+    // NB: Every step records what it is doing, so that a failure can say
+    // which step it happened in.
+    writeln!(script, "kick_step='starting'")?;
+    writeln!(
+        script,
+        r#"trap 'kick_status=$?; if [ "$kick_status" -ne 0 ]; then printf "kick: failed while %s (exit %s)\n" "$kick_step" "$kick_status" >&2; fi' EXIT"#
+    )?;
+
+    let step = |script: &mut String, indent: &str, what: &str| -> Result<()> {
+        writeln!(script, "{indent}kick_step={}", quote(what))?;
+        Ok(())
+    };
+
     // NB: The staged files arrive as a tar archive on stdin, and are unpacked
     // before anything else so that a failed transfer leaves the running
     // service alone.
     if let Sources::Staged(dir) = sources {
+        step(&mut script, "", "unpacking the uploaded files")?;
         writeln!(script, "mkdir -p {}", shell.escape(dir))?;
         writeln!(script, "tar -x -f - -C {}", shell.escape(dir))?;
     }
 
-    let socket_dest = socket.map(|file_name| escape(&format!("{unit_dir}/{file_name}")));
+    if !items.is_empty() {
+        // NB: The mode is compared as well as the contents, since kick sets
+        // it. The owner is not, since kick leaves it to whoever installs the
+        // file, and a file which is chowned after it is installed would
+        // otherwise count as changed on every deployment.
+        writeln!(script, "kick_differs() {{")?;
+        writeln!(script, "  kick_why=")?;
+        writeln!(
+            script,
+            "  if ! $1 test -e \"$3\"; then kick_why=new; return 0; fi"
+        )?;
+        writeln!(
+            script,
+            "  if ! $1 cmp -s \"$2\" \"$3\"; then kick_why=changed; return 0; fi"
+        )?;
+        writeln!(
+            script,
+            "  kick_mode=$($1 stat -c %a \"$3\" 2>/dev/null || $1 stat -f %Lp \"$3\")"
+        )?;
+        writeln!(
+            script,
+            "  if [ \"$kick_mode\" != \"$4\" ]; then kick_why=\"mode was $kick_mode\"; return 0; fi"
+        )?;
 
-    match (unit, socket.zip(socket_dest.as_deref())) {
-        // NB: A socket unit is compared up front, since whether it changed
-        // decides whether the socket has to be stopped. A socket which is
-        // already active and unchanged is left alone, so that whatever is
-        // listening on it keeps working while the binary is replaced, and the
-        // service is restarted once it is in place.
-        (Some((name, _)), Some((file_name, dest))) => {
-            writeln!(script, "socket_changed=no")?;
-            writeln!(
-                script,
-                "if ! {unit_sudo}cmp -s {} {dest}; then",
-                source(file_name)
-            )?;
-            writeln!(script, "  socket_changed=yes")?;
-            writeln!(script, "fi")?;
+        if opts.force {
+            writeln!(script, "  kick_why=forced")?;
+            writeln!(script, "  return 0")?;
+        } else {
+            writeln!(script, "  return 1")?;
+        }
 
-            if !opts.no_restart {
-                writeln!(script, "if [ \"$socket_changed\" = yes ]; then")?;
+        writeln!(script, "}}")?;
+    }
+
+    if service.is_some() {
+        writeln!(script, "kick_active() {{")?;
+        writeln!(script, "  sleep 1")?;
+        writeln!(script, "  if {systemctl} is-active --quiet \"$1\"; then")?;
+        writeln!(
+            script,
+            "    printf '%s: %s, active\\n' \"$1\" \"$kick_service\""
+        )?;
+        writeln!(script, "    return 0")?;
+        writeln!(script, "  fi")?;
+        writeln!(
+            script,
+            "  printf '%s: not active after being %s, last log lines:\\n' \"$1\" \"$kick_service\" >&2"
+        )?;
+        writeln!(
+            script,
+            "  {journalctl} -u \"$1\" -n 20 --no-pager >&2 || true"
+        )?;
+        writeln!(script, "  return 1")?;
+        writeln!(script, "}}")?;
+        writeln!(script, "kick_service='not restarted'")?;
+    }
+
+    // Compare everything up front, before anything is stopped.
+    writeln!(script, "kick_changed=0")?;
+
+    if !items.is_empty() {
+        writeln!(script, "kick_reasons=")?;
+    }
+
+    for item in &items {
+        let Item {
+            var,
+            source,
+            dest,
+            mode,
+            sudo,
+            reason,
+        } = item;
+
+        step(&mut script, "", &format!("comparing {dest}"))?;
+        writeln!(script, "{var}=")?;
+        writeln!(
+            script,
+            "if kick_differs {} {source} {} {mode:o}; then",
+            quote(sudo.trim_end()),
+            escape(dest)
+        )?;
+        writeln!(script, "  {var}=$kick_why")?;
+        writeln!(script, "  kick_changed=$((kick_changed + 1))")?;
+        writeln!(
+            script,
+            "  kick_reasons=\"${{kick_reasons:+$kick_reasons, }}\"{}",
+            quote(reason)
+        )?;
+        writeln!(script, "fi")?;
+    }
+
+    // NB: The service is only stopped up front when it has to be. With a
+    // socket unit that is when the socket changed, since whatever is listening
+    // on an unchanged socket keeps working while the binary is replaced and
+    // the service is restarted once it is in place. Without one it is when
+    // the binary is replaced, and anything else which changed is picked up by
+    // restarting the service at the end.
+    if let Some(name) = service {
+        let escaped = shell.escape(name);
+
+        match socket {
+            Some(socket) => {
+                writeln!(script, "if [ -n \"$kick_socket\" ]; then")?;
+                step(&mut script, "  ", &format!("stopping {name}"))?;
                 writeln!(
                     script,
-                    "  {systemctl} stop {} 2>/dev/null || true",
-                    shell.escape(name)
+                    "  printf '%s: stopping (socket changed)\\n' {}",
+                    quote(name)
                 )?;
+                writeln!(script, "  {systemctl} stop {escaped} 2>/dev/null || true")?;
                 writeln!(
                     script,
                     "  {systemctl} stop {} 2>/dev/null || true",
-                    shell.escape(file_name)
+                    shell.escape(socket)
                 )?;
                 writeln!(script, "fi")?;
             }
+            None if binary.is_some() => {
+                writeln!(script, "if [ -n \"$kick_bin\" ]; then")?;
+                step(&mut script, "  ", &format!("stopping {name}"))?;
+                writeln!(
+                    script,
+                    "  printf '%s: stopping (binary changed)\\n' {}",
+                    quote(name)
+                )?;
+                writeln!(script, "  {systemctl} stop {escaped} 2>/dev/null || true")?;
+                writeln!(script, "fi")?;
+            }
+            None => {}
         }
-        // Stop the service before its binary is replaced, the unit might not
-        // exist yet in which case this is a no-op.
-        (Some((name, _)), None) if !opts.no_restart => {
-            writeln!(
-                script,
-                "{systemctl} stop {} 2>/dev/null || true",
-                shell.escape(name)
-            )?;
-        }
-        _ => {}
     }
 
-    if let Some(binary) = binary {
-        writeln!(script, "{sudo}mkdir -p {}", shell.escape(bin_dir))?;
+    if unit.is_some() {
+        writeln!(script, "kick_reload=no")?;
+    }
+
+    for item in &items {
+        let Item {
+            var,
+            source,
+            dest,
+            mode,
+            sudo,
+            ..
+        } = item;
+
+        let escaped = escape(dest);
+
+        writeln!(script, "if [ -n \"${var}\" ]; then")?;
+        step(&mut script, "  ", &format!("installing {dest}"))?;
+
+        match var.as_str() {
+            "kick_bin" => {
+                writeln!(script, "  {sudo}mkdir -p {}", shell.escape(bin_dir))?;
+                writeln!(script, "  {sudo}install -m {mode:04o} {source} {escaped}")?;
+            }
+            "kick_unit" | "kick_socket" => {
+                writeln!(script, "  {sudo}mkdir -p {}", shell.escape(unit_dir))?;
+                writeln!(script, "  {sudo}install -m {mode:04o} {source} {escaped}")?;
+                writeln!(script, "  kick_reload=yes")?;
+            }
+            _ => {
+                writeln!(
+                    script,
+                    "  {sudo}install -D -m {mode:04o} {source} {escaped}"
+                )?;
+            }
+        }
 
         writeln!(
             script,
-            "{sudo}install -m 0755 {} {}",
-            source(binary),
-            escape(&format!("{bin_dir}/{binary}"))
+            "  printf '%s: updated (%s)\\n' {} \"${var}\"",
+            quote(dest)
         )?;
+        writeln!(script, "else")?;
+        writeln!(script, "  printf '%s: unchanged\\n' {}", quote(dest))?;
+        writeln!(script, "fi")?;
     }
 
-    for (name, dest, mode) in installs {
-        writeln!(
-            script,
-            "{sudo}install -D -m {:04o} {} {}",
-            mode.permissions(),
-            source(name),
-            shell.escape(dest)
-        )?;
+    // NB: With two units which might change, systemd is reloaded once after
+    // both have been installed, and not at all when neither changed.
+    if unit.is_some() {
+        writeln!(script, "if [ \"$kick_reload\" = yes ]; then")?;
+        step(&mut script, "  ", "reloading systemd")?;
+        writeln!(script, "  {systemctl} daemon-reload")?;
+        writeln!(script, "fi")?;
     }
 
-    if let Some((name, file_name)) = unit {
-        let dest = escape(&format!("{unit_dir}/{file_name}"));
+    // NB: The commands are part of starting the service, so a deployment
+    // which leaves the service alone skips them too, and so does one where
+    // nothing changed. With nothing to compare there is no way to tell, so
+    // they always run. They are command lines for the shell running the
+    // script, so they are used as written and the sudo prefix goes in front
+    // of them. That way the shell expands `~` and `$HOME` for the user being
+    // deployed as before sudo runs.
+    let commands = |script: &mut String,
+                    what: &str,
+                    commands: &[ConfigCommand],
+                    condition: Option<&str>|
+     -> Result<()> {
+        if opts.no_restart || commands.is_empty() {
+            return Ok(());
+        }
 
-        writeln!(script, "{unit_sudo}mkdir -p {}", shell.escape(unit_dir))?;
+        let indent = if let Some(condition) = condition {
+            writeln!(script, "if {condition}; then")?;
+            "  "
+        } else {
+            ""
+        };
 
+        for c in commands {
+            let line = c.to_shell(shell);
+            let sudo = if c.sudo { sudo } else { "" };
+            let what = format!("running {what}: {sudo}{line}");
+            writeln!(script, "{indent}printf '%s\\n' {}", quote(&what))?;
+            step(script, indent, &what)?;
+            writeln!(script, "{indent}{sudo}{line}")?;
+        }
+
+        if condition.is_some() {
+            writeln!(script, "fi")?;
+        }
+
+        Ok(())
+    };
+
+    let changed = (!items.is_empty()).then_some("[ \"$kick_changed\" -gt 0 ]");
+
+    commands(&mut script, "post_install", &config.post_install, changed)?;
+
+    if let Some((name, _)) = unit {
         let enable = config
             .systemd
             .as_ref()
             .and_then(|s| s.enable)
             .unwrap_or(true);
 
-        if let (Some(socket), Some(socket_dest)) = (socket, &socket_dest) {
-            // NB: With two units which might change, systemd is reloaded once
-            // after both have been installed.
-            writeln!(script, "reload=no")?;
+        let escaped = shell.escape(name);
 
-            writeln!(
-                script,
-                "if ! {unit_sudo}cmp -s {} {dest}; then",
-                source(file_name)
-            )?;
-            writeln!(
-                script,
-                "  {unit_sudo}install -m 0644 {} {dest}",
-                source(file_name)
-            )?;
-            writeln!(script, "  reload=yes")?;
-            writeln!(script, "fi")?;
-
-            writeln!(script, "if [ \"$socket_changed\" = yes ]; then")?;
-            writeln!(
-                script,
-                "  {unit_sudo}install -m 0644 {} {socket_dest}",
-                source(socket)
-            )?;
-            writeln!(script, "  reload=yes")?;
-            writeln!(script, "fi")?;
-
-            writeln!(script, "if [ \"$reload\" = yes ]; then")?;
-            writeln!(script, "  {systemctl} daemon-reload")?;
-            writeln!(script, "fi")?;
-
-            commands(&mut script, &config.post_install)?;
+        if let Some(socket) = socket {
+            let what = format!("enabling {socket}");
+            let socket = shell.escape(socket);
 
             // NB: It is the socket which is enabled rather than the service,
             // since the service is started by connections to the socket.
-            match (enable, opts.no_restart) {
-                (true, false) => {
-                    writeln!(script, "{systemctl} enable --now {}", shell.escape(socket))?;
-                }
-                (true, true) => {
-                    writeln!(script, "{systemctl} enable {}", shell.escape(socket))?;
-                }
-                (false, false) => {
-                    writeln!(script, "{systemctl} start {}", shell.escape(socket))?;
-                }
-                (false, true) => {}
-            }
+            let line = match (enable, opts.no_restart) {
+                (true, false) => Some(format!("{systemctl} enable --now {socket}")),
+                (true, true) => Some(format!("{systemctl} enable {socket}")),
+                (false, false) => Some(format!("{systemctl} start {socket}")),
+                (false, true) => None,
+            };
 
-            // NB: The service is only stopped up front if the socket changed,
-            // so it is restarted to pick up the new binary.
-            if !opts.no_restart {
-                writeln!(script, "{systemctl} restart {}", shell.escape(name))?;
+            if let Some(line) = line {
+                step(&mut script, "", &what)?;
+                writeln!(script, "{line}")?;
             }
+        } else if enable {
+            step(&mut script, "", &format!("enabling {name}"))?;
+            writeln!(script, "{systemctl} enable {escaped}")?;
+        }
 
-            commands(&mut script, &config.post_start)?;
-        } else {
-            // NB: Installing the unit unconditionally would touch it on every
-            // deployment, so only do it when it actually changed. This also
-            // keeps us from reloading systemd for no reason.
+        if service.is_some() {
+            writeln!(script, "if [ \"$kick_changed\" -gt 0 ]; then")?;
+            step(&mut script, "  ", &format!("restarting {name}"))?;
             writeln!(
                 script,
-                "if ! {unit_sudo}cmp -s {} {dest}; then",
-                source(file_name)
+                "  printf '%s: restarting (%s changed)\\n' {} \"$kick_reasons\"",
+                quote(name)
             )?;
+            writeln!(script, "  {systemctl} restart {escaped}")?;
+            writeln!(script, "  kick_service=restarted")?;
 
-            writeln!(
-                script,
-                "  {unit_sudo}install -m 0644 {} {dest}",
-                source(file_name)
-            )?;
+            // NB: A service activated by a socket is not expected to be
+            // running, so it is left to the socket to start it.
+            if socket.is_none() {
+                writeln!(
+                    script,
+                    "elif ! {systemctl} is-active --quiet {escaped}; then"
+                )?;
+                step(&mut script, "  ", &format!("starting {name}"))?;
+                writeln!(
+                    script,
+                    "  printf '%s: starting (not running)\\n' {}",
+                    quote(name)
+                )?;
+                writeln!(script, "  {systemctl} start {escaped}")?;
+                writeln!(script, "  kick_service=started")?;
+            }
 
-            writeln!(script, "  {systemctl} daemon-reload")?;
             writeln!(script, "fi")?;
 
-            commands(&mut script, &config.post_install)?;
-
-            if enable {
-                writeln!(script, "{systemctl} enable {}", shell.escape(name))?;
-            }
-
-            if !opts.no_restart {
-                writeln!(script, "{systemctl} start {}", shell.escape(name))?;
-            }
-
-            commands(&mut script, &config.post_start)?;
+            writeln!(script, "if [ \"$kick_service\" != 'not restarted' ]; then")?;
+            step(
+                &mut script,
+                "  ",
+                &format!("checking that {name} is active"),
+            )?;
+            writeln!(script, "  kick_active {escaped}")?;
+            writeln!(script, "fi")?;
         }
+
+        commands(
+            &mut script,
+            "post_start",
+            &config.post_start,
+            Some("[ \"$kick_service\" != 'not restarted' ]"),
+        )?;
     } else {
         // NB: Without a unit there is nothing to start, so the commands run
         // back to back once everything has been installed.
-        commands(&mut script, &config.post_install)?;
-        commands(&mut script, &config.post_start)?;
+        commands(&mut script, "post_start", &config.post_start, changed)?;
     }
 
     // NB: Only staged copies are removed, a local deployment installs from the
@@ -1561,9 +1805,53 @@ fn script(
         names.extend(unit.map(|(_, file_name)| file_name));
         names.extend(socket);
 
+        if !names.is_empty() {
+            step(&mut script, "", "cleaning up the uploaded files")?;
+        }
+
         for name in names {
             writeln!(script, "rm -f {}", escape(&format!("{dir}/{name}")))?;
         }
+    }
+
+    let total = items.len();
+    let files = if total == 1 { "file" } else { "files" };
+
+    if total > 0 {
+        writeln!(script, "if [ \"$kick_changed\" -eq 0 ]; then")?;
+        writeln!(
+            script,
+            "  kick_summary={}",
+            quote(&format!("up to date, {total} {files} unchanged"))
+        )?;
+        writeln!(script, "else")?;
+        writeln!(
+            script,
+            "  kick_summary=\"changed $kick_changed of {total} {files}\""
+        )?;
+        writeln!(script, "fi")?;
+    } else {
+        writeln!(script, "kick_summary=installed")?;
+    }
+
+    match (unit, service) {
+        (_, Some(name)) => writeln!(
+            script,
+            "printf '%s: %s, %s %s\\n' {} \"$kick_summary\" {} \"$kick_service\"",
+            quote(host),
+            quote(name)
+        )?,
+        (Some((name, _)), None) => writeln!(
+            script,
+            "printf '%s: %s, %s not restarted (--no-restart)\\n' {} \"$kick_summary\" {}",
+            quote(host),
+            quote(name)
+        )?,
+        (None, None) => writeln!(
+            script,
+            "printf '%s: %s\\n' {} \"$kick_summary\"",
+            quote(host)
+        )?,
     }
 
     Ok(script)
@@ -2260,67 +2548,136 @@ mod tests {
         }
     }
 
+    fn ssh_opts<'a>(unit: Option<(&'a str, &'a str)>, socket: Option<&'a str>) -> ScriptOpts<'a> {
+        ScriptOpts {
+            host: "example",
+            sudo: "sudo -n ",
+            scope: SystemdScope::System,
+            binary: unit.map(|(name, _)| name),
+            bin_dir: "/usr/local/bin",
+            unit_dir: "/etc/systemd/system",
+            sources: Sources::Staged(".kick-deploy"),
+            unit,
+            socket,
+        }
+    }
+
+    /// The whole script for the most common deployment, a binary and a
+    /// system unit over ssh.
     #[test]
-    fn local_script() {
-        let config = user_unit();
+    fn ssh_script_with_system_unit() {
+        let config = Deploy::default();
         let opts = Opts::default();
-
-        let uploads = vec![
-            (
-                PathBuf::from("/src/kanban/target/release/kanban"),
-                String::from("kanban"),
-            ),
-            (
-                PathBuf::from("/src/kanban/config.toml"),
-                String::from("config.toml"),
-            ),
-            (
-                PathBuf::from("/tmp/unit/kanban.service"),
-                String::from("kanban.service"),
-            ),
-        ];
-
-        let installs = vec![(
-            String::from("config.toml"),
-            String::from("/home/me/.config/kanban/config.toml"),
-            "644".parse::<Mode>().unwrap(),
-        )];
 
         let script = script(
             &config,
             &opts,
-            &installs,
-            ScriptOpts {
-                sudo: "",
-                scope: SystemdScope::User,
-                binary: Some("kanban"),
-                bin_dir: "/home/me/.cargo/bin",
-                unit_dir: "/home/me/.config/systemd/user",
-                sources: Sources::Local(&uploads),
-                unit: Some(("kanban", "kanban.service")),
-                socket: None,
-            },
+            &[],
+            ssh_opts(Some(("track", "track.service")), None),
         )
         .unwrap();
 
-        let expected = "\
-set -eu
-systemctl --user stop kanban 2>/dev/null || true
-mkdir -p /home/me/.cargo/bin
-install -m 0755 /src/kanban/target/release/kanban /home/me/.cargo/bin/kanban
-install -D -m 0644 /src/kanban/config.toml /home/me/.config/kanban/config.toml
-mkdir -p /home/me/.config/systemd/user
-if ! cmp -s /tmp/unit/kanban.service /home/me/.config/systemd/user/kanban.service; then
-  install -m 0644 /tmp/unit/kanban.service /home/me/.config/systemd/user/kanban.service
-  systemctl --user daemon-reload
+        let expected = r#"set -eu
+kick_step='starting'
+trap 'kick_status=$?; if [ "$kick_status" -ne 0 ]; then printf "kick: failed while %s (exit %s)\n" "$kick_step" "$kick_status" >&2; fi' EXIT
+kick_step='unpacking the uploaded files'
+mkdir -p .kick-deploy
+tar -x -f - -C .kick-deploy
+kick_differs() {
+  kick_why=
+  if ! $1 test -e "$3"; then kick_why=new; return 0; fi
+  if ! $1 cmp -s "$2" "$3"; then kick_why=changed; return 0; fi
+  kick_mode=$($1 stat -c %a "$3" 2>/dev/null || $1 stat -f %Lp "$3")
+  if [ "$kick_mode" != "$4" ]; then kick_why="mode was $kick_mode"; return 0; fi
+  return 1
+}
+kick_active() {
+  sleep 1
+  if sudo -n systemctl is-active --quiet "$1"; then
+    printf '%s: %s, active\n' "$1" "$kick_service"
+    return 0
+  fi
+  printf '%s: not active after being %s, last log lines:\n' "$1" "$kick_service" >&2
+  sudo -n journalctl -u "$1" -n 20 --no-pager >&2 || true
+  return 1
+}
+kick_service='not restarted'
+kick_changed=0
+kick_reasons=
+kick_step='comparing /usr/local/bin/track'
+kick_bin=
+if kick_differs 'sudo -n' .kick-deploy/track /usr/local/bin/track 755; then
+  kick_bin=$kick_why
+  kick_changed=$((kick_changed + 1))
+  kick_reasons="${kick_reasons:+$kick_reasons, }"'binary'
 fi
-systemctl --user enable kanban
-systemctl --user start kanban
-";
+kick_step='comparing /etc/systemd/system/track.service'
+kick_unit=
+if kick_differs 'sudo -n' .kick-deploy/track.service /etc/systemd/system/track.service 644; then
+  kick_unit=$kick_why
+  kick_changed=$((kick_changed + 1))
+  kick_reasons="${kick_reasons:+$kick_reasons, }"'track.service'
+fi
+if [ -n "$kick_bin" ]; then
+  kick_step='stopping track'
+  printf '%s: stopping (binary changed)\n' 'track'
+  sudo -n systemctl stop track 2>/dev/null || true
+fi
+kick_reload=no
+if [ -n "$kick_bin" ]; then
+  kick_step='installing /usr/local/bin/track'
+  sudo -n mkdir -p /usr/local/bin
+  sudo -n install -m 0755 .kick-deploy/track /usr/local/bin/track
+  printf '%s: updated (%s)\n' '/usr/local/bin/track' "$kick_bin"
+else
+  printf '%s: unchanged\n' '/usr/local/bin/track'
+fi
+if [ -n "$kick_unit" ]; then
+  kick_step='installing /etc/systemd/system/track.service'
+  sudo -n mkdir -p /etc/systemd/system
+  sudo -n install -m 0644 .kick-deploy/track.service /etc/systemd/system/track.service
+  kick_reload=yes
+  printf '%s: updated (%s)\n' '/etc/systemd/system/track.service' "$kick_unit"
+else
+  printf '%s: unchanged\n' '/etc/systemd/system/track.service'
+fi
+if [ "$kick_reload" = yes ]; then
+  kick_step='reloading systemd'
+  sudo -n systemctl daemon-reload
+fi
+kick_step='enabling track'
+sudo -n systemctl enable track
+if [ "$kick_changed" -gt 0 ]; then
+  kick_step='restarting track'
+  printf '%s: restarting (%s changed)\n' 'track' "$kick_reasons"
+  sudo -n systemctl restart track
+  kick_service=restarted
+elif ! sudo -n systemctl is-active --quiet track; then
+  kick_step='starting track'
+  printf '%s: starting (not running)\n' 'track'
+  sudo -n systemctl start track
+  kick_service=started
+fi
+if [ "$kick_service" != 'not restarted' ]; then
+  kick_step='checking that track is active'
+  kick_active track
+fi
+kick_step='cleaning up the uploaded files'
+rm -f .kick-deploy/track
+rm -f .kick-deploy/track.service
+if [ "$kick_changed" -eq 0 ]; then
+  kick_summary='up to date, 2 files unchanged'
+else
+  kick_summary="changed $kick_changed of 2 files"
+fi
+printf '%s: %s, %s %s\n' 'example' "$kick_summary" 'track' "$kick_service"
+"#;
 
         assert_eq!(script, expected);
     }
 
+    /// The binary still needs sudo, but nothing belonging to a user unit
+    /// does.
     #[test]
     fn ssh_script_with_user_unit() {
         let config = user_unit();
@@ -2331,153 +2688,30 @@ systemctl --user start kanban
             &opts,
             &[],
             ScriptOpts {
-                sudo: "sudo -n ",
                 scope: SystemdScope::User,
-                binary: Some("track"),
-                bin_dir: "/usr/local/bin",
                 unit_dir: "/home/integration/.config/systemd/user",
-                sources: Sources::Staged(".kick-deploy"),
-                unit: Some(("track", "track.service")),
-                socket: None,
+                ..ssh_opts(Some(("track", "track.service")), None)
             },
         )
         .unwrap();
 
-        // NB: The binary still needs sudo, but nothing belonging to the user
-        // unit does.
-        let expected = "\
-set -eu
-mkdir -p .kick-deploy
-tar -x -f - -C .kick-deploy
-systemctl --user stop track 2>/dev/null || true
-sudo -n mkdir -p /usr/local/bin
-sudo -n install -m 0755 .kick-deploy/track /usr/local/bin/track
-mkdir -p /home/integration/.config/systemd/user
-if ! cmp -s .kick-deploy/track.service /home/integration/.config/systemd/user/track.service; then
-  install -m 0644 .kick-deploy/track.service /home/integration/.config/systemd/user/track.service
-  systemctl --user daemon-reload
-fi
-systemctl --user enable track
-systemctl --user start track
-rm -f .kick-deploy/track
-rm -f .kick-deploy/track.service
-";
+        for expected in [
+            "if kick_differs 'sudo -n' .kick-deploy/track /usr/local/bin/track 755; then\n",
+            "if kick_differs '' .kick-deploy/track.service /home/integration/.config/systemd/user/track.service 644; then\n",
+            "  install -m 0644 .kick-deploy/track.service /home/integration/.config/systemd/user/track.service\n",
+            "  systemctl --user daemon-reload\n",
+            "  systemctl --user stop track 2>/dev/null || true\n",
+            "  journalctl --user -u \"$1\" -n 20 --no-pager >&2 || true\n",
+        ] {
+            assert!(script.contains(expected), "{expected}\n{script}");
+        }
 
-        assert_eq!(script, expected);
+        assert!(!script.contains("sudo -n systemctl"), "{script}");
     }
 
-    #[test]
-    fn ssh_script_with_system_unit() {
-        let config = Deploy::default();
-        let opts = Opts::default();
-
-        let script = script(
-            &config,
-            &opts,
-            &[],
-            ScriptOpts {
-                sudo: "sudo -n ",
-                scope: SystemdScope::System,
-                binary: Some("track"),
-                bin_dir: "/usr/local/bin",
-                unit_dir: "/etc/systemd/system",
-                sources: Sources::Staged(".kick-deploy"),
-                unit: Some(("track", "track.service")),
-                socket: None,
-            },
-        )
-        .unwrap();
-
-        let expected = "\
-set -eu
-mkdir -p .kick-deploy
-tar -x -f - -C .kick-deploy
-sudo -n systemctl stop track 2>/dev/null || true
-sudo -n mkdir -p /usr/local/bin
-sudo -n install -m 0755 .kick-deploy/track /usr/local/bin/track
-sudo -n mkdir -p /etc/systemd/system
-if ! sudo -n cmp -s .kick-deploy/track.service /etc/systemd/system/track.service; then
-  sudo -n install -m 0644 .kick-deploy/track.service /etc/systemd/system/track.service
-  sudo -n systemctl daemon-reload
-fi
-sudo -n systemctl enable track
-sudo -n systemctl start track
-rm -f .kick-deploy/track
-rm -f .kick-deploy/track.service
-";
-
-        assert_eq!(script, expected);
-    }
-
-    #[test]
-    fn local_script_with_socket() {
-        let config = user_unit();
-        let opts = Opts::default();
-
-        let uploads = vec![
-            (
-                PathBuf::from("/src/kanban/target/release/kanban"),
-                String::from("kanban"),
-            ),
-            (
-                PathBuf::from("/tmp/unit/kanban.service"),
-                String::from("kanban.service"),
-            ),
-            (
-                PathBuf::from("/tmp/unit/kanban.socket"),
-                String::from("kanban.socket"),
-            ),
-        ];
-
-        let script = script(
-            &config,
-            &opts,
-            &[],
-            ScriptOpts {
-                sudo: "",
-                scope: SystemdScope::User,
-                binary: Some("kanban"),
-                bin_dir: "/home/me/.cargo/bin",
-                unit_dir: "/home/me/.config/systemd/user",
-                sources: Sources::Local(&uploads),
-                unit: Some(("kanban", "kanban.service")),
-                socket: Some("kanban.socket"),
-            },
-        )
-        .unwrap();
-
-        let expected = "\
-set -eu
-socket_changed=no
-if ! cmp -s /tmp/unit/kanban.socket /home/me/.config/systemd/user/kanban.socket; then
-  socket_changed=yes
-fi
-if [ \"$socket_changed\" = yes ]; then
-  systemctl --user stop kanban 2>/dev/null || true
-  systemctl --user stop kanban.socket 2>/dev/null || true
-fi
-mkdir -p /home/me/.cargo/bin
-install -m 0755 /src/kanban/target/release/kanban /home/me/.cargo/bin/kanban
-mkdir -p /home/me/.config/systemd/user
-reload=no
-if ! cmp -s /tmp/unit/kanban.service /home/me/.config/systemd/user/kanban.service; then
-  install -m 0644 /tmp/unit/kanban.service /home/me/.config/systemd/user/kanban.service
-  reload=yes
-fi
-if [ \"$socket_changed\" = yes ]; then
-  install -m 0644 /tmp/unit/kanban.socket /home/me/.config/systemd/user/kanban.socket
-  reload=yes
-fi
-if [ \"$reload\" = yes ]; then
-  systemctl --user daemon-reload
-fi
-systemctl --user enable --now kanban.socket
-systemctl --user restart kanban
-";
-
-        assert_eq!(script, expected);
-    }
-
+    /// A socket unit is compared like everything else, the service and the
+    /// socket are only stopped if the socket changed, and an unchanged
+    /// deployment leaves the service alone since the socket starts it.
     #[test]
     fn ssh_script_with_system_socket() {
         let config = Deploy::default();
@@ -2487,54 +2721,43 @@ systemctl --user restart kanban
             &config,
             &opts,
             &[],
-            ScriptOpts {
-                sudo: "sudo -n ",
-                scope: SystemdScope::System,
-                binary: Some("kanban"),
-                bin_dir: "/usr/local/bin",
-                unit_dir: "/etc/systemd/system",
-                sources: Sources::Staged(".kick-deploy"),
-                unit: Some(("kanban", "kanban.service")),
-                socket: Some("kanban.socket"),
-            },
+            ssh_opts(Some(("kanban", "kanban.service")), Some("kanban.socket")),
         )
         .unwrap();
 
-        let expected = "\
-set -eu
-mkdir -p .kick-deploy
-tar -x -f - -C .kick-deploy
-socket_changed=no
-if ! sudo -n cmp -s .kick-deploy/kanban.socket /etc/systemd/system/kanban.socket; then
-  socket_changed=yes
-fi
-if [ \"$socket_changed\" = yes ]; then
+        for expected in [
+            "if kick_differs 'sudo -n' .kick-deploy/kanban.socket /etc/systemd/system/kanban.socket 644; then\n",
+            "\
+if [ -n \"$kick_socket\" ]; then
+  kick_step='stopping kanban'
+  printf '%s: stopping (socket changed)\\n' 'kanban'
   sudo -n systemctl stop kanban 2>/dev/null || true
   sudo -n systemctl stop kanban.socket 2>/dev/null || true
 fi
-sudo -n mkdir -p /usr/local/bin
-sudo -n install -m 0755 .kick-deploy/kanban /usr/local/bin/kanban
-sudo -n mkdir -p /etc/systemd/system
-reload=no
-if ! sudo -n cmp -s .kick-deploy/kanban.service /etc/systemd/system/kanban.service; then
-  sudo -n install -m 0644 .kick-deploy/kanban.service /etc/systemd/system/kanban.service
-  reload=yes
-fi
-if [ \"$socket_changed\" = yes ]; then
+",
+            "\
   sudo -n install -m 0644 .kick-deploy/kanban.socket /etc/systemd/system/kanban.socket
-  reload=yes
-fi
-if [ \"$reload\" = yes ]; then
-  sudo -n systemctl daemon-reload
-fi
+  kick_reload=yes
+",
+            "\
+kick_step='enabling kanban.socket'
 sudo -n systemctl enable --now kanban.socket
-sudo -n systemctl restart kanban
-rm -f .kick-deploy/kanban
-rm -f .kick-deploy/kanban.service
-rm -f .kick-deploy/kanban.socket
-";
+if [ \"$kick_changed\" -gt 0 ]; then
+  kick_step='restarting kanban'
+  printf '%s: restarting (%s changed)\\n' 'kanban' \"$kick_reasons\"
+  sudo -n systemctl restart kanban
+  kick_service=restarted
+fi
+",
+            "rm -f .kick-deploy/kanban.socket\n",
+            "kick_summary='up to date, 3 files unchanged'\n",
+        ] {
+            assert!(script.contains(expected), "{expected}\n{script}");
+        }
 
-        assert_eq!(script, expected);
+        // NB: The service is only stopped up front if the socket changed.
+        assert!(!script.contains("binary changed"), "{script}");
+        assert!(!script.contains("is-active --quiet kanban;"), "{script}");
     }
 
     /// Without restarting, the units are still installed and the socket is
@@ -2553,6 +2776,7 @@ rm -f .kick-deploy/kanban.socket
             &opts,
             &[],
             ScriptOpts {
+                host: "localhost",
                 sudo: "",
                 scope: SystemdScope::User,
                 binary: Some("kanban"),
@@ -2569,11 +2793,18 @@ rm -f .kick-deploy/kanban.socket
         assert!(!script.contains(" start "), "{script}");
         assert!(!script.contains(" restart "), "{script}");
         assert!(!script.contains("--now"), "{script}");
+        assert!(!script.contains("kick_active"), "{script}");
         assert!(
             script.contains("systemctl --user enable kanban.socket\n"),
             "{script}"
         );
         assert!(!script.contains("enable kanban\n"), "{script}");
+        assert!(
+            script.contains(
+                "printf '%s: %s, %s not restarted (--no-restart)\\n' 'localhost' \"$kick_summary\" 'kanban'\n"
+            ),
+            "{script}"
+        );
     }
 
     /// When `commands` install the binary, the script only installs what
@@ -2592,6 +2823,7 @@ rm -f .kick-deploy/kanban.socket
                 Mode::READ_WRITE,
             )],
             ScriptOpts {
+                host: "localhost",
                 sudo: "",
                 scope: SystemdScope::User,
                 binary: None,
@@ -2606,11 +2838,12 @@ rm -f .kick-deploy/kanban.socket
 
         assert!(!script.contains(".cargo/bin"), "{script}");
         assert!(
-            script.contains("install -D -m 0644 s/kanban.conf /etc/kanban.conf\n"),
+            script.contains("  install -D -m 0644 s/kanban.conf /etc/kanban.conf\n"),
             "{script}"
         );
-        assert!(script.contains("\necho started\n"), "{script}");
+        assert!(script.contains("\n  echo started\n"), "{script}");
         assert!(!script.contains("rm -f s/kanban\n"), "{script}");
+        assert!(!script.contains("systemctl"), "{script}");
     }
 
     fn start_commands() -> Deploy {
@@ -2635,8 +2868,9 @@ rm -f .kick-deploy/kanban.socket
         }
     }
 
-    /// Commands run after the units are installed, around the start of the
-    /// socket and the service.
+    /// The commands only run when something changed, `post_install` once
+    /// everything is installed and `post_start` once the service has been
+    /// started.
     #[test]
     fn ssh_script_with_start_commands() {
         let config = start_commands();
@@ -2646,72 +2880,55 @@ rm -f .kick-deploy/kanban.socket
             &config,
             &opts,
             &[],
-            ScriptOpts {
-                sudo: "sudo -n ",
-                scope: SystemdScope::System,
-                binary: Some("kanban"),
-                bin_dir: "/usr/local/bin",
-                unit_dir: "/etc/systemd/system",
-                sources: Sources::Staged(".kick-deploy"),
-                unit: Some(("kanban", "kanban.service")),
-                socket: Some("kanban.socket"),
-            },
+            ssh_opts(Some(("kanban", "kanban.service")), Some("kanban.socket")),
         )
         .unwrap();
 
         let expected = "\
-if [ \"$reload\" = yes ]; then
+if [ \"$kick_reload\" = yes ]; then
+  kick_step='reloading systemd'
   sudo -n systemctl daemon-reload
 fi
-sudo -n systemd-sysusers
-/usr/local/bin/kanban --db ~/kanban.db install
+if [ \"$kick_changed\" -gt 0 ]; then
+  printf '%s\\n' 'running post_install: sudo -n systemd-sysusers'
+  kick_step='running post_install: sudo -n systemd-sysusers'
+  sudo -n systemd-sysusers
+  printf '%s\\n' 'running post_install: /usr/local/bin/kanban --db ~/kanban.db install'
+  kick_step='running post_install: /usr/local/bin/kanban --db ~/kanban.db install'
+  /usr/local/bin/kanban --db ~/kanban.db install
+fi
+kick_step='enabling kanban.socket'
 sudo -n systemctl enable --now kanban.socket
-sudo -n systemctl restart kanban
-echo started
-rm -f .kick-deploy/kanban
 ";
 
         assert!(script.contains(expected), "{script}");
 
-        let script = super::script(
-            &config,
-            &opts,
-            &[],
-            ScriptOpts {
-                sudo: "sudo -n ",
-                scope: SystemdScope::System,
-                binary: Some("kanban"),
-                bin_dir: "/usr/local/bin",
-                unit_dir: "/etc/systemd/system",
-                sources: Sources::Staged(".kick-deploy"),
-                unit: Some(("kanban", "kanban.service")),
-                socket: None,
-            },
-        )
-        .unwrap();
-
         let expected = "\
-  sudo -n systemctl daemon-reload
+if [ \"$kick_service\" != 'not restarted' ]; then
+  kick_step='checking that kanban is active'
+  kick_active kanban
 fi
-sudo -n systemd-sysusers
-/usr/local/bin/kanban --db ~/kanban.db install
-sudo -n systemctl enable kanban
-sudo -n systemctl start kanban
-echo started
-rm -f .kick-deploy/kanban
+if [ \"$kick_service\" != 'not restarted' ]; then
+  printf '%s\\n' 'running post_start: echo started'
+  kick_step='running post_start: echo started'
+  echo started
+fi
+kick_step='cleaning up the uploaded files'
 ";
 
         assert!(script.contains(expected), "{script}");
     }
 
-    /// Without a unit the commands run once everything is installed, and a
-    /// deployment which doesn't restart anything skips them.
+    /// Without a unit the commands run once everything is installed, if
+    /// anything changed, and a deployment which doesn't restart anything
+    /// skips them.
     #[test]
     fn local_script_with_start_commands() {
         let config = start_commands();
         let uploads = vec![(PathBuf::from("/src/kanban"), String::from("kanban"))];
 
         let s = || ScriptOpts {
+            host: "localhost",
             sudo: "sudo ",
             scope: SystemdScope::System,
             binary: Some("kanban"),
@@ -2725,15 +2942,26 @@ rm -f .kick-deploy/kanban
         let script = script(&config, &Opts::default(), &[], s()).unwrap();
 
         let expected = "\
-set -eu
-sudo mkdir -p /usr/local/bin
-sudo install -m 0755 /src/kanban /usr/local/bin/kanban
-sudo systemd-sysusers
-/usr/local/bin/kanban --db ~/kanban.db install
-echo started
+if [ \"$kick_changed\" -gt 0 ]; then
+  printf '%s\\n' 'running post_start: echo started'
+  kick_step='running post_start: echo started'
+  echo started
+fi
+if [ \"$kick_changed\" -eq 0 ]; then
+  kick_summary='up to date, 1 file unchanged'
+else
+  kick_summary=\"changed $kick_changed of 1 file\"
+fi
+printf '%s: %s\\n' 'localhost' \"$kick_summary\"
 ";
 
-        assert_eq!(script, expected);
+        assert!(script.ends_with(expected), "{script}");
+        assert!(
+            script.contains("if kick_differs 'sudo' /src/kanban /usr/local/bin/kanban 755; then\n"),
+            "{script}"
+        );
+        assert!(!script.contains("systemctl"), "{script}");
+        assert!(!script.contains("rm -f"), "{script}");
 
         let opts = Opts::local(Common {
             no_restart: true,
@@ -2743,6 +2971,415 @@ echo started
         let script = super::script(&config, &opts, &[], s()).unwrap();
         assert!(!script.contains("sysusers"), "{script}");
         assert!(!script.contains("echo started"), "{script}");
+    }
+
+    /// With nothing to compare, there is no telling whether anything changed,
+    /// so the commands always run.
+    #[test]
+    fn script_with_only_commands() {
+        let config = start_commands();
+
+        let script = script(
+            &config,
+            &Opts::default(),
+            &[],
+            ScriptOpts {
+                host: "localhost",
+                sudo: "",
+                scope: SystemdScope::User,
+                binary: None,
+                bin_dir: "/bin",
+                unit_dir: "/units",
+                sources: Sources::Local(&[]),
+                unit: None,
+                socket: None,
+            },
+        )
+        .unwrap();
+
+        assert!(!script.contains("kick_differs"), "{script}");
+        assert!(!script.contains("if [ \"$kick_changed\""), "{script}");
+        assert!(script.contains("\nsystemd-sysusers\n"), "{script}");
+        assert!(script.contains("\necho started\n"), "{script}");
+        assert!(script.contains("kick_summary=installed\n"), "{script}");
+    }
+
+    /// Forcing a deployment counts everything as changed.
+    #[test]
+    fn script_with_force() {
+        let opts = Opts::local(Common {
+            force: true,
+            ..Common::default()
+        });
+
+        let script = script(
+            &Deploy::default(),
+            &opts,
+            &[],
+            ssh_opts(Some(("track", "track.service")), None),
+        )
+        .unwrap();
+
+        assert!(
+            script.contains("  kick_why=forced\n  return 0\n}\n"),
+            "{script}"
+        );
+        assert!(!script.contains("return 1\n}\nkick_active"), "{script}");
+    }
+
+    /// Runs generated scripts against a scratch directory with a stand-in
+    /// for `systemctl` and `journalctl` which records how it is called, to
+    /// check what a deployment does depending on what is already installed.
+    #[cfg(target_os = "linux")]
+    mod run {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+        use std::path::{Path, PathBuf};
+        use std::process::Command;
+
+        use crate::config::{CommandLine, ConfigCommand, Deploy, SystemdScope};
+        use crate::packaging::Mode;
+
+        use super::super::{Common, Opts, ScriptOpts, Sources, script};
+
+        struct Output {
+            success: bool,
+            stdout: String,
+            stderr: String,
+            systemctl: Vec<String>,
+        }
+
+        struct Fixture {
+            dir: tempfile::TempDir,
+        }
+
+        impl Fixture {
+            fn new() -> Self {
+                let dir = tempfile::TempDir::new().unwrap();
+                let root = dir.path();
+
+                for d in ["src", "bin", "units", "etc", "fake"] {
+                    fs::create_dir_all(root.join(d)).unwrap();
+                }
+
+                fs::write(root.join("src/kanban"), "binary v1").unwrap();
+                fs::write(root.join("src/kanban.service"), "[Service]\n").unwrap();
+                fs::write(root.join("src/kanban.toml"), "config = 1\n").unwrap();
+
+                let fake = "#!/bin/sh\n\
+                    echo \"$(basename \"$0\") $*\" >> \"$KICK_TEST_LOG\"\n\
+                    case \"$*\" in *is-active*) exit \"${KICK_TEST_ACTIVE:-0}\";; esac\n";
+
+                for name in ["systemctl", "journalctl"] {
+                    let path = root.join("fake").join(name);
+                    fs::write(&path, fake).unwrap();
+                    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+                }
+
+                Self { dir }
+            }
+
+            fn path(&self, name: &str) -> PathBuf {
+                self.dir.path().join(name)
+            }
+
+            fn run(&self, opts: &Opts, active: bool) -> Output {
+                let root = self.dir.path();
+                let path = |name: &str| root.join(name).display().to_string();
+
+                let uploads = vec![
+                    (root.join("src/kanban"), String::from("kanban")),
+                    (root.join("src/kanban.toml"), String::from("kanban.toml")),
+                    (
+                        root.join("src/kanban.service"),
+                        String::from("kanban.service"),
+                    ),
+                ];
+
+                let installs = vec![(
+                    String::from("kanban.toml"),
+                    path("etc/kanban/kanban.toml"),
+                    "644".parse::<Mode>().unwrap(),
+                )];
+
+                let config = Deploy {
+                    post_install: vec![ConfigCommand {
+                        line: CommandLine::Line(String::from("echo hook")),
+                        sudo: false,
+                    }],
+                    ..Deploy::default()
+                };
+
+                let bin_dir = path("bin");
+                let unit_dir = path("units");
+
+                let script = script(
+                    &config,
+                    opts,
+                    &installs,
+                    ScriptOpts {
+                        host: "localhost",
+                        sudo: "",
+                        scope: SystemdScope::User,
+                        binary: Some("kanban"),
+                        bin_dir: &bin_dir,
+                        unit_dir: &unit_dir,
+                        sources: Sources::Local(&uploads),
+                        unit: Some(("kanban", "kanban.service")),
+                        socket: None,
+                    },
+                )
+                .unwrap();
+
+                let log = root.join("systemctl.log");
+                let _ = fs::remove_file(&log);
+
+                let search = format!(
+                    "{}:{}",
+                    root.join("fake").display(),
+                    std::env::var("PATH").unwrap_or_default()
+                );
+
+                let output = Command::new("sh")
+                    .arg("-c")
+                    .arg(&script)
+                    .env("PATH", search)
+                    .env("KICK_TEST_LOG", &log)
+                    .env("KICK_TEST_ACTIVE", if active { "0" } else { "3" })
+                    .output()
+                    .unwrap();
+
+                let replace = |s: &[u8]| {
+                    String::from_utf8_lossy(s).replace(&format!("{}/", root.display()), "")
+                };
+
+                Output {
+                    success: output.status.success(),
+                    stdout: replace(&output.stdout),
+                    stderr: replace(&output.stderr),
+                    systemctl: fs::read_to_string(&log)
+                        .unwrap_or_default()
+                        .lines()
+                        .map(str::to_owned)
+                        .collect(),
+                }
+            }
+        }
+
+        fn mode(path: &Path) -> u32 {
+            fs::metadata(path).unwrap().permissions().mode() & 0o7777
+        }
+
+        #[test]
+        fn deploys_only_what_differs() {
+            let f = Fixture::new();
+            let opts = Opts::default();
+
+            // A first deployment installs everything.
+            let out = f.run(&opts, true);
+            assert!(out.success, "{}", out.stderr);
+            assert_eq!(
+                out.stdout,
+                "\
+kanban: stopping (binary changed)
+bin/kanban: updated (new)
+etc/kanban/kanban.toml: updated (new)
+units/kanban.service: updated (new)
+running post_install: echo hook
+hook
+kanban: restarting (binary, etc/kanban/kanban.toml, kanban.service changed)
+kanban: restarted, active
+localhost: changed 3 of 3 files, kanban restarted
+"
+            );
+            assert_eq!(
+                out.systemctl,
+                [
+                    "systemctl --user stop kanban",
+                    "systemctl --user daemon-reload",
+                    "systemctl --user enable kanban",
+                    "systemctl --user restart kanban",
+                    "systemctl --user is-active --quiet kanban",
+                ]
+            );
+            assert_eq!(mode(&f.path("bin/kanban")), 0o755);
+
+            // Nothing changed, so nothing is installed or restarted.
+            let out = f.run(&opts, true);
+            assert!(out.success, "{}", out.stderr);
+            assert_eq!(
+                out.stdout,
+                "\
+bin/kanban: unchanged
+etc/kanban/kanban.toml: unchanged
+units/kanban.service: unchanged
+localhost: up to date, 3 files unchanged, kanban not restarted
+"
+            );
+            assert_eq!(
+                out.systemctl,
+                [
+                    "systemctl --user enable kanban",
+                    "systemctl --user is-active --quiet kanban",
+                ]
+            );
+
+            // A changed binary stops the service before it is replaced.
+            fs::write(f.path("src/kanban"), "binary v2").unwrap();
+            let out = f.run(&opts, true);
+            assert!(out.success, "{}", out.stderr);
+            assert_eq!(
+                out.stdout,
+                "\
+kanban: stopping (binary changed)
+bin/kanban: updated (changed)
+etc/kanban/kanban.toml: unchanged
+units/kanban.service: unchanged
+running post_install: echo hook
+hook
+kanban: restarting (binary changed)
+kanban: restarted, active
+localhost: changed 1 of 3 files, kanban restarted
+"
+            );
+            assert_eq!(
+                out.systemctl,
+                [
+                    "systemctl --user stop kanban",
+                    "systemctl --user enable kanban",
+                    "systemctl --user restart kanban",
+                    "systemctl --user is-active --quiet kanban",
+                ]
+            );
+
+            // A changed unit reloads systemd and restarts the service, without
+            // stopping it up front.
+            fs::write(f.path("src/kanban.service"), "[Service]\nUser=kanban\n").unwrap();
+            let out = f.run(&opts, true);
+            assert!(out.success, "{}", out.stderr);
+            assert!(
+                out.stdout
+                    .contains("units/kanban.service: updated (changed)\n"),
+                "{}",
+                out.stdout
+            );
+            assert!(
+                out.stdout
+                    .contains("kanban: restarting (kanban.service changed)\n"),
+                "{}",
+                out.stdout
+            );
+            assert_eq!(
+                out.systemctl,
+                [
+                    "systemctl --user daemon-reload",
+                    "systemctl --user enable kanban",
+                    "systemctl --user restart kanban",
+                    "systemctl --user is-active --quiet kanban",
+                ]
+            );
+
+            // A changed file only installs that file and restarts the service.
+            fs::write(f.path("src/kanban.toml"), "config = 2\n").unwrap();
+            let out = f.run(&opts, true);
+            assert!(out.success, "{}", out.stderr);
+            assert_eq!(
+                out.stdout,
+                "\
+bin/kanban: unchanged
+etc/kanban/kanban.toml: updated (changed)
+units/kanban.service: unchanged
+running post_install: echo hook
+hook
+kanban: restarting (etc/kanban/kanban.toml changed)
+kanban: restarted, active
+localhost: changed 1 of 3 files, kanban restarted
+"
+            );
+
+            // So does a file which has the wrong mode.
+            fs::set_permissions(
+                f.path("etc/kanban/kanban.toml"),
+                fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+            let out = f.run(&opts, true);
+            assert!(out.success, "{}", out.stderr);
+            assert!(
+                out.stdout
+                    .contains("etc/kanban/kanban.toml: updated (mode was 600)\n"),
+                "{}",
+                out.stdout
+            );
+            assert_eq!(mode(&f.path("etc/kanban/kanban.toml")), 0o644);
+
+            // A service which isn't running is started even if nothing changed,
+            // but the commands don't run.
+            let out = f.run(&opts, false);
+            assert!(!out.success);
+            assert!(
+                out.stdout.contains("kanban: starting (not running)\n"),
+                "{}",
+                out.stdout
+            );
+            assert!(!out.stdout.contains("hook"), "{}", out.stdout);
+        }
+
+        #[test]
+        fn force_deploys_everything() {
+            let f = Fixture::new();
+            assert!(f.run(&Opts::default(), true).success);
+
+            let opts = Opts::local(Common {
+                force: true,
+                ..Common::default()
+            });
+
+            let out = f.run(&opts, true);
+            assert!(out.success, "{}", out.stderr);
+            assert_eq!(
+                out.stdout,
+                "\
+kanban: stopping (binary changed)
+bin/kanban: updated (forced)
+etc/kanban/kanban.toml: updated (forced)
+units/kanban.service: updated (forced)
+running post_install: echo hook
+hook
+kanban: restarting (binary, etc/kanban/kanban.toml, kanban.service changed)
+kanban: restarted, active
+localhost: changed 3 of 3 files, kanban restarted
+"
+            );
+        }
+
+        /// A service which isn't active once it has been started fails the
+        /// deployment, with its last log lines and the step which failed.
+        #[test]
+        fn reports_inactive_service() {
+            let f = Fixture::new();
+            let out = f.run(&Opts::default(), false);
+
+            assert!(!out.success);
+            assert!(
+                out.stdout.ends_with(
+                    "kanban: restarting (binary, etc/kanban/kanban.toml, kanban.service changed)\n"
+                ),
+                "{}",
+                out.stdout
+            );
+            assert_eq!(
+                out.stderr,
+                "\
+kanban: not active after being restarted, last log lines:
+kick: failed while checking that kanban is active (exit 1)
+"
+            );
+            assert_eq!(
+                out.systemctl.last().map(String::as_str),
+                Some("journalctl --user -u kanban -n 20 --no-pager")
+            );
+        }
     }
 
     #[test]

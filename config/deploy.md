@@ -24,9 +24,9 @@ Deploying performs the following steps:
     has one, as a `tar` archive streamed over its stdin, and
     unpacks them into the [staging directory](#deploy-section) on the remote
     host.
-  * Stops the service, installs everything into place, and starts the service
-    again. The unit is only written and systemd only reloaded if the unit
-    actually changed.
+  * Compares everything with what is already installed, and only installs
+    what differs and only restarts the service when something changed. See
+    [only what changed](#only-what-changed).
 
 Nothing is installed remotely unless the upload succeeded, and the staged files
 are removed once they've been installed. See
@@ -37,6 +37,53 @@ fails ends the deployment, so the hosts after it are left as they were.
 
 A [local deployment](#local-deployments) skips the access check and the upload,
 and runs the same install script through the local shell instead.
+
+<br>
+
+### Only what changed
+
+The install script compares each file it deploys (the binary, every
+[`files`](#deployfiles) entry, the unit and its socket unit) with the installed
+one, by contents and by the mode kick installs it with, before it touches
+anything. The owner is not compared, since kick leaves it to whoever installs
+the file. Then:
+
+* If nothing differs, nothing is installed, the service is not stopped or
+  restarted, and the [`post_install` and `post_start`](#target-commands)
+  commands are skipped. A service which is not running is still started.
+* Otherwise only what differs is installed. The service is stopped before its
+  binary is replaced, and restarted once everything is in place.
+  `systemctl daemon-reload` only runs if a unit changed.
+* After the service has been started or restarted, the script waits a second
+  and checks that it is active with `systemctl is-active`. If it isn't, the
+  last lines of its journal are printed and the deployment fails.
+
+`--force` installs everything and restarts the service regardless, as if every
+file had changed.
+
+The script reports what it does as it goes, and ends with a summary for the
+host. A deployment where only the binary changed prints:
+
+```text
+track: stopping (binary changed)
+/usr/local/bin/track: updated (changed)
+/etc/systemd/system/track.service: unchanged
+track: restarting (binary changed)
+track: restarted, active
+moore: changed 1 of 2 files, track restarted
+```
+
+And one where nothing changed:
+
+```text
+/usr/local/bin/track: unchanged
+/etc/systemd/system/track.service: unchanged
+moore: up to date, 2 files unchanged, track not restarted
+```
+
+A failing step is named, as in `kick: failed while running post_install:
+systemd-sysusers (exit 1)`. Pass `-V` to also trace every command the script
+runs.
 
 <br>
 
@@ -361,17 +408,26 @@ home directory of the user running `kick`:
 
 ```sh
 set -eu
-systemctl --user stop kanban 2>/dev/null || true
-mkdir -p ~/.cargo/bin
-install -m 0755 <repo>/target/release/kanban ~/.cargo/bin/kanban
-mkdir -p ~/.config/systemd/user
-if ! cmp -s <rendered unit> ~/.config/systemd/user/kanban.service; then
-  install -m 0644 <rendered unit> ~/.config/systemd/user/kanban.service
-  systemctl --user daemon-reload
+# ... compare <repo>/target/release/kanban with ~/.cargo/bin/kanban and
+# <rendered unit> with ~/.config/systemd/user/kanban.service, then:
+if [ -n "$kick_bin" ]; then
+  systemctl --user stop kanban 2>/dev/null || true
 fi
+if [ -n "$kick_bin" ]; then
+  mkdir -p ~/.cargo/bin
+  install -m 0755 <repo>/target/release/kanban ~/.cargo/bin/kanban
+fi
+if [ -n "$kick_unit" ]; then
+  mkdir -p ~/.config/systemd/user
+  install -m 0644 <rendered unit> ~/.config/systemd/user/kanban.service
+fi
+# ... daemon-reload if the unit changed
 systemctl --user enable kanban
-systemctl --user start kanban
+# ... restart kanban if anything changed, or start it if it isn't running
 ```
+
+This is abbreviated, `--dry-run` prints the whole script, which also reports
+what it does as it goes (see [only what changed](#only-what-changed)).
 
 Which installs the following unit into `~/.config/systemd/user/kanban.service`:
 
@@ -479,6 +535,11 @@ has none) there is nothing to start, so both run once everything has been
 installed, `post_install` first. Since they are part of starting the service,
 `--no-restart` skips them.
 
+Both only run when the deployment [changed something](#only-what-changed), or
+with `--force`. `post_start` also runs when an unchanged service which wasn't
+running is started. A deployment with nothing to compare, such as one where
+`commands` install the binary and nothing else is deployed, always runs them.
+
 An entry is [configured](./build.md#commands) as a string, a list of arguments
 or a table:
 
@@ -523,10 +584,13 @@ mode = "644"
 Which adds the following to the script, right before the socket is enabled:
 
 ```sh
-sudo -n systemd-sysusers
-sudo -n /usr/local/bin/kanban --db /var/lib/kanban/kanban.db install
+if [ "$kick_changed" -gt 0 ]; then
+  printf '%s\n' 'running post_install: sudo -n systemd-sysusers'
+  kick_step='running post_install: sudo -n systemd-sysusers'
+  sudo -n systemd-sysusers
+  # ... and the same for the second command
+fi
 sudo -n systemctl enable --now kanban.socket
-sudo -n systemctl restart kanban
 ```
 
 <br>
@@ -552,7 +616,8 @@ systemd = "systemd/track.service"
 ```
 
 The unit is installed as `<unit_dir>/<name>.service`, after which `systemctl
-enable <name>` and `systemctl start <name>` are run.
+enable <name>` is run and the service is restarted if anything changed, or
+started if it isn't running.
 
 The rendered unit is compared against the one which is already installed, and is
 only written if the two differ. `systemctl daemon-reload` is run only when it was
@@ -674,13 +739,15 @@ unit, the deployment:
 
 * Compares the socket unit with the installed one up front. If it changed, or
   isn't installed yet, the service and then the socket are stopped.
-* Installs the binary, the service unit and, if it changed, the socket unit, and
-  runs `systemctl daemon-reload` once if either unit was written.
-* Runs any [`post_install`](#target-commands) commands.
+* Installs whichever of the binary, the files, the service unit and the socket
+  unit changed, and runs `systemctl daemon-reload` once if either unit was
+  written.
+* Runs any [`post_install`](#target-commands) commands, if anything changed.
 * Runs `systemctl enable --now <name>.socket`. It is the socket which is
   enabled, not the service. With `enable = false` the socket is only started.
-* Runs `systemctl restart <service>`, followed by any
-  [`post_start`](#target-commands) commands.
+* If anything changed, runs `systemctl restart <service>`, checks that it is
+  active, and runs any [`post_start`](#target-commands) commands. Otherwise the
+  service is left to the socket.
 
 So a deployment which only changes the binary leaves an active socket alone and
 only restarts the service, and anything connecting in the meantime is queued by
@@ -1043,8 +1110,8 @@ that:
 
 * We can log in over ssh at all, and that we end up as the user the `user`
   option asks for. Ending up as a different user is a warning, not an error.
-* `install` and `tar` are available, along with `systemctl` and `cmp` if a unit
-  is being installed.
+* `install`, `tar`, `cmp` and `stat` are available, along with `systemctl` if a
+  unit is being installed.
 * `sudo` can be used without being prompted for a password, when `sudo` is
   enabled. This is an error, see
   [sudo and interactivity](#sudo-and-interactivity) below.
@@ -1168,8 +1235,8 @@ by `kick install`:
 
 ### Requirements
 
-A local deployment needs `install`, and `systemctl` and `cmp` if a unit is
-being installed, on the machine `kick` is running on.
+A local deployment needs `install`, `cmp` and `stat`, and `systemctl` if a unit
+is being installed, on the machine `kick` is running on.
 
 Every remote host being deployed to is expected to:
 
@@ -1178,11 +1245,12 @@ Every remote host being deployed to is expected to:
 * Allow `sudo` without a password when `sudo` is enabled, see
   [sudo and interactivity](#sudo-and-interactivity).
 * Use a POSIX-compatible login shell.
-* Have `install` available, which is part of coreutils.
+* Have `install` and `stat` available, which are part of coreutils.
 * Have `tar` available, which the files being deployed are sent as. Any of GNU
   tar, bsdtar and busybox tar will do.
-* Have `systemd` and `cmp` available if the `systemd` option is in use. The
-  latter is part of diffutils.
+* Have `cmp` available, which is part of diffutils, to compare what is being
+  deployed with what is installed.
+* Have `systemd` available if the `systemd` option is in use.
 
 <br>
 
