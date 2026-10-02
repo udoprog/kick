@@ -110,8 +110,9 @@ was looked for in load order (with the keys and `[repo."<path>"]` sections
 each one sets, or that it is missing), any errors loading them, every repo
 and why the selection includes or excludes it, and the effective `[build]`,
 `[install]` and `[deploy]` configuration of the selected repos, including the
-profile `kick deploy` would pick and the absolute paths of files and unit
-templates. It takes the same selection options as other commands, such as
+profile `kick deploy` would pick, the absolute paths of files and unit
+templates, and the variables (with where each comes from) and directives each
+systemd unit is rendered with. It takes the same selection options as other commands, such as
 `--all`, `-p` and `--set`, `--to <profile>` to report on a specific profile,
 and `--json` for scripting. It exits with an error if the configuration or the
 selection would make other commands refuse to run.
@@ -411,10 +412,22 @@ moore: changed 1 of 2 files, track restarted
 ```
 
 The unit comes from a built-in template which is filled in from the variables
-in `[deploy.systemd]`, so there is nothing to write to get a working service. When you need something it doesn't cover, point `systemd` at a unit file
-of your own instead — they are [minijinja] templates, so
+in `[deploy.systemd]`, so there is nothing to write to get a working service.
+Any other directive goes in a table named after the section of the unit it
+belongs to, and is written into the unit as it is:
+
+```toml
+[deploy.systemd.service]
+LimitNOFILE = 65536
+ProtectSystem = "strict"
+ExecStartPre = ["/usr/local/bin/track migrate", "/usr/local/bin/track check-config"]
+```
+
+When you need the unit to look entirely different, point `systemd` at a unit
+file of your own instead — they are [minijinja] templates, so
 `ExecStart={{ exec }} {{ args | join(" ") }}` picks up the remote path of the
-binary along with anything else you have defined.
+binary along with anything else you have defined. A variable which the template
+never uses, such as a misspelled one, is warned about when deploying.
 
 [minijinja]: https://docs.rs/minijinja
 

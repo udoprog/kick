@@ -18,7 +18,7 @@ use crate::model::Repo;
 use crate::packaging::{self, Mode};
 use crate::process::Command;
 use crate::shell::Shell;
-use crate::systemd;
+use crate::systemd::{self, UnitKind};
 
 /// The remote directory binaries are installed into by default.
 const DEFAULT_BIN_DIR: &str = "/usr/local/bin";
@@ -30,7 +30,7 @@ const DEFAULT_UNIT_DIR: &str = "/etc/systemd/system";
 /// The directory user units are installed into by default.
 const DEFAULT_USER_UNIT_DIR: &str = "~/.config/systemd/user";
 /// The host a local deployment is reported as deploying to.
-const LOCAL_HOST: &str = "localhost";
+pub(crate) const LOCAL_HOST: &str = "localhost";
 /// The remote directory files are uploaded to by default, relative to the home
 /// directory of the user being logged in as.
 const DEFAULT_STAGING_DIR: &str = ".kick-deploy";
@@ -580,6 +580,52 @@ pub(crate) fn deploy(
         }
     }
 
+    // NB: Configuration which doesn't end up in a unit is pointed out before
+    // anything else happens, since a misspelled variable would otherwise
+    // quietly do nothing.
+    if let Some(systemd) = &systemd {
+        let label = format!("[{}.systemd]", section.as_str());
+        let template = systemd.template.as_ref().map(|t| &*t.source);
+
+        for warning in systemd::lint(
+            UnitKind::Service,
+            &label,
+            template,
+            &systemd.variables,
+            &systemd.directives,
+        ) {
+            tracing::warn!("{warning}");
+        }
+
+        if let Some(socket) = systemd
+            .socket
+            .as_ref()
+            .filter(|s| s.enabled.unwrap_or(true))
+        {
+            let label = format!("[{}.systemd.socket]", section.as_str());
+
+            for warning in systemd::lint(
+                UnitKind::Socket,
+                &label,
+                socket.template.as_ref().map(|t| &*t.source),
+                &socket.variables,
+                &socket.directives,
+            ) {
+                tracing::warn!("{warning}");
+            }
+        }
+
+        if template.is_none()
+            && !opts.args.is_empty()
+            && systemd.directives.contains("service", "ExecStart")
+        {
+            bail!(
+                "Cannot use `--args` since `ExecStart` is set in `{}`, which replaces the command the built-in template would start",
+                systemd::table(&label, "service")
+            );
+        }
+    }
+
     // NB: Installing locally happens as the user running kick, which is
     // rarely someone who wants to elevate.
     let use_sudo = config.sudo.unwrap_or(kind == DeployKind::Ssh);
@@ -681,15 +727,8 @@ pub(crate) fn deploy(
 
     let installed_binary = binary_path.as_ref().and(binary.as_deref());
 
-    let default_unit_dir = match scope {
-        SystemdScope::System => DEFAULT_UNIT_DIR,
-        SystemdScope::User => DEFAULT_USER_UNIT_DIR,
-    };
-
-    let default_bin_dir = match kind {
-        DeployKind::Ssh => DEFAULT_BIN_DIR.to_owned(),
-        DeployKind::Local => cargo_bin_dir(),
-    };
+    let default_unit_dir = default_unit_dir(scope);
+    let default_bin_dir = default_bin_dir(kind);
 
     let bin_dir = trim_dir(
         opts.bin_dir
@@ -813,6 +852,10 @@ pub(crate) fn deploy(
     // directory, since the unit is rendered for the host it belongs to.
     let temp = tempfile::TempDir::new().context("Creating temporary directory")?;
 
+    // NB: The global variables are visible to a custom unit template,
+    // underneath the variables of the systemd section.
+    let globals = cx.config.variables(repo);
+
     for (index, (target, home)) in targets.iter().zip(&homes).enumerate() {
         let home = home.as_deref();
 
@@ -847,31 +890,15 @@ pub(crate) fn deploy(
 
                 // NB: Both units are rendered with the same set of built-in
                 // variables, but each with its own name.
-                let builtins = |name: &str| -> toml::Table {
-                    let mut variables = toml::Table::new();
-                    variables.insert(String::from("name"), toml::Value::String(name.to_owned()));
-                    variables.insert(String::from("binary"), toml::Value::String(binary.clone()));
-                    variables.insert(
-                        String::from("exec"),
-                        toml::Value::String(format!("{bin_dir}/{binary}")),
-                    );
-                    variables.insert(
-                        String::from("bin_dir"),
-                        toml::Value::String(bin_dir.clone()),
-                    );
-                    variables.insert(
-                        String::from("unit_dir"),
-                        toml::Value::String(unit_dir.clone()),
-                    );
-                    variables.insert(
-                        String::from("host"),
-                        toml::Value::String(target.host.clone()),
-                    );
-                    variables.insert(
-                        String::from("scope"),
-                        toml::Value::String(scope.as_str().to_owned()),
-                    );
-                    variables
+                let provide = |variables: &mut systemd::Variables, name: &str| {
+                    let string = |value: &str| toml::Value::String(value.to_owned());
+                    variables.provide("name", string(name));
+                    variables.provide("binary", string(binary));
+                    variables.provide("exec", string(&format!("{bin_dir}/{binary}")));
+                    variables.provide("bin_dir", string(&bin_dir));
+                    variables.provide("unit_dir", string(&unit_dir));
+                    variables.provide("host", string(&target.host));
+                    variables.provide("scope", string(scope.as_str()));
                 };
 
                 // NB: A user unit runs as the user being deployed as, so a `~`
@@ -898,23 +925,23 @@ pub(crate) fn deploy(
                     // NB: The socket is rendered with its own variables rather
                     // than those of the service, since a `Description=` or
                     // `WantedBy=` meant for one is wrong for the other.
-                    let mut variables = socket.variables.clone();
-                    expand_variables(&mut variables)?;
-                    variables.extend(builtins(socket_name));
-                    variables.insert(
-                        String::from("service"),
-                        toml::Value::String(file_name.clone()),
-                    );
+                    let mut configured = socket.variables.clone();
+                    expand_variables(&mut configured)?;
 
-                    let template = socket
-                        .template
-                        .as_ref()
-                        .map(|t| &*t.source)
-                        .unwrap_or(systemd::DEFAULT_SOCKET_TEMPLATE);
+                    let template = socket.template.as_ref().map(|t| &*t.source);
+                    let mut variables = systemd::configured(template, &globals, &configured);
+                    provide(&mut variables, socket_name);
+                    variables.provide("service", toml::Value::String(file_name.clone()));
 
-                    let contents = systemd::render(template, &variables).with_context(|| {
-                        anyhow!("Rendering unit `{socket_file_name}` for `{}`", target.ssh)
-                    })?;
+                    let contents = variables
+                        .render(
+                            template.unwrap_or(systemd::DEFAULT_SOCKET_TEMPLATE),
+                            UnitKind::Socket,
+                            &socket.directives,
+                        )
+                        .with_context(|| {
+                            anyhow!("Rendering unit `{socket_file_name}` for `{}`", target.ssh)
+                        })?;
 
                     let path = dir.join(socket_file_name);
 
@@ -929,35 +956,53 @@ pub(crate) fn deploy(
                 // to it in the `[deploy.systemd]` section, since a unit
                 // directive is not something anything else in the
                 // configuration has any use for.
-                let mut variables = systemd.variables.clone();
-                expand_variables(&mut variables)?;
-                variables.extend(builtins(name));
+                let mut configured = systemd.variables.clone();
+                expand_variables(&mut configured)?;
+
+                let template = systemd.template.as_ref().map(|t| &*t.source);
+                let mut variables = systemd::configured(template, &globals, &configured);
+                provide(&mut variables, name);
 
                 if let Some(socket_file_name) = &socket_file_name {
-                    variables.insert(
-                        String::from("socket"),
-                        toml::Value::String(socket_file_name.clone()),
-                    );
+                    variables.provide("socket", toml::Value::String(socket_file_name.clone()));
                 }
+
+                let mut directives = systemd.directives.clone();
 
                 // NB: Which user a service runs as and what it is started with
                 // are things a deployment which has no configuration at all
-                // still needs to be able to say.
+                // still needs to be able to say. The options are the most
+                // specific thing there is, so they override both the variables
+                // and the directives.
                 if let Some(user) = &opts.service_user {
-                    variables.insert(String::from("user"), toml::Value::String(user.clone()));
+                    variables.insert(
+                        "user",
+                        toml::Value::String(user.clone()),
+                        systemd::Origin::Option,
+                    );
+                    directives.remove("service", "User");
                 }
 
                 // NB: A service which runs as a dedicated user conventionally
                 // has a group of the same name, but a configured group is not
                 // something to be overridden by that convention.
+                let group_configured = variables.origin("group")
+                    == Some(systemd::Origin::Configured)
+                    || directives.contains("service", "Group");
+
                 let group = match &opts.group {
                     Some(group) => Some(group),
-                    None if !variables.contains_key("group") => opts.service_user.as_ref(),
+                    None if !group_configured => opts.service_user.as_ref(),
                     None => None,
                 };
 
                 if let Some(group) = group {
-                    variables.insert(String::from("group"), toml::Value::String(group.clone()));
+                    variables.insert(
+                        "group",
+                        toml::Value::String(group.clone()),
+                        systemd::Origin::Option,
+                    );
+                    directives.remove("service", "Group");
                 }
 
                 let args = opts
@@ -968,18 +1013,18 @@ pub(crate) fn deploy(
                     .collect::<Vec<_>>();
 
                 if !args.is_empty() {
-                    variables.insert(String::from("args"), toml::Value::Array(args));
+                    variables.insert("args", toml::Value::Array(args), systemd::Origin::Option);
                 }
 
-                let template = systemd
-                    .template
-                    .as_ref()
-                    .map(|t| &*t.source)
-                    .unwrap_or(systemd::DEFAULT_TEMPLATE);
-
-                let contents = systemd::render(template, &variables).with_context(|| {
-                    anyhow!("Rendering unit `{file_name}` for `{}`", target.ssh)
-                })?;
+                let contents = variables
+                    .render(
+                        template.unwrap_or(systemd::DEFAULT_TEMPLATE),
+                        UnitKind::Service,
+                        &directives,
+                    )
+                    .with_context(|| {
+                        anyhow!("Rendering unit `{file_name}` for `{}`", target.ssh)
+                    })?;
 
                 let path = dir.join(&file_name);
 
@@ -1999,6 +2044,22 @@ fn target_dir(manifest_dir: &Path) -> PathBuf {
 
 /// The directory cargo installs binaries into, which is where something
 /// installed on the machine kick runs on goes by default.
+/// The directory a binary is installed into unless told otherwise.
+pub(crate) fn default_bin_dir(kind: DeployKind) -> String {
+    match kind {
+        DeployKind::Ssh => DEFAULT_BIN_DIR.to_owned(),
+        DeployKind::Local => cargo_bin_dir(),
+    }
+}
+
+/// The directory a unit is installed into unless told otherwise.
+pub(crate) fn default_unit_dir(scope: SystemdScope) -> &'static str {
+    match scope {
+        SystemdScope::System => DEFAULT_UNIT_DIR,
+        SystemdScope::User => DEFAULT_USER_UNIT_DIR,
+    }
+}
+
 fn cargo_bin_dir() -> String {
     match std::env::var("CARGO_HOME") {
         Ok(home) if !home.is_empty() => format!("{}/bin", home.trim_end_matches('/')),
@@ -2290,7 +2351,7 @@ fn check(
 
 /// Trim any trailing slashes from a directory so that it can be consistently
 /// joined with a file name.
-fn trim_dir(dir: &str) -> &str {
+pub(crate) fn trim_dir(dir: &str) -> &str {
     let trimmed = dir.trim_end_matches('/');
 
     if trimmed.is_empty() { dir } else { trimmed }

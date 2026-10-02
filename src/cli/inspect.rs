@@ -10,13 +10,16 @@ use clap::Parser;
 use relative_path::RelativePath;
 use serde::Serialize;
 
-use crate::cli::deploy::{Choice, choose_profile};
+use crate::cli::deploy::{
+    Choice, LOCAL_HOST, choose_profile, default_bin_dir, default_unit_dir, trim_dir,
+};
 use crate::config::{
     Build, Config, ConfigCommand, ConfigSource, Deploy, DeployKind, Os, Section, SourceState,
-    SystemdScope,
+    SystemdScope, UnitTemplate,
 };
 use crate::ctxt::Paths;
 use crate::model::{Repo, RepoSource};
+use crate::systemd::{self, Directives, UnitKind};
 use crate::{Exclusion, GITHUB_TOKEN, KICK_TOML, RepoOptions};
 
 #[derive(Default, Debug, Parser)]
@@ -232,6 +235,8 @@ struct SystemdReport {
     name: Option<String>,
     enable: Option<bool>,
     scope: String,
+    #[serde(flatten)]
+    unit: UnitReport,
     socket: Option<SocketReport>,
 }
 
@@ -239,6 +244,39 @@ struct SystemdReport {
 struct SocketReport {
     template: Option<PathBuf>,
     name: Option<String>,
+    #[serde(flatten)]
+    unit: UnitReport,
+}
+
+/// What a unit is rendered with.
+#[derive(Debug, Serialize)]
+struct UnitReport {
+    /// The variables the template is rendered with, in the order they are
+    /// layered.
+    variables: Vec<VariableReport>,
+    /// The pass-through directives.
+    directives: Vec<DirectiveReport>,
+    /// Configuration which doesn't end up in the unit.
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct VariableReport {
+    name: String,
+    /// The value, or `None` when it is only known when deploying.
+    value: Option<toml::Value>,
+    /// `global`, `configured` or `built-in`.
+    origin: &'static str,
+    /// Where a value which is only known when deploying comes from.
+    note: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DirectiveReport {
+    /// The table the directive is configured in, such as `service`.
+    section: &'static str,
+    directive: String,
+    values: Vec<String>,
 }
 
 /// The name of the built-in defaults layer.
@@ -492,11 +530,14 @@ fn effective(
             .any(|layer| layer.keys.iter().any(|k| overlaps(&k.key, section)))
     };
 
+    let globals = config.variables(repo);
+
     let install = section(
         &config.install(repo),
         Section::Install,
         configured("install"),
         &base_build,
+        &globals,
         &repo_dir,
         opts,
     );
@@ -506,6 +547,7 @@ fn effective(
         Section::Deploy,
         configured("deploy"),
         &base_build,
+        &globals,
         &repo_dir,
         opts,
     );
@@ -526,6 +568,7 @@ fn section(
     section: Section,
     configured: bool,
     base_build: &Build,
+    globals: &toml::Table,
     repo_dir: &Path,
     opts: &Opts,
 ) -> SectionReport {
@@ -556,29 +599,125 @@ fn section(
 
     let systemd_config = config.systemd.clone().unwrap_or_default();
 
-    let systemd = systemd_config
-        .enabled
-        .unwrap_or(systemd_default)
-        .then(|| SystemdReport {
+    let scope = systemd_config.scope.unwrap_or(match kind {
+        DeployKind::Ssh => SystemdScope::System,
+        DeployKind::Local => SystemdScope::User,
+    });
+
+    let systemd = systemd_config.enabled.unwrap_or(systemd_default).then(|| {
+        let binary = build.binary.clone().or_else(|| build.package.clone());
+
+        let bin_dir =
+            trim_dir(config.bin_dir.as_deref().unwrap_or(&default_bin_dir(kind))).to_owned();
+        let unit_dir = trim_dir(
+            config
+                .unit_dir
+                .as_deref()
+                .unwrap_or(default_unit_dir(scope)),
+        )
+        .to_owned();
+
+        let name = systemd_config.name.clone().or_else(|| binary.clone());
+
+        let host = match kind {
+            DeployKind::Local => Provided::Value(string(LOCAL_HOST)),
+            DeployKind::Ssh => match &config.host[..] {
+                [] => Provided::Note("from --host"),
+                [host] => Provided::Value(string(bare_host(host))),
+                hosts => Provided::Value(toml::Value::Array(
+                    hosts.iter().map(|host| string(bare_host(host))).collect(),
+                )),
+            },
+        };
+
+        let known = |value: Option<&String>, note: &'static str| match value {
+            Some(value) => Provided::Value(string(value)),
+            None => Provided::Note(note),
+        };
+
+        let exec = binary.as_ref().map(|binary| format!("{bin_dir}/{binary}"));
+
+        let common = |name: Option<&String>, note: &'static str| {
+            vec![
+                ("name", known(name, note)),
+                (
+                    "binary",
+                    known(binary.as_ref(), "from the package in Cargo.toml"),
+                ),
+                ("exec", known(exec.as_ref(), "<bin_dir>/<binary>")),
+                ("bin_dir", Provided::Value(string(&bin_dir))),
+                ("unit_dir", Provided::Value(string(&unit_dir))),
+                ("host", host.clone()),
+                ("scope", Provided::Value(string(scope.as_str()))),
+            ]
+        };
+
+        let label = format!("[{}.systemd]", section.as_str());
+
+        let socket = systemd_config
+            .socket
+            .as_ref()
+            .filter(|s| s.enabled.unwrap_or(true));
+
+        let socket_name = socket.and_then(|s| s.name.clone().or_else(|| name.clone()));
+
+        let mut provided = common(name.as_ref(), "same as binary");
+
+        if socket.is_some() {
+            provided.push((
+                "socket",
+                known(
+                    socket_name.as_ref().map(|n| format!("{n}.socket")).as_ref(),
+                    "<name>.socket",
+                ),
+            ));
+        }
+
+        let unit = unit_report(
+            UnitKind::Service,
+            &label,
+            systemd_config.template.as_ref(),
+            globals,
+            &systemd_config.variables,
+            &systemd_config.directives,
+            provided,
+        );
+
+        let socket = socket.map(|s| {
+            let mut provided = common(socket_name.as_ref(), "same as the service");
+
+            provided.push((
+                "service",
+                known(
+                    name.as_ref().map(|n| format!("{n}.service")).as_ref(),
+                    "<name>.service",
+                ),
+            ));
+
+            SocketReport {
+                template: s.template.as_ref().map(|t| absolute(&t.path)),
+                name: s.name.clone(),
+                unit: unit_report(
+                    UnitKind::Socket,
+                    &format!("[{}.systemd.socket]", section.as_str()),
+                    s.template.as_ref(),
+                    globals,
+                    &s.variables,
+                    &s.directives,
+                    provided,
+                ),
+            }
+        });
+
+        SystemdReport {
             template: systemd_config.template.as_ref().map(|t| absolute(&t.path)),
             name: systemd_config.name.clone(),
             enable: systemd_config.enable,
-            scope: systemd_config
-                .scope
-                .unwrap_or(match kind {
-                    DeployKind::Ssh => SystemdScope::System,
-                    DeployKind::Local => SystemdScope::User,
-                })
-                .to_string(),
-            socket: systemd_config
-                .socket
-                .as_ref()
-                .filter(|s| s.enabled.unwrap_or(true))
-                .map(|s| SocketReport {
-                    template: s.template.as_ref().map(|t| absolute(&t.path)),
-                    name: s.name.clone(),
-                }),
-        });
+            scope: scope.to_string(),
+            unit,
+            socket,
+        }
+    });
 
     SectionReport {
         configured,
@@ -608,6 +747,78 @@ fn section(
         post_install: commands(&config.post_install),
         post_start: commands(&config.post_start),
         systemd,
+    }
+}
+
+/// A variable kick provides to a unit template.
+#[derive(Clone)]
+enum Provided {
+    /// The value is known up front.
+    Value(toml::Value),
+    /// The value is only known when deploying, and comes from what is noted.
+    Note(&'static str),
+}
+
+fn string(value: &str) -> toml::Value {
+    toml::Value::String(value.to_owned())
+}
+
+/// The host without any login user, which is what a unit template sees.
+fn bare_host(host: &str) -> &str {
+    host.rsplit_once('@').map_or(host, |(_, host)| host)
+}
+
+/// Report what a unit is rendered with, the same way `kick deploy` layers it.
+fn unit_report(
+    kind: UnitKind,
+    label: &str,
+    template: Option<&UnitTemplate>,
+    globals: &toml::Table,
+    configured: &toml::Table,
+    directives: &Directives,
+    provided: Vec<(&'static str, Provided)>,
+) -> UnitReport {
+    let source = template.map(|t| &*t.source);
+    let mut variables = systemd::configured(source, globals, configured);
+    let mut notes = Vec::new();
+
+    for (name, value) in provided {
+        match value {
+            Provided::Value(value) => variables.provide(name, value),
+            // NB: A configured `exec` overrides what kick would provide.
+            Provided::Note(..) if variables.origin(name) == Some(systemd::Origin::Configured) => {}
+            Provided::Note(note) => notes.push(VariableReport {
+                name: name.to_owned(),
+                value: None,
+                origin: systemd::Origin::BuiltIn.as_str(),
+                note: Some(note.to_owned()),
+            }),
+        }
+    }
+
+    let mut report = variables
+        .iter()
+        .map(|(name, value, origin)| VariableReport {
+            name: name.to_owned(),
+            value: Some(value.clone()),
+            origin: origin.as_str(),
+            note: None,
+        })
+        .collect::<Vec<_>>();
+
+    report.extend(notes);
+
+    UnitReport {
+        variables: report,
+        directives: directives
+            .iter(kind)
+            .map(|(section, directive, values)| DirectiveReport {
+                section,
+                directive: directive.to_owned(),
+                values: values.into_iter().map(str::to_owned).collect(),
+            })
+            .collect(),
+        warnings: systemd::lint(kind, label, source, configured, directives),
     }
 }
 
@@ -940,6 +1151,8 @@ fn write_section(o: &mut impl Write, name: &str, s: &SectionReport) -> io::Resul
 
     if !s.hosts.is_empty() {
         writeln!(o, "    host: {}", s.hosts.join(", "))?;
+    } else if s.kind == DeployKind::Ssh.to_string() {
+        writeln!(o, "    host: from --host")?;
     }
 
     if let Some(user) = &s.user {
@@ -1012,6 +1225,8 @@ fn write_section(o: &mut impl Write, name: &str, s: &SectionReport) -> io::Resul
                 writeln!(o, "      enable: {enable}")?;
             }
 
+            write_unit(o, &systemd.unit, "      ")?;
+
             if let Some(socket) = &systemd.socket {
                 let template = match &socket.template {
                     Some(path) => path.display().to_string(),
@@ -1019,9 +1234,58 @@ fn write_section(o: &mut impl Write, name: &str, s: &SectionReport) -> io::Resul
                 };
 
                 writeln!(o, "      socket: {template}")?;
+
+                if let Some(name) = &socket.name {
+                    writeln!(o, "        name: {name}")?;
+                }
+
+                write_unit(o, &socket.unit, "        ")?;
             }
         }
         None => writeln!(o, "    systemd: no unit")?,
+    }
+
+    Ok(())
+}
+
+fn write_unit(o: &mut impl Write, unit: &UnitReport, indent: &str) -> io::Result<()> {
+    if !unit.variables.is_empty() {
+        writeln!(o, "{indent}variables:")?;
+
+        for variable in &unit.variables {
+            match (&variable.value, &variable.note) {
+                (Some(value), _) => writeln!(
+                    o,
+                    "{indent}  {} = {value} ({})",
+                    variable.name, variable.origin
+                )?,
+                (None, Some(note)) => writeln!(
+                    o,
+                    "{indent}  {}: {note} ({})",
+                    variable.name, variable.origin
+                )?,
+                (None, None) => writeln!(o, "{indent}  {} ({})", variable.name, variable.origin)?,
+            }
+        }
+    }
+
+    if !unit.directives.is_empty() {
+        writeln!(o, "{indent}directives:")?;
+
+        for directive in &unit.directives {
+            for value in &directive.values {
+                writeln!(
+                    o,
+                    "{indent}  [{}] {}={value}",
+                    systemd::section_title(directive.section),
+                    directive.directive
+                )?;
+            }
+        }
+    }
+
+    for warning in &unit.warnings {
+        writeln!(o, "{indent}warning: {warning}")?;
     }
 
     Ok(())
@@ -1235,6 +1499,162 @@ mod tests {
                 .as_deref()
                 .unwrap()
                 .contains("No profile named `missing`")
+        );
+    }
+
+    /// The variables a unit is rendered with are reported along with where
+    /// they come from, as are its directives and warnings.
+    #[test]
+    fn systemd_variables() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        fs::write(
+            root.join("Kick.toml"),
+            "[variables]\n\
+             motd = \"hello\"\n\
+             [repo.\"repos/app\"]\n\
+             url = \"https://example.com/app\"\n",
+        )
+        .unwrap();
+
+        let app = root.join("repos/app");
+        fs::create_dir_all(app.join("systemd")).unwrap();
+        fs::write(
+            app.join("systemd/app.service"),
+            "[Service]\nExecStart={{ exec }} {{ motd }}\n",
+        )
+        .unwrap();
+        fs::write(
+            app.join("Kick.toml"),
+            "[build]\n\
+             binary = \"app\"\n\
+             [deploy.systemd]\n\
+             user = \"app\"\n\
+             exec = \"/usr/bin/wrapper /usr/local/bin/app\"\n\
+             enabel = true\n\
+             [deploy.systemd.service]\n\
+             User = \"other\"\n\
+             LimitNOFILE = 65536\n\
+             [deploy.profiles.custom]\n\
+             host = [\"login@moore\"]\n\
+             [deploy.profiles.custom.systemd]\n\
+             template = \"systemd/app.service\"\n\
+             [deploy.profiles.plain]\n",
+        )
+        .unwrap();
+
+        let opts = Opts {
+            to: Some(String::from("plain")),
+            ..Opts::default()
+        };
+
+        let report = report(root, &opts);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+
+        let app = report.repos.iter().find(|r| r.path == "repos/app").unwrap();
+        let deploy = &app.effective.as_ref().unwrap().deploy;
+        let systemd = deploy.systemd.as_ref().unwrap();
+
+        let variables = systemd
+            .unit
+            .variables
+            .iter()
+            .map(|v| {
+                let value = match (&v.value, &v.note) {
+                    (Some(value), _) => value.to_string(),
+                    (None, Some(note)) => note.clone(),
+                    (None, None) => String::new(),
+                };
+
+                format!("{} = {value} ({})", v.name, v.origin)
+            })
+            .collect::<Vec<_>>();
+
+        // NB: The built-in template doesn't see global variables.
+        assert_eq!(
+            variables,
+            [
+                "user = \"app\" (configured)",
+                "exec = \"/usr/bin/wrapper /usr/local/bin/app\" (configured)",
+                "enabel = true (configured)",
+                "name = \"app\" (built-in)",
+                "binary = \"app\" (built-in)",
+                "bin_dir = \"/usr/local/bin\" (built-in)",
+                "unit_dir = \"/etc/systemd/system\" (built-in)",
+                "scope = \"system\" (built-in)",
+                "host = from --host (built-in)",
+            ]
+        );
+
+        let directives = systemd
+            .unit
+            .directives
+            .iter()
+            .map(|d| format!("{}.{}={}", d.section, d.directive, d.values.join(",")))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            directives,
+            ["service.LimitNOFILE=65536", "service.User=other"]
+        );
+
+        assert_eq!(
+            systemd.unit.warnings,
+            [
+                "`enabel` in `[deploy.systemd]` is not used by the built-in template",
+                "`user` in `[deploy.systemd]` is ignored since `User` is set in `[deploy.systemd.service]`",
+            ]
+        );
+
+        let mut text = Vec::new();
+        super::write_text(&mut text, &report).unwrap();
+        let text = String::from_utf8(text).unwrap();
+        assert!(text.contains("\n    host: from --host\n"), "{text}");
+        assert!(
+            text.contains("\n        host: from --host (built-in)\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n        [Service] LimitNOFILE=65536\n"),
+            "{text}"
+        );
+
+        // A custom template sees the global variables, and is deployed to a
+        // configured host.
+        let opts = Opts {
+            to: Some(String::from("custom")),
+            ..Opts::default()
+        };
+
+        let report = super::tests::report(root, &opts);
+        let app = report.repos.iter().find(|r| r.path == "repos/app").unwrap();
+        let deploy = &app.effective.as_ref().unwrap().deploy;
+        let unit = &deploy.systemd.as_ref().unwrap().unit;
+
+        let origin = |name: &str| {
+            unit.variables
+                .iter()
+                .find(|v| v.name == name)
+                .map(|v| (v.value.as_ref().map(|v| v.to_string()), v.origin))
+        };
+
+        assert_eq!(
+            origin("motd"),
+            Some((Some(String::from("\"hello\"")), "global"))
+        );
+        assert_eq!(
+            origin("host"),
+            Some((Some(String::from("\"moore\"")), "built-in"))
+        );
+
+        assert_eq!(
+            unit.warnings,
+            [
+                "`user` in `[deploy.systemd]` is not used by the unit template",
+                "`enabel` in `[deploy.systemd]` is not used by the unit template",
+                "Directives are configured for `[deploy.systemd]`, but the unit template never refers to `directives`",
+            ]
         );
     }
 

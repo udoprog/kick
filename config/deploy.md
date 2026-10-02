@@ -111,7 +111,9 @@ kick deploy --host moore docular --service-user docular --args "--bind 0.0.0.0:3
 
 Which runs the service as `docular:docular`, since `--group` defaults to
 `--service-user`. Everything else the unit needs is configured through
-[variables](#template-variables) in the `[deploy.systemd]` section.
+[variables](#template-variables) in the `[deploy.systemd]` section, or as
+[directives](#pass-through-directives) which are written into the unit as they
+are.
 
 Note that `--service-user` is the user the *service* runs as. The user the
 deployment itself logs in as is `--user`, and the two are rarely the same, since
@@ -649,6 +651,9 @@ enable = false
   [user units](#user-units).
 * `socket` a socket unit which activates the service, see [socket
   units](#socket-units).
+* `unit`, `service` and `install` tables of [directives](#pass-through-directives)
+  which are written as they are into the `[Unit]`, `[Service]` and `[Install]`
+  sections of the unit.
 
 Every other key in the section is a [variable](#template-variables) the unit is
 rendered with, which is where directives like `User=` or `Environment=` come
@@ -661,11 +666,118 @@ user = "track"
 environment = { RUST_LOG = "info" }
 ```
 
-Since anything which isn't one of the options above is taken as a
-variable, this is the one section which cannot tell you that you misspelled an
-option. Writing `enabel = true` defines a variable named `enabel` which the
-template doesn't use, and the unit is installed as if you hadn't written it at
-all.
+Since anything which isn't one of the options above is taken as a variable, the
+section cannot reject a misspelled option outright. Instead `kick deploy`
+(including `--dry-run`) and `kick inspect` warn about every variable which the
+template never refers to, so writing `enabel = true` is reported as:
+
+```text
+WARN `enabel` in `[deploy.systemd]` is not used by the built-in template
+```
+
+A variable which kick provides to the template, such as `binary` or `host`, is
+an error to define here, see [template variables](#template-variables).
+
+<br>
+
+#### Pass-through directives
+
+Any directive can be added to the unit without writing a template of your own,
+through the `unit`, `service` and `install` tables of the `systemd` section.
+Each is named after the section of the unit file its directives are written
+into, and its keys are directives spelled the way systemd spells them:
+
+```toml
+[deploy.systemd]
+user = "track"
+args = ["--bind", "0.0.0.0:3004"]
+
+[deploy.systemd.unit]
+After = ["network-online.target", "postgresql.service"]
+
+[deploy.systemd.service]
+LimitNOFILE = 65536
+ProtectSystem = "strict"
+ReadWritePaths = "/var/lib/track"
+NoNewPrivileges = true
+ExecStartPre = [
+    "/usr/local/bin/track migrate",
+    "/usr/local/bin/track check-config",
+]
+```
+
+Which installs:
+
+```text
+[Unit]
+Description=track service
+Wants=network-online.target
+After=network-online.target
+After=postgresql.service
+
+[Service]
+Type=simple
+User=track
+ExecStart=/usr/local/bin/track --bind 0.0.0.0:3004
+Restart=always
+RestartSec=5
+ExecStartPre=/usr/local/bin/track migrate
+ExecStartPre=/usr/local/bin/track check-config
+LimitNOFILE=65536
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/track
+
+[Install]
+WantedBy=multi-user.target
+```
+
+* A string or a number is written as one line, and a list as one line per
+  element in the order given, which is how a directive that can be repeated
+  such as `ExecStartPre=` is written. Booleans are written as `yes` or `no`.
+* An empty string writes `Directive=` with nothing after it, which is how
+  systemd resets a list, such as `ExecStart = ["", "/usr/bin/other"]`.
+* The directives are written after what the template writes itself, at the end
+  of their section, sorted by name. Lines of the same directive stay in the
+  order they are given.
+* A directive replaces whatever the built-in template would have written for
+  it, including its defaults, so `[deploy.systemd.service] Restart =
+  "on-failure"` replaces `Restart=always`. When a [variable](#the-built-in-template)
+  for the same directive is also defined, such as `user` alongside `User`, the
+  directive wins and the deployment warns that the variable is ignored. The one
+  exception is the `Requires=` and `After=` on a [socket unit](#socket-units),
+  which are always written since the service depends on them.
+* `--service-user` and `--group` override a `User` and `Group` directive the
+  same way they override the variables. `--args` can't be used together with an
+  `ExecStart` directive, which replaces the command `--args` would be added to.
+* A directive name has to start with an uppercase letter and contain only
+  letters, digits and `-`, and a value cannot contain a line break. Anything
+  else is an error when the configuration is loaded. Which directive belongs in
+  which section is up to systemd, so `systemd-analyze verify` is the way to
+  check a rendered unit.
+* A [profile](#profiles) or a more specific layer replaces a directive as a
+  whole rather than adding to it, so a profile setting `ExecStartPre =
+  "/usr/local/bin/track migrate"` leaves only that one line.
+
+A [socket unit](#socket-units) takes `unit`, `socket` and `install` tables in
+`[deploy.systemd.socket]` the same way.
+
+A [custom template](#templates) has the directives in the `directives` variable,
+as a table per section with a list of lines per directive, and every section
+present even when nothing is configured for it. A template writes them with:
+
+```jinja
+[Service]
+ExecStart={{ exec }}
+{%- for key, values in directives.service | items %}
+{%- for value in values %}
+{{ key }}={{ value }}
+{%- endfor %}
+{%- endfor %}
+```
+
+The deployment warns when directives are configured for a custom template which
+never refers to `directives`.
 
 <br>
 
@@ -721,6 +833,10 @@ listen_stream = "/run/kanban/kanban.sock"
 * `name` the name of the socket unit. Defaults to the name of the service, which
   is what lets systemd pair them up without a `Service=` directive.
 
+* `unit`, `socket` and `install` tables of [directives](#pass-through-directives)
+  which are written into the `[Unit]`, `[Socket]` and `[Install]` sections of
+  the socket unit.
+
 Every other key in the section is a variable the socket unit is rendered with.
 These are the socket's own, a variable defined for the service is not visible to
 the socket and the other way around, but the [built-in
@@ -729,6 +845,9 @@ of the socket unit. A socket template also has `service`, the file name of the
 service it activates such as `kanban.service`. A service template with a socket
 has `socket`, the file name of the socket unit such as `kanban.socket`, which the
 built-in template uses to add `Requires=` and `After=` on it.
+
+Since `service` is the file name of the service and `scope` is shared with the
+service, neither can be defined as a variable of the socket.
 
 Like the rest of the `systemd` section, a profile can override individual
 socket variables, or turn the socket off with `socket = false`.
@@ -758,47 +877,24 @@ the socket enabled, but nothing is stopped or started.
 
 #### The built-in socket template
 
-```jinja
-[Unit]
-Description={{ description | default(name ~ " socket") }}
+The built-in socket template is in `src/systemd/default.socket` in the [kick
+repo][default-socket]. It writes the following, each of which is replaced by a
+[directive](#pass-through-directives) of the same name in the `socket` (or
+`unit` and `install`) table:
 
-[Socket]
-{%- for listen in ([listen_stream] if listen_stream is string else listen_stream) %}
-ListenStream={{ listen }}
-{%- endfor %}
-{%- if socket_user is defined %}
-SocketUser={{ socket_user }}
-{%- endif %}
-{%- if socket_group is defined %}
-SocketGroup={{ socket_group }}
-{%- endif %}
-{%- if socket_mode is defined %}
-SocketMode={{ socket_mode }}
-{%- endif %}
-{%- if directory_mode is defined %}
-DirectoryMode={{ directory_mode }}
-{%- endif %}
-{%- if remove_on_stop is defined %}
-RemoveOnStop={{ remove_on_stop if remove_on_stop is string else ("yes" if remove_on_stop else "no") }}
-{%- endif %}
-{%- if service != name ~ ".service" %}
-Service={{ service }}
-{%- endif %}
+* `Description=` from `description`, which defaults to `<name> socket`.
+* `ListenStream=` from `listen_stream`, either a single address or a list of
+  them. It is required unless a `ListenStream` directive is given.
+* `SocketUser=`, `SocketGroup=` and `SocketMode=` from `socket_user`,
+  `socket_group` and `socket_mode`.
+* `DirectoryMode=` from `directory_mode`.
+* `RemoveOnStop=` from `remove_on_stop`, either a boolean or a string such as
+  `"yes"`.
+* `Service=` from `service`, only when the socket is named differently from the
+  service.
+* `WantedBy=` from `wanted_by`, which defaults to `sockets.target`.
 
-[Install]
-WantedBy={{ wanted_by | default("sockets.target") }}
-```
-
-* `listen_stream` is required, either a single address or a list of them, each
-  of which becomes a `ListenStream=`.
-* `description`, defaults to `<name> socket`.
-* `socket_user`, `socket_group` and `socket_mode`.
-* `directory_mode`.
-* `remove_on_stop`, either a boolean or a string such as `"yes"`.
-* `wanted_by`, defaults to `sockets.target`.
-
-`Service=` is only written when the socket is named differently from the
-service.
+[default-socket]: https://github.com/udoprog/kick/blob/main/src/systemd/default.socket
 
 <br>
 
@@ -932,10 +1028,16 @@ user = "track"
 args = ["--bind", "0.0.0.0:3004"]
 ```
 
-These are scoped to the unit rather than being taken from the global
+These are scoped to the unit rather than being defined in the global
 [`[variables]`](./variables.md) section, since a `User=` directive is not
-something the rest of the configuration has any use for. A variable defined in
-`[variables]` is *not* visible to a unit template.
+something the rest of the configuration has any use for.
+
+The global variables are visible to a [custom template](#templates) underneath
+the ones defined in the `systemd` section, so a template can refer to a URL or
+a name defined there, and a variable in the `systemd` section wins over a global
+one of the same name. The built-in templates are not rendered with the global
+variables, since names like `description` or `user` commonly mean something
+else there, and defining one should not change a unit.
 
 They are layered per repo the same way everything else in `Kick.toml` is, so a
 `[repo."<name>".deploy.systemd]` section overrides individual variables without
@@ -954,98 +1056,88 @@ In addition to what you define, the following are always available:
   it is being installed on. For a local deployment this is `localhost`.
 * `scope` the [scope](#user-units) the unit is installed into, `system` or
   `user`.
+* `socket` the file name of the [socket unit](#socket-units), such as
+  `kanban.socket`, when there is one. A socket template has `service`, the file
+  name of the service, instead.
+* `directives` the [pass-through directives](#pass-through-directives).
+
+These win over the global variables. Defining one in the `systemd` section is
+an error, since the template would then describe something other than what is
+being installed, and the error says which option to set instead. `name`, `scope`
+and `socket` are options of the section rather than variables.
+
+The exception is `exec`, which can be defined to start the binary through
+something else, such as a wrapper:
+
+```toml
+[deploy.systemd]
+exec = "/usr/bin/systemd-cat -t track /usr/local/bin/track"
+args = ["--bind", "0.0.0.0:3004"]
+```
+
+Which the built-in template writes as `ExecStart=/usr/bin/systemd-cat -t track
+/usr/local/bin/track --bind 0.0.0.0:3004`. Note that it replaces the whole
+command, so it has to include the path of the binary.
+
+`kick inspect` lists the variables each unit is rendered with along with where
+they come from (`global`, `configured` or `built-in`), its directives, and any
+warnings. A host which is left to the command line is listed as coming from
+`--host`.
 
 <br>
 
 #### The built-in template
 
-```jinja
-[Unit]
-Description={{ description | default(name ~ " service") }}
-{%- if after is defined or scope | default("system") != "user" %}
-After={{ after | default("network-online.target") }}
-{%- endif %}
-{%- if wants is defined or scope | default("system") != "user" %}
-Wants={{ wants | default("network-online.target") }}
-{%- endif %}
-{%- if requires is defined %}
-Requires={{ requires }}
-{%- endif %}
-{%- if socket is defined %}
-Requires={{ socket }}
-After={{ socket }}
-{%- endif %}
-{%- if start_limit_interval_sec is defined %}
-StartLimitIntervalSec={{ start_limit_interval_sec }}
-{%- endif %}
-{%- if start_limit_burst is defined %}
-StartLimitBurst={{ start_limit_burst }}
-{%- endif %}
+The built-in template is in `src/systemd/default.service` in the [kick repo].
+Every variable it uses beyond the ones kick provides is optional, and defining
+one in the `[deploy.systemd]` section fills in the directive it belongs to. A
+[directive](#pass-through-directives) of the same name in the `unit`, `service`
+or `install` table replaces what a variable or its default would have written.
 
-[Service]
-Type={{ type | default("simple") }}
-{%- if user is defined %}
-User={{ user }}
-{%- endif %}
-{%- if group is defined %}
-Group={{ group }}
-{%- endif %}
-{%- if working_directory is defined %}
-WorkingDirectory={{ working_directory }}
-{%- endif %}
-{%- if kill_signal is defined %}
-KillSignal={{ kill_signal }}
-{%- endif %}
-{%- for key, value in environment | default({}) | items %}
-Environment={{ key }}={{ value }}
-{%- endfor %}
-{%- if environment_file is defined %}
-EnvironmentFile={{ environment_file }}
-{%- endif %}
-ExecStart={{ exec }}{% if args is defined %} {{ args | join(" ") }}{% endif %}
-Restart={{ restart | default("always") }}
-RestartSec={{ restart_sec | default(5) }}
-{%- if timeout_stop_sec is defined %}
-TimeoutStopSec={{ timeout_stop_sec }}
-{%- endif %}
+In `[Unit]`:
 
-[Install]
-WantedBy={{ wanted_by | default("default.target" if scope | default("system") == "user" else "multi-user.target") }}
-```
+* `Description=` from `description`, which defaults to `<name> service`.
+* `After=` and `Wants=` from `after` and `wants`, which both default to
+  `network-online.target` for a system unit, and are left out of a [user
+  unit](#user-units) unless set.
+* `Requires=` from `requires`.
+* `Requires=` and `After=` on the socket, when a [socket unit](#socket-units) is
+  installed with the service.
+* `StartLimitIntervalSec=` and `StartLimitBurst=` from
+  `start_limit_interval_sec` and `start_limit_burst`.
 
-Every variable it uses beyond the ones above is optional, and defining one in
-the `[deploy.systemd]` section fills in the corresponding directive:
+In `[Service]`:
 
-* `description`, defaults to `<name> service`.
-* `after` and `wants`, both default to `network-online.target` for a system
-  unit, and are left out of a [user unit](#user-units) unless set.
-* `requires`.
-* `socket` is defined when a [socket unit](#socket-units) is installed with the
-  service, which adds `Requires=` and `After=` on it.
-* `start_limit_interval_sec` and `start_limit_burst`.
-* `type`, defaults to `simple`.
-* `user` and `group`, which can also be set with `--service-user <user>` and
-  `--group <group>`. The options override the variables, and `--service-user` on
-  its own also defines `group` unless the variable is set. Note that this is the
-  user the *service* runs as, and has nothing to do with the `user` option in
-  the `[deploy]` section, which is the user being logged in as.
-* `working_directory`.
-* `kill_signal`.
-* `environment`, a table which becomes one `Environment=` per entry.
-* `environment_file`.
-* `args`, a list which is appended to `ExecStart`. Can also be set with
-  `--args <args>`, which overrides the variable. Values are taken as they are
-  given, so `--args --user x` passes `--user x` to the service, and an argument
-  which itself contains whitespace has to be specified through the variable.
-* `restart`, defaults to `always`.
-* `restart_sec`, defaults to `5`.
-* `timeout_stop_sec`.
-* `wanted_by`, defaults to `multi-user.target`, or `default.target` for a
-  [user unit](#user-units).
+* `Type=` from `type`, which defaults to `simple`.
+* `User=` and `Group=` from `user` and `group`, which can also be set with
+  `--service-user <user>` and `--group <group>`. The options override the
+  variables, and `--service-user` on its own also defines `group` unless the
+  variable or a `Group` directive is set. Note that this is the user the
+  *service* runs as, and has nothing to do with the `user` option in the
+  `[deploy]` section, which is the user being logged in as.
+* `WorkingDirectory=` from `working_directory`.
+* `KillSignal=` from `kill_signal`.
+* `Environment=` from `environment`, a table which becomes one `Environment=`
+  per entry.
+* `EnvironmentFile=` from `environment_file`.
+* `ExecStart=` from `exec` followed by `args`, a list which is appended to it.
+  `args` can also be set with `--args <args>`, which overrides the variable.
+  Values are taken as they are given, so `--args --user x` passes `--user x` to
+  the service, and an argument which itself contains whitespace has to be
+  specified through the variable.
+* `Restart=` from `restart`, which defaults to `always`.
+* `RestartSec=` from `restart_sec`, which defaults to `5`.
+* `TimeoutStopSec=` from `timeout_stop_sec`.
 
-If you need something the built-in template doesn't cover, copy it out of
-`src/systemd/default.service` in the [kick repo] and point `template` at your own
-copy.
+In `[Install]`:
+
+* `WantedBy=` from `wanted_by`, which defaults to `multi-user.target`, or
+  `default.target` for a [user unit](#user-units).
+
+Anything else is added with a [directive](#pass-through-directives). If you
+need the unit to look entirely different, copy the template out of
+`src/systemd/default.service` in the [kick repo] and point `template` at your
+own copy.
 
 [kick repo]: https://github.com/udoprog/kick/blob/main/src/systemd/default.service
 

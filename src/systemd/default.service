@@ -1,51 +1,83 @@
+{%- set unit_directives = (directives | default({})).unit | default({}) -%}
+{%- set service_directives = (directives | default({})).service | default({}) -%}
+{%- set install_directives = (directives | default({})).install | default({}) -%}
 [Unit]
+{%- if "Description" not in unit_directives %}
 Description={{ description | default(name ~ " service") }}
-{%- if after is defined or scope | default("system") != "user" %}
+{%- endif %}
+{%- if "After" not in unit_directives and (after is defined or scope | default("system") != "user") %}
 After={{ after | default("network-online.target") }}
 {%- endif %}
-{%- if wants is defined or scope | default("system") != "user" %}
+{%- if "Wants" not in unit_directives and (wants is defined or scope | default("system") != "user") %}
 Wants={{ wants | default("network-online.target") }}
 {%- endif %}
-{%- if requires is defined %}
+{%- if "Requires" not in unit_directives and requires is defined %}
 Requires={{ requires }}
 {%- endif %}
 {%- if socket is defined %}
 Requires={{ socket }}
 After={{ socket }}
 {%- endif %}
-{%- if start_limit_interval_sec is defined %}
+{%- if "StartLimitIntervalSec" not in unit_directives and start_limit_interval_sec is defined %}
 StartLimitIntervalSec={{ start_limit_interval_sec }}
 {%- endif %}
-{%- if start_limit_burst is defined %}
+{%- if "StartLimitBurst" not in unit_directives and start_limit_burst is defined %}
 StartLimitBurst={{ start_limit_burst }}
 {%- endif %}
+{%- for key, values in unit_directives | items %}
+{%- for value in values %}
+{{ key }}={{ value }}
+{%- endfor %}
+{%- endfor %}
 
 [Service]
+{%- if "Type" not in service_directives %}
 Type={{ type | default("simple") }}
-{%- if user is defined %}
+{%- endif %}
+{%- if "User" not in service_directives and user is defined %}
 User={{ user }}
 {%- endif %}
-{%- if group is defined %}
+{%- if "Group" not in service_directives and group is defined %}
 Group={{ group }}
 {%- endif %}
-{%- if working_directory is defined %}
+{%- if "WorkingDirectory" not in service_directives and working_directory is defined %}
 WorkingDirectory={{ working_directory }}
 {%- endif %}
-{%- if kill_signal is defined %}
+{%- if "KillSignal" not in service_directives and kill_signal is defined %}
 KillSignal={{ kill_signal }}
 {%- endif %}
+{%- if "Environment" not in service_directives %}
 {%- for key, value in environment | default({}) | items %}
 Environment={{ key }}={{ value }}
 {%- endfor %}
-{%- if environment_file is defined %}
+{%- endif %}
+{%- if "EnvironmentFile" not in service_directives and environment_file is defined %}
 EnvironmentFile={{ environment_file }}
 {%- endif %}
+{%- if "ExecStart" not in service_directives %}
 ExecStart={{ exec }}{% if args is defined %} {{ args | join(" ") }}{% endif %}
+{%- endif %}
+{%- if "Restart" not in service_directives %}
 Restart={{ restart | default("always") }}
+{%- endif %}
+{%- if "RestartSec" not in service_directives %}
 RestartSec={{ restart_sec | default(5) }}
-{%- if timeout_stop_sec is defined %}
+{%- endif %}
+{%- if "TimeoutStopSec" not in service_directives and timeout_stop_sec is defined %}
 TimeoutStopSec={{ timeout_stop_sec }}
 {%- endif %}
+{%- for key, values in service_directives | items %}
+{%- for value in values %}
+{{ key }}={{ value }}
+{%- endfor %}
+{%- endfor %}
 
 [Install]
+{%- if "WantedBy" not in install_directives %}
 WantedBy={{ wanted_by | default("default.target" if scope | default("system") == "user" else "multi-user.target") }}
+{%- endif %}
+{%- for key, values in install_directives | items %}
+{%- for value in values %}
+{{ key }}={{ value }}
+{%- endfor %}
+{%- endfor %}

@@ -517,6 +517,9 @@ pub(crate) struct Systemd {
     pub(crate) scope: Option<SystemdScope>,
     /// The socket unit which activates the service, if any.
     pub(crate) socket: Option<SystemdSocket>,
+    /// Directives written verbatim into the `[Unit]`, `[Service]` and
+    /// `[Install]` sections of the unit.
+    pub(crate) directives: systemd::Directives,
     /// The variables the unit template is rendered with.
     ///
     /// These are every key in the section which isn't one of the options
@@ -535,6 +538,7 @@ impl Default for Systemd {
             enable: None,
             scope: None,
             socket: None,
+            directives: systemd::Directives::default(),
             variables: toml::Table::new(),
         }
     }
@@ -558,6 +562,7 @@ impl Systemd {
             _ => {}
         }
 
+        self.directives.merge_with(other.directives);
         merge_map(&mut self.variables, other.variables);
     }
 }
@@ -573,6 +578,9 @@ pub(crate) struct SystemdSocket {
     pub(crate) template: Option<UnitTemplate>,
     /// The name of the socket unit, defaults to the name of the service.
     pub(crate) name: Option<String>,
+    /// Directives written verbatim into the `[Unit]`, `[Socket]` and
+    /// `[Install]` sections of the socket unit.
+    pub(crate) directives: systemd::Directives,
     /// The variables the socket template is rendered with.
     pub(crate) variables: toml::Table,
 }
@@ -582,6 +590,7 @@ impl SystemdSocket {
         self.enabled = other.enabled.or(self.enabled.take());
         self.template = other.template.take().or(self.template.take());
         self.name = other.name.or(self.name.take());
+        self.directives.merge_with(other.directives);
         merge_map(&mut self.variables, other.variables);
     }
 }
@@ -2264,19 +2273,22 @@ impl<'a> Cx<'a> {
                 let enable = self.in_key(&mut table, "enable", Self::boolean);
                 let scope = self.in_key(&mut table, "scope", Self::parse);
                 let socket = self.in_key(&mut table, "socket", Self::systemd_socket);
+                let directives = self.directives(&mut table, systemd::UnitKind::Service);
+                let reserved = self.reserved_variables(&table, systemd::UnitKind::Service);
 
                 // NB: Everything which is left over is a variable the unit
                 // template is rendered with. This is why the section cannot
                 // reject keys it doesn't know about the way the others do, so
-                // a misspelled option quietly becomes a variable which the
-                // template doesn't use instead of being reported.
+                // a misspelled option becomes a variable instead, which the
+                // deployment warns about if the template doesn't use it.
                 Ok(Systemd {
                     template: template?,
                     name: name?,
                     enable: enable?,
                     scope: scope?,
                     socket: socket?,
-                    variables: table,
+                    directives: directives?,
+                    variables: reserved.map(|()| table)?,
                     ..Systemd::default()
                 })
             }
@@ -2300,16 +2312,99 @@ impl<'a> Cx<'a> {
 
                 let template = self.in_key(&mut table, "template", Self::unit_template);
                 let name = self.in_key(&mut table, "name", Self::string);
+                let directives = self.directives(&mut table, systemd::UnitKind::Socket);
+                let reserved = self.reserved_variables(&table, systemd::UnitKind::Socket);
 
                 // NB: As with the service, everything else is a variable.
                 Ok(SystemdSocket {
                     template: template?,
                     name: name?,
-                    variables: table,
+                    directives: directives?,
+                    variables: reserved.map(|()| table)?,
                     ..SystemdSocket::default()
                 })
             }
         }
+    }
+
+    /// Extract the pass-through directive tables of a unit, such as
+    /// `[deploy.systemd.service]`, from its section.
+    fn directives(
+        &self,
+        table: &mut toml::Table,
+        kind: systemd::UnitKind,
+    ) -> Result<systemd::Directives, ErrorMarker> {
+        let mut directives = systemd::Directives::default();
+        let mut error = false;
+
+        for section in kind.sections() {
+            let parsed = self.in_key(table, section, |cx, value| {
+                let table = cx.table(value)?;
+                let mut out = toml::Table::new();
+                let mut error = false;
+
+                for (key, value) in table {
+                    cx.keys.field(&key);
+
+                    let result = systemd::directive(&key, value);
+
+                    match result {
+                        Ok(values) => {
+                            out.insert(key, values);
+                        }
+                        Err(e) => {
+                            cx.capture(e);
+                            error = true;
+                        }
+                    }
+
+                    cx.keys.pop();
+                }
+
+                if error {
+                    return Err(ErrorMarker);
+                }
+
+                Ok(out)
+            });
+
+            match parsed {
+                Ok(Some(parsed)) => directives.insert(section, parsed),
+                Ok(None) => {}
+                Err(ErrorMarker) => error = true,
+            }
+        }
+
+        if error {
+            return Err(ErrorMarker);
+        }
+
+        Ok(directives)
+    }
+
+    /// Report variables which would clash with one kick provides to the
+    /// template of the given kind of unit.
+    fn reserved_variables(
+        &self,
+        table: &toml::Table,
+        kind: systemd::UnitKind,
+    ) -> Result<(), ErrorMarker> {
+        let mut error = false;
+
+        for key in table.keys() {
+            if let Some(reason) = systemd::reserved(kind, key) {
+                self.keys.field(key);
+                self.capture(reason);
+                self.keys.pop();
+                error = true;
+            }
+        }
+
+        if error {
+            return Err(ErrorMarker);
+        }
+
+        Ok(())
     }
 
     /// The `[install]` or `[deploy]` section.
@@ -2657,6 +2752,7 @@ mod tests {
     use super::{Build, CommandLine, ConfigCommand, Cx, Deploy, DeployKind, Section, SystemdScope};
     use crate::ctxt::Paths;
     use crate::shell::Shell;
+    use crate::systemd;
     use crate::templates::Templating;
 
     fn line(line: &str, sudo: bool) -> ConfigCommand {
@@ -2760,6 +2856,122 @@ host = "moore"
         assert!(systemd.variables.contains_key("working_directory"));
 
         assert_eq!(deploy.profiles["remote"].host, ["moore"]);
+    }
+
+    #[test]
+    fn deploy_directives() {
+        let (deploy, errors) = parse_deploy(
+            r#"
+[systemd]
+user = "track"
+
+[systemd.service]
+LimitNOFILE = 65536
+ExecStartPre = ["a", "b"]
+NoNewPrivileges = true
+
+[systemd.install]
+Alias = "tracker.service"
+
+[systemd.socket]
+listen_stream = "/run/track.sock"
+
+[systemd.socket.socket]
+Backlog = 128
+
+[profiles.other.systemd.service]
+ExecStartPre = "c"
+"#,
+        );
+
+        assert_eq!(errors, 0);
+
+        let deploy = deploy.unwrap();
+        let systemd = deploy.systemd.as_ref().unwrap();
+
+        // NB: The directive tables are not variables.
+        assert!(!systemd.variables.contains_key("service"));
+        assert!(!systemd.variables.contains_key("install"));
+        assert!(systemd.variables.contains_key("user"));
+
+        let directives = systemd
+            .directives
+            .iter(systemd::UnitKind::Service)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            directives,
+            [
+                ("service", "ExecStartPre", vec!["a", "b"]),
+                ("service", "LimitNOFILE", vec!["65536"]),
+                ("service", "NoNewPrivileges", vec!["yes"]),
+                ("install", "Alias", vec!["tracker.service"]),
+            ]
+        );
+
+        let socket = systemd.socket.as_ref().unwrap();
+        assert!(!socket.variables.contains_key("socket"));
+
+        let directives = socket
+            .directives
+            .iter(systemd::UnitKind::Socket)
+            .collect::<Vec<_>>();
+
+        assert_eq!(directives, [("socket", "Backlog", vec!["128"])]);
+
+        // A profile replaces a directive rather than extending it.
+        let other = deploy.with_profile("other").unwrap();
+        let systemd = other.systemd.unwrap();
+
+        assert_eq!(
+            systemd
+                .directives
+                .iter(systemd::UnitKind::Service)
+                .collect::<Vec<_>>(),
+            [
+                ("service", "ExecStartPre", vec!["c"]),
+                ("service", "LimitNOFILE", vec!["65536"]),
+                ("service", "NoNewPrivileges", vec!["yes"]),
+                ("install", "Alias", vec!["tracker.service"]),
+            ]
+        );
+    }
+
+    /// Variables which kick provides cannot be configured, except for `exec`.
+    #[test]
+    fn deploy_reserved_variables() {
+        for (source, expected) in [
+            (
+                "[systemd]\nexec = \"/usr/bin/wrapper /usr/local/bin/track\"",
+                0,
+            ),
+            ("[systemd]\nbinary = \"track\"", 1),
+            ("[systemd]\nbin_dir = \"/opt\"\nunit_dir = \"/opt\"", 2),
+            ("[systemd]\nhost = \"moore\"", 1),
+            ("[systemd]\ndirectives = {}", 1),
+            ("[systemd.socket]\nservice = \"other.service\"", 1),
+            ("[systemd.socket]\nscope = \"user\"", 1),
+            ("[systemd.socket]\nexec = \"/usr/bin/wrapper\"", 0),
+        ] {
+            let (_, errors) = parse_deploy(source);
+            assert_eq!(errors, expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn deploy_invalid_directives() {
+        for source in [
+            "[systemd]\nservice = \"LimitNOFILE=1\"",
+            "[systemd.service]\nlimit_nofile = 1",
+            "[systemd.service]\nEnvironment = { A = \"1\" }",
+            "[systemd.unit]\nAfter = [[\"a\"]]",
+            // NB: The socket has no `[Service]` section, so this is the
+            // reserved `service` variable.
+            "[systemd.socket.service]\nUser = \"x\"",
+        ] {
+            let (_, errors) = parse_deploy(source);
+            assert_eq!(errors, 1, "{source}");
+        }
     }
 
     #[test]

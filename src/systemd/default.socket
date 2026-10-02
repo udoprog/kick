@@ -1,28 +1,52 @@
+{%- set unit_directives = (directives | default({})).unit | default({}) -%}
+{%- set socket_directives = (directives | default({})).socket | default({}) -%}
+{%- set install_directives = (directives | default({})).install | default({}) -%}
 [Unit]
+{%- if "Description" not in unit_directives %}
 Description={{ description | default(name ~ " socket") }}
+{%- endif %}
+{%- for key, values in unit_directives | items %}
+{%- for value in values %}
+{{ key }}={{ value }}
+{%- endfor %}
+{%- endfor %}
 
 [Socket]
+{%- if "ListenStream" not in socket_directives %}
 {%- for listen in ([listen_stream] if listen_stream is string else listen_stream) %}
 ListenStream={{ listen }}
 {%- endfor %}
-{%- if socket_user is defined %}
+{%- endif %}
+{%- if "SocketUser" not in socket_directives and socket_user is defined %}
 SocketUser={{ socket_user }}
 {%- endif %}
-{%- if socket_group is defined %}
+{%- if "SocketGroup" not in socket_directives and socket_group is defined %}
 SocketGroup={{ socket_group }}
 {%- endif %}
-{%- if socket_mode is defined %}
+{%- if "SocketMode" not in socket_directives and socket_mode is defined %}
 SocketMode={{ socket_mode }}
 {%- endif %}
-{%- if directory_mode is defined %}
+{%- if "DirectoryMode" not in socket_directives and directory_mode is defined %}
 DirectoryMode={{ directory_mode }}
 {%- endif %}
-{%- if remove_on_stop is defined %}
+{%- if "RemoveOnStop" not in socket_directives and remove_on_stop is defined %}
 RemoveOnStop={{ remove_on_stop if remove_on_stop is string else ("yes" if remove_on_stop else "no") }}
 {%- endif %}
-{%- if service != name ~ ".service" %}
+{%- if "Service" not in socket_directives and service != name ~ ".service" %}
 Service={{ service }}
 {%- endif %}
+{%- for key, values in socket_directives | items %}
+{%- for value in values %}
+{{ key }}={{ value }}
+{%- endfor %}
+{%- endfor %}
 
 [Install]
+{%- if "WantedBy" not in install_directives %}
 WantedBy={{ wanted_by | default("sockets.target") }}
+{%- endif %}
+{%- for key, values in install_directives | items %}
+{%- for value in values %}
+{{ key }}={{ value }}
+{%- endfor %}
+{%- endfor %}
