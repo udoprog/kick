@@ -21,7 +21,7 @@ use crate::KICK_TOML;
 use crate::ctxt::Paths;
 use crate::glob::Glob;
 use crate::keys::Keys;
-use crate::model::{Repo, RepoInfo, RepoParams, RepoRef, RepoSource};
+use crate::model::{Repo, RepoParams, RepoRef, RepoSource};
 use crate::packaging::Mode;
 use crate::process;
 use crate::shell::Shell;
@@ -2348,16 +2348,8 @@ impl<'a> Cx<'a> {
 pub(crate) fn load<'a>(
     paths: Paths<'a>,
     templating: &Templating,
-    extra_repos: impl IntoIterator<Item = (RelativePathBuf, RepoInfo)>,
     defaults: &'a toml::Table,
 ) -> Result<Config<'a>> {
-    fn from_config(c: &RepoConfig) -> RepoInfo {
-        let mut repo = RepoInfo::default();
-        repo.urls.extend(c.urls.clone());
-        repo.sources.extend(c.sources.iter().cloned());
-        repo
-    }
-
     let mut cx = Cx::new(paths, RelativePath::new(""), templating);
 
     let (base, mut repos) = 'out: {
@@ -2372,19 +2364,15 @@ pub(crate) fn load<'a>(
         (base, repos)
     };
 
-    let mut infos = BTreeMap::from_iter(
-        repos
-            .iter()
-            .map(|(path, config)| (path.to_owned(), from_config(config))),
-    );
+    // Repos are only ever declared in configuration, so every repo here comes
+    // from a `[repo."<path>"]` section. Layer each repo's own configuration on
+    // top of what declared it.
+    let declared = repos
+        .iter()
+        .map(|(path, config)| (path.to_owned(), config.sources.clone(), config.urls.clone()))
+        .collect::<Vec<_>>();
 
-    for (path, info) in extra_repos {
-        let to = infos.entry(path).or_default();
-        to.urls.extend(info.urls);
-        to.sources.extend(info.sources);
-    }
-
-    for (path, info) in infos {
+    for (path, sources, urls) in declared {
         let path = cx.current.join(&path);
         let updates = load_repo(&mut cx, path.clone());
         let config = repos.entry(path).or_default();
@@ -2393,8 +2381,8 @@ pub(crate) fn load<'a>(
             config.merge_with(updates);
         }
 
-        config.sources.extend(info.sources);
-        config.urls.extend(info.urls);
+        config.sources.extend(sources);
+        config.urls.extend(urls);
     }
 
     let errors = cx.errors.into_inner();

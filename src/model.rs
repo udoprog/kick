@@ -2,8 +2,6 @@ use std::cell::{Cell, UnsafeCell};
 use std::collections::BTreeSet;
 use std::env;
 use std::fmt;
-use std::fs;
-use std::io;
 use std::ops::Deref;
 use std::path::Path;
 use std::rc::Rc;
@@ -16,9 +14,7 @@ use url::Url;
 
 use crate::cargo::RustVersion;
 use crate::ctxt::Ctxt;
-use crate::gitmodules;
 use crate::system::Git;
-use crate::system::git::parse_url;
 use crate::workspace::Crates;
 
 /// Parameters particular to a given package.
@@ -100,28 +96,8 @@ impl Serialize for RepoPath<'_> {
     }
 }
 
-/// Information about a repository.
-#[derive(Default)]
-pub(crate) struct RepoInfo {
-    /// Sources for this module.
-    pub(crate) sources: BTreeSet<RepoSource>,
-    /// URLs for this module.
-    pub(crate) urls: BTreeSet<Url>,
-}
-
-impl RepoInfo {
-    fn new(source: RepoSource, url: Url) -> Self {
-        Self {
-            sources: BTreeSet::from([source]),
-            urls: BTreeSet::from([url]),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Encode, Decode)]
 pub(crate) enum RepoSource {
-    /// Module loaded from a .gitmodules file.
-    Gitmodules,
     /// Module loaded from local .git
     Git,
     /// Module loaded from configuration.
@@ -131,7 +107,6 @@ pub(crate) enum RepoSource {
 impl fmt::Display for RepoSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RepoSource::Gitmodules => write!(f, ".gitmodules"),
             RepoSource::Git => write!(f, "git repo"),
             RepoSource::Config(path) => write!(f, "{path}"),
         }
@@ -382,17 +357,6 @@ impl Deref for Repo {
     }
 }
 
-/// Load git modules.
-pub(crate) fn load_gitmodules(root: &Path) -> Result<Vec<(RelativePathBuf, RepoInfo)>> {
-    let path = root.join(".gitmodules");
-
-    match fs::read(&path) {
-        Ok(buf) => Ok(parse_git_modules(&buf).with_context(|| path.display().to_string())?),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(e) => Err(e).context(path.display().to_string()),
-    }
-}
-
 #[tracing::instrument(skip_all, fields(root = ?root.display()))]
 pub(crate) fn load_from_git(
     root: &Path,
@@ -425,56 +389,6 @@ pub(crate) fn load_from_git(
     }
 
     Ok(None)
-}
-
-/// Parse a git module.
-pub(crate) fn parse_git_module(
-    parser: &mut gitmodules::Parser<'_>,
-) -> Result<Option<(RelativePathBuf, RepoInfo)>> {
-    let mut parsed_path = None;
-    let mut parsed_url = None;
-
-    let mut section = match parser.parse_section()? {
-        Some(section) => section,
-        None => return Ok(None),
-    };
-
-    while let Some((key, value)) = section.next_section()? {
-        match key {
-            "path" => {
-                let string = std::str::from_utf8(value)?;
-                parsed_path = Some(RelativePath::new(string).into());
-            }
-            "url" => {
-                let string = std::str::from_utf8(value)?;
-
-                let url = parse_url(string)
-                    .with_context(|| format!("Parsing url of git module: {string}"))?;
-
-                parsed_url = Some(url);
-            }
-            _ => {}
-        }
-    }
-
-    let (Some(url), Some(path)) = (parsed_url, parsed_path) else {
-        return Ok(None);
-    };
-
-    Ok(Some((path, RepoInfo::new(RepoSource::Gitmodules, url))))
-}
-
-/// Parse gitmodules from the given input.
-pub(crate) fn parse_git_modules(input: &[u8]) -> Result<Vec<(RelativePathBuf, RepoInfo)>> {
-    let mut parser = gitmodules::Parser::new(input);
-
-    let mut modules = Vec::new();
-
-    while let Some(module) = parse_git_module(&mut parser)? {
-        modules.push(module);
-    }
-
-    Ok(modules)
 }
 
 /// Process module information from a git repository.

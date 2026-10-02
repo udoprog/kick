@@ -68,12 +68,10 @@ add a repo to kick you can add the following to a `Kick.toml` file:
 url = "https://github.com/udoprog/OxidizeBot"
 ```
 
-This can also be added as a git submodule, note that the important part is
-what's in the `.gitmodules` file:
-
-```bash
-git submodule add https://github.com/udoprog/OxidizeBot repos/OxidizeBot
-```
+Repos are only ever declared in `Kick.toml`. Git submodules and the
+`.gitmodules` file are ignored, so a submodule only becomes a repo if it is
+declared like above. Without any declared repos, kick acts on the project
+itself.
 
 Once this is done, kick can run any command over a collection of repos:
 

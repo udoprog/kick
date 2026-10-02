@@ -65,12 +65,10 @@
 //! url = "https://github.com/udoprog/OxidizeBot"
 //! ```
 //!
-//! This can also be added as a git submodule, note that the important part is
-//! what's in the `.gitmodules` file:
-//!
-//! ```bash
-//! git submodule add https://github.com/udoprog/OxidizeBot repos/OxidizeBot
-//! ```
+//! Repos are only ever declared in `Kick.toml`. Git submodules and the
+//! `.gitmodules` file are ignored, so a submodule only becomes a repo if it is
+//! declared like above. Without any declared repos, kick acts on the project
+//! itself.
 //!
 //! Once this is done, kick can run any command over a collection of repos:
 //!
@@ -486,7 +484,6 @@ mod env;
 mod file;
 mod fs;
 mod git_cache;
-mod gitmodules;
 mod gix;
 mod glob;
 mod keys;
@@ -1048,12 +1045,10 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     }
 
     let templating = templates::Templating::new()?;
-    let extra_repos = model::load_gitmodules(&root)?;
-
     let defaults = config::defaults();
 
-    let config = config::load(paths, &templating, extra_repos, &defaults)
-        .context("Loading kick configuration")?;
+    let config =
+        config::load(paths, &templating, &defaults).context("Loading kick configuration")?;
 
     let os = match std::env::consts::OS {
         "linux" => Os::Linux,
@@ -1088,37 +1083,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         tracing::debug!("Os: {os}, Dist: {dist}");
     }
 
-    let mut from_group = true;
-    let mut repos = Vec::new();
-
-    for (path, config) in config.repos.iter() {
-        let Some(url) = config.urls.iter().next() else {
-            continue;
-        };
-
-        repos.push(Repo::new(
-            [RepoSource::Config(path.clone())],
-            path.to_owned(),
-            url.clone(),
-        ));
-    }
-
-    tracing::trace!(
-        modules = repos
-            .iter()
-            .map(|m| m.path().to_string())
-            .collect::<Vec<_>>()
-            .join(", "),
-        "loaded modules"
-    );
-
-    if repos.is_empty() {
-        from_group = false;
-
-        if let Some((path, url)) = load_from_git(&root, system.git.first())? {
-            repos.push(Repo::new(BTreeSet::from([RepoSource::Git]), path, url));
-        }
-    }
+    let (repos, from_group) = collect_repos(&config, &root, system.git.first())?;
 
     let mut sets = repo_sets::RepoSets::new(root.join("sets"))?;
 
@@ -1138,8 +1103,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
 
             // Reload the configuration so that repo configuration and
             // templates are read from the worktree.
-            let extra_repos = model::load_gitmodules(&root)?;
-            let config = config::load(paths, &templating, extra_repos, &defaults)
+            let config = config::load(paths, &templating, &defaults)
                 .context("Loading kick configuration")?;
             (paths, config)
         }
@@ -1847,6 +1811,50 @@ fn find_from_current_dir(current_dir: &Path) -> Option<(PathBuf, RelativePathBuf
     first_git
 }
 
+/// Collect the repos kick acts on.
+///
+/// Repos are only ever those declared in configuration with
+/// `[repo."<path>"]`. Without any, the project root itself is the repo. The
+/// returned flag is `true` if the repos came from configuration.
+fn collect_repos(
+    config: &Config<'_>,
+    root: &Path,
+    git: Option<&system::Git>,
+) -> Result<(Vec<Repo>, bool)> {
+    let mut repos = Vec::new();
+
+    for (path, config) in config.repos.iter() {
+        let Some(url) = config.urls.iter().next() else {
+            continue;
+        };
+
+        repos.push(Repo::new(
+            [RepoSource::Config(path.clone())],
+            path.to_owned(),
+            url.clone(),
+        ));
+    }
+
+    tracing::trace!(
+        modules = repos
+            .iter()
+            .map(|m| m.path().to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        "loaded modules"
+    );
+
+    if !repos.is_empty() {
+        return Ok((repos, true));
+    }
+
+    if let Some((path, url)) = load_from_git(root, git)? {
+        repos.push(Repo::new(BTreeSet::from([RepoSource::Git]), path, url));
+    }
+
+    Ok((repos, false))
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -1855,13 +1863,14 @@ mod tests {
     use relative_path::RelativePath;
 
     use super::{
-        RepoOptions, nested_worktree, unmatched_path_filters_message,
+        RepoOptions, collect_repos, nested_worktree, unmatched_path_filters_message,
         unregistered_checkout_message, unregistered_git_checkout,
     };
     use crate::config;
     use crate::ctxt::{Paths, Redirect};
-    use crate::glob::Fragment;
+    use crate::glob::{Fragment, Glob};
     use crate::model::{Repo, RepoSource};
+    use crate::system::Git;
     use crate::templates::Templating;
     use crate::worktree::tests::{git, init};
 
@@ -1883,7 +1892,7 @@ mod tests {
             redirect: None,
         };
 
-        let config = config::load(paths, &templating, [], &defaults).unwrap();
+        let config = config::load(paths, &templating, &defaults).unwrap();
         let url = url::Url::parse("https://example.com/repo").unwrap();
 
         let mut repos = config
@@ -1922,7 +1931,7 @@ mod tests {
                     ..paths
                 };
 
-                let config = config::load(paths, &templating, [], &defaults).unwrap();
+                let config = config::load(paths, &templating, &defaults).unwrap();
                 (Some(format!("{repo} -> {checkout}")), config)
             }
             None => (None, config),
@@ -1941,6 +1950,77 @@ mod tests {
             .iter()
             .map(|(repo, user)| ((*repo).to_owned(), Some((*user).to_owned())))
             .collect()
+    }
+
+    /// A git submodule is not a repo: without any `[repo]` sections the
+    /// project root is the only repo, and deploy file sources resolve against
+    /// it.
+    #[test]
+    fn gitmodules_are_not_repos() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        init(root);
+        git(
+            root,
+            &["remote", "add", "origin", "https://example.com/project"],
+        );
+        init(&root.join("3rdparty/heroicons"));
+        fs::write(
+            root.join(".gitmodules"),
+            "[submodule \"3rdparty/heroicons\"]\n\
+             \tpath = 3rdparty/heroicons\n\
+             \turl = https://github.com/tailwindlabs/heroicons\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("systemd/remote")).unwrap();
+        fs::write(root.join("systemd/remote/sysusers.conf"), "u app - -\n").unwrap();
+        fs::write(
+            root.join("Kick.toml"),
+            "[[deploy.profiles.remote.files]]\n\
+             source = \"systemd/remote/sysusers.conf\"\n\
+             dest = \"/usr/lib/sysusers.d/\"\n",
+        )
+        .unwrap();
+
+        let templating = Templating::new().unwrap();
+        let defaults = config::defaults();
+
+        let paths = Paths {
+            root,
+            current: None,
+            config: None,
+            cache: None,
+            redirect: None,
+        };
+
+        let config = config::load(paths, &templating, &defaults).unwrap();
+        let git = Git::new("git".into());
+        let (repos, from_group) = collect_repos(&config, root, Some(&git)).unwrap();
+
+        assert!(!from_group);
+
+        let found = repos
+            .iter()
+            .map(|repo| (repo.path().as_str(), repo.url().as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(found, [(".", "https://example.com/project")]);
+
+        let repo = &repos[0];
+        let deploy = config.deploy(repo).with_profile("remote").unwrap();
+        let repo_root = repo.path().to_path(root);
+
+        let mut matched = Vec::new();
+
+        for file in &deploy.files {
+            for source in Glob::new(&repo_root, &file.source).matcher() {
+                let path = repo_root.join(source.unwrap().as_str());
+                assert!(path.is_file(), "{}", path.display());
+                matched.push(path);
+            }
+        }
+
+        assert_eq!(matched, [root.join("systemd/remote/sysusers.conf")]);
     }
 
     #[test]
