@@ -22,7 +22,7 @@ impl Shell {
     pub(crate) fn escape<'a>(&self, source: &'a str) -> Cow<'a, str> {
         let plain = match *self {
             Shell::Bash => source.chars().all(|c| matches!(c, base!())),
-            Shell::Powershell => source.chars().all(|c| matches!(c, base!('\\' | ':' | '`'))),
+            Shell::Powershell => source.chars().all(|c| matches!(c, base!('\\' | ':'))),
         };
 
         if plain && !source.is_empty() {
@@ -209,5 +209,66 @@ mod tests {
         assert_eq!(shell.escape("$HOME"), "'$HOME'");
         assert_eq!(shell.escape("a\tb"), "'a\tb'");
         assert_eq!(shell.escape_string("plain"), "'plain'");
+    }
+
+    #[test]
+    fn powershell_escape() {
+        let shell = Shell::Powershell;
+        assert_eq!(shell.escape(r"C:\dir\file-1.0"), r"C:\dir\file-1.0");
+        assert_eq!(shell.escape(""), "\"\"");
+        assert_eq!(shell.escape("a b"), "\"a b\"");
+        assert_eq!(shell.escape("a`b"), "\"a``b\"");
+        assert_eq!(shell.escape("$HOME"), "\"`$HOME\"");
+        assert_eq!(shell.escape("say \"hi\""), "\"say `\"hi`\"\"");
+        assert_eq!(shell.escape("it's"), "\"it`'s\"");
+        assert_eq!(shell.escape_string("plain"), "\"plain\"");
+        assert_eq!(shell.escape_string(""), "\"\"");
+        assert_eq!(shell.escape_string("`"), "\"``\"");
+        assert_eq!(shell.escape_string(r"C:\x"), "\"C:\\x\"");
+    }
+
+    /// Round-trip through PowerShell, skipping when `pwsh` is not installed.
+    #[test]
+    fn powershell_round_trip() {
+        let script_head = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; \
+            function p { foreach ($a in $args) { [Console]::Out.Write($a + [char]0) } }; p";
+
+        for escape_all in [false, true] {
+            let mut script = String::from(script_head);
+
+            for value in AWKWARD {
+                script.push(' ');
+
+                if escape_all {
+                    script.push_str(&Shell::Powershell.escape_string(value));
+                } else {
+                    script.push_str(&Shell::Powershell.escape(value));
+                }
+            }
+
+            let output = match Command::new("pwsh")
+                .args(["-NoProfile", "-NonInteractive", "-Command"])
+                .arg(&script)
+                .output()
+            {
+                Ok(output) => output,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    eprintln!("skipping: pwsh is not installed");
+                    return;
+                }
+                Err(e) => panic!("pwsh failed to run: {e}"),
+            };
+
+            assert!(
+                output.status.success(),
+                "pwsh failed on {script:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+
+            let stdout = String::from_utf8(output.stdout).expect("utf-8 output");
+            let mut got = stdout.split('\0').map(str::to_owned).collect::<Vec<_>>();
+            assert_eq!(got.pop().as_deref(), Some(""));
+            assert_eq!(got, AWKWARD, "escape_all = {escape_all}");
+        }
     }
 }
