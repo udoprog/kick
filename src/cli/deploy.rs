@@ -899,6 +899,10 @@ pub(crate) struct Unit {
     pub(crate) name: String,
     /// The file name of the unit.
     pub(crate) file_name: String,
+    /// The variables the unit was rendered with, which `kick inspect` is
+    /// tested against.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) variables: systemd::Variables,
     /// The rendered unit.
     pub(crate) contents: String,
 }
@@ -993,6 +997,7 @@ pub(crate) fn render_units(
         socket_unit = Some(Unit {
             name: socket_name.to_owned(),
             file_name: socket_file_name.clone(),
+            variables,
             contents,
         });
     }
@@ -1071,6 +1076,7 @@ pub(crate) fn render_units(
         service: Unit {
             name: name.to_owned(),
             file_name,
+            variables,
             contents,
         },
         socket: socket_unit,

@@ -10,7 +10,7 @@ use clap::Parser;
 use relative_path::RelativePath;
 use serde::Serialize;
 
-use crate::cli::deploy::plan::{self, Builtins, Plan};
+use crate::cli::deploy::plan::{self, Builtins, Plan, local_home};
 use crate::cli::deploy::{Choice, Common, LOCAL_HOST, choose_profile};
 use crate::config::{
     Build, Config, ConfigCommand, ConfigSource, Deploy, DeployKind, Os, Section, SourceState,
@@ -598,10 +598,32 @@ fn section(
     let kind = plan.kind;
     let scope = plan.scope;
 
+    // NB: A local deployment expands `~` against the home directory of the
+    // user running kick, which is known up front, while the home directory on
+    // a remote host only is once it has been logged into.
+    let home = match kind {
+        DeployKind::Local => local_home(),
+        DeployKind::Ssh => None,
+    };
+
+    let home = home.as_deref();
+    let dirs = plan.dirs.expand(home).unwrap_or_else(|_| plan.dirs.clone());
+
+    let expand_variables = |variables: &toml::Table| {
+        let mut variables = variables.clone();
+
+        if home.is_some() {
+            // NB: Nothing is left unexpanded when the home directory is known.
+            _ = plan.expand_variables(&mut variables, home);
+        }
+
+        variables
+    };
+
     let systemd = plan.systemd.as_ref().map(|systemd_config| {
         let binary = plan.binary.as_ref();
-        let bin_dir = &plan.dirs.bin_dir;
-        let unit_dir = &plan.dirs.unit_dir;
+        let bin_dir = &dirs.bin_dir;
+        let unit_dir = &dirs.unit_dir;
         let name = plan.unit_name(binary.map(String::as_str));
 
         let host = match kind {
@@ -663,6 +685,7 @@ fn section(
             systemd_config.template.as_ref(),
             globals,
             &systemd_config.variables,
+            &expand_variables(&systemd_config.variables),
             &systemd_config.directives,
             provided,
         );
@@ -689,6 +712,7 @@ fn section(
                     s.template.as_ref(),
                     globals,
                     &s.variables,
+                    &expand_variables(&s.variables),
                     &s.directives,
                     provided,
                 ),
@@ -755,17 +779,22 @@ fn bare_host(host: &str) -> &str {
 }
 
 /// Report what a unit is rendered with, the same way `kick deploy` layers it.
+///
+/// `configured` are the variables as configured, which is what is linted, and
+/// `expanded` are the same with `~` expanded the way deploying does.
+#[allow(clippy::too_many_arguments)]
 fn unit_report(
     kind: UnitKind,
     label: &str,
     template: Option<&UnitTemplate>,
     globals: &toml::Table,
     configured: &toml::Table,
+    expanded: &toml::Table,
     directives: &Directives,
     provided: Vec<(&'static str, Provided)>,
 ) -> UnitReport {
     let source = template.map(|t| &*t.source);
-    let mut variables = systemd::configured(source, globals, configured);
+    let mut variables = systemd::configured(source, globals, expanded);
     let mut notes = Vec::new();
 
     for (name, value) in provided {
@@ -1642,6 +1671,175 @@ mod tests {
                 "Directives are configured for `[deploy.systemd]`, but the unit template never refers to `directives`",
             ]
         );
+    }
+
+    /// The variables `kick inspect` reports for a unit are the variables
+    /// `kick install` and `kick deploy` render it with, for the built-in
+    /// templates of a local install with a user unit and of an ssh deployment
+    /// with a system unit, each with a socket.
+    #[test]
+    fn variables_match_deploy() {
+        use crate::cli::deploy::plan::{Plan, local_home};
+        use crate::cli::deploy::{Common, Target, render_units};
+        use crate::config::{DeployKind, Section};
+        use crate::systemd::Variables;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        fs::write(
+            root.join("Kick.toml"),
+            "[variables]\n\
+             motd = \"hello\"\n\
+             [repo.\"repos/app\"]\n\
+             url = \"https://example.com/app\"\n",
+        )
+        .unwrap();
+
+        let app = root.join("repos/app");
+        fs::create_dir_all(&app).unwrap();
+        fs::write(
+            app.join("Kick.toml"),
+            "[build]\n\
+             binary = \"app\"\n\
+             [install.systemd]\n\
+             working_directory = \"~/data\"\n\
+             [install.systemd.socket.socket]\n\
+             ListenStream = 8080\n\
+             [deploy]\n\
+             host = [\"login@moore\"]\n\
+             [deploy.systemd]\n\
+             user = \"app\"\n\
+             working_directory = \"~/data\"\n\
+             exec = \"/usr/bin/wrapper /usr/local/bin/app\"\n\
+             [deploy.systemd.socket]\n\
+             name = \"app-listen\"\n\
+             [deploy.systemd.socket.socket]\n\
+             ListenStream = 80\n",
+        )
+        .unwrap();
+
+        let templating = Templating::new().unwrap();
+        let defaults = config::defaults();
+        let loaded = config::load_all(paths(root), &templating, &defaults);
+        assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+        let repos = repos(&loaded.config);
+        let repo_opts = RepoOptions::default();
+        let config = &loaded.config;
+
+        let cx = Inspect {
+            paths: paths(root),
+            worktree: None,
+            config,
+            repos: &repos,
+            from_group: true,
+            in_repo_path: false,
+            repo_opts: &repo_opts,
+            os: &Os::Linux,
+            collected: Collected {
+                exclusions: vec![None; repos.len()],
+                sources: Vec::new(),
+                errors: Vec::new(),
+                selection_error: None,
+            },
+        };
+
+        let report = build(&cx, &Opts::default());
+        let (index, repo) = repos
+            .iter()
+            .enumerate()
+            .find(|(_, r)| r.path() == RelativePath::new("repos/app"))
+            .unwrap();
+        let effective = report.repos[index].effective.as_ref().unwrap();
+
+        let reported = |unit: &super::UnitReport| {
+            unit.variables
+                .iter()
+                .map(|v| {
+                    let value = v.value.as_ref().map(|v| v.to_string());
+                    format!("{} = {value:?} ({})", v.name, v.origin)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let rendered = |variables: &Variables| {
+            variables
+                .iter()
+                .map(|(name, value, origin)| {
+                    format!("{name} = {:?} ({origin})", Some(value.to_string()))
+                })
+                .collect::<Vec<_>>()
+        };
+
+        for (section, report) in [
+            (Section::Install, &effective.install),
+            (Section::Deploy, &effective.deploy),
+        ] {
+            let base = match section {
+                Section::Install => config.install(repo),
+                Section::Deploy => config.deploy(repo),
+            };
+
+            let opts = Common::default();
+            let plan = Plan::new(
+                section,
+                &base,
+                base.clone(),
+                None,
+                &config.build(repo),
+                &opts,
+            );
+
+            let (target, home) = match plan.kind {
+                DeployKind::Local => (Target::local(), local_home()),
+                // NB: The home directory on a remote host comes from the
+                // access check, which only matters to a user unit.
+                DeployKind::Ssh => (
+                    Target::new(plan.config.user.as_deref(), &plan.config.host[0]),
+                    None,
+                ),
+            };
+
+            let home = home.as_deref();
+            let dirs = plan.dirs.expand(home).unwrap();
+            let binary = plan.binary.as_deref().unwrap();
+            let name = plan.unit_name(Some(binary)).unwrap();
+            let socket_name = plan.socket_name(Some(&name));
+
+            let units = render_units(
+                &plan,
+                &opts,
+                &config.variables(repo),
+                &target,
+                home,
+                &dirs,
+                binary,
+                &name,
+                socket_name.as_deref(),
+            )
+            .unwrap();
+
+            let systemd = report.systemd.as_ref().unwrap();
+            let socket = units.socket.as_ref().unwrap();
+
+            assert_eq!(
+                reported(&systemd.unit),
+                rendered(&units.service.variables),
+                "{section:?} service"
+            );
+            assert_eq!(
+                reported(&systemd.socket.as_ref().unwrap().unit),
+                rendered(&socket.variables),
+                "{section:?} socket"
+            );
+
+            for variable in ["name", "binary", "exec", "bin_dir", "unit_dir", "host"] {
+                assert!(
+                    units.service.variables.origin(variable).is_some(),
+                    "{section:?} {variable}"
+                );
+            }
+        }
     }
 
     #[test]
