@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::fmt;
 use std::io::Write;
 
@@ -10,7 +11,6 @@ use crate::cli::WithRepos;
 use crate::ctxt::Ctxt;
 use crate::model::{Repo, RepoPath};
 use crate::octokit;
-use crate::once::Once;
 
 #[derive(Debug, Default, Parser)]
 pub(super) struct Opts {
@@ -24,7 +24,7 @@ pub(super) async fn entry(
     with_repos: &mut WithRepos<'_>,
     client: &octokit::Client,
 ) -> Result<()> {
-    let today = Once::new(Local::now);
+    let today = OnceCell::new();
 
     with_repos
         .run_async(
@@ -176,11 +176,7 @@ struct Outcome<'repo> {
 
 impl Outcome<'_> {
     #[inline]
-    fn display(
-        self,
-        o: &mut StandardStream,
-        today: &Once<DateTime<Local>, impl Fn() -> DateTime<Local>>,
-    ) -> Result<()> {
+    fn display(self, o: &mut StandardStream, today: &OnceCell<DateTime<Local>>) -> Result<()> {
         let failure_color = {
             let mut c = ColorSpec::new();
             c.set_fg(Some(Color::Red));
@@ -212,7 +208,10 @@ impl Outcome<'_> {
                 ..
             } = run;
 
-            let updated_at = FormatTime::new(today.get(), Some(updated_at.with_timezone(&Local)));
+            let updated_at = FormatTime::new(
+                *today.get_or_init(Local::now),
+                Some(updated_at.with_timezone(&Local)),
+            );
 
             let head = if self.sha.as_deref() == Some(head_sha.as_str()) {
                 "*"
@@ -255,10 +254,14 @@ impl Outcome<'_> {
 
                 let failure = conclusion.as_deref() == Some("failure");
                 let status = conclusion.as_deref().unwrap_or(&status);
-                let started =
-                    FormatTime::new(today.get(), started_at.map(|d| d.with_timezone(&Local)));
-                let completed =
-                    FormatTime::new(today.get(), completed_at.map(|d| d.with_timezone(&Local)));
+                let started = FormatTime::new(
+                    *today.get_or_init(Local::now),
+                    started_at.map(|d| d.with_timezone(&Local)),
+                );
+                let completed = FormatTime::new(
+                    *today.get_or_init(Local::now),
+                    completed_at.map(|d| d.with_timezone(&Local)),
+                );
 
                 write!(o, "    Job `{name}` (")?;
 

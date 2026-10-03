@@ -23,6 +23,32 @@ const START: u32 = 0xE0000;
 const TAG_START: &str = "\u{E0001}";
 const TAG_END: &str = "\u{E007F}";
 
+/// Encode a character into the tag range, returning `None` if it can't be
+/// redacted.
+///
+/// Only printable ASCII characters can be redacted, which keeps the encoded
+/// characters away from the [`TAG_START`] and [`TAG_END`] markers.
+fn encode(c: char) -> Option<char> {
+    if !c.is_ascii() || c.is_ascii_control() {
+        return None;
+    }
+
+    char::from_u32(c as u32 + START)
+}
+
+/// Decode a character from the tag range.
+///
+/// Redacted strings can be constructed from arbitrary input (e.g. through
+/// [`RStr::new`]), so characters which were not produced by [`encode`] decode
+/// into [`char::REPLACEMENT_CHARACTER`].
+fn decode(c: char) -> char {
+    (c as u32)
+        .checked_sub(START)
+        .and_then(char::from_u32)
+        .filter(|c| c.is_ascii() && !c.is_ascii_control())
+        .unwrap_or(char::REPLACEMENT_CHARACTER)
+}
+
 /// A borrowed string which might contain redacted sequences.
 ///
 /// Trying to format the string will result in those redacted sequences being
@@ -310,19 +336,18 @@ impl RString {
     }
 
     /// Push a redacted string.
+    ///
+    /// Returns `false` and leaves the string unmodified if `s` contains
+    /// characters which can't be redacted.
     pub(crate) fn push_redacted(&mut self, s: &str) -> bool {
-        self.0.push_str(TAG_START);
-
-        for c in s.chars() {
-            if !c.is_ascii() || c.is_ascii_control() {
-                return false;
-            }
-
-            // SAFETY: We know that `c` is an ASCII character.
-            self.0
-                .push(unsafe { char::from_u32_unchecked(c as u32 + START) });
+        if !s.chars().all(|c| encode(c).is_some()) {
+            return false;
         }
 
+        self.0
+            .reserve(TAG_START.len() + s.len() * 4 + TAG_END.len());
+        self.0.push_str(TAG_START);
+        self.0.extend(s.chars().filter_map(encode));
         self.0.push_str(TAG_END);
         true
     }

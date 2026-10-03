@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::collections::{BTreeSet, HashSet};
 use std::env;
 use std::ffi::OsString;
@@ -15,7 +16,6 @@ use termcolor::{ColorSpec, WriteColor};
 
 use crate::Distribution;
 use crate::config::Os;
-use crate::once::Once;
 use crate::process::{Command, OsArg};
 use crate::rstr::{RStr, RString};
 use crate::shell::Shell;
@@ -108,10 +108,16 @@ impl Batch {
     {
         let mut scheduler = Scheduler::new();
 
-        let scripts_dir = Once::new(|| {
+        let scripts_dir = OnceCell::<PathBuf>::new();
+
+        let get_scripts_dir = || -> Result<&Path> {
+            if let Some(dir) = scripts_dir.get() {
+                return Ok(dir);
+            }
+
             let dir = c.cx.paths.cache.context("Missing cache directory")?;
-            Ok(dir.join("scripts"))
-        });
+            Ok(scripts_dir.get_or_init(|| dir.join("scripts")))
+        };
 
         for (run_on, os) in self.runners(&c.run_on) {
             match run_on {
@@ -239,7 +245,7 @@ impl Batch {
                 if let Some(script_file) = &script_file {
                     let script_path = match &script_file.kind {
                         ScriptFileKind::Inline { contents, ext } => {
-                            let scripts_dir = scripts_dir.try_get()?;
+                            let scripts_dir = get_scripts_dir()?;
 
                             let sequence = session.sequence();
                             let process_id = c.process_id;

@@ -1,4 +1,4 @@
-use std::cell::{Cell, UnsafeCell};
+use std::cell::{Cell, OnceCell};
 use std::collections::BTreeSet;
 use std::env;
 use std::fmt;
@@ -214,10 +214,8 @@ struct RepoInner {
     symbolic: RepoRef,
     /// Running the repo operation errored.
     state: Cell<State>,
-    /// Whether we've tried to initialize the workspace.
-    init: Cell<bool>,
-    /// Initialized workspace.
-    crates: UnsafeCell<Option<Crates>>,
+    /// Initialized workspace, set once we've successfully tried to open it.
+    crates: OnceCell<Option<Crates>>,
 }
 
 /// A git module.
@@ -232,8 +230,8 @@ impl fmt::Debug for Repo {
             .field("sources", &self.inner.sources)
             .field("symbolic", &self.inner.symbolic)
             .field("state", &self.inner.state)
-            .field("init", &self.inner.init)
-            .field("workspace", &self.inner.crates)
+            .field("init", &self.inner.crates.get().is_some())
+            .field("workspace", &self.inner.crates.get().map(Option::is_some))
             .finish()
     }
 }
@@ -249,8 +247,7 @@ impl Repo {
                 sources: sources.into_iter().collect(),
                 symbolic: RepoRef { path, url },
                 state: Cell::new(State::Pending),
-                init: Cell::new(false),
-                crates: UnsafeCell::new(None),
+                crates: OnceCell::new(),
             }),
         }
     }
@@ -309,25 +306,16 @@ impl Repo {
         DisplaySources(&self.inner.sources)
     }
 
-    /// Get the inner workspace.
-    fn get_workspace(&self) -> Option<&Crates> {
-        // SAFETY: This is the only way to access this interior value.
-        unsafe { (*self.inner.crates.get().cast_const()).as_ref() }
-    }
-
     /// Try to get a workspace, if one is present in the module.
     #[tracing::instrument(skip_all, fields(sources = ?self.inner.sources, module = self.path().as_str()))]
     pub(crate) fn try_workspace(&self, cx: &Ctxt<'_>) -> Result<Option<&'_ Crates>> {
-        self.init_workspace(cx)?;
-        Ok(self.get_workspace())
+        self.init_workspace(cx)
     }
 
     /// Try to get a workspace, if one is present in the module.
     #[tracing::instrument(skip_all, fields(sources = ?self.inner.sources, module = self.path().as_str()))]
     pub(crate) fn workspace(&self, cx: &Ctxt<'_>) -> Result<&'_ Crates> {
-        self.init_workspace(cx)?;
-
-        let Some(workspace) = self.get_workspace() else {
+        let Some(workspace) = self.init_workspace(cx)? else {
             bail!("missing workspace")
         };
 
@@ -335,21 +323,19 @@ impl Repo {
     }
 
     #[tracing::instrument(skip_all)]
-    fn init_workspace(&self, cx: &Ctxt<'_>) -> Result<()> {
-        if !self.inner.init.get() {
-            if let Some(workspace) = self.inner_workspace(cx)? {
-                // This is the only place where this is initialized.
-                unsafe {
-                    *self.inner.crates.get() = Some(workspace);
-                }
-            } else {
-                tracing::warn!("Missing workspace for module");
-            };
-
-            self.inner.init.set(true);
+    fn init_workspace(&self, cx: &Ctxt<'_>) -> Result<Option<&Crates>> {
+        if let Some(crates) = self.inner.crates.get() {
+            return Ok(crates.as_ref());
         }
 
-        Ok(())
+        // Errors leave the cell unset so that opening is retried.
+        let crates = self.inner_workspace(cx)?;
+
+        if crates.is_none() {
+            tracing::warn!("Missing workspace for module");
+        }
+
+        Ok(self.inner.crates.get_or_init(|| crates).as_ref())
     }
 }
 

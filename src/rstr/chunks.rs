@@ -1,6 +1,6 @@
 use std::mem::take;
 
-use super::{RStr, START, TAG_END, TAG_START};
+use super::{RStr, TAG_END, TAG_START, decode};
 
 /// An iterator over the chunks of a redacted string.
 ///
@@ -96,7 +96,6 @@ impl Iterator for Redacted<'_> {
 
         self.string = it.as_str();
 
-        // SAFETY: We know that `c` is an ASCII character in the tag range.
-        Some(unsafe { char::from_u32_unchecked((c as u32) - START) })
+        Some(decode(c))
     }
 }
