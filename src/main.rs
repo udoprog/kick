@@ -1368,26 +1368,9 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         changes::report(&mut o, &cx, warning)?;
     }
 
-    for change in cx.changes_mut().iter_mut() {
-        if change.written {
-            continue;
-        }
-
-        match changes::apply(&mut o, &cx, &change.change, shared.save) {
-            Ok(()) => {
-                if shared.save {
-                    change.written = true;
-                }
-            }
-            Err(error) => {
-                tracing::error!("Failed to apply change: {error}");
-
-                for cause in error.chain().skip(1) {
-                    tracing::error!("Caused by: {cause}");
-                }
-            }
-        }
-    }
+    let failed = changes::apply_all(&mut cx.changes_mut(), shared.save, |change| {
+        changes::apply(&mut o, &cx, change, shared.save)
+    });
 
     if cx.can_save() {
         tracing::info!(
@@ -1404,7 +1387,12 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         }
     }
 
-    let outcome = cx.outcome();
+    let mut outcome = cx.outcome();
+
+    if failed > 0 {
+        tracing::error!("Failed to apply {failed} change(s)");
+        outcome = ExitCode::FAILURE;
+    }
 
     if let Some(opts) = repo_opts {
         let mut remaining = RepoSet::default();

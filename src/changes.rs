@@ -183,6 +183,45 @@ where
     Ok(())
 }
 
+/// Apply every change which has not been written yet using `apply`.
+///
+/// Changes which apply successfully are marked as written when `save` is set.
+/// A failing change is logged and the remaining changes are still applied, so
+/// the ones which failed stay unwritten and are kept for `kick changes`.
+///
+/// Returns the number of changes which failed to apply.
+pub(crate) fn apply_all(
+    changes: &mut [ChangeWrapper],
+    save: bool,
+    mut apply: impl FnMut(&Change) -> Result<()>,
+) -> usize {
+    let mut failed = 0;
+
+    for change in changes.iter_mut() {
+        if change.written {
+            continue;
+        }
+
+        match apply(&change.change) {
+            Ok(()) => {
+                if save {
+                    change.written = true;
+                }
+            }
+            Err(error) => {
+                failed += 1;
+                tracing::error!("Failed to apply change: {error}");
+
+                for cause in error.chain().skip(1) {
+                    tracing::error!("Caused by: {cause}");
+                }
+            }
+        }
+    }
+
+    failed
+}
+
 /// Report and apply a asingle change.
 pub(crate) fn apply<W>(o: &mut W, cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()>
 where
@@ -876,5 +915,70 @@ impl fmt::Display for Line {
             None => write!(f, "    "),
             Some(idx) => write!(f, "{:<4}", idx + 1),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::bail;
+    use relative_path::RelativePathBuf;
+    use semver::Version;
+
+    use super::{Change, ChangeWrapper, apply_all};
+
+    fn change(path: &str, written: bool) -> ChangeWrapper {
+        ChangeWrapper {
+            change: Change::ReleaseCommit {
+                path: RelativePathBuf::from(path),
+                version: Version::new(1, 0, 0),
+            },
+            written,
+        }
+    }
+
+    fn path(change: &Change) -> &str {
+        match change {
+            Change::ReleaseCommit { path, .. } => path.as_str(),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn apply_all_counts_failures_and_continues() {
+        let mut changes = [
+            change("ok", false),
+            change("readonly", false),
+            change("already", true),
+            change("after", false),
+        ];
+
+        let mut seen = Vec::new();
+
+        let failed = apply_all(&mut changes, true, |change| {
+            let path = path(change);
+            seen.push(path.to_owned());
+
+            if path == "readonly" {
+                bail!("{path}: Permission denied");
+            }
+
+            Ok(())
+        });
+
+        assert_eq!(failed, 1);
+        // Already written changes are skipped, and a failure does not stop the
+        // remaining changes from being applied.
+        assert_eq!(seen, ["ok", "readonly", "after"]);
+        let written = changes.iter().map(|c| c.written).collect::<Vec<_>>();
+        // The failed change stays unwritten so it is saved for later.
+        assert_eq!(written, [true, false, true, true]);
+    }
+
+    #[test]
+    fn apply_all_without_save_writes_nothing() {
+        let mut changes = [change("a", false), change("b", false)];
+        let failed = apply_all(&mut changes, false, |_| Ok(()));
+        assert_eq!(failed, 0);
+        assert!(changes.iter().all(|c| !c.written));
     }
 }
