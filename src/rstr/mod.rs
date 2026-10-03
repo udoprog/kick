@@ -155,6 +155,14 @@ impl RStr {
     }
 
     /// Find the first occurrence of the given character in the redacted string.
+    ///
+    /// Characters inside redacted spans are matched by their decoded value.
+    ///
+    /// The returned offset is a byte offset into the raw string (as returned
+    /// by [`RStr::as_raw`]), so it can be used to slice it. Redacted spans
+    /// before the match are counted by their encoded length, including the tag
+    /// markers. For a match inside a redacted span the offset points at the
+    /// encoded character.
     pub(crate) fn find(&self, c: char) -> Option<usize> {
         let mut n = 0;
 
@@ -170,12 +178,12 @@ impl RStr {
             if !redacted.is_empty() {
                 n += TAG_START.len();
 
-                for a in redacted {
+                for (a, len) in redacted.with_raw_len() {
                     if a == c {
                         return Some(n);
                     }
 
-                    n += a.len_utf8();
+                    n += len;
                 }
 
                 n += TAG_END.len();

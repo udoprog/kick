@@ -83,6 +83,14 @@ impl Redacted<'_> {
     }
 }
 
+impl Redacted<'_> {
+    /// Iterate over the decoded characters, each paired with the number of
+    /// bytes its encoded form occupies in the raw string.
+    pub(crate) fn with_raw_len(&self) -> impl Iterator<Item = (char, usize)> + '_ {
+        self.string.chars().map(|c| (decode(c), c.len_utf8()))
+    }
+}
+
 impl Iterator for Redacted<'_> {
     type Item = char;
 

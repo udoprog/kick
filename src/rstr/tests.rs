@@ -92,3 +92,31 @@ fn test_arbitrary_tag_input_decodes_safely() {
     assert!(s.find('x').is_none());
     assert!(!RStr::new("\u{E0001}abc").str_eq("abc"));
 }
+
+#[test]
+fn test_find_returns_raw_offsets() {
+    let mut s = RString::from(String::from("ab "));
+    assert!(s.push_redacted("sec/ret"));
+    s.push_rstr("cd=e");
+
+    let raw = s.as_raw();
+
+    // Match after a redacted span slices the raw string.
+    let at = s.find('=').unwrap();
+    assert_eq!(&raw[at..], "=e");
+    let at = s.find('d').unwrap();
+    assert_eq!(&raw[at..], "d=e");
+
+    // Public match before the span.
+    assert_eq!(s.find('b'), Some(1));
+
+    // Redacted characters match by decoded value and point at the encoded char.
+    let at = s.find('/').unwrap();
+    assert_eq!(decode(raw[at..].chars().next().unwrap()), '/');
+    assert_eq!(at, "ab ".len() + TAG_START.len() + 3 * 4);
+
+    // Undecodable characters count their real length.
+    let s = RStr::new("\u{E0001}\u{E0000}\u{E0041}\u{E007F}=");
+    assert_eq!(s.find('A'), Some(TAG_START.len() + 4));
+    assert_eq!(&s.as_raw()[s.find('=').unwrap()..], "=");
+}
