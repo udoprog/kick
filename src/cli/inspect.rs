@@ -10,12 +10,11 @@ use clap::Parser;
 use relative_path::RelativePath;
 use serde::Serialize;
 
-use crate::cli::deploy::{
-    Choice, LOCAL_HOST, choose_profile, default_bin_dir, default_unit_dir, trim_dir,
-};
+use crate::cli::deploy::plan::{self, Builtins, Plan};
+use crate::cli::deploy::{Choice, Common, LOCAL_HOST, choose_profile};
 use crate::config::{
     Build, Config, ConfigCommand, ConfigSource, Deploy, DeployKind, Os, Section, SourceState,
-    SystemdScope, UnitTemplate,
+    UnitTemplate,
 };
 use crate::ctxt::Paths;
 use crate::model::{Repo, RepoSource};
@@ -584,40 +583,26 @@ fn section(
         .and_then(|name| base.with_profile(name))
         .unwrap_or_else(|| base.clone());
 
-    let kind = match section {
-        Section::Install => DeployKind::Local,
-        Section::Deploy => config.kind.unwrap_or_default(),
-    };
+    // NB: Inspecting has no install or deploy options, so it reports what a
+    // deployment without any does.
+    let plan = Plan::new(
+        section,
+        base,
+        config,
+        profile.clone(),
+        base_build,
+        &Common::default(),
+    );
 
-    let mut build = base_build.clone();
-    build.merge_with(config.build.clone());
+    let config = &plan.config;
+    let kind = plan.kind;
+    let scope = plan.scope;
 
-    let systemd_default = match section {
-        Section::Install => config.systemd.is_some(),
-        Section::Deploy => true,
-    };
-
-    let systemd_config = config.systemd.clone().unwrap_or_default();
-
-    let scope = systemd_config.scope.unwrap_or(match kind {
-        DeployKind::Ssh => SystemdScope::System,
-        DeployKind::Local => SystemdScope::User,
-    });
-
-    let systemd = systemd_config.enabled.unwrap_or(systemd_default).then(|| {
-        let binary = build.binary.clone().or_else(|| build.package.clone());
-
-        let bin_dir =
-            trim_dir(config.bin_dir.as_deref().unwrap_or(&default_bin_dir(kind))).to_owned();
-        let unit_dir = trim_dir(
-            config
-                .unit_dir
-                .as_deref()
-                .unwrap_or(default_unit_dir(scope)),
-        )
-        .to_owned();
-
-        let name = systemd_config.name.clone().or_else(|| binary.clone());
+    let systemd = plan.systemd.as_ref().map(|systemd_config| {
+        let binary = plan.binary.as_ref();
+        let bin_dir = &plan.dirs.bin_dir;
+        let unit_dir = &plan.dirs.unit_dir;
+        let name = plan.unit_name(binary.map(String::as_str));
 
         let host = match kind {
             DeployKind::Local => Provided::Value(string(LOCAL_HOST)),
@@ -635,43 +620,42 @@ fn section(
             None => Provided::Note(note),
         };
 
-        let exec = binary.as_ref().map(|binary| format!("{bin_dir}/{binary}"));
+        let exec = binary.map(|binary| plan::exec(bin_dir, binary));
 
-        let common = |name: Option<&String>, note: &'static str| {
-            vec![
-                ("name", known(name, note)),
-                (
-                    "binary",
-                    known(binary.as_ref(), "from the package in Cargo.toml"),
-                ),
-                ("exec", known(exec.as_ref(), "<bin_dir>/<binary>")),
-                ("bin_dir", Provided::Value(string(&bin_dir))),
-                ("unit_dir", Provided::Value(string(&unit_dir))),
-                ("host", host.clone()),
-                ("scope", Provided::Value(string(scope.as_str()))),
-            ]
-        };
+        let builtins =
+            |kind: UnitKind, name: Option<&String>, note: &'static str, peer: Option<Provided>| {
+                Builtins {
+                    name: known(name, note),
+                    binary: known(binary, "from the package in Cargo.toml"),
+                    exec: known(exec.as_ref(), "<bin_dir>/<binary>"),
+                    bin_dir: Provided::Value(string(bin_dir)),
+                    unit_dir: Provided::Value(string(unit_dir)),
+                    host: host.clone(),
+                    scope: Provided::Value(string(scope.as_str())),
+                    peer,
+                }
+                .into_vec(kind)
+            };
 
         let label = format!("[{}.systemd]", section.as_str());
 
-        let socket = systemd_config
-            .socket
-            .as_ref()
-            .filter(|s| s.enabled.unwrap_or(true));
+        let socket = plan.socket();
+        let socket_name = plan.socket_name(name.as_deref());
 
-        let socket_name = socket.and_then(|s| s.name.clone().or_else(|| name.clone()));
-
-        let mut provided = common(name.as_ref(), "same as binary");
-
-        if socket.is_some() {
-            provided.push((
-                "socket",
+        let provided = builtins(
+            UnitKind::Service,
+            name.as_ref(),
+            "same as binary",
+            socket.map(|_| {
                 known(
-                    socket_name.as_ref().map(|n| format!("{n}.socket")).as_ref(),
+                    socket_name
+                        .as_ref()
+                        .map(|n| plan::unit_file(n, UnitKind::Socket))
+                        .as_ref(),
                     "<name>.socket",
-                ),
-            ));
-        }
+                )
+            }),
+        );
 
         let unit = unit_report(
             UnitKind::Service,
@@ -684,15 +668,17 @@ fn section(
         );
 
         let socket = socket.map(|s| {
-            let mut provided = common(socket_name.as_ref(), "same as the service");
-
-            provided.push((
-                "service",
-                known(
-                    name.as_ref().map(|n| format!("{n}.service")).as_ref(),
+            let provided = builtins(
+                UnitKind::Socket,
+                socket_name.as_ref(),
+                "same as the service",
+                Some(known(
+                    name.as_ref()
+                        .map(|n| plan::unit_file(n, UnitKind::Service))
+                        .as_ref(),
                     "<name>.service",
-                ),
-            ));
+                )),
+            );
 
             SocketReport {
                 template: s.template.as_ref().map(|t| absolute(&t.path)),
@@ -721,7 +707,7 @@ fn section(
 
     SectionReport {
         configured,
-        profiles: base.profiles.keys().cloned().collect(),
+        profiles: plan.profiles.clone(),
         profile,
         profile_error,
         kind: kind.to_string(),
@@ -732,7 +718,7 @@ fn section(
         bin_dir: config.bin_dir.clone(),
         unit_dir: config.unit_dir.clone(),
         staging_dir: config.staging_dir.clone(),
-        build: build_report(&build),
+        build: build_report(&plan.build),
         commands: commands(&config.commands),
         files: config
             .files

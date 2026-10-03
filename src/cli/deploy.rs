@@ -12,13 +12,6 @@ use termcolor::{ColorChoice, StandardStream};
 
 use crate::cli::WithRepos;
 use crate::config::{Build, ConfigCommand, Deploy, DeployKind, Section, SystemdScope};
-
-#[cfg(test)]
-use self::plan::expand_home;
-use self::plan::{Builtins, Dirs, Plan, local_home};
-pub(crate) use self::plan::{default_bin_dir, default_unit_dir, trim_dir};
-
-mod plan;
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::model::Repo;
@@ -26,6 +19,12 @@ use crate::packaging::{self, Mode};
 use crate::process::Command;
 use crate::shell::Shell;
 use crate::systemd::{self, UnitKind};
+
+#[cfg(test)]
+use self::plan::expand_home;
+use self::plan::{Builtins, Dirs, Plan, local_home};
+
+pub(crate) mod plan;
 
 /// The host a local deployment is reported as deploying to.
 pub(crate) const LOCAL_HOST: &str = "localhost";
