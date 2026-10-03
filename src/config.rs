@@ -3289,6 +3289,46 @@ host = \"moore\"",
 
         let command = args(&["echo", "a b", "$HOME"]);
         assert_eq!(command.argv(), ["echo", "a b", "$HOME"]);
-        assert_eq!(command.to_shell(Shell::Bash), r#"echo "a b" "\$HOME""#);
+        assert_eq!(command.to_shell(Shell::Bash), "echo 'a b' '$HOME'");
+    }
+
+    /// A list of arguments reaches the program unchanged when its line is run
+    /// by the shell, which is how the deploy script runs it.
+    #[test]
+    fn command_args_round_trip() {
+        for argv in [
+            &["sh", "-c", "printf '%s\\0' \"$0\" 'hi'", "it's"][..],
+            &[
+                "printf",
+                "%s\\0",
+                "done!",
+                "$HOME",
+                "a\nb",
+                "tab\there",
+                "back\\slash",
+            ],
+            &["printf", "%s\\0", "", "\"quoted\"", "`echo no`", "åäö ✓"],
+        ] {
+            let line = args(argv).to_shell(Shell::Bash);
+
+            let output = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&line)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{line}");
+
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            let mut got = stdout.split('\0').collect::<Vec<_>>();
+            assert_eq!(got.pop(), Some(""));
+
+            let expected = if argv[0] == "sh" {
+                vec![argv[3], "hi"]
+            } else {
+                argv[2..].to_vec()
+            };
+
+            assert_eq!(got, expected, "{line}");
+        }
     }
 }

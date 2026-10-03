@@ -1380,12 +1380,6 @@ struct ScriptOpts<'a> {
     socket: Option<&'a str>,
 }
 
-/// Quote a value so that the shell passes it through literally, which is what
-/// the messages printed by the script need.
-fn quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', r"'\''"))
-}
-
 /// Something the script installs, which it only does if it differs from what
 /// is already installed.
 struct Item<'a> {
@@ -1519,7 +1513,7 @@ fn script(
     )?;
 
     let step = |script: &mut String, indent: &str, what: &str| -> Result<()> {
-        writeln!(script, "{indent}kick_step={}", quote(what))?;
+        writeln!(script, "{indent}kick_step={}", shell.escape_string(what))?;
         Ok(())
     };
 
@@ -1611,7 +1605,7 @@ fn script(
         writeln!(
             script,
             "if kick_differs {} {source} {} {mode:o}; then",
-            quote(sudo.trim_end()),
+            shell.escape_string(sudo.trim_end()),
             escape(dest)
         )?;
         writeln!(script, "  {var}=$kick_why")?;
@@ -1619,7 +1613,7 @@ fn script(
         writeln!(
             script,
             "  kick_reasons=\"${{kick_reasons:+$kick_reasons, }}\"{}",
-            quote(reason)
+            shell.escape_string(reason)
         )?;
         writeln!(script, "fi")?;
     }
@@ -1640,7 +1634,7 @@ fn script(
                 writeln!(
                     script,
                     "  printf '%s: stopping (socket changed)\\n' {}",
-                    quote(name)
+                    shell.escape_string(name)
                 )?;
                 writeln!(script, "  {systemctl} stop {escaped} 2>/dev/null || true")?;
                 writeln!(
@@ -1656,7 +1650,7 @@ fn script(
                 writeln!(
                     script,
                     "  printf '%s: stopping (binary changed)\\n' {}",
-                    quote(name)
+                    shell.escape_string(name)
                 )?;
                 writeln!(script, "  {systemctl} stop {escaped} 2>/dev/null || true")?;
                 writeln!(script, "fi")?;
@@ -1705,10 +1699,14 @@ fn script(
         writeln!(
             script,
             "  printf '%s: updated (%s)\\n' {} \"${var}\"",
-            quote(dest)
+            shell.escape_string(dest)
         )?;
         writeln!(script, "else")?;
-        writeln!(script, "  printf '%s: unchanged\\n' {}", quote(dest))?;
+        writeln!(
+            script,
+            "  printf '%s: unchanged\\n' {}",
+            shell.escape_string(dest)
+        )?;
         writeln!(script, "fi")?;
     }
 
@@ -1748,7 +1746,11 @@ fn script(
             let line = c.to_shell(shell);
             let sudo = if c.sudo { sudo } else { "" };
             let what = format!("running {what}: {sudo}{line}");
-            writeln!(script, "{indent}printf '%s\\n' {}", quote(&what))?;
+            writeln!(
+                script,
+                "{indent}printf '%s\\n' {}",
+                shell.escape_string(&what)
+            )?;
             step(script, indent, &what)?;
             writeln!(script, "{indent}{sudo}{line}")?;
         }
@@ -1801,7 +1803,7 @@ fn script(
             writeln!(
                 script,
                 "  printf '%s: restarting (%s changed)\\n' {} \"$kick_reasons\"",
-                quote(name)
+                shell.escape_string(name)
             )?;
             writeln!(script, "  {systemctl} restart {escaped}")?;
             writeln!(script, "  kick_service=restarted")?;
@@ -1817,7 +1819,7 @@ fn script(
                 writeln!(
                     script,
                     "  printf '%s: starting (not running)\\n' {}",
-                    quote(name)
+                    shell.escape_string(name)
                 )?;
                 writeln!(script, "  {systemctl} start {escaped}")?;
                 writeln!(script, "  kick_service=started")?;
@@ -1872,7 +1874,7 @@ fn script(
         writeln!(
             script,
             "  kick_summary={}",
-            quote(&format!("up to date, {total} {files} unchanged"))
+            shell.escape_string(&format!("up to date, {total} {files} unchanged"))
         )?;
         writeln!(script, "else")?;
         writeln!(
@@ -1888,19 +1890,19 @@ fn script(
         (_, Some(name)) => writeln!(
             script,
             "printf '%s: %s, %s %s\\n' {} \"$kick_summary\" {} \"$kick_service\"",
-            quote(host),
-            quote(name)
+            shell.escape_string(host),
+            shell.escape_string(name)
         )?,
         (Some((name, _)), None) => writeln!(
             script,
             "printf '%s: %s, %s not restarted (--no-restart)\\n' {} \"$kick_summary\" {}",
-            quote(host),
-            quote(name)
+            shell.escape_string(host),
+            shell.escape_string(name)
         )?,
         (None, None) => writeln!(
             script,
             "printf '%s: %s\\n' {} \"$kick_summary\"",
-            quote(host)
+            shell.escape_string(host)
         )?,
     }
 
@@ -3454,6 +3456,101 @@ kick: failed while checking that kanban is active (exit 1)
                 out.systemctl.last().map(String::as_str),
                 Some("journalctl --user -u kanban -n 20 --no-pager")
             );
+        }
+
+        /// Paths and list-form commands reach the shell literally, whatever
+        /// quotes, `!`, `$` or whitespace they contain.
+        #[test]
+        fn awkward_paths_and_arguments() {
+            let f = Fixture::new();
+            let root = f.path("");
+            let awkward = "it's \"a\" $HOME `x` \\ done!";
+
+            let src = f.path(&format!("src/{awkward}.conf"));
+            fs::write(&src, "awkward\n").unwrap();
+
+            let dest = f.path(&format!("etc/{awkward}/dest!.conf"));
+            let dest = dest.display().to_string();
+            let args = f.path("args");
+
+            let config = Deploy {
+                post_install: vec![ConfigCommand {
+                    line: CommandLine::Args(vec![
+                        String::from("sh"),
+                        String::from("-c"),
+                        String::from("printf '%s\\n' \"$@\" > \"$0\""),
+                        args.display().to_string(),
+                        String::from(awkward),
+                        String::from("tab\there"),
+                        String::from("new\nline"),
+                        String::new(),
+                    ]),
+                    sudo: false,
+                }],
+                ..Deploy::default()
+            };
+
+            let uploads = vec![(src.clone(), String::from("awkward.conf"))];
+            let installs = vec![(
+                String::from("awkward.conf"),
+                dest.clone(),
+                "600".parse::<Mode>().unwrap(),
+            )];
+
+            let bin_dir = f.path("bin").display().to_string();
+            let unit_dir = f.path("units").display().to_string();
+
+            let script = script(
+                &config,
+                &Opts::default(),
+                &installs,
+                ScriptOpts {
+                    host: "localhost",
+                    sudo: "",
+                    scope: SystemdScope::User,
+                    binary: None,
+                    bin_dir: &bin_dir,
+                    unit_dir: &unit_dir,
+                    sources: Sources::Local(&uploads),
+                    unit: None,
+                    socket: None,
+                },
+            )
+            .unwrap();
+
+            let run = || {
+                Command::new("sh")
+                    .arg("-c")
+                    .arg(&script)
+                    .current_dir(&root)
+                    .output()
+                    .unwrap()
+            };
+
+            let output = run();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success(),
+                "{script}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                stdout.contains(&format!("{dest}: updated (new)")),
+                "{stdout}"
+            );
+
+            assert_eq!(fs::read_to_string(&dest).unwrap(), "awkward\n");
+            assert_eq!(mode(Path::new(&dest)), 0o600);
+            assert_eq!(
+                fs::read_to_string(&args).unwrap(),
+                format!("{awkward}\ntab\there\nnew\nline\n\n")
+            );
+
+            // Unchanged on a second run, so the comparison found the file.
+            let output = run();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(output.status.success());
+            assert!(stdout.contains(&format!("{dest}: unchanged")), "{stdout}");
         }
     }
 
