@@ -12,6 +12,13 @@ use termcolor::{ColorChoice, StandardStream};
 
 use crate::cli::WithRepos;
 use crate::config::{Build, ConfigCommand, Deploy, DeployKind, Section, SystemdScope};
+
+#[cfg(test)]
+use self::plan::expand_home;
+use self::plan::{Builtins, Dirs, Plan, local_home};
+pub(crate) use self::plan::{default_bin_dir, default_unit_dir, trim_dir};
+
+mod plan;
 use crate::ctxt::Ctxt;
 use crate::glob::Glob;
 use crate::model::Repo;
@@ -20,22 +27,8 @@ use crate::process::Command;
 use crate::shell::Shell;
 use crate::systemd::{self, UnitKind};
 
-/// The remote directory binaries are installed into by default.
-const DEFAULT_BIN_DIR: &str = "/usr/local/bin";
-/// The directory a local install puts binaries into by default, unless
-/// `CARGO_HOME` says otherwise.
-const DEFAULT_CARGO_BIN_DIR: &str = "~/.cargo/bin";
-/// The directory system units are installed into by default.
-const DEFAULT_UNIT_DIR: &str = "/etc/systemd/system";
-/// The directory user units are installed into by default.
-const DEFAULT_USER_UNIT_DIR: &str = "~/.config/systemd/user";
 /// The host a local deployment is reported as deploying to.
 pub(crate) const LOCAL_HOST: &str = "localhost";
-/// The remote directory files are uploaded to by default, relative to the home
-/// directory of the user being logged in as.
-const DEFAULT_STAGING_DIR: &str = ".kick-deploy";
-/// The build profile binaries are picked up from by default.
-const DEFAULT_PROFILE: &str = "release";
 /// Remote commands which are always needed.
 ///
 /// `tar` unpacks the files being deployed, which are streamed to the remote
@@ -425,64 +418,6 @@ fn warn_ignored_for_local(layer: &Deploy, opts: &Opts, what: &str) {
     }
 }
 
-/// Expand a leading `~`, `$HOME` or `${HOME}` in a path to the given home
-/// directory.
-///
-/// Returns `Ok(None)` if there is nothing to expand, and `Err(())` if there is
-/// but the home directory is not known.
-fn expand_home(value: &str, home: Option<&str>) -> Result<Option<String>, ()> {
-    let rest = ["~", "${HOME}", "$HOME"].into_iter().find_map(|prefix| {
-        let rest = value.strip_prefix(prefix)?;
-        (rest.is_empty() || rest.starts_with('/')).then_some(rest)
-    });
-
-    let Some(rest) = rest else {
-        return Ok(None);
-    };
-
-    let Some(home) = home else {
-        return Err(());
-    };
-
-    Ok(Some(format!("{}{rest}", home.trim_end_matches('/'))))
-}
-
-/// Expand the home directory in every string in the given value.
-fn expand_value(value: &mut toml::Value, home: Option<&str>) -> Result<(), String> {
-    match value {
-        toml::Value::String(string) => match expand_home(string, home) {
-            Ok(Some(expanded)) => *string = expanded,
-            Ok(None) => {}
-            Err(()) => return Err(string.clone()),
-        },
-        toml::Value::Array(values) => {
-            for value in values {
-                expand_value(value, home)?;
-            }
-        }
-        toml::Value::Table(table) => {
-            for (_, value) in table.iter_mut() {
-                expand_value(value, home)?;
-            }
-        }
-        _ => {}
-    }
-
-    Ok(())
-}
-
-/// The home directory of the user running `kick`.
-fn local_home() -> Option<String> {
-    if let Some(home) = std::env::var_os("HOME")
-        && !home.is_empty()
-    {
-        return Some(home.to_string_lossy().into_owned());
-    }
-
-    let dirs = directories::BaseDirs::new()?;
-    Some(dirs.home_dir().to_string_lossy().into_owned())
-}
-
 /// Run an install or a deployment, depending on the section which configures
 /// it.
 #[tracing::instrument(skip_all)]
@@ -513,29 +448,27 @@ pub(crate) fn deploy(
         None => base.clone(),
     };
 
-    // NB: An install always happens on the machine kick is running on.
-    let kind = match section {
-        Section::Install => DeployKind::Local,
-        Section::Deploy => config.kind.unwrap_or_default(),
-    };
+    let plan = Plan::new(
+        section,
+        &base,
+        config,
+        selected,
+        &cx.config.build(repo),
+        opts,
+    );
 
-    let systemd_config = config.systemd.clone().unwrap_or_default();
-
-    // NB: Installing locally happens as the user running kick, whose own
-    // systemd instance is the one which needs neither root nor sudo.
-    let scope = systemd_config.scope.unwrap_or(match kind {
-        DeployKind::Ssh => SystemdScope::System,
-        DeployKind::Local => SystemdScope::User,
-    });
-
-    let mut build = cx.config.build(repo);
-    build.merge_with(config.build.clone());
-    let build = build;
+    let section = plan.section;
+    let config = &plan.config;
+    let selected = &plan.selected;
+    let kind = plan.kind;
+    let scope = plan.scope;
+    let build = &plan.build;
+    let systemd = &plan.systemd;
 
     let targets = match kind {
-        DeployKind::Ssh => ssh_targets(&config, selected.as_deref(), opts)?,
+        DeployKind::Ssh => ssh_targets(config, selected.as_deref(), opts)?,
         DeployKind::Local => {
-            match &selected {
+            match selected {
                 Some(name) => {
                     if let Some(profile) = base.profiles.get(name) {
                         warn_ignored_for_local(
@@ -545,7 +478,7 @@ pub(crate) fn deploy(
                         );
                     }
                 }
-                None => warn_ignored_for_local(&config, opts, &format!("`[{}]`", section.as_str())),
+                None => warn_ignored_for_local(config, opts, &format!("`[{}]`", section.as_str())),
             }
 
             vec![Target::local()]
@@ -553,18 +486,6 @@ pub(crate) fn deploy(
     };
 
     let root = cx.to_path(repo.path());
-
-    // NB: Deploying a service without a unit to run it is rarely what anyone
-    // wants, so the built-in template applies unless it is turned off. Most
-    // things which are installed are not services, so an install only has a
-    // unit when it is configured with one.
-    let systemd_default = match section {
-        Section::Install => config.systemd.is_some(),
-        Section::Deploy => true,
-    };
-
-    let systemd = (systemd_config.enabled.unwrap_or(systemd_default) && !opts.no_systemd)
-        .then_some(systemd_config);
 
     if systemd.is_none() {
         if opts.service_user.is_some() {
@@ -626,9 +547,7 @@ pub(crate) fn deploy(
         }
     }
 
-    // NB: Installing locally happens as the user running kick, which is
-    // rarely someone who wants to elevate.
-    let use_sudo = config.sudo.unwrap_or(kind == DeployKind::Ssh);
+    let use_sudo = plan.sudo;
 
     // NB: Access is checked before anything is built, since discovering that we
     // cannot log in after a lengthy build is not very helpful. Every host is
@@ -648,7 +567,7 @@ pub(crate) fn deploy(
                     homes.push(check(
                         o,
                         opts,
-                        &config,
+                        config,
                         target,
                         use_sudo,
                         systemd.is_some(),
@@ -661,40 +580,27 @@ pub(crate) fn deploy(
         }
     }
 
-    let profile = opts
-        .profile
-        .as_deref()
-        .or(build.profile.as_deref())
-        .unwrap_or(DEFAULT_PROFILE);
+    let profile = plan.cargo_profile.as_str();
+    let package = plan.package.as_deref();
+    let custom = plan.custom;
 
-    let package = opts.package.as_deref().or(build.package.as_deref());
-
-    // NB: Commands replace building and installing the binary, so a binary is
-    // only needed when it is installed or when a unit runs it.
-    let custom = !config.commands.is_empty();
-
-    let binary = match opts
-        .binary
-        .as_deref()
-        .or(build.binary.as_deref())
-        .or(package)
-    {
-        Some(binary) => Some(binary.to_owned()),
-        None if !custom || systemd.is_some() => Some(default_binary(cx, repo)?),
+    let binary = match &plan.binary {
+        Some(binary) => Some(binary.clone()),
+        None if plan.needs_binary() => Some(default_binary(cx, repo)?),
         None => None,
     };
 
     let manifest_dir = manifest_dir(cx, repo);
 
     if !opts.no_build {
-        pre_build(o, opts, &build, &root)?;
+        pre_build(o, opts, build, &root)?;
 
         if custom {
             for command in &config.commands {
                 run(o, opts, &mut command.to_command(&root))?;
             }
         } else {
-            cargo_build(o, opts, &build, &root, &manifest_dir, profile, package)?;
+            cargo_build(o, opts, build, &root, &manifest_dir, profile, package)?;
         }
     }
 
@@ -726,18 +632,6 @@ pub(crate) fn deploy(
     };
 
     let installed_binary = binary_path.as_ref().and(binary.as_deref());
-
-    let default_unit_dir = default_unit_dir(scope);
-    let default_bin_dir = default_bin_dir(kind);
-
-    let bin_dir = trim_dir(
-        opts.bin_dir
-            .as_deref()
-            .or(config.bin_dir.as_deref())
-            .unwrap_or(&default_bin_dir),
-    );
-    let unit_dir = trim_dir(config.unit_dir.as_deref().unwrap_or(default_unit_dir));
-    let staging_dir = trim_dir(config.staging_dir.as_deref().unwrap_or(DEFAULT_STAGING_DIR));
 
     // Files to upload, as `(local path, staged file name)`. The unit is added
     // per host, since it is rendered for the host it is being installed on.
@@ -793,23 +687,9 @@ pub(crate) fn deploy(
         }
     }
 
-    let unit_name = match (&systemd, &binary) {
-        (Some(systemd), Some(binary)) => Some(systemd.name.as_deref().unwrap_or(binary).to_owned()),
-        _ => None,
-    };
-
-    // NB: A socket unit is only installed alongside the service it activates,
-    // and is named after it unless told otherwise, which is what lets systemd
-    // pair them up without a `Service=` directive.
-    let socket = systemd
-        .as_ref()
-        .and_then(|systemd| systemd.socket.as_ref())
-        .filter(|socket| socket.enabled.unwrap_or(true));
-
-    let socket_name = match (socket, &unit_name) {
-        (Some(socket), Some(name)) => Some(socket.name.as_deref().unwrap_or(name).to_owned()),
-        _ => None,
-    };
+    let unit_name = plan.unit_name(binary.as_deref());
+    let socket = plan.socket();
+    let socket_name = plan.socket_name(unit_name.as_deref());
 
     let mut staged = HashMap::new();
 
@@ -826,7 +706,7 @@ pub(crate) fn deploy(
     // NB: The unit is generated as part of the deployment instead of being one
     // of the files being uploaded, so it is checked on its own.
     if let Some(name) = &unit_name {
-        let file_name = format!("{name}.service");
+        let file_name = plan::unit_file(name, UnitKind::Service);
 
         if let Some(existing) = staged.get(&file_name) {
             bail!(
@@ -837,7 +717,7 @@ pub(crate) fn deploy(
     }
 
     if let Some(name) = &socket_name {
-        let file_name = format!("{name}.socket");
+        let file_name = plan::unit_file(name, UnitKind::Socket);
 
         if let Some(existing) = staged.get(&file_name) {
             bail!(
@@ -860,16 +740,17 @@ pub(crate) fn deploy(
         let home = home.as_deref();
 
         let expand = |value: &str| -> Result<String> {
-            match expand_home(value, home) {
-                Ok(Some(expanded)) => Ok(expanded),
-                Ok(None) => Ok(value.to_owned()),
-                Err(()) => Err(missing_home(target, value)),
-            }
+            plan::expand_or_keep(value, home).map_err(|value| missing_home(target, &value))
         };
 
-        let bin_dir = expand(bin_dir)?;
-        let unit_dir = expand(unit_dir)?;
-        let staging_dir = expand(staging_dir)?;
+        let Dirs {
+            bin_dir,
+            unit_dir,
+            staging_dir,
+        } = plan
+            .dirs
+            .expand(home)
+            .map_err(|value| missing_home(target, &value))?;
 
         let installs = installs
             .iter()
@@ -882,7 +763,7 @@ pub(crate) fn deploy(
 
         let unit = match (&systemd, &unit_name, &binary) {
             (Some(systemd), Some(name), Some(binary)) => {
-                let file_name = format!("{name}.service");
+                let file_name = plan::unit_file(name, UnitKind::Service);
                 let dir = temp.path().join(index.to_string());
 
                 std::fs::create_dir_all(&dir)
@@ -890,15 +771,26 @@ pub(crate) fn deploy(
 
                 // NB: Both units are rendered with the same set of built-in
                 // variables, but each with its own name.
-                let provide = |variables: &mut systemd::Variables, name: &str| {
+                let provide = |variables: &mut systemd::Variables,
+                               kind: UnitKind,
+                               name: &str,
+                               peer: Option<&str>| {
                     let string = |value: &str| toml::Value::String(value.to_owned());
-                    variables.provide("name", string(name));
-                    variables.provide("binary", string(binary));
-                    variables.provide("exec", string(&format!("{bin_dir}/{binary}")));
-                    variables.provide("bin_dir", string(&bin_dir));
-                    variables.provide("unit_dir", string(&unit_dir));
-                    variables.provide("host", string(&target.host));
-                    variables.provide("scope", string(scope.as_str()));
+
+                    let builtins = Builtins {
+                        name: string(name),
+                        binary: string(binary),
+                        exec: string(&plan::exec(&bin_dir, binary)),
+                        bin_dir: string(&bin_dir),
+                        unit_dir: string(&unit_dir),
+                        host: string(&target.host),
+                        scope: string(scope.as_str()),
+                        peer: peer.map(string),
+                    };
+
+                    for (key, value) in builtins.into_vec(kind) {
+                        variables.provide(key, value);
+                    }
                 };
 
                 // NB: A user unit runs as the user being deployed as, so a `~`
@@ -906,18 +798,13 @@ pub(crate) fn deploy(
                 // runs as whatever `User=` says, and systemd resolves a `~` in
                 // `WorkingDirectory=` against that user, so it is left alone.
                 let expand_variables = |variables: &mut toml::Table| -> Result<()> {
-                    if scope == SystemdScope::User {
-                        for (_, value) in variables.iter_mut() {
-                            if let Err(value) = expand_value(value, home) {
-                                return Err(missing_home(target, &value));
-                            }
-                        }
-                    }
-
-                    Ok(())
+                    plan.expand_variables(variables, home)
+                        .map_err(|value| missing_home(target, &value))
                 };
 
-                let socket_file_name = socket_name.as_ref().map(|name| format!("{name}.socket"));
+                let socket_file_name = socket_name
+                    .as_ref()
+                    .map(|name| plan::unit_file(name, UnitKind::Socket));
 
                 if let (Some(socket), Some(socket_name), Some(socket_file_name)) =
                     (socket, &socket_name, &socket_file_name)
@@ -930,8 +817,12 @@ pub(crate) fn deploy(
 
                     let template = socket.template.as_ref().map(|t| &*t.source);
                     let mut variables = systemd::configured(template, &globals, &configured);
-                    provide(&mut variables, socket_name);
-                    variables.provide("service", toml::Value::String(file_name.clone()));
+                    provide(
+                        &mut variables,
+                        UnitKind::Socket,
+                        socket_name,
+                        Some(&file_name),
+                    );
 
                     let contents = variables
                         .render(
@@ -961,11 +852,12 @@ pub(crate) fn deploy(
 
                 let template = systemd.template.as_ref().map(|t| &*t.source);
                 let mut variables = systemd::configured(template, &globals, &configured);
-                provide(&mut variables, name);
-
-                if let Some(socket_file_name) = &socket_file_name {
-                    variables.provide("socket", toml::Value::String(socket_file_name.clone()));
-                }
+                provide(
+                    &mut variables,
+                    UnitKind::Service,
+                    name,
+                    socket_file_name.as_deref(),
+                );
 
                 let mut directives = systemd.directives.clone();
 
@@ -1054,22 +946,12 @@ pub(crate) fn deploy(
         };
 
         let script = script(
-            &config,
+            config,
             opts,
             &installs,
             ScriptOpts {
                 host: &target.host,
-                sudo: match (use_sudo, kind) {
-                    (false, _) => "",
-                    // NB: The script is run non-interactively over ssh, so
-                    // `-n` is used to make sudo fail immediately with a
-                    // diagnostic instead of trying to prompt for a password
-                    // on a terminal which isn't there.
-                    (true, DeployKind::Ssh) => "sudo -n ",
-                    // NB: A local script runs on our terminal, where sudo can
-                    // prompt like it usually does.
-                    (true, DeployKind::Local) => "sudo ",
-                },
+                sudo: plan.sudo_prefix(),
                 scope,
                 binary: installed_binary,
                 bin_dir: &bin_dir,
@@ -1083,65 +965,62 @@ pub(crate) fn deploy(
         )?;
 
         if opts.details() {
-            let mut plan = Vec::new();
+            let mut lines = Vec::new();
 
             if let Some(name) = &selected {
-                plan.push(format!("profile: {name}"));
+                lines.push(format!("profile: {name}"));
             }
 
-            if !base.profiles.is_empty() {
-                plan.push(format!(
-                    "profiles: {}",
-                    base.profiles.keys().cloned().collect::<Vec<_>>().join(", ")
-                ));
+            if !plan.profiles.is_empty() {
+                lines.push(format!("profiles: {}", plan.profiles.join(", ")));
             }
 
             if section == Section::Deploy {
-                plan.push(format!("kind: {kind}"));
+                lines.push(format!("kind: {kind}"));
             }
 
             if kind == DeployKind::Ssh {
-                plan.push(format!("host: {}", target.host));
+                lines.push(format!("host: {}", target.host));
 
                 if let Some(user) = &target.user {
-                    plan.push(format!("user: {user}"));
+                    lines.push(format!("user: {user}"));
                 }
 
                 if let Some(port) = config.port {
-                    plan.push(format!("port: {port}"));
+                    lines.push(format!("port: {port}"));
                 }
             }
 
             if let Some(binary) = &binary {
-                plan.push(format!("binary: {binary}"));
+                lines.push(format!("binary: {binary}"));
             }
 
             if custom {
-                plan.push(String::from("build: replaced by `commands`"));
+                lines.push(String::from("build: replaced by `commands`"));
             } else {
                 if let Some(package) = package {
-                    plan.push(format!("package: {package}"));
+                    lines.push(format!("package: {package}"));
                 }
 
-                plan.push(format!("cargo profile: {profile}"));
+                lines.push(format!("cargo profile: {profile}"));
             }
 
-            plan.push(format!("sudo: {}", if use_sudo { "yes" } else { "no" }));
-            plan.push(format!("bin_dir: {bin_dir}"));
+            lines.push(format!("sudo: {}", if use_sudo { "yes" } else { "no" }));
+            lines.push(format!("bin_dir: {bin_dir}"));
 
             if let Some((_, file_name, _)) = &unit {
-                plan.push(format!("unit_dir: {unit_dir}"));
-                plan.push(format!("unit: {file_name}"));
+                lines.push(format!("unit_dir: {unit_dir}"));
+                lines.push(format!("unit: {file_name}"));
 
                 if let Some((socket_file_name, _)) = &socket_unit {
-                    plan.push(format!("socket: {socket_file_name}"));
+                    lines.push(format!("socket: {socket_file_name}"));
                 }
 
-                plan.push(format!("scope: {scope}"));
+                lines.push(format!("scope: {scope}"));
             }
 
             if kind == DeployKind::Ssh {
-                plan.push(format!("staging_dir: {staging_dir}"));
+                lines.push(format!("staging_dir: {staging_dir}"));
             }
 
             let title = match section {
@@ -1149,7 +1028,7 @@ pub(crate) fn deploy(
                 Section::Deploy => "deployment",
             };
 
-            details(o, title, plan.iter().map(String::as_str))?;
+            details(o, title, lines.iter().map(String::as_str))?;
 
             if kind == DeployKind::Ssh {
                 let uploaded = uploads
@@ -1218,7 +1097,7 @@ pub(crate) fn deploy(
                 // are streamed as a tar archive over the stdin of the remote
                 // script, which unpacks them into the staging directory before
                 // it installs anything.
-                let mut command = ssh(opts, &config, target);
+                let mut command = ssh(opts, config, target);
                 command.arg(&script);
                 let repr = command
                     .display()
@@ -2049,31 +1928,6 @@ fn target_dir(manifest_dir: &Path) -> PathBuf {
     manifest_dir.join("target")
 }
 
-/// The directory cargo installs binaries into, which is where something
-/// installed on the machine kick runs on goes by default.
-/// The directory a binary is installed into unless told otherwise.
-pub(crate) fn default_bin_dir(kind: DeployKind) -> String {
-    match kind {
-        DeployKind::Ssh => DEFAULT_BIN_DIR.to_owned(),
-        DeployKind::Local => cargo_bin_dir(),
-    }
-}
-
-/// The directory a unit is installed into unless told otherwise.
-pub(crate) fn default_unit_dir(scope: SystemdScope) -> &'static str {
-    match scope {
-        SystemdScope::System => DEFAULT_UNIT_DIR,
-        SystemdScope::User => DEFAULT_USER_UNIT_DIR,
-    }
-}
-
-fn cargo_bin_dir() -> String {
-    match std::env::var("CARGO_HOME") {
-        Ok(home) if !home.is_empty() => format!("{}/bin", home.trim_end_matches('/')),
-        _ => String::from(DEFAULT_CARGO_BIN_DIR),
-    }
-}
-
 /// The directory under `target` which cargo puts the given profile in.
 fn profile_dir(profile: &str) -> &str {
     match profile {
@@ -2363,14 +2217,6 @@ fn check(
     }
 
     Ok(home)
-}
-
-/// Trim any trailing slashes from a directory so that it can be consistently
-/// joined with a file name.
-pub(crate) fn trim_dir(dir: &str) -> &str {
-    let trimmed = dir.trim_end_matches('/');
-
-    if trimmed.is_empty() { dir } else { trimmed }
 }
 
 #[cfg(test)]
