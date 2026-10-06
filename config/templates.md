@@ -1,5 +1,3 @@
-Template syntax.
-
 Kick renders user-written templates in three places, and they don't all use the
 same syntax. This page says which one applies where.
 

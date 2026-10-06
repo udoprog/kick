@@ -47,6 +47,7 @@ See the following sections for documentation on the various configuration sectio
 
 * [Repository configuration](./config/toplevel.md)
 * [Defining re-usable `[variables]`](./config/variables.md)
+* [Template syntax used in `Kick.toml`, unit templates and archive names](./config/templates.md)
 * [Managing `[workflows]`](./config/workflows.md)
 * [Managing `[badges]`](./config/badges.md)
 * [Managing GitHub `[actions]`](./config/actions.md)
