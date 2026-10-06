@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::env::consts::{self, EXE_SUFFIX};
 use std::fmt;
 use std::fs::File;
@@ -17,7 +16,6 @@ use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::packaging::{self, Mode, Packager, infer};
 use crate::release::ReleaseOpts;
-use crate::template::{Template, Variable};
 
 use super::output::OutputOpts;
 
@@ -54,7 +52,9 @@ pub(crate) struct Opts {
     os: Option<String>,
     /// The name format to use for the archive
     ///
-    /// If unspecified, the name will be {project}-{release}-{arch}-{os}.
+    /// If unspecified, the name will be {project}-{release}-{arch}-{os}. This is
+    /// a jinja template whose variables use single braces, see the templates
+    /// section of the configuration documentation.
     #[arg(long)]
     name: Option<String>,
     #[clap(flatten)]
@@ -82,17 +82,8 @@ fn compress(cx: &Ctxt<'_>, ty: Kind, opts: &Opts, repo: &Repo) -> Result<()> {
     let os = &opts.os.as_deref().unwrap_or(consts::OS);
     let arch = opts.arch.as_deref().unwrap_or(consts::ARCH);
 
-    let name_template = opts
-        .name
-        .as_deref()
-        .unwrap_or("{project}-{release}-{arch}-{os}");
-    let name_template = Template::parse(name_template)
-        .with_context(|| anyhow!("While parsing `{name_template}`"))?;
-
-    let variables = variables(name, &release, os, arch);
-    let archive_name = name_template
-        .render(&variables)
-        .context("While rendering name template")?;
+    let name_template = opts.name.as_deref().unwrap_or(DEFAULT_NAME);
+    let archive_name = render_name(name_template, name, &release, os, arch)?;
 
     let mut zip_archive;
     let mut gzip_archive;
@@ -261,16 +252,99 @@ impl Archive for ZipArchive {
     }
 }
 
-fn variables<'a>(
-    project: &'a str,
-    release: &'a dyn fmt::Display,
-    os: &'a str,
-    arch: &'a str,
-) -> HashMap<&'a str, Variable<'a>> {
-    let mut vars = HashMap::new();
-    vars.insert("project", Variable::Str(project));
-    vars.insert("release", Variable::Display(release));
-    vars.insert("os", Variable::Str(os));
-    vars.insert("arch", Variable::Str(arch));
-    vars
+/// The default archive name template.
+const DEFAULT_NAME: &str = "{project}-{release}-{arch}-{os}";
+
+/// Render the archive name template given to `--name`.
+///
+/// This is a [minijinja] template whose variable delimiters are single braces,
+/// so `{project}` expands a variable and expressions such as `{os | upper}`
+/// work. Blocks and comments use `{% ... %}` and `{# ... #}`, and `{{` is a
+/// literal `{`.
+fn render_name(
+    template: &str,
+    project: &str,
+    release: &dyn fmt::Display,
+    os: &str,
+    arch: &str,
+) -> Result<String> {
+    let mut env = minijinja::Environment::new();
+    env.set_syntax(
+        minijinja::syntax::SyntaxConfig::builder()
+            .variable_delimiters("{", "}")
+            .block_delimiters("{%", "%}")
+            .comment_delimiters("{#", "#}")
+            .build()
+            .context("Building name template syntax")?,
+    );
+    env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
+    env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+
+    // A `{{` would otherwise open a variable whose expression starts with a
+    // map literal, so replace it with an expression for a literal brace.
+    let source = template.replace("{{", "{'{'}");
+
+    let compiled = env
+        .template_from_str(&source)
+        .with_context(|| anyhow!("While parsing name template `{template}`"))?;
+
+    compiled
+        .render(minijinja::context! {
+            project,
+            release => release.to_string(),
+            os,
+            arch,
+        })
+        .with_context(|| anyhow!("While rendering name template `{template}`"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DEFAULT_NAME, render_name};
+
+    fn render(template: &str) -> anyhow::Result<String> {
+        render_name(template, "my_project", &"1.0.0", "linux", "x86_64")
+    }
+
+    #[test]
+    fn default_name() {
+        assert_eq!(
+            render(DEFAULT_NAME).unwrap(),
+            "my_project-1.0.0-x86_64-linux"
+        );
+    }
+
+    #[test]
+    fn custom_name() {
+        assert_eq!(
+            render("{ project }_{os}.{arch}").unwrap(),
+            "my_project_linux.x86_64"
+        );
+        assert_eq!(render("static-name").unwrap(), "static-name");
+        assert_eq!(render("{os | upper}").unwrap(), "LINUX");
+        assert_eq!(
+            render("{project}{% if os == 'linux' %}-gnu{% endif %}{# comment #}").unwrap(),
+            "my_project-gnu"
+        );
+    }
+
+    #[test]
+    fn literal_braces() {
+        assert_eq!(render("{{project}").unwrap(), "{project}");
+        assert_eq!(render("{{{project}}").unwrap(), "{my_project}");
+        assert_eq!(render("a}b").unwrap(), "a}b");
+    }
+
+    #[test]
+    fn errors() {
+        let error = format!("{:#}", render("{project}-{nope}").unwrap_err());
+        assert!(error.contains("While rendering name template"), "{error}");
+        assert!(error.contains("undefined"), "{error}");
+
+        let error = format!("{:#}", render("{project").unwrap_err());
+        assert!(error.contains("While parsing name template"), "{error}");
+
+        let error = format!("{:#}", render("{}").unwrap_err());
+        assert!(error.contains("While parsing name template"), "{error}");
+    }
 }

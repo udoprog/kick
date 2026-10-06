@@ -991,10 +991,11 @@ rendered units and the script without changing anything.
 
 #### Templates
 
-Unit templates are rendered with [minijinja], so they use jinja2 syntax. The
-template is otherwise used verbatim, it is a regular unit file which happens to
-have some holes in it, and can be linted with `systemd-analyze verify` once
-rendered.
+Unit templates are rendered with [minijinja], so they use jinja2 syntax, unlike
+values elsewhere in `Kick.toml` which use handlebars (see [template
+syntax](./templates.md)). The template is otherwise used verbatim, it is a
+regular unit file which happens to have some holes in it, and can be linted with
+`systemd-analyze verify` once rendered.
 
 Templates are compiled when the configuration is loaded, so a syntax error is
 reported by any `kick` command rather than in the middle of a deployment.

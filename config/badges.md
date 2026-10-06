@@ -3,7 +3,12 @@ The `[[badges]]` array defines all possible badges which can be used by a repo.
 The exact set of badges being used is defined in the [`lib_badges` or
   `readme_badges`][lib-readme-badges] repo settings.
 
+The `src`, `href` and `height` options are [handlebars templates][templates],
+expanded with the [`variables`](./variables.md) section. Use the `dash_escape`
+helper to escape dashes in a shields.io label, as in the examples below.
+
 [lib-readme-badges]: ./toplevel.md#lib_badges-and-readme_badges
+[templates]: ./templates.md#handlebars
 
 ## `[[badges]]`
 

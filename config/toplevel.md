@@ -111,8 +111,9 @@ lib = "data/rune.lib.md"
 readme = "data/rune.readme.md"
 ```
 
-The following variables are available for expansion, beyond what's defined in
-the [`variables`](./variables.md) section:
+These are [handlebars templates](./templates.md#handlebars). The following
+variables are available for expansion, beyond what's defined in the
+[`variables`](./variables.md) section:
 
 * `body` the rest of the comment, which does not include the generated
   header.

@@ -511,7 +511,6 @@ mod rstr;
 mod shell;
 mod system;
 mod systemd;
-mod template;
 mod templates;
 mod urls;
 mod utils;

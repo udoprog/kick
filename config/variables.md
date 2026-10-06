@@ -1,5 +1,6 @@
 The `variables` section defines an arbitrary collection of extra variables that
-can be used in templates.
+can be used in templates. These are the [handlebars templates](./templates.md#handlebars)
+in `Kick.toml`, such as [badges](./badges.md), not systemd unit templates.
 
 These are overriden on a per-repo basis in the following ways:
 
