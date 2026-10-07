@@ -10,14 +10,16 @@ use gix::protocol::handshake::Ref;
 use gix::remote::fetch::refmap::Source;
 use gix::{ObjectId, Repository};
 
-use self::progress::Logger;
+pub(crate) use self::progress::{Fetch, Fetches};
 
-/// Sync the local repo by fetching the specified refspecs.
+/// Sync the local repo by fetching the specified refspecs, reporting to
+/// `progress`.
 pub(crate) fn sync(
     repo: &Repository,
     url: &str,
     refspecs: &[BString],
     open: bool,
+    progress: &mut Fetch,
 ) -> Result<Vec<(BString, ObjectId)>> {
     let mut remote = repo
         .find_fetch_remote(Some(BStr::new(url)))
@@ -31,8 +33,6 @@ pub(crate) fn sync(
 
     let options = gix::remote::ref_map::Options::default();
 
-    let mut progress = Logger::new();
-
     let shallow = NonZeroU32::new(1)
         .map(gix::remote::fetch::Shallow::DepthAtRemote)
         .unwrap_or(gix::remote::fetch::Shallow::NoChange);
@@ -42,9 +42,9 @@ pub(crate) fn sync(
     let connect = remote.connect(gix::remote::Direction::Fetch)?;
 
     let outcome = connect
-        .prepare_fetch(&mut progress, options)?
+        .prepare_fetch(&mut *progress, options)?
         .with_shallow(shallow)
-        .receive(&mut progress, &should_interrupt)?;
+        .receive(&mut *progress, &should_interrupt)?;
 
     let mut output = Vec::new();
 

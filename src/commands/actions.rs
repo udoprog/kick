@@ -230,21 +230,34 @@ struct RepoGroup<'a> {
 
 impl RepoGroup<'_> {
     fn context(&self) -> String {
-        let mut out = String::from("Failed to sync GitHub action");
+        format!("Failed to sync GitHub action {}", self.label())
+    }
+
+    /// Every pending action of the group, like `owner/name@v1, owner/name@v2`.
+    fn label(&self) -> String {
+        let mut out = String::new();
 
         for (n, version) in self.versions.iter().enumerate() {
-            let sep = if n == 0 { " " } else { ", " };
-            out.push_str(&format!("{sep}{}/{}@{version}", self.repo, self.name));
+            if n > 0 {
+                out.push_str(", ");
+            }
+
+            out.push_str(&format!("{}/{}@{version}", self.repo, self.name));
         }
 
         out
     }
 
+    /// Refspecs fetching every version into a local ref of the same name, so
+    /// that the next fetch has it to negotiate with and receives nothing if
+    /// the version is unchanged.
     fn refspecs(&self) -> Vec<BString> {
         let mut refspecs = Vec::new();
 
         for version in &self.versions {
-            refspecs.extend(version_refs(version));
+            for name in version_refs(version) {
+                refspecs.push(BString::from(format!("+{name}:{name}")));
+            }
         }
 
         refspecs
@@ -328,11 +341,15 @@ fn fetch_all(
 
     let parent = tracing::Span::current();
 
+    // Rendered until every fetch is done, which is when this is dropped.
+    let progress = crate::gix::Fetches::new();
+
     let done = thread::scope(|s| {
         let handles = (0..workers)
             .map(|_| {
                 let next = &next;
                 let parent = &parent;
+                let progress = &progress;
 
                 s.spawn(move || {
                     let _enter = parent.enter();
@@ -345,7 +362,7 @@ fn fetch_all(
                             break;
                         };
 
-                        done.push((index, fetch(group, r, *open)));
+                        done.push((index, fetch(progress, group, r, *open)));
                     }
 
                     done
@@ -374,6 +391,7 @@ fn fetch_all(
 ///
 /// Returns `None` if the fetch failed.
 fn fetch(
+    progress: &crate::gix::Fetches,
     group: &RepoGroup<'_>,
     r: &gix::ThreadSafeRepository,
     open: bool,
@@ -393,7 +411,17 @@ fn fetch(
 
     tracing::debug!(git_dir = ?r.git_dir(), "Syncing");
 
-    match crate::gix::sync(&r.to_thread_local(), &url, &group.refspecs(), open) {
+    let mut progress = progress.fetch(group.label());
+    let result = crate::gix::sync(
+        &r.to_thread_local(),
+        &url,
+        &group.refspecs(),
+        open,
+        &mut progress,
+    );
+    progress.finish(result.is_ok());
+
+    match result {
         Ok(remotes) => {
             tracing::debug!(?remotes, "Found remotes");
             Some(remotes)
