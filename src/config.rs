@@ -1545,13 +1545,24 @@ impl<'a> Cx<'a> {
 
         let path = self.interpolate_path(key)?;
 
-        if path.is_absolute() || self.global.is_some() {
+        let path = if path.is_absolute() || self.global.is_some() {
             let path = global::normalize(&self.base_dir().join(path));
-            return Ok(global::relative_to(&base, &path));
+            global::relative_to(&base, &path)
+        } else {
+            RelativePathBuf::from_path(&path).map_err(|error| {
+                self.capture(format_args!("in `{key}`: {}: {error}", path.display()))
+            })?
+        };
+
+        // A project's own configuration would otherwise be read again as the
+        // configuration of the repo, which fails confusingly.
+        if self.global.is_none() && self.current.join(&path).normalize().as_str().is_empty() {
+            return Err(self.capture(format_args!(
+                "[repo.\"{key}\"] resolves to the project root, which cannot be declared as one of its own repos (remove the key)"
+            )));
         }
 
-        RelativePathBuf::from_path(&path)
-            .map_err(|error| self.capture(format_args!("in `{key}`: {}: {error}", path.display())))
+        Ok(path)
     }
 
     /// The path of the configuration file being loaded.
@@ -2999,7 +3010,9 @@ mod tests {
 
     use relative_path::RelativePath;
 
-    use super::{Build, CommandLine, ConfigCommand, Cx, Deploy, DeployKind, Section, SystemdScope};
+    use super::{
+        Build, CommandLine, ConfigCommand, Cx, Deploy, DeployKind, Section, SystemdScope, load_base,
+    };
     use crate::ctxt::Paths;
     use crate::shell::Shell;
     use crate::systemd;
@@ -3622,5 +3635,59 @@ host = \"moore\"",
 
             assert_eq!(got, expected, "{line}");
         }
+    }
+
+    /// Load the `[repo]` sections of a project configuration at a temporary
+    /// root, which is also the home directory, returning the errors.
+    fn load_repo_keys(keys: &[&str]) -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let templating = Templating::new().unwrap();
+
+        let paths = Paths {
+            root: dir.path(),
+            current: None,
+            config: None,
+            cache: None,
+            redirect: None,
+        };
+
+        let mut cx = Cx::new(paths, RelativePath::new(""), &templating);
+        cx.home = Some(dir.path().to_owned());
+
+        let mut table = toml::Table::new();
+
+        for key in keys {
+            let key = key.replace("{root}", &dir.path().display().to_string());
+            table.insert(key, toml::Value::Table(toml::Table::new()));
+        }
+
+        let mut config = toml::Table::new();
+        config.insert("repo".to_owned(), toml::Value::Table(table));
+        let _ = load_base(&mut cx, toml::Value::Table(config));
+        cx.errors.borrow().iter().map(|e| e.to_string()).collect()
+    }
+
+    #[test]
+    fn repo_key_resolving_to_root() {
+        for key in [".", "./", "sub/..", "~", "~/", "{root}"] {
+            let errors = load_repo_keys(&[key]);
+            assert_eq!(errors.len(), 1, "{key}: {errors:?}");
+            let error = &errors[0];
+            assert!(error.contains("Kick.toml"), "{error}");
+            assert!(
+                error.contains(
+                    "resolves to the project root, which cannot be declared as one of its own repos"
+                ),
+                "{error}"
+            );
+            assert!(!error.contains("{root}"), "{error}");
+            assert!(!error.contains("unsupported key"), "{error}");
+        }
+
+        // Keys resolving elsewhere are unaffected.
+        assert_eq!(
+            load_repo_keys(&["sub", "~/sub", "{root}/sub", "../other"]),
+            Vec::<String>::new()
+        );
     }
 }
