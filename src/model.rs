@@ -101,6 +101,9 @@ pub(crate) enum RepoSource {
     Git,
     /// Module loaded from configuration.
     Config(#[musli(with = musli::serde)] RelativePathBuf),
+    /// Module declared in the global configuration under the given
+    /// `[repo."<key>"]` key.
+    Global(String),
 }
 
 impl fmt::Display for RepoSource {
@@ -108,6 +111,7 @@ impl fmt::Display for RepoSource {
         match self {
             RepoSource::Git => write!(f, "git repo"),
             RepoSource::Config(path) => write!(f, "{path}"),
+            RepoSource::Global(key) => write!(f, "{key} (global)"),
         }
     }
 }

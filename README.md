@@ -118,6 +118,48 @@ selection would make other commands refuse to run.
 
 <br>
 
+### Global configuration
+
+Kick also loads a user-global `Kick.toml` from its user configuration
+directory, which is `~/.config/kick/Kick.toml` on Linux (`kick info` prints
+it). It has the same schema as a project `Kick.toml`.
+
+The global configuration is loaded after every project `Kick.toml`, but it is
+the least specific layer: anything a project or repo `Kick.toml` sets takes
+precedence over it, so it's a good place for user defaults. Paths in it, such
+as `[repo."<path>"]` keys and template paths, may be absolute, start with
+`~/`, or be relative in which case they are resolved against your home
+directory.
+
+When kick runs *outside* of a project, that is when no `Kick.toml` or git
+checkout is found in the current directory or any of its parents, it acts on
+the repos declared in the global configuration instead. This lets you keep
+your list of projects per-user rather than in a `Kick.toml` hierarchy. Inside
+of a project the `[repo]` sections of the global configuration are ignored.
+
+```toml
+# ~/.config/kick/Kick.toml
+[repo."~/projects/OxidizeBot"]
+url = "https://github.com/udoprog/OxidizeBot"
+```
+
+Projects in the global configuration can be managed with `kick project`, which
+edits it in place while preserving formatting and comments:
+
+```sh
+kick project add                 # register the git checkout of the current directory
+kick project add ~/src/foo --url https://github.com/udoprog/foo
+kick project list
+kick project remove ~/src/foo
+```
+
+`kick project add` stores directories inside of your home directory with a `~/`
+prefix, and detects the url from the `origin` remote unless `--url` is given.
+Repo sets and staged changes made while acting on global repos are stored in
+the user configuration directory.
+
+<br>
+
 ## Tour of commands
 
 This section details some of my favorite things that Kick can do for you.

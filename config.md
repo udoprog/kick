@@ -13,6 +13,19 @@ every `Kick.toml` in load order and what each one sets, load errors, the repos
 and whether they are selected, and the effective configuration of the selected
 repos. Use `kick inspect --json` for a machine-readable report.
 
+### Global configuration
+
+A user-global `Kick.toml` in kick's user configuration directory
+(`~/.config/kick/Kick.toml` on Linux) is loaded after the project hierarchy as
+the least specific layer, so project and repo configuration takes precedence
+over it. Path-valued settings and `[repo."<path>"]` keys in it may be absolute,
+start with `~/`, or be relative to the home directory.
+
+Outside of a project (no `Kick.toml` or git checkout in the current directory
+or its parents) kick acts on the repos declared in the global configuration.
+Inside of a project its `[repo]` sections are ignored. Use `kick project add`,
+`kick project list` and `kick project remove` to manage them.
+
 ```toml
 [repo."repos/OxidizeBot"]
 crate = "oxidize"

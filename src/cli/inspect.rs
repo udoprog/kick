@@ -17,6 +17,7 @@ use crate::config::{
     UnitTemplate,
 };
 use crate::ctxt::Paths;
+use crate::global::Global;
 use crate::model::{Repo, RepoSource};
 use crate::systemd::{self, Directives, UnitKind};
 use crate::{Exclusion, GITHUB_TOKEN, KICK_TOML, RepoOptions};
@@ -52,6 +53,8 @@ pub(crate) struct Inspect<'a> {
     pub(crate) paths: Paths<'a>,
     pub(crate) worktree: Option<(&'a RelativePath, &'a RelativePath)>,
     pub(crate) config: &'a Config<'a>,
+    /// The user-global configuration, if kick could locate it.
+    pub(crate) global: Option<&'a Global>,
     pub(crate) repos: &'a [Repo],
     pub(crate) from_group: bool,
     pub(crate) in_repo_path: bool,
@@ -88,7 +91,10 @@ pub(crate) struct Report {
     user_config: UserConfigReport,
     errors: Vec<String>,
     selection: SelectionReport,
+    /// `config`, `global` or `git`.
     repos_from: &'static str,
+    /// The path of the global configuration.
+    global: Option<PathBuf>,
     repos: Vec<RepoReport>,
 }
 
@@ -100,7 +106,7 @@ struct WorktreeReport {
 
 #[derive(Debug, Serialize)]
 struct SourceReport {
-    /// What the source is, `defaults` or `file`.
+    /// What the source is, `defaults`, `file` or `global`.
     kind: &'static str,
     /// The source as it is referred to elsewhere in the report.
     name: String,
@@ -111,6 +117,9 @@ struct SourceReport {
     state: &'static str,
     keys: Vec<String>,
     repo_sections: Vec<RepoSectionReport>,
+    /// Whether the `[repo]` sections are ignored, which is the case for the
+    /// global configuration inside of a project.
+    repos_ignored: bool,
     errors: Vec<String>,
 }
 
@@ -300,12 +309,13 @@ fn build(cx: &Inspect<'_>, opts: &Opts) -> Report {
         state: "built-in",
         keys: defaults_keys(cx.config.defaults),
         repo_sections: Vec::new(),
+        repos_ignored: false,
         errors: Vec::new(),
     });
 
     for source in &cx.collected.sources {
         config.push(SourceReport {
-            kind: "file",
+            kind: if source.global { "global" } else { "file" },
             name: source.config_path.to_string(),
             path: Some(absolute(&source.path)),
             applies_to: (!source.dir.as_str().is_empty()).then(|| source.dir.to_string()),
@@ -319,17 +329,21 @@ fn build(cx: &Inspect<'_>, opts: &Opts) -> Report {
                     keys: keys.clone(),
                 })
                 .collect(),
+            repos_ignored: source.repos_ignored,
             errors: source.errors.clone(),
         });
     }
 
+    let provides_repos = cx.global.is_some_and(|g| g.provides_repos);
+
     let user_config = UserConfigReport {
         dir: paths.config.map(absolute),
-        files: paths
-            .config
+        files: cx
+            .global
+            .map(|g| g.path.clone())
             .into_iter()
-            .map(|p| p.join(GITHUB_TOKEN))
-            .chain([paths.root.join(GITHUB_TOKEN)])
+            .chain(paths.config.into_iter().map(|p| p.join(GITHUB_TOKEN)))
+            .chain((!provides_repos).then(|| paths.root.join(GITHUB_TOKEN)))
             .map(|p| FileReport {
                 exists: p.is_file(),
                 path: absolute(&p),
@@ -407,7 +421,12 @@ fn build(cx: &Inspect<'_>, opts: &Opts) -> Report {
         user_config,
         errors,
         selection,
-        repos_from: if cx.from_group { "config" } else { "git" },
+        repos_from: match (cx.from_group, provides_repos) {
+            (true, true) => "global",
+            (true, false) => "config",
+            _ => "git",
+        },
+        global: cx.global.map(|g| absolute(&g.path)),
         repos,
     }
 }
@@ -432,6 +451,7 @@ fn repo_sources(repo: &Repo) -> Vec<String> {
         .map(|source| match source {
             RepoSource::Git => String::from("the git checkout at the root"),
             RepoSource::Config(path) => format!("{KICK_TOML} [repo.\"{path}\"]"),
+            RepoSource::Global(key) => format!("global {KICK_TOML} [repo.\"{key}\"]"),
         })
         .collect()
 }
@@ -450,7 +470,14 @@ fn layers(
         layers.push((defaults.name.clone(), defaults.state, defaults.keys.clone()));
     }
 
-    for source in sources {
+    // NB: The global configuration is loaded last, but is the least specific
+    // layer.
+    let ordered = sources
+        .iter()
+        .filter(|s| s.global)
+        .chain(sources.iter().filter(|s| !s.global));
+
+    for source in ordered {
         let dir = source.dir.normalize();
 
         if dir.as_str().is_empty() {
@@ -459,6 +486,10 @@ fn layers(
                 state_name(source.state),
                 source.keys.clone(),
             ));
+
+            if source.repos_ignored {
+                continue;
+            }
 
             for (repo, keys) in &source.repos {
                 if repo.normalize() == path {
@@ -922,7 +953,18 @@ fn write_text(o: &mut impl Write, r: &Report) -> io::Result<()> {
         match &source.applies_to {
             Some(repo) => writeln!(o, "       applies to repo {repo}")?,
             None if source.kind == "file" => writeln!(o, "       applies to every repo")?,
+            None if source.kind == "global" => writeln!(
+                o,
+                "       global user configuration, applies to every repo as the least specific layer"
+            )?,
             None => {}
+        }
+
+        if source.repos_ignored && !source.repo_sections.is_empty() {
+            writeln!(
+                o,
+                "       its [repo] sections are ignored inside of a project"
+            )?;
         }
 
         if !source.keys.is_empty() {
@@ -948,7 +990,7 @@ fn write_text(o: &mut impl Write, r: &Report) -> io::Result<()> {
     match &r.user_config.dir {
         Some(dir) => writeln!(
             o,
-            "User configuration: {} (only `{GITHUB_TOKEN}` is read, no {KICK_TOML})",
+            "User configuration: {} (`{KICK_TOML}` and `{GITHUB_TOKEN}`)",
             dir.display()
         )?,
         None => writeln!(o, "User configuration: no directory")?,
@@ -1015,8 +1057,12 @@ fn write_text(o: &mut impl Write, r: &Report) -> io::Result<()> {
 
     writeln!(o)?;
 
-    let from = match r.repos_from {
-        "config" => format!("from [repo] sections in {KICK_TOML}"),
+    let from = match (r.repos_from, &r.global) {
+        ("config", _) => format!("from [repo] sections in {KICK_TOML}"),
+        ("global", Some(global)) => format!(
+            "outside of a project, so from [repo] sections in the global {}",
+            global.display()
+        ),
         _ => String::from("no [repo] sections, so the git checkout at the root"),
     };
 
@@ -1318,6 +1364,7 @@ mod tests {
     use crate::config::{self, Os, SourceState};
     use crate::ctxt::Paths;
     use crate::glob::Fragment;
+    use crate::global::Global;
     use crate::model::{Repo, RepoSource};
     use crate::templates::Templating;
     use crate::{Exclusion, RepoOptions, filter_repos};
@@ -1358,6 +1405,7 @@ mod tests {
             paths: paths(root),
             worktree: None,
             config: &loaded.config,
+            global: None,
             repos: &repos,
             from_group: true,
             in_repo_path: false,
@@ -1372,6 +1420,106 @@ mod tests {
         };
 
         build(&cx, opts)
+    }
+
+    #[test]
+    fn global_layer_is_least_specific() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        let home = dir.path().join("home");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&home).unwrap();
+
+        fs::write(
+            root.join("Kick.toml"),
+            "license = \"project\"\n[repo.\"app\"]\nurl = \"https://example.com/app\"\n",
+        )
+        .unwrap();
+
+        let global_path = home.join(".config/kick/Kick.toml");
+        fs::create_dir_all(global_path.parent().unwrap()).unwrap();
+        fs::write(
+            &global_path,
+            "license = \"global\"\n[repo.\"~/other\"]\nurl = \"https://example.com/other\"\n",
+        )
+        .unwrap();
+
+        let global = Global {
+            path: global_path,
+            home,
+            provides_repos: false,
+        };
+
+        let templating = Templating::new().unwrap();
+        let defaults = config::defaults();
+        let loaded = config::load_all_with(paths(&root), &templating, &defaults, Some(&global));
+        let repos = repos(&loaded.config);
+        let repo_opts = RepoOptions::default();
+
+        let cx = Inspect {
+            paths: paths(&root),
+            worktree: None,
+            config: &loaded.config,
+            global: Some(&global),
+            repos: &repos,
+            from_group: true,
+            in_repo_path: false,
+            repo_opts: &repo_opts,
+            os: &Os::Linux,
+            collected: Collected {
+                exclusions: vec![None; repos.len()],
+                sources: loaded.sources,
+                errors: loaded.errors,
+                selection_error: None,
+            },
+        };
+
+        let report = build(&cx, &Opts::default());
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+
+        let sources = report
+            .config
+            .iter()
+            .map(|s| (s.name.as_str(), s.kind, s.repos_ignored))
+            .collect::<Vec<_>>();
+
+        // Loaded last.
+        assert_eq!(
+            sources,
+            [
+                ("built-in defaults", "defaults", false),
+                ("Kick.toml", "file", false),
+                ("app/Kick.toml", "file", false),
+                ("~/.config/kick/Kick.toml", "global", true),
+            ]
+        );
+
+        assert_eq!(report.repos.len(), 1);
+
+        // But layered first, under the project configuration.
+        let layers = report.repos[0]
+            .layers
+            .iter()
+            .map(|l| l.source.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            layers,
+            [
+                "built-in defaults",
+                "~/.config/kick/Kick.toml",
+                "Kick.toml",
+                "Kick.toml [repo.\"app\"]",
+                "app/Kick.toml",
+            ]
+        );
+
+        let license = report.repos[0].layers[2]
+            .keys
+            .iter()
+            .find(|k| k.key == "license")
+            .unwrap();
+        assert_eq!(license.merges_over, ["~/.config/kick/Kick.toml"]);
     }
 
     #[test]
@@ -1731,6 +1879,7 @@ mod tests {
             paths: paths(root),
             worktree: None,
             config,
+            global: None,
             repos: &repos,
             from_group: true,
             in_repo_path: false,

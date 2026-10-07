@@ -115,6 +115,48 @@
 //!
 //! <br>
 //!
+//! ### Global configuration
+//!
+//! Kick also loads a user-global `Kick.toml` from its user configuration
+//! directory, which is `~/.config/kick/Kick.toml` on Linux (`kick info` prints
+//! it). It has the same schema as a project `Kick.toml`.
+//!
+//! The global configuration is loaded after every project `Kick.toml`, but it is
+//! the least specific layer: anything a project or repo `Kick.toml` sets takes
+//! precedence over it, so it's a good place for user defaults. Paths in it, such
+//! as `[repo."<path>"]` keys and template paths, may be absolute, start with
+//! `~/`, or be relative in which case they are resolved against your home
+//! directory.
+//!
+//! When kick runs *outside* of a project, that is when no `Kick.toml` or git
+//! checkout is found in the current directory or any of its parents, it acts on
+//! the repos declared in the global configuration instead. This lets you keep
+//! your list of projects per-user rather than in a `Kick.toml` hierarchy. Inside
+//! of a project the `[repo]` sections of the global configuration are ignored.
+//!
+//! ```toml
+//! # ~/.config/kick/Kick.toml
+//! [repo."~/projects/OxidizeBot"]
+//! url = "https://github.com/udoprog/OxidizeBot"
+//! ```
+//!
+//! Projects in the global configuration can be managed with `kick project`, which
+//! edits it in place while preserving formatting and comments:
+//!
+//! ```sh
+//! kick project add                 # register the git checkout of the current directory
+//! kick project add ~/src/foo --url https://github.com/udoprog/foo
+//! kick project list
+//! kick project remove ~/src/foo
+//! ```
+//!
+//! `kick project add` stores directories inside of your home directory with a `~/`
+//! prefix, and detects the url from the `origin` remote unless `--url` is given.
+//! Repo sets and staged changes made while acting on global repos are stored in
+//! the user configuration directory.
+//!
+//! <br>
+//!
 //! ## Tour of commands
 //!
 //! This section details some of my favorite things that Kick can do for you.
@@ -498,6 +540,7 @@ mod fs;
 mod git_cache;
 mod gix;
 mod glob;
+mod global;
 mod keys;
 mod model;
 mod musli;
@@ -533,7 +576,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
 
 use config::{Config, Distribution, Os};
-use directories::ProjectDirs;
+use directories::{BaseDirs, ProjectDirs};
 use env::SecretString;
 use model::State;
 use relative_path::{RelativePath, RelativePathBuf};
@@ -618,6 +661,12 @@ enum Command {
     Publish(SharedAction<cli::publish::Opts>),
     /// Build an .rpm package (builtin).
     Rpm(SharedAction<cli::rpm::Opts>),
+    /// Manage the projects registered in the global configuration.
+    ///
+    /// The global configuration is a `Kick.toml` in kick's user configuration
+    /// directory (see `kick info`). When kick runs outside of a project it
+    /// acts on the projects registered in it.
+    Project(ProjectAction),
     /// Run a custom command.
     Run(SharedAction<cli::run::Opts>),
     /// Manage sets.
@@ -656,6 +705,7 @@ impl Command {
             Command::Login(c) => &c.shared,
             Command::Msi(c) => &c.shared,
             Command::Msrv(c) => &c.shared,
+            Command::Project(c) => &c.shared,
             Command::Publish(c) => &c.shared,
             Command::Rpm(c) => &c.shared,
             Command::Run(c) => &c.shared,
@@ -684,6 +734,7 @@ impl Command {
             Command::Login(..) => None,
             Command::Msi(c) => Some(&c.repo),
             Command::Msrv(c) => Some(&c.repo),
+            Command::Project(..) => None,
             Command::Publish(c) => Some(&c.repo),
             Command::Rpm(c) => Some(&c.repo),
             Command::Run(c) => Some(&c.repo),
@@ -698,7 +749,7 @@ impl Command {
 
     #[inline]
     fn needs_ctrlc_handler(&self) -> bool {
-        !matches!(self, Command::Login(..))
+        !matches!(self, Command::Login(..) | Command::Project(..))
     }
 }
 
@@ -961,6 +1012,15 @@ where
     shared: SharedOptions,
 }
 
+#[derive(Parser)]
+#[command(version = None)]
+struct ProjectAction {
+    #[command(flatten)]
+    action: cli::project::Opts,
+    #[command(flatten)]
+    shared: SharedOptions,
+}
+
 /// Give your projects a good 🦶!
 ///
 /// Kick optionally reads Kick.toml, for how to configure projects. See the
@@ -1014,7 +1074,32 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
 
     let repo_opts = opts.action.repo();
 
-    let (root, current_path) = match &shared.root {
+    let project_dirs = ProjectDirs::from("se", "tedro", "kick");
+    let home = BaseDirs::new().map(|d| d.home_dir().to_owned());
+    let global_path = project_dirs
+        .as_ref()
+        .map(|p| p.config_dir().join(KICK_TOML));
+
+    if let Command::Project(project) = &opts.action {
+        let (Some(home), Some(global_path)) = (&home, &global_path) else {
+            bail!("Could not determine the home and user configuration directories");
+        };
+
+        let current_dir = std::env::current_dir().context("Getting current directory")?;
+        let system = system::detect()?;
+
+        let cx = cli::project::Cx {
+            config: global_path,
+            home,
+            current_dir: &current_dir,
+            git: system.git.first(),
+        };
+
+        cli::project::entry(&cx, &project.action)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let (root, current_path, global_repos) = match &shared.root {
         Some(root) => {
             let root = root.canonicalize()?;
             let current = std::env::current_dir()?.canonicalize()?;
@@ -1025,20 +1110,29 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
                 None
             };
 
-            (root.to_owned(), current_path)
+            (root.to_owned(), current_path, false)
         }
         None => {
             let current_dir = std::env::current_dir().context("Getting current directory")?;
-            let found = find_from_current_dir(&current_dir);
-
-            match found {
-                Some((root, current_path)) => (root, Some(current_path)),
-                None => (current_dir, Some(RelativePathBuf::new())),
-            }
+            find_root(&current_dir, home.as_deref(), global_path.as_deref())
         }
     };
 
-    let project_dirs = ProjectDirs::from("se", "tedro", "kick");
+    let global = match (&home, &global_path) {
+        (Some(home), Some(path)) => Some(global::Global {
+            path: path.clone(),
+            home: home.clone(),
+            provides_repos: global_repos,
+        }),
+        _ => None,
+    };
+
+    // NB: State written by kick is stored in the root of the project, or in
+    // the user configuration directory when acting on global repos.
+    let state_dir = match project_dirs.as_ref() {
+        Some(dirs) if global_repos => dirs.config_dir().to_owned(),
+        _ => root.clone(),
+    };
 
     let paths = Paths {
         root: &root,
@@ -1062,7 +1156,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         .config
         .into_iter()
         .map(|p| p.join(GITHUB_TOKEN))
-        .chain([root.join(GITHUB_TOKEN)])
+        .chain((!global_repos).then(|| root.join(GITHUB_TOKEN)))
     {
         if let Some(secret) = crate::env::read_secret_string(&p)? {
             env.github_tokens.push(env::GithubToken::path(&p, secret));
@@ -1098,7 +1192,14 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     let inspecting = matches!(opts.action, Command::Inspect(..));
     let mut report = cli::inspect::Collected::default();
 
-    let config = load_config(paths, &templating, &defaults, inspecting, &mut report)?;
+    let config = load_config(
+        paths,
+        global.as_ref(),
+        &templating,
+        &defaults,
+        inspecting,
+        &mut report,
+    )?;
 
     let os = match std::env::consts::OS {
         "linux" => Os::Linux,
@@ -1142,7 +1243,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         Err(error) => return Err(error),
     };
 
-    let mut sets = repo_sets::RepoSets::new(root.join("sets"))?;
+    let mut sets = repo_sets::RepoSets::new(state_dir.join("sets"))?;
 
     // When running from a git worktree nested inside of a registered repo, use
     // the worktree as that repo's working directory.
@@ -1167,7 +1268,14 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
 
             // Reload the configuration so that repo configuration and
             // templates are read from the worktree.
-            let config = load_config(paths, &templating, &defaults, inspecting, &mut report)?;
+            let config = load_config(
+                paths,
+                global.as_ref(),
+                &templating,
+                &defaults,
+                inspecting,
+                &mut report,
+            )?;
             (paths, config)
         }
         None => (paths, config),
@@ -1210,6 +1318,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
                 .as_ref()
                 .map(|(r, c)| (r.as_relative_path(), c.as_relative_path())),
             config: &config,
+            global: global.as_ref(),
             repos: &repos,
             from_group,
             in_repo_path,
@@ -1236,7 +1345,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         tracing::info!("using worktree {} for repo {repo}", dir.display());
     }
 
-    let changes_path = root.join("changes.gz");
+    let changes_path = state_dir.join("changes.gz");
 
     let git_credentials = match system.git.first() {
         Some(git) => match git.get_credentials("github.com", "https") {
@@ -1294,6 +1403,20 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
                 println!("Cache: {}", cache.display());
             }
 
+            if let Some(global) = &global {
+                let state = if global.path.is_file() {
+                    "present"
+                } else {
+                    "absent"
+                };
+
+                println!("Global config: {} ({state})", global.path.display());
+
+                if global.provides_repos {
+                    println!("Using repos from the global config");
+                }
+            }
+
             return Ok(ExitCode::SUCCESS);
         }
         Command::Changes(..) => {
@@ -1318,6 +1441,9 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         }
         Command::Set(opts) => {
             cli::set::entry(&mut with_repos.cx, &opts.action)?;
+        }
+        Command::Project(..) => {
+            unreachable!("project is handled before configuration is loaded")
         }
         Command::Run(opts) => {
             cli::run::entry(&mut with_repos, &opts.action)?;
@@ -1419,16 +1545,18 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
 /// the files which were looked for and the errors are recorded in `report`.
 fn load_config<'a>(
     paths: Paths<'a>,
+    global: Option<&'a global::Global>,
     templating: &templates::Templating,
     defaults: &'a toml::Table,
     inspecting: bool,
     report: &mut cli::inspect::Collected,
 ) -> Result<Config<'a>> {
     if !inspecting {
-        return config::load(paths, templating, defaults).context("Loading kick configuration");
+        return config::load_with(paths, templating, defaults, global)
+            .context("Loading kick configuration");
     }
 
-    let loaded = config::load_all(paths, templating, defaults);
+    let loaded = config::load_all_with(paths, templating, defaults, global);
     report.sources = loaded.sources;
     report.errors = loaded.errors;
     Ok(loaded.config)
@@ -1963,6 +2091,36 @@ fn find_from_current_dir(current_dir: &Path) -> Option<(PathBuf, RelativePathBuf
     first_git
 }
 
+/// Find the root to use from the current directory, returning the root, the
+/// current directory relative to it, and whether the repos come from the
+/// global configuration at `global_path`.
+///
+/// Inside a project (a `Kick.toml` or a git checkout is found upward) that is
+/// the project. Outside of one, if the global configuration declares repos,
+/// the root is the home directory and the global repos are used. Otherwise
+/// the current directory is the root.
+fn find_root(
+    current_dir: &Path,
+    home: Option<&Path>,
+    global_path: Option<&Path>,
+) -> (PathBuf, Option<RelativePathBuf>, bool) {
+    if let Some((root, current_path)) = find_from_current_dir(current_dir) {
+        return (root, Some(current_path), false);
+    }
+
+    if let (Some(home), Some(global_path)) = (home, global_path)
+        && !global::declared_repos(global_path).is_empty()
+    {
+        tracing::trace!(
+            "Using repos from global configuration {}",
+            global_path.display()
+        );
+        return (home.to_owned(), None, true);
+    }
+
+    (current_dir.to_owned(), Some(RelativePathBuf::new()), false)
+}
+
 /// Collect the repos kick acts on.
 ///
 /// Repos are only ever those declared in configuration with
@@ -1980,11 +2138,14 @@ fn collect_repos(
             continue;
         };
 
-        repos.push(Repo::new(
-            [RepoSource::Config(path.clone())],
-            path.to_owned(),
-            url.clone(),
-        ));
+        let source = config
+            .sources
+            .iter()
+            .find(|s| matches!(s, RepoSource::Global(..)))
+            .cloned()
+            .unwrap_or_else(|| RepoSource::Config(path.clone()));
+
+        repos.push(Repo::new([source], path.to_owned(), url.clone()));
     }
 
     tracing::trace!(
@@ -2385,5 +2546,187 @@ mod tests {
         assert_eq!(check("plain"), None);
         assert_eq!(check(""), None);
         Ok(())
+    }
+
+    /// Write the global configuration and return a [`Global`] for it.
+    fn global_config(dir: &Path, contents: &str, provides_repos: bool) -> crate::global::Global {
+        let path = dir.join("config/kick/Kick.toml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, contents).unwrap();
+
+        crate::global::Global {
+            path,
+            home: dir.join("home"),
+            provides_repos,
+        }
+    }
+
+    #[test]
+    fn outside_project_uses_global_repos() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let outside = dir.path().join("outside");
+        let project = dir.path().join("project");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(project.join("sub")).unwrap();
+        fs::write(project.join("Kick.toml"), "").unwrap();
+
+        let global = global_config(
+            dir.path(),
+            "[repo.\"~/a\"]\nurl = \"https://example.com/a\"\n",
+            true,
+        );
+
+        let (root, current, global_repos) =
+            super::find_root(&outside, Some(&home), Some(&global.path));
+        assert_eq!(root, home);
+        assert_eq!(current, None);
+        assert!(global_repos);
+
+        // Inside a project the global repos are not used.
+        let (_, current, global_repos) =
+            super::find_root(&project.join("sub"), Some(&home), Some(&global.path));
+        assert_eq!(current.as_deref().map(|c| c.as_str()), Some("sub"));
+        assert!(!global_repos);
+
+        // Without global repos, the current directory is the root as before.
+        let empty = global_config(dir.path(), "license = \"MIT\"\n", true);
+        let (root, current, global_repos) =
+            super::find_root(&outside, Some(&home), Some(&empty.path));
+        assert_eq!(root, outside);
+        assert_eq!(current.as_deref().map(|c| c.as_str()), Some(""));
+        assert!(!global_repos);
+
+        // A repo without a url is not a repo.
+        let no_url = global_config(dir.path(), "[repo.\"~/a\"]\nbranch = \"main\"\n", true);
+        let (_, _, global_repos) = super::find_root(&outside, Some(&home), Some(&no_url.path));
+        assert!(!global_repos);
+    }
+
+    #[test]
+    fn global_repos_resolve_against_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let elsewhere = dir.path().join("elsewhere/c");
+
+        fs::create_dir_all(home.join("a")).unwrap();
+        fs::create_dir_all(home.join("templates")).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(home.join("a/Kick.toml"), "license = \"own\"\n").unwrap();
+        fs::write(home.join("templates/lib.md"), "lib template\n").unwrap();
+
+        let global = global_config(
+            dir.path(),
+            &format!(
+                "license = \"global\"\n\
+                 lib = \"templates/lib.md\"\n\
+                 \n\
+                 [deploy]\n\
+                 user = \"global\"\n\
+                 \n\
+                 [repo.\"~/a\"]\n\
+                 url = \"https://example.com/a\"\n\
+                 \n\
+                 [repo.\"b\"]\n\
+                 url = \"https://example.com/b\"\n\
+                 \n\
+                 [repo.\"{}\"]\n\
+                 url = \"https://example.com/c\"\n",
+                elsewhere.display()
+            ),
+            true,
+        );
+
+        let templating = Templating::new().unwrap();
+        let defaults = config::defaults();
+
+        let paths = Paths {
+            root: &home,
+            current: None,
+            config: None,
+            cache: None,
+            redirect: None,
+        };
+
+        let loaded = config::load_all_with(paths, &templating, &defaults, Some(&global));
+        assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+        let config = loaded.config;
+
+        let keys = config.repos.keys().map(|k| k.as_str()).collect::<Vec<_>>();
+        assert_eq!(keys, ["../elsewhere/c", "a", "b"]);
+
+        let (repos, from_group) = collect_repos(&config, &home, None).unwrap();
+        assert!(from_group);
+        assert_eq!(repos.len(), 3);
+
+        let a = repos.iter().find(|r| r.path() == "a").unwrap();
+        let b = repos.iter().find(|r| r.path() == "b").unwrap();
+
+        assert!(
+            a.source_list()
+                .any(|s| *s == RepoSource::Global(String::from("~/a")))
+        );
+
+        // The repo's own configuration takes precedence over the global one.
+        assert_eq!(config.license(a), "own");
+        assert_eq!(config.license(b), "global");
+        assert_eq!(config.deploy(a).user.as_deref(), Some("global"));
+        assert!(config.lib(b).is_some());
+
+        // The global configuration is reported as a source.
+        let global_source = loaded.sources.iter().find(|s| s.global).unwrap();
+        assert!(!global_source.repos_ignored);
+        assert!(global_source.repos.iter().any(|(p, _)| p == "a"));
+    }
+
+    #[test]
+    fn global_config_is_least_specific_in_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        fs::create_dir_all(dir.path().join("home")).unwrap();
+        fs::create_dir_all(root.join("x")).unwrap();
+
+        fs::write(
+            root.join("Kick.toml"),
+            "[deploy]\nuser = \"project\"\n\n[repo.\"x\"]\nurl = \"https://example.com/x\"\n",
+        )
+        .unwrap();
+
+        let global = global_config(
+            dir.path(),
+            "license = \"global\"\nbranch = \"trunk\"\n\n[deploy]\nuser = \"global\"\n\n[repo.\"~/a\"]\nurl = \"https://example.com/a\"\n",
+            false,
+        );
+
+        let templating = Templating::new().unwrap();
+        let defaults = config::defaults();
+
+        let paths = Paths {
+            root: &root,
+            current: None,
+            config: None,
+            cache: None,
+            redirect: None,
+        };
+
+        let loaded = config::load_all_with(paths, &templating, &defaults, Some(&global));
+        assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+
+        // The global configuration is loaded last.
+        let last = loaded.sources.last().unwrap();
+        assert!(last.global);
+        assert!(last.repos_ignored);
+
+        let config = loaded.config;
+        let keys = config.repos.keys().map(|k| k.as_str()).collect::<Vec<_>>();
+        assert_eq!(keys, ["x"], "global repos are not merged into a project");
+
+        let (repos, _) = collect_repos(&config, &root, None).unwrap();
+        let x = &repos[0];
+
+        assert_eq!(config.deploy(x).user.as_deref(), Some("project"));
+        assert_eq!(config.license(x), "global");
+        assert_eq!(config.branch(x), Some("trunk"));
     }
 }

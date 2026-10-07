@@ -15,6 +15,7 @@ pub(crate) mod login;
 pub(crate) mod msi;
 pub(crate) mod msrv;
 mod output;
+pub(crate) mod project;
 pub(crate) mod publish;
 pub(crate) mod rpm;
 pub(crate) mod run;

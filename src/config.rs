@@ -20,6 +20,7 @@ use url::Url;
 use crate::KICK_TOML;
 use crate::ctxt::Paths;
 use crate::glob::Glob;
+use crate::global::Global;
 use crate::keys::Keys;
 use crate::model::{Repo, RepoParams, RepoRef, RepoSource};
 use crate::packaging::Mode;
@@ -1456,6 +1457,12 @@ pub(crate) struct ConfigSource {
     pub(crate) repos: Vec<(RelativePathBuf, Vec<String>)>,
     /// Errors raised while loading the file.
     pub(crate) errors: Vec<String>,
+    /// Whether this is the user-global configuration, which is the least
+    /// specific layer even though it is loaded last.
+    pub(crate) global: bool,
+    /// Whether the `[repo."<path>"]` sections in the file are ignored, which
+    /// is the case for the global configuration inside of a project.
+    pub(crate) repos_ignored: bool,
 }
 
 /// Configuration loaded with [`load_all`], which keeps going past errors.
@@ -1478,6 +1485,8 @@ struct Cx<'a> {
     templating: &'a Templating,
     errors: RefCell<Vec<Error>>,
     sources: RefCell<Vec<ConfigSource>>,
+    /// Set while the global configuration is being loaded.
+    global: Option<&'a Global>,
 }
 
 impl<'a> Cx<'a> {
@@ -1490,6 +1499,15 @@ impl<'a> Cx<'a> {
             templating,
             errors: RefCell::new(Vec::new()),
             sources: RefCell::new(Vec::new()),
+            global: None,
+        }
+    }
+
+    /// The path of the configuration file being loaded.
+    fn config_file(&self) -> PathBuf {
+        match self.global {
+            Some(global) => global.path.clone(),
+            None => self.paths.to_path(&self.config_path),
         }
     }
 
@@ -1498,11 +1516,13 @@ impl<'a> Cx<'a> {
         self.sources.borrow_mut().push(ConfigSource {
             dir: self.current.clone(),
             config_path: self.config_path.clone(),
-            path: self.paths.to_path(&self.config_path),
+            path: self.config_file(),
             state: SourceState::Invalid,
             keys: Vec::new(),
             repos: Vec::new(),
             errors: Vec::new(),
+            global: self.global.is_some(),
+            repos_ignored: self.global.is_some_and(|g| !g.provides_repos),
         });
 
         let value = self.read_config();
@@ -1512,6 +1532,14 @@ impl<'a> Cx<'a> {
                 Ok(Some(value)) => {
                     source.state = SourceState::Loaded;
                     (source.keys, source.repos) = top_level_keys(value);
+
+                    // Repos declared in the global configuration are shown
+                    // by the path they resolve to.
+                    if let Some(global) = self.global.filter(|g| g.provides_repos) {
+                        for (path, _) in &mut source.repos {
+                            *path = global.repo_path(self.paths.root, path.as_str());
+                        }
+                    }
                 }
                 Ok(None) => {
                     source.state = SourceState::Missing;
@@ -1524,11 +1552,23 @@ impl<'a> Cx<'a> {
     }
 
     fn read_config(&self) -> Result<Option<toml::Value>, ErrorMarker> {
-        let Some(string) = self
-            .paths
-            .read_to_string(&self.config_path)
-            .map_err(self.map())?
-        else {
+        let string = match self.global {
+            Some(global) => match fs::read_to_string(&global.path) {
+                Ok(string) => Some(string),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                Err(e) => {
+                    return Err(
+                        self.capture(format_args!("reading {}: {e}", global.path.display()))
+                    );
+                }
+            },
+            None => self
+                .paths
+                .read_to_string(&self.config_path)
+                .map_err(self.map())?,
+        };
+
+        let Some(string) = string else {
             return Ok(None);
         };
 
@@ -1556,7 +1596,7 @@ impl<'a> Cx<'a> {
         self.errors.borrow_mut().push(anyhow!(
             "{path}: {}: {error}",
             self.keys,
-            path = self.paths.to_path(&self.config_path).display()
+            path = self.config_file().display()
         ));
 
         ErrorMarker
@@ -1611,8 +1651,15 @@ impl<'a> Cx<'a> {
 
     /// Read a template, returning the path it was read from with it.
     fn read_template_at(&self, value: toml::Value) -> Result<(PathBuf, String), ErrorMarker> {
-        let path = self.relative_path(value)?;
-        let path = self.paths.to_path(self.current.join(path));
+        let path = match self.global {
+            // NB: Paths in the global configuration may be absolute, start
+            // with `~/`, or be relative to the home directory.
+            Some(global) => global.resolve(&self.string(value)?),
+            None => {
+                let path = self.relative_path(value)?;
+                self.paths.to_path(self.current.join(path))
+            }
+        };
 
         match fs::read_to_string(&path) {
             Ok(template) => Ok((path, template)),
@@ -2565,12 +2612,24 @@ impl<'a> Cx<'a> {
 ///
 /// This fails if any configuration file could not be loaded, after logging
 /// every error. Use [`load_all`] to inspect partially loaded configuration.
+#[cfg(test)]
 pub(crate) fn load<'a>(
     paths: Paths<'a>,
     templating: &Templating,
     defaults: &'a toml::Table,
 ) -> Result<Config<'a>> {
-    let loaded = load_all(paths, templating, defaults);
+    load_with(paths, templating, defaults, None)
+}
+
+/// Load configuration like [`load`], also loading the user-global
+/// configuration as described in [`load_all_with`].
+pub(crate) fn load_with<'a>(
+    paths: Paths<'a>,
+    templating: &Templating,
+    defaults: &'a toml::Table,
+    global: Option<&'a Global>,
+) -> Result<Config<'a>> {
+    let loaded = load_all_with(paths, templating, defaults, global);
 
     if !loaded.errors.is_empty() {
         let count = loaded.errors.len();
@@ -2598,14 +2657,39 @@ pub(crate) fn load<'a>(
 
 /// Load configuration from the given path, keeping going past errors and
 /// recording every configuration file which was looked for.
+#[cfg(test)]
 pub(crate) fn load_all<'a>(
     paths: Paths<'a>,
     templating: &Templating,
     defaults: &'a toml::Table,
 ) -> Loaded<'a> {
+    load_all_with(paths, templating, defaults, None)
+}
+
+/// Load configuration like [`load_all`], also loading the user-global
+/// configuration if `global` is specified.
+///
+/// The global configuration is the least specific layer: project
+/// configuration takes precedence over it. If it provides the repos (outside
+/// of a project) the repos declared in it are used and no project
+/// configuration is loaded at the root, otherwise its `[repo]` sections are
+/// ignored.
+pub(crate) fn load_all_with<'a>(
+    paths: Paths<'a>,
+    templating: &Templating,
+    defaults: &'a toml::Table,
+    global: Option<&'a Global>,
+) -> Loaded<'a> {
     let mut cx = Cx::new(paths, RelativePath::new(""), templating);
 
-    let (base, mut repos) = 'out: {
+    let provides_repos = global.filter(|g| g.provides_repos);
+
+    let (mut base, mut repos) = 'out: {
+        if let Some(global) = provides_repos {
+            let (base, repos) = load_global(&mut cx, global);
+            break 'out (base.unwrap_or_default(), repos);
+        }
+
         let Ok(Some(config)) = cx.config() else {
             break 'out (RepoConfig::default(), BTreeMap::new());
         };
@@ -2636,6 +2720,14 @@ pub(crate) fn load_all<'a>(
 
         config.sources.extend(sources);
         config.urls.extend(urls);
+    }
+
+    // The global configuration is loaded last, but is merged in as the least
+    // specific layer.
+    if let Some(global) = global.filter(|g| !g.provides_repos)
+        && let (Some(global), _) = load_global(&mut cx, global)
+    {
+        base = merge_under(global, base);
     }
 
     Loaded {
@@ -2694,6 +2786,61 @@ fn load_base(
 
         Ok((base?, repos?))
     })
+}
+
+/// Load the global configuration, returning its base configuration and, if it
+/// provides the repos, the repos declared in it keyed by their path relative
+/// to the root.
+fn load_global<'a>(
+    cx: &mut Cx<'a>,
+    global: &'a Global,
+) -> (Option<RepoConfig>, BTreeMap<RelativePathBuf, RepoConfig>) {
+    let config_path = RelativePathBuf::from(global.display_path());
+    let old_config_path = mem::replace(&mut cx.config_path, config_path);
+    let old_keys = mem::take(&mut cx.keys);
+    cx.global = Some(global);
+
+    let loaded = match cx.config() {
+        Ok(Some(config)) => load_base(cx, config).ok(),
+        _ => None,
+    };
+
+    cx.global = None;
+    cx.keys = old_keys;
+    cx.config_path = old_config_path;
+
+    let mut repos = BTreeMap::new();
+
+    let base = loaded.map(|(base, declared)| {
+        if global.provides_repos {
+            for (key, mut config) in declared {
+                config.sources = BTreeSet::from([RepoSource::Global(key.to_string())]);
+                repos.insert(global.repo_path(cx.paths.root, key.as_str()), config);
+            }
+        }
+
+        base
+    });
+
+    (base, repos)
+}
+
+/// Merge the more specific `config` over the less specific `under`.
+fn merge_under(mut under: RepoConfig, mut config: RepoConfig) -> RepoConfig {
+    // NB: These are not covered by `merge_with`.
+    let readme = config.readme.take();
+    let urls = mem::take(&mut config.urls);
+    let sources = mem::take(&mut config.sources);
+
+    under.merge_with(config);
+    under.readme = readme.or(under.readme.take());
+
+    if !urls.is_empty() {
+        under.urls = urls;
+    }
+
+    under.sources.extend(sources);
+    under
 }
 
 fn load_repo(cx: &mut Cx, current: RelativePathBuf) -> Result<RepoConfig, ErrorMarker> {
