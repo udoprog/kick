@@ -59,14 +59,23 @@ pub(super) enum Schedule {
 
 impl Schedule {
     /// Add a preparation which matches the given schedule.
+    ///
+    /// A group adds every action used by its steps, including those of nested
+    /// groups, so that they are synchronized together before the group runs.
     pub(super) fn prepare(&self, session: &mut Session) -> Result<()> {
         match self {
             Schedule::Use(u) => {
                 session.actions_mut().insert_action(u.uses())?;
-                Ok(())
             }
-            _ => Ok(()),
+            Schedule::Group(g) => {
+                for step in g.steps.iter() {
+                    step.prepare(session)?;
+                }
+            }
+            _ => {}
         }
+
+        Ok(())
     }
 }
 

@@ -1,9 +1,11 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::str;
+use std::sync::Mutex;
+use std::thread;
 
 use anyhow::{Context, Result, anyhow, bail};
 use bstr::BString;
@@ -106,74 +108,169 @@ impl Actions {
     }
 
     /// Synchronize github uses.
+    ///
+    /// Distinct repos are fetched concurrently, after which every action is
+    /// loaded, exported and registered in the order it was inserted.
     pub(super) fn synchronize(
         &mut self,
         runners: &mut ActionRunners,
         cx: &Ctxt<'_>,
         eval: &Eval,
     ) -> Result<()> {
-        for (repo, name, version) in self.changed.drain(..) {
-            sync_action(
-                runners,
-                cx,
-                eval,
-                &repo,
-                &name,
-                &version,
-                &mut self.found_node_versions,
-            )
-            .with_context(|| anyhow!("Failed to sync GitHub action {repo}/{name}@{version}"))?;
+        let pending = self
+            .changed
+            .drain(..)
+            .filter(|(repo, name, version)| !runners.contains(&format!("{repo}/{name}@{version}")))
+            .collect::<Vec<_>>();
+
+        if pending.is_empty() {
+            return Ok(());
         }
 
-        Ok(())
+        let cache_dir = cx
+            .paths
+            .cache
+            .context("Kick does not have project directories")?;
+
+        let actions_dir = cache_dir.join("actions");
+
+        let mut errors = Vec::new();
+
+        // Group entries by repo, so that a single fetch covers every version
+        // of it and no two fetches write the same bare git dir at once.
+        let mut groups = Vec::<RepoGroup<'_>>::new();
+        let mut group_index = HashMap::<(&str, &str), usize>::new();
+
+        for (repo, name, version) in &pending {
+            let index = *group_index
+                .entry((repo.as_str(), name.as_str()))
+                .or_insert_with(|| {
+                    groups.push(RepoGroup {
+                        repo,
+                        name,
+                        repo_dir: actions_dir.join(repo).join(name),
+                        versions: Vec::new(),
+                    });
+
+                    groups.len() - 1
+                });
+
+            groups[index].versions.push(version);
+        }
+
+        let mut opened = Vec::with_capacity(groups.len());
+
+        for group in &groups {
+            match open_repo(&group.repo_dir) {
+                Ok(repo) => opened.push(Some(repo)),
+                Err(error) => {
+                    errors.push(error.context(group.context()));
+                    opened.push(None);
+                }
+            }
+        }
+
+        let fetched = fetch_all(&groups, &opened);
+
+        // Load, export and register in a deterministic order.
+        for (repo, name, version) in &pending {
+            let index = group_index[&(repo.as_str(), name.as_str())];
+
+            let (Some((r, _)), Some(remotes)) = (&opened[index], &fetched[index]) else {
+                continue;
+            };
+
+            let result = load_action(
+                runners,
+                eval,
+                &r.to_thread_local(),
+                &groups[index].repo_dir,
+                repo,
+                name,
+                version,
+                remotes.as_deref(),
+                &mut self.found_node_versions,
+            );
+
+            if let Err(error) = result {
+                errors.push(error.context(format!(
+                    "Failed to sync GitHub action {repo}/{name}@{version}"
+                )));
+            }
+        }
+
+        let mut errors = errors.into_iter();
+
+        let Some(first) = errors.next() else {
+            return Ok(());
+        };
+
+        for error in errors {
+            tracing::error!("{error:?}");
+        }
+
+        Err(first)
     }
 }
 
-fn sync_action(
-    runners: &mut ActionRunners,
-    cx: &Ctxt<'_>,
-    eval: &Eval,
-    repo: &str,
-    name: &str,
-    version: &str,
-    node_versions: &mut BTreeSet<Version>,
-) -> Result<()> {
-    let mut refspecs = Vec::new();
-    let key = format!("{repo}/{name}@{version}");
+/// Maximum number of repos fetched at once.
+const MAX_CONCURRENT_FETCHES: usize = 4;
 
-    if runners.contains(&key) {
-        return Ok(());
+/// The lock file in an action's repo directory, which serializes kick
+/// processes fetching or exporting the same action.
+const LOCK: &str = ".kick.lock";
+
+/// Every pending version of one action repo.
+struct RepoGroup<'a> {
+    repo: &'a str,
+    name: &'a str,
+    repo_dir: PathBuf,
+    versions: Vec<&'a str>,
+}
+
+impl RepoGroup<'_> {
+    fn context(&self) -> String {
+        let mut out = String::from("Failed to sync GitHub action");
+
+        for (n, version) in self.versions.iter().enumerate() {
+            let sep = if n == 0 { " " } else { ", " };
+            out.push_str(&format!("{sep}{}/{}@{version}", self.repo, self.name));
+        }
+
+        out
     }
 
-    let mut expected = HashSet::new();
+    fn refspecs(&self) -> Vec<BString> {
+        let mut refspecs = Vec::new();
 
-    for remote_name in [
+        for version in &self.versions {
+            refspecs.extend(version_refs(version));
+        }
+
+        refspecs
+    }
+}
+
+/// The remote refs that a version can name.
+fn version_refs(version: &str) -> [BString; 2] {
+    [
         BString::from(format!("refs/heads/{version}")),
         BString::from(format!("refs/tags/{version}")),
-    ] {
-        refspecs.push(remote_name.clone());
-        expected.insert(remote_name);
-    }
+    ]
+}
 
-    let cache_dir = cx
-        .paths
-        .cache
-        .context("Kick does not have project directories")?;
-
-    let actions_dir = cache_dir.join("actions");
-    let repo_dir = actions_dir.join(repo).join(name);
-
+/// Open or initialize the bare git dir of an action repo.
+///
+/// Returns the repository and whether it already existed.
+fn open_repo(repo_dir: &Path) -> Result<(gix::ThreadSafeRepository, bool)> {
     let git_dir = repo_dir.join(GIT);
-    let work_dir = repo_dir.join(WORKDIR).join(version);
-    let meta_path = work_dir.join(KICK_META_JSON);
-
-    let span = tracing::span!(Level::DEBUG, "sync_action", ?key, ?repo_dir);
-    let _enter = span.enter();
 
     if !git_dir.is_dir() {
         fs::create_dir_all(&git_dir)
             .with_context(|| anyhow!("Failed to create repo directory: {}", git_dir.display()))?;
     }
+
+    let _lock = lock_repo(repo_dir)?;
 
     let (r, open) = match gix::open(&git_dir) {
         Ok(r) => (r, true),
@@ -181,55 +278,198 @@ fn sync_action(
         Err(error) => return Err(error).context("Failed to open or initialize cache repository"),
     };
 
-    let url = format!("{GITHUB_BASE}/{repo}/{name}");
+    Ok((r.into_sync(), open))
+}
 
-    let mut found = None;
+/// Take an exclusive lock on an action repo directory.
+fn lock_repo(repo_dir: &Path) -> Result<Option<File>> {
+    let path = repo_dir.join(LOCK);
 
-    tracing::debug!(?git_dir, ?url, "Syncing");
+    let file = File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| anyhow!("Failed to open lock file: {}", path.display()))?;
 
-    match crate::gix::sync(&r, &url, &refspecs, open) {
-        Ok(remotes) => {
-            tracing::debug!(?url, ?remotes, "Found remotes");
+    match file.lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+            tracing::warn!(?path, "File locking is not supported");
+            Ok(None)
+        }
+        Err(error) => Err(error).with_context(|| anyhow!("Failed to lock: {}", path.display())),
+    }
+}
 
-            for (remote_name, id) in remotes {
-                if !expected.remove(&remote_name) || found.is_some() {
-                    continue;
-                };
+/// The outcome of fetching one repo group, indexed like the groups.
+///
+/// The outer `None` means the group could not be fetched or loaded at all and
+/// its error has been reported. An inner `None` means the fetch failed, so its
+/// actions are loaded from the cached workdir instead.
+type Fetched = Option<Option<Vec<(BString, ObjectId)>>>;
 
-                let mut files = Vec::new();
+/// Fetch every opened repo group, at most [`MAX_CONCURRENT_FETCHES`] at once.
+fn fetch_all(
+    groups: &[RepoGroup<'_>],
+    opened: &[Option<(gix::ThreadSafeRepository, bool)>],
+) -> Vec<Fetched> {
+    let jobs = groups
+        .iter()
+        .zip(opened)
+        .enumerate()
+        .filter_map(|(index, (group, opened))| Some((index, group, opened.as_ref()?)))
+        .collect::<Vec<_>>();
 
-                let (kind, action) = match crate::action::load(&r, eval, id, &mut files) {
-                    Ok(found) => found,
-                    Err(error) => {
-                        tracing::debug!(?remote_name, ?id, ?error, "Not an action");
-                        continue;
+    let mut results = (0..groups.len()).map(|_| None).collect::<Vec<Fetched>>();
+
+    let next = Mutex::new(jobs.into_iter());
+    let workers = MAX_CONCURRENT_FETCHES.min(groups.len());
+
+    let parent = tracing::Span::current();
+
+    let done = thread::scope(|s| {
+        let handles = (0..workers)
+            .map(|_| {
+                let next = &next;
+                let parent = &parent;
+
+                s.spawn(move || {
+                    let _enter = parent.enter();
+                    let mut done = Vec::new();
+
+                    loop {
+                        let Some((index, group, (r, open))) =
+                            next.lock().unwrap_or_else(|e| e.into_inner()).next()
+                        else {
+                            break;
+                        };
+
+                        done.push((index, fetch(group, r, *open)));
                     }
-                };
 
-                tracing::debug!(?remote_name, ?id, ?kind, "Found action");
+                    done
+                })
+            })
+            .collect::<Vec<_>>();
 
-                fs::create_dir_all(&work_dir).with_context(|| {
-                    anyhow!("Failed to create work directory: {}", work_dir.display())
-                })?;
+        handles
+            .into_iter()
+            .flat_map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|e| std::panic::resume_unwind(e))
+            })
+            .collect::<Vec<_>>()
+    });
 
-                let meta = match load_meta(&meta_path)? {
-                    Some(meta) => KickMeta {
-                        id: StringObjectId(id),
-                        ..meta
-                    },
-                    None => KickMeta {
-                        id: StringObjectId(id),
-                        files: Vec::new(),
-                        current: false,
-                    },
-                };
+    for (index, result) in done {
+        results[index] = Some(result);
+    }
 
-                found = Some((kind, action, files, meta));
-            }
+    results
+}
+
+/// Fetch every version of a repo group in one call.
+///
+/// Returns `None` if the fetch failed.
+fn fetch(
+    group: &RepoGroup<'_>,
+    r: &gix::ThreadSafeRepository,
+    open: bool,
+) -> Option<Vec<(BString, ObjectId)>> {
+    let url = format!("{GITHUB_BASE}/{}/{}", group.repo, group.name);
+
+    let span = tracing::span!(Level::DEBUG, "fetch_action", ?url, versions = ?group.versions);
+    let _enter = span.enter();
+
+    let _lock = match lock_repo(&group.repo_dir) {
+        Ok(lock) => lock,
+        Err(error) => {
+            tracing::warn!(?error, "Failed to lock repo");
+            return None;
+        }
+    };
+
+    tracing::debug!(git_dir = ?r.git_dir(), "Syncing");
+
+    match crate::gix::sync(&r.to_thread_local(), &url, &group.refspecs(), open) {
+        Ok(remotes) => {
+            tracing::debug!(?remotes, "Found remotes");
+            Some(remotes)
         }
         Err(error) => {
             tracing::warn!(?error, "Failed to sync remote");
+            None
         }
+    }
+}
+
+/// Load, export and register a single fetched action.
+///
+/// If `remotes` is `None` or contains no action for `version`, the action is
+/// loaded from the id recorded in its cached workdir.
+#[allow(clippy::too_many_arguments)]
+fn load_action(
+    runners: &mut ActionRunners,
+    eval: &Eval,
+    r: &gix::Repository,
+    repo_dir: &Path,
+    repo: &str,
+    name: &str,
+    version: &str,
+    remotes: Option<&[(BString, ObjectId)]>,
+    node_versions: &mut BTreeSet<Version>,
+) -> Result<()> {
+    let key = format!("{repo}/{name}@{version}");
+
+    let work_dir = repo_dir.join(WORKDIR).join(version);
+    let meta_path = work_dir.join(KICK_META_JSON);
+
+    let span = tracing::span!(Level::DEBUG, "load_action", ?key, ?repo_dir);
+    let _enter = span.enter();
+
+    // Serialize with other kick processes exporting the same action.
+    let _lock = lock_repo(repo_dir)?;
+
+    let mut expected = version_refs(version).into_iter().collect::<HashSet<_>>();
+
+    let mut found = None;
+
+    for (remote_name, id) in remotes.into_iter().flatten() {
+        if !expected.remove(remote_name) {
+            continue;
+        };
+
+        let mut files = Vec::new();
+
+        let (kind, action) = match crate::action::load(r, eval, *id, &mut files) {
+            Ok(found) => found,
+            Err(error) => {
+                tracing::debug!(?remote_name, ?id, ?error, "Not an action");
+                continue;
+            }
+        };
+
+        tracing::debug!(?remote_name, ?id, ?kind, "Found action");
+
+        fs::create_dir_all(&work_dir)
+            .with_context(|| anyhow!("Failed to create work directory: {}", work_dir.display()))?;
+
+        let meta = match load_meta(&meta_path)? {
+            Some(meta) => KickMeta {
+                id: StringObjectId(*id),
+                ..meta
+            },
+            None => KickMeta {
+                id: StringObjectId(*id),
+                files: Vec::new(),
+                current: false,
+            },
+        };
+
+        found = Some((kind, action, files, meta));
+        break;
     }
 
     // Try to read out remaining versions from the workdir cache.
@@ -240,7 +480,7 @@ fn sync_action(
 
         // Load an action runner directly out of a repository without checking it out.
         let mut files = Vec::new();
-        let (kind, action) = crate::action::load(&r, eval, meta.id.0, &mut files)?;
+        let (kind, action) = crate::action::load(r, eval, meta.id.0, &mut files)?;
         found = Some((kind, action, files, meta));
     }
 
