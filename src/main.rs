@@ -128,6 +128,12 @@
 //! `~/`, or be relative in which case they are resolved against your home
 //! directory.
 //!
+//! Path-valued settings in any `Kick.toml` interpolate a leading `~` and
+//! environment variables as `$VAR`, `${VAR}` or `${VAR:-default}`, and `$$` is a
+//! literal `$`. Referencing an unset variable without a `:-` fallback is an error,
+//! it never expands to an empty string. See [config.md](config.md#paths-and-environment-variables)
+//! for details.
+//!
 //! When kick runs *outside* of a project, that is when no `Kick.toml` or git
 //! checkout is found in the current directory or any of its parents, it acts on
 //! the repos declared in the global configuration instead. This lets you keep
@@ -541,6 +547,7 @@ mod git_cache;
 mod gix;
 mod glob;
 mod global;
+mod interpolate;
 mod keys;
 mod model;
 mod musli;
@@ -2728,5 +2735,205 @@ mod tests {
         assert_eq!(config.deploy(x).user.as_deref(), Some("project"));
         assert_eq!(config.license(x), "global");
         assert_eq!(config.branch(x), Some("trunk"));
+    }
+
+    /// A variable which is never set, used to test interpolation errors and
+    /// fallbacks.
+    const UNSET: &str = "KICK_TEST_UNSET_61D2B90B";
+
+    #[test]
+    fn project_paths_are_interpolated() {
+        // NB: Cargo sets this when running tests.
+        assert_eq!(
+            std::env::var("CARGO_PKG_NAME").ok().as_deref(),
+            Some(env!("CARGO_PKG_NAME"))
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        fs::create_dir_all(dir.path().join("home")).unwrap();
+        fs::create_dir_all(root.join("templates")).unwrap();
+        fs::write(root.join("templates/lib.md"), "lib template\n").unwrap();
+
+        fs::write(
+            root.join("Kick.toml"),
+            format!(
+                "lib = \"${{{UNSET}:-templates}}/lib.md\"\n\
+                 \n\
+                 [repo.\"repos/$CARGO_PKG_NAME\"]\n\
+                 url = \"https://example.com/kick\"\n\
+                 cargo_toml = \"$$weird/${{CARGO_PKG_NAME}}.toml\"\n\
+                 \n\
+                 [repo.\"~/elsewhere\"]\n\
+                 url = \"https://example.com/elsewhere\"\n"
+            ),
+        )
+        .unwrap();
+
+        let global = global_config(dir.path(), "", false);
+
+        let templating = Templating::new().unwrap();
+        let defaults = config::defaults();
+
+        let paths = Paths {
+            root: &root,
+            current: None,
+            config: None,
+            cache: None,
+            redirect: None,
+        };
+
+        let loaded = config::load_all_with(paths, &templating, &defaults, Some(&global));
+        assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+        let config = loaded.config;
+
+        // `~` expands to the home directory and environment variables are
+        // interpolated in repo keys.
+        let keys = config.repos.keys().map(|k| k.as_str()).collect::<Vec<_>>();
+        assert_eq!(keys, ["../home/elsewhere", "repos/kick"]);
+
+        let (repos, _) = collect_repos(&config, &root, None).unwrap();
+        let kick = repos.iter().find(|r| r.path() == "repos/kick").unwrap();
+
+        // `$$` is a literal `$`.
+        assert_eq!(
+            config.cargo_toml(kick).map(|p| p.as_str()),
+            Some("$weird/kick.toml")
+        );
+
+        // The fallback is used for the unset variable.
+        assert!(config.lib(kick).is_some());
+    }
+
+    #[test]
+    fn global_paths_are_interpolated() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        fs::create_dir_all(home.join("templates")).unwrap();
+        fs::write(home.join("templates/lib.md"), "lib template\n").unwrap();
+
+        let global = global_config(
+            dir.path(),
+            &format!(
+                "lib = \"~/${{{UNSET}:-templates}}/lib.md\"\n\
+                 \n\
+                 [repo.\"~/src/$CARGO_PKG_NAME\"]\n\
+                 url = \"https://example.com/kick\"\n\
+                 \n\
+                 [repo.\"${{{UNSET}:-~/other}}\"]\n\
+                 url = \"https://example.com/other\"\n"
+            ),
+            true,
+        );
+
+        let templating = Templating::new().unwrap();
+        let defaults = config::defaults();
+
+        let paths = Paths {
+            root: &home,
+            current: None,
+            config: None,
+            cache: None,
+            redirect: None,
+        };
+
+        let loaded = config::load_all_with(paths, &templating, &defaults, Some(&global));
+        assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+        let config = loaded.config;
+
+        // NB: `~` is only expanded at the start of a value, so the fallback
+        // `~/other` is a path relative to the home directory named `~`.
+        let keys = config.repos.keys().map(|k| k.as_str()).collect::<Vec<_>>();
+        assert_eq!(keys, ["src/kick", "~/other"]);
+
+        let (repos, _) = collect_repos(&config, &home, None).unwrap();
+        let kick = repos.iter().find(|r| r.path() == "src/kick").unwrap();
+
+        // The key is kept as written.
+        assert!(
+            kick.source_list()
+                .any(|s| *s == RepoSource::Global(String::from("~/src/$CARGO_PKG_NAME")))
+        );
+
+        assert!(config.lib(kick).is_some());
+
+        // The source lists the repos by the path they resolve to.
+        let source = loaded.sources.iter().find(|s| s.global).unwrap();
+        assert!(source.repos.iter().any(|(p, _)| p == "src/kick"));
+    }
+
+    #[test]
+    fn unset_variables_are_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        fs::create_dir_all(dir.path().join("home")).unwrap();
+        fs::create_dir_all(&root).unwrap();
+
+        fs::write(
+            root.join("Kick.toml"),
+            format!(
+                "[repo.\"repos/${UNSET}\"]\n\
+                 url = \"https://example.com/a\"\n\
+                 \n\
+                 [repo.\"b\"]\n\
+                 url = \"https://example.com/b\"\n\
+                 cargo_toml = \"${{{UNSET}}}/Cargo.toml\"\n"
+            ),
+        )
+        .unwrap();
+
+        let global = global_config(dir.path(), &format!("lib = \"~/${UNSET}/lib.md\"\n"), false);
+
+        let templating = Templating::new().unwrap();
+        let defaults = config::defaults();
+
+        let paths = Paths {
+            root: &root,
+            current: None,
+            config: None,
+            cache: None,
+            redirect: None,
+        };
+
+        let loaded = config::load_all_with(paths, &templating, &defaults, Some(&global));
+        let errors = loaded
+            .errors
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(errors.len(), 3, "{errors:?}");
+
+        let project = root.join("Kick.toml");
+        let project = project.display();
+
+        // Each error names the file, the key and the variable.
+        let find = |needle: &str| {
+            errors
+                .iter()
+                .find(|e| e.contains(needle))
+                .unwrap_or_else(|| panic!("no error containing {needle:?} in {errors:?}"))
+        };
+
+        let repo_key = find(&format!("repos/${UNSET}"));
+        assert!(repo_key.starts_with(&format!("{project}: ")), "{repo_key}");
+        assert!(
+            repo_key.contains(&format!("environment variable `{UNSET}` is not set")),
+            "{repo_key}"
+        );
+
+        let cargo_toml = find("cargo_toml");
+        assert!(
+            cargo_toml.starts_with(&format!("{project}: ")),
+            "{cargo_toml}"
+        );
+        assert!(cargo_toml.contains(&format!("`{UNSET}`")), "{cargo_toml}");
+
+        let lib = find("lib");
+        assert!(
+            lib.starts_with(&format!("{}: .lib: ", global.path.display())),
+            "{lib}"
+        );
+        assert!(lib.contains(&format!("`{UNSET}`")), "{lib}");
     }
 }

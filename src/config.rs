@@ -20,7 +20,8 @@ use url::Url;
 use crate::KICK_TOML;
 use crate::ctxt::Paths;
 use crate::glob::Glob;
-use crate::global::Global;
+use crate::global::{self, Global};
+use crate::interpolate;
 use crate::keys::Keys;
 use crate::model::{Repo, RepoParams, RepoRef, RepoSource};
 use crate::packaging::Mode;
@@ -1487,6 +1488,9 @@ struct Cx<'a> {
     sources: RefCell<Vec<ConfigSource>>,
     /// Set while the global configuration is being loaded.
     global: Option<&'a Global>,
+    /// The home directory, which a leading `~` in path-valued settings
+    /// expands to.
+    home: Option<PathBuf>,
 }
 
 impl<'a> Cx<'a> {
@@ -1500,7 +1504,54 @@ impl<'a> Cx<'a> {
             errors: RefCell::new(Vec::new()),
             sources: RefCell::new(Vec::new()),
             global: None,
+            home: None,
         }
+    }
+
+    /// Interpolate `~` and environment variables in a path-valued setting.
+    fn interpolate_path(&self, value: &str) -> Result<PathBuf, ErrorMarker> {
+        let home = match self.global {
+            Some(global) => Some(global.home.as_path()),
+            None => self.home.as_deref(),
+        };
+
+        interpolate::path(value, home, interpolate::env)
+            .map_err(|error| self.capture(format_args!("in `{value}`: {error}")))
+    }
+
+    /// The directory of the configuration file being loaded, which relative
+    /// paths in it are resolved against.
+    fn base_dir(&self) -> PathBuf {
+        match self.global {
+            Some(global) => global.home.clone(),
+            None => self.current.to_path(self.paths.root),
+        }
+    }
+
+    /// Resolve the key of a `[repo."<key>"]` section, interpolating `~` and
+    /// environment variables in it.
+    ///
+    /// The returned path is relative to the directory of the configuration
+    /// file, or to the root for the global configuration. A key which
+    /// resolves to an absolute path is made relative to it.
+    fn repo_key(&self, key: &str) -> Result<RelativePathBuf, ErrorMarker> {
+        let base = match self.global {
+            // NB: The repos of the global configuration are ignored inside of
+            // a project, so its keys are left alone.
+            Some(global) if !global.provides_repos => return Ok(RelativePathBuf::from(key)),
+            Some(..) => self.paths.root.to_owned(),
+            None => self.base_dir(),
+        };
+
+        let path = self.interpolate_path(key)?;
+
+        if path.is_absolute() || self.global.is_some() {
+            let path = global::normalize(&self.base_dir().join(path));
+            return Ok(global::relative_to(&base, &path));
+        }
+
+        RelativePathBuf::from_path(&path)
+            .map_err(|error| self.capture(format_args!("in `{key}`: {}: {error}", path.display())))
     }
 
     /// The path of the configuration file being loaded.
@@ -1537,7 +1588,10 @@ impl<'a> Cx<'a> {
                     // by the path they resolve to.
                     if let Some(global) = self.global.filter(|g| g.provides_repos) {
                         for (path, _) in &mut source.repos {
-                            *path = global.repo_path(self.paths.root, path.as_str());
+                            // NB: Errors are reported when the repo is loaded.
+                            if let Ok(resolved) = global.repo_path(self.paths.root, path.as_str()) {
+                                *path = resolved;
+                            }
                         }
                     }
                 }
@@ -1651,13 +1705,21 @@ impl<'a> Cx<'a> {
 
     /// Read a template, returning the path it was read from with it.
     fn read_template_at(&self, value: toml::Value) -> Result<(PathBuf, String), ErrorMarker> {
-        let path = match self.global {
-            // NB: Paths in the global configuration may be absolute, start
-            // with `~/`, or be relative to the home directory.
-            Some(global) => global.resolve(&self.string(value)?),
-            None => {
-                let path = self.relative_path(value)?;
-                self.paths.to_path(self.current.join(path))
+        // NB: Template paths may be absolute, start with `~/`, or be relative
+        // to the directory of the configuration file (the home directory for
+        // the global configuration).
+        let path = self.interpolate_path(&self.string(value)?)?;
+
+        let path = if path.is_absolute() {
+            path
+        } else if self.global.is_some() {
+            global::normalize(&self.base_dir().join(path))
+        } else {
+            match RelativePathBuf::from_path(&path) {
+                Ok(path) => self.paths.to_path(self.current.join(path)),
+                Err(error) => {
+                    return Err(self.capture(format_args!("{}: {error}", path.display())));
+                }
             }
         };
 
@@ -1694,14 +1756,21 @@ impl<'a> Cx<'a> {
         }
     }
 
+    /// A path-valued setting which must be relative, after `~` and
+    /// environment variables are interpolated in it.
     fn relative_path(&self, value: toml::Value) -> Result<RelativePathBuf, ErrorMarker> {
-        let path = RelativePathBuf::from(self.string(value)?);
+        let value = self.string(value)?;
+        let path = self.interpolate_path(&value)?;
 
-        if path.as_str().starts_with('/') {
-            return Err(self.capture(format_args!("path must be relative, but got {path}")));
+        if path.has_root() || path.is_absolute() {
+            return Err(self.capture(format_args!(
+                "path must be relative, but got {}",
+                path.display()
+            )));
         }
 
-        Ok(path)
+        RelativePathBuf::from_path(&path)
+            .map_err(|error| self.capture(format_args!("{}: {error}", path.display())))
     }
 
     fn boolean(&self, value: toml::Value) -> Result<bool, ErrorMarker> {
@@ -2681,6 +2750,10 @@ pub(crate) fn load_all_with<'a>(
     global: Option<&'a Global>,
 ) -> Loaded<'a> {
     let mut cx = Cx::new(paths, RelativePath::new(""), templating);
+    cx.home = match global {
+        Some(global) => Some(global.home.clone()),
+        None => directories::BaseDirs::new().map(|d| d.home_dir().to_owned()),
+    };
 
     let provides_repos = global.filter(|g| g.provides_repos);
 
@@ -2697,6 +2770,11 @@ pub(crate) fn load_all_with<'a>(
         let Ok((base, repos)) = load_base(&mut cx, config) else {
             break 'out (RepoConfig::default(), BTreeMap::new());
         };
+
+        let repos = repos
+            .into_iter()
+            .map(|(path, (_, config))| (path, config))
+            .collect();
 
         (base, repos)
     };
@@ -2773,15 +2851,21 @@ fn top_level_keys(value: &toml::Value) -> (Vec<String>, Vec<(RelativePathBuf, Ve
     (keys, repos)
 }
 
+/// Load the base configuration and the repos declared in a configuration
+/// file, keyed by their resolved path along with the `[repo."<key>"]` key they
+/// were declared under.
+#[allow(clippy::type_complexity)]
 fn load_base(
     cx: &mut Cx<'_>,
     table: toml::Value,
-) -> Result<(RepoConfig, BTreeMap<RelativePathBuf, RepoConfig>), ErrorMarker> {
+) -> Result<(RepoConfig, BTreeMap<RelativePathBuf, (String, RepoConfig)>), ErrorMarker> {
     cx.with_table(table, |cx, table| {
         let base = cx.repo_table(table);
 
         let repos = cx.in_table(table, "repo", |cx, id, value| {
-            Ok((RelativePathBuf::from(id), cx.repo(value)?))
+            let path = cx.repo_key(&id);
+            let config = cx.repo(value);
+            Ok((path?, (id, config?)))
         });
 
         Ok((base?, repos?))
@@ -2813,9 +2897,9 @@ fn load_global<'a>(
 
     let base = loaded.map(|(base, declared)| {
         if global.provides_repos {
-            for (key, mut config) in declared {
-                config.sources = BTreeSet::from([RepoSource::Global(key.to_string())]);
-                repos.insert(global.repo_path(cx.paths.root, key.as_str()), config);
+            for (path, (key, mut config)) in declared {
+                config.sources = BTreeSet::from([RepoSource::Global(key)]);
+                repos.insert(path, config);
             }
         }
 

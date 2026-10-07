@@ -7,7 +7,8 @@
 //!
 //! Paths in it, including the `[repo."<path>"]` keys, may be absolute, start
 //! with `~/`, or be relative in which case they are resolved against the
-//! user's home directory.
+//! user's home directory. Environment variables are interpolated in them as
+//! described in [`crate::interpolate`].
 
 use std::fs;
 use std::io;
@@ -16,6 +17,8 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use relative_path::RelativePathBuf;
 use toml_edit::{DocumentMut, Item, Table};
+
+use crate::interpolate;
 
 /// The user-global configuration.
 #[derive(Debug, Clone)]
@@ -36,21 +39,49 @@ impl Global {
         display(&self.home, &self.path)
     }
 
-    /// Resolve a path-valued setting from the global configuration.
-    pub(crate) fn resolve(&self, value: &str) -> PathBuf {
-        resolve(&self.home, &self.home, value)
+    /// Resolve a path-valued setting from the global configuration,
+    /// interpolating `~` and environment variables in it.
+    pub(crate) fn resolve(&self, value: &str) -> Result<PathBuf, interpolate::Error> {
+        resolve_config(&self.home, &self.home, value, interpolate::env)
     }
 
     /// Resolve the `[repo."<key>"]` key of a repo declared in the global
     /// configuration to a path relative to `root`.
-    pub(crate) fn repo_path(&self, root: &Path, key: &str) -> RelativePathBuf {
-        relative_to(root, &self.resolve(key))
+    pub(crate) fn repo_path(
+        &self,
+        root: &Path,
+        key: &str,
+    ) -> Result<RelativePathBuf, interpolate::Error> {
+        Ok(relative_to(root, &self.resolve(key)?))
     }
 }
 
-/// Resolve `value` the way paths in the global configuration are resolved.
+/// Resolve a path-valued setting read from configuration.
 ///
-/// A path starting with `~/` (or which is exactly `~`) is resolved against
+/// `~` and environment variables are interpolated as described in
+/// [`crate::interpolate`], after which an absolute path is used as-is and
+/// anything else is resolved against `base`.
+pub(crate) fn resolve_config(
+    home: &Path,
+    base: &Path,
+    value: &str,
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<PathBuf, interpolate::Error> {
+    let path = interpolate::path(value, Some(home), lookup)?;
+
+    let path = if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    };
+
+    Ok(normalize(&path))
+}
+
+/// Resolve a path given on the command line.
+///
+/// No environment variables are interpolated, since the shell has already
+/// done so. A path starting with `~/` (or which is exactly `~`) is resolved against
 /// `home`, an absolute path is used as-is, and anything else is resolved
 /// against `base`.
 pub(crate) fn resolve(home: &Path, base: &Path, value: &str) -> PathBuf {
@@ -183,8 +214,9 @@ pub(crate) fn declared_repos(path: &Path) -> Vec<String> {
 pub(crate) struct Project {
     /// The `[repo."<key>"]` key the project is registered under.
     pub(crate) key: String,
-    /// The resolved path of the project.
-    pub(crate) path: PathBuf,
+    /// The resolved path of the project, or the error raised interpolating
+    /// its key.
+    pub(crate) path: Result<PathBuf, interpolate::Error>,
     /// The url of the project, if any.
     pub(crate) url: Option<String>,
 }
@@ -226,7 +258,7 @@ impl Projects {
             .iter()
             .map(|(key, item)| Project {
                 key: key.to_owned(),
-                path: resolve(&self.home, &self.home, key),
+                path: resolve_config(&self.home, &self.home, key, interpolate::env),
                 url: item
                     .as_table_like()
                     .and_then(|t| t.get("url"))
@@ -240,9 +272,9 @@ impl Projects {
     fn find(&self, key: Option<&str>, path: &Path) -> Option<Project> {
         let path = normalize(path);
 
-        self.list()
-            .into_iter()
-            .find(|p| key.is_some_and(|k| k == p.key) || same_path(&p.path, &path))
+        self.list().into_iter().find(|p| {
+            key.is_some_and(|k| k == p.key) || p.path.as_ref().is_ok_and(|p| same_path(p, &path))
+        })
     }
 
     /// Register the directory at `path` with the given `url`, returning the
@@ -408,9 +440,9 @@ mod tests {
         let list = projects.list();
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].key, "~/projects/a");
-        assert_eq!(list[0].path, project);
+        assert_eq!(list[0].path, Ok(project.clone()));
         assert_eq!(list[0].url.as_deref(), Some("https://example.com/a"));
-        assert_eq!(list[1].path, Path::new("/opt/b"));
+        assert_eq!(list[1].path, Ok(Path::new("/opt/b").to_owned()));
 
         assert_eq!(
             declared_repos(&config),

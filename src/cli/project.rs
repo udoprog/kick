@@ -64,16 +64,20 @@ pub(crate) fn entry(cx: &Cx<'_>, opts: &Opts) -> Result<()> {
             }
 
             for project in list {
-                let exists = if project.path.is_dir() {
-                    ""
-                } else {
-                    " (missing)"
-                };
+                match &project.path {
+                    Ok(path) => {
+                        let exists = if path.is_dir() { "" } else { " (missing)" };
 
-                println!("{}{exists}", project.key);
+                        println!("{}{exists}", project.key);
 
-                if project.key != global::display(cx.home, &project.path) {
-                    println!("  path: {}", project.path.display());
+                        if project.key != global::display(cx.home, path) {
+                            println!("  path: {}", path.display());
+                        }
+                    }
+                    Err(error) => {
+                        println!("{} (error)", project.key);
+                        println!("  error: {error}");
+                    }
                 }
 
                 match &project.url {

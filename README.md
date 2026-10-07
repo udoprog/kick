@@ -131,6 +131,12 @@ as `[repo."<path>"]` keys and template paths, may be absolute, start with
 `~/`, or be relative in which case they are resolved against your home
 directory.
 
+Path-valued settings in any `Kick.toml` interpolate a leading `~` and
+environment variables as `$VAR`, `${VAR}` or `${VAR:-default}`, and `$$` is a
+literal `$`. Referencing an unset variable without a `:-` fallback is an error,
+it never expands to an empty string. See [config.md](config.md#paths-and-environment-variables)
+for details.
+
 When kick runs *outside* of a project, that is when no `Kick.toml` or git
 checkout is found in the current directory or any of its parents, it acts on
 the repos declared in the global configuration instead. This lets you keep
