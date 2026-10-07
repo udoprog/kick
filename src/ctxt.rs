@@ -74,6 +74,13 @@ impl Paths<'_> {
         let path = rewritten.as_deref().unwrap_or(path);
 
         if self.root.components().eq([Component::CurDir]) {
+            // NB: An empty path refers to the root itself, which must not be
+            // returned as an empty path since it is not a valid directory to
+            // run commands in.
+            if path.components().next().is_none() {
+                return PathBuf::from_iter([Component::CurDir]);
+            }
+
             return PathBuf::from(path.as_str());
         }
 
@@ -301,6 +308,24 @@ mod tests {
             cache: None,
             redirect,
         }
+    }
+
+    #[test]
+    fn to_path_root_is_never_empty() {
+        let p = Paths {
+            root: Path::new("."),
+            current: Some(RelativePath::new("")),
+            config: None,
+            cache: None,
+            redirect: None,
+        };
+
+        assert_eq!(p.to_path(""), PathBuf::from("."));
+        assert_eq!(p.to_path("."), PathBuf::from("."));
+        assert_eq!(p.to_path("src"), PathBuf::from("src"));
+
+        let p = paths(Some(""), None);
+        assert_eq!(p.to_path(""), PathBuf::from("."));
     }
 
     #[test]

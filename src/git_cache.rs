@@ -55,7 +55,10 @@ impl<'repo, 'a> GitCache<'repo, 'a> {
             for repo in self.repos {
                 let path = self.paths.to_path(repo.path());
 
-                if git.is_dirty(&path)? {
+                if git
+                    .is_dirty(&path)
+                    .with_context(|| checking(repo.path(), "is dirty"))?
+                {
                     self.dirty.push(repo.path());
                 }
             }
@@ -77,7 +80,10 @@ impl<'repo, 'a> GitCache<'repo, 'a> {
             for repo in self.repos {
                 let path = self.paths.to_path(repo.path());
 
-                if git.is_cached(&path)? {
+                if git
+                    .is_cached(&path)
+                    .with_context(|| checking(repo.path(), "has cached changes"))?
+                {
                     self.cached.push(repo.path());
                 }
             }
@@ -99,7 +105,10 @@ impl<'repo, 'a> GitCache<'repo, 'a> {
             for repo in self.repos {
                 let path = self.paths.to_path(repo.path());
 
-                if git.is_outdated(&path, self.fetch)? {
+                if git
+                    .is_outdated(&path, self.fetch)
+                    .with_context(|| checking(repo.path(), "is outdated"))?
+                {
                     self.outdated.push(repo.path());
                 }
             }
@@ -122,7 +131,10 @@ impl<'repo, 'a> GitCache<'repo, 'a> {
                 let path = self.paths.to_path(repo.path());
 
                 let outcome = 'outcome: {
-                    let Some(describe) = git.describe_tags(&path, self.fetch)? else {
+                    let Some(describe) = git
+                        .describe_tags(&path, self.fetch)
+                        .with_context(|| checking(repo.path(), "is unreleased"))?
+                    else {
                         tracing::trace!("No tags to describe");
                         break 'outcome true;
                     };
@@ -145,4 +157,14 @@ impl<'repo, 'a> GitCache<'repo, 'a> {
 
         Ok(&self.unreleased)
     }
+}
+
+/// Describe checking a property of the repo at `path`.
+fn checking(path: &RelativePath, what: &str) -> String {
+    let path = match path.as_str() {
+        "" => ".",
+        path => path,
+    };
+
+    format!("Checking if repo `{path}` {what}")
 }

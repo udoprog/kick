@@ -149,9 +149,16 @@ pub(crate) fn normalize(path: &Path) -> PathBuf {
 
 /// Express the absolute `path` relative to `root`, using `..` components if
 /// it is not inside of `root`.
+///
+/// If only one of them is absolute, the other is resolved against the current
+/// directory first, since the root of a project is typically relative to it
+/// (such as `.`).
 pub(crate) fn relative_to(root: &Path, path: &Path) -> RelativePathBuf {
-    let root = normalize(root);
-    let path = normalize(path);
+    let (root, path) = if root.is_absolute() != path.is_absolute() {
+        (absolute(root), absolute(path))
+    } else {
+        (normalize(root), normalize(path))
+    };
 
     let mut root_c = root.components().peekable();
     let mut path_c = path.components().peekable();
@@ -176,6 +183,11 @@ pub(crate) fn relative_to(root: &Path, path: &Path) -> RelativePathBuf {
     }
 
     out
+}
+
+/// Make `path` absolute against the current directory and normalize it.
+fn absolute(path: &Path) -> PathBuf {
+    normalize(&std::path::absolute(path).unwrap_or_else(|_| path.to_owned()))
 }
 
 /// Display `path`, abbreviating the home directory to `~`.
@@ -415,6 +427,15 @@ mod tests {
         assert_eq!(relative_to(home, Path::new("/home/user")), "");
         assert_eq!(relative_to(home, Path::new("/opt/a")), "../../opt/a");
         assert_eq!(relative_to(home, Path::new("/home/other")), "../other");
+
+        // A relative root is resolved against the current directory.
+        let current = std::env::current_dir().unwrap();
+        assert_eq!(relative_to(Path::new("."), &current), "");
+        assert_eq!(relative_to(Path::new("."), &current.join("a/b")), "a/b");
+        assert_eq!(
+            relative_to(Path::new(".."), &current),
+            current.file_name().unwrap().to_str().unwrap()
+        );
     }
 
     #[test]
