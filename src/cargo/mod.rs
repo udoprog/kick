@@ -262,7 +262,9 @@ impl Manifest {
         Some(Dependencies::new(
             doc,
             crates,
-            WorkspaceTable::dev_dependencies,
+            // Cargo only inherits from `[workspace.dependencies]`, whatever
+            // the kind of the dependency.
+            WorkspaceTable::dependencies,
         ))
     }
 
@@ -273,11 +275,75 @@ impl Manifest {
             .get(BUILD_DEPENDENCIES)
             .and_then(|table| table.as_table())?;
 
-        Some(Dependencies::new(
-            doc,
-            crates,
-            WorkspaceTable::build_dependencies,
-        ))
+        Some(Dependencies::new(doc, crates, WorkspaceTable::dependencies))
+    }
+
+    /// Access dependencies of the given kind (one of [`DEPS`]) declared in
+    /// `[target.<cfg>.<kind>]` tables, together with the `<cfg>` they are
+    /// declared under.
+    pub(crate) fn target_dependencies<'a>(
+        &'a self,
+        crates: &'a Crates,
+        kind: &str,
+    ) -> Vec<(&'a str, Dependencies<'a>)> {
+        let Some(target) = self.doc.get(TARGET).and_then(Item::as_table) else {
+            return Vec::new();
+        };
+
+        let mut output = Vec::new();
+
+        for (cfg, value) in target.iter() {
+            let Some(table) = value.get(kind).and_then(Item::as_table) else {
+                continue;
+            };
+
+            // Cargo only inherits from `[workspace.dependencies]`.
+            output.push((
+                cfg,
+                Dependencies::new(table, crates, WorkspaceTable::dependencies),
+            ));
+        }
+
+        output
+    }
+
+    /// Remove the dependency declared under `key` in the `[dev-dependencies]`
+    /// table, or in `[target.<target>.dev-dependencies]` if `target` is
+    /// specified.
+    ///
+    /// Returns `true` if the dependency was removed.
+    pub(crate) fn remove_dev_dependency(&mut self, target: Option<&str>, key: &str) -> bool {
+        let table = match target {
+            Some(target) => self
+                .doc
+                .get_mut(TARGET)
+                .and_then(Item::as_table_like_mut)
+                .and_then(|t| t.get_mut(target))
+                .and_then(Item::as_table_like_mut)
+                .and_then(|t| t.get_mut(DEV_DEPENDENCIES)),
+            None => self.doc.get_mut(DEV_DEPENDENCIES),
+        };
+
+        let Some(table) = table.and_then(Item::as_table_like_mut) else {
+            return false;
+        };
+
+        table.remove(key).is_some()
+    }
+
+    /// Construct a manifest from a string for testing.
+    #[cfg(test)]
+    pub(crate) fn parse_for_test(path: &str, input: &str) -> Result<Self> {
+        Ok(Self {
+            doc: input.parse()?,
+            path: RelativePath::new(path).into(),
+        })
+    }
+
+    /// Render the manifest to a string.
+    #[cfg(test)]
+    pub(crate) fn to_toml_string(&self) -> String {
+        self.doc.to_string()
     }
 
     /// Get the document as a [`TableLike`].

@@ -115,6 +115,24 @@ pub(crate) struct Crates {
 }
 
 impl Crates {
+    /// Construct a workspace out of already loaded manifests for testing.
+    #[cfg(test)]
+    pub(crate) fn from_manifests_for_test(manifests: Vec<Manifest>) -> Self {
+        let packages = (0..manifests.len())
+            .filter(|&i| manifests[i].is_package())
+            .collect();
+        let workspaces = (0..manifests.len())
+            .filter(|&i| manifests[i].as_workspace().is_some())
+            .collect();
+
+        Self {
+            primary_package: None,
+            manifests,
+            packages,
+            workspaces,
+        }
+    }
+
     /// Test if this is a single crate workspace.
     pub(crate) fn is_single_crate(&self) -> bool {
         self.packages.len() == 1

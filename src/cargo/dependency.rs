@@ -26,6 +26,19 @@ impl<'a> Dependency<'a> {
         }
     }
 
+    /// The key the dependency is declared under, which differs from the
+    /// package name for renamed dependencies.
+    pub(crate) fn key(&self) -> &'a str {
+        self.dependency
+    }
+
+    /// Test if the dependency declares a version requirement, either directly
+    /// or through the workspace. Cargo strips dependencies without one when
+    /// packaging.
+    pub(crate) fn has_version(&self) -> Result<bool> {
+        Ok(self.lookup(DependencyItem::version)?.is_some())
+    }
+
     /// Get the package name of the dependency.
     pub(crate) fn package(&self) -> Result<PackageValue<&'a str>> {
         let optional = self.lookup(DependencyItem::package)?;

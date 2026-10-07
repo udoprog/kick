@@ -20,6 +20,7 @@ use crate::cargo::Manifest;
 use crate::cargo::RustVersion;
 use crate::cli::check::cargo::CargoKey;
 use crate::cli::check::ci::ActionExpected;
+use crate::cli::publish::{self, CircularDev, ManifestBackup};
 use crate::commands::Colors;
 use crate::config::Replaced;
 use crate::ctxt::Ctxt;
@@ -27,7 +28,6 @@ use crate::edits::{self, Edits};
 use crate::file::{File, LineColumn};
 use crate::model::RepoRef;
 use crate::process::Command;
-use crate::restore::Restore;
 
 const ENCODING: Encoding = Encoding::new();
 
@@ -189,6 +189,10 @@ where
 /// A failing change is logged and the remaining changes are still applied, so
 /// the ones which failed stay unwritten and are kept for `kick changes`.
 ///
+/// A crate is not published if a crate in the same workspace which it
+/// depends on failed to publish, since that could only fail too or pick up an
+/// older version from the registry. It counts as failed.
+///
 /// Returns the number of changes which failed to apply.
 pub(crate) fn apply_all(
     changes: &mut [ChangeWrapper],
@@ -196,9 +200,23 @@ pub(crate) fn apply_all(
     mut apply: impl FnMut(&Change) -> Result<()>,
 ) -> usize {
     let mut failed = 0;
+    let mut failed_crates = Vec::<&str>::new();
 
     for change in changes.iter_mut() {
         if change.written {
+            continue;
+        }
+
+        if let Change::Publish {
+            name, depends_on, ..
+        } = &change.change
+            && let Some(dep) = depends_on
+                .iter()
+                .find(|dep| failed_crates.contains(&dep.as_str()))
+        {
+            failed += 1;
+            failed_crates.push(name);
+            tracing::error!("Not publishing `{name}` since `{dep}` failed to publish");
             continue;
         }
 
@@ -210,6 +228,11 @@ pub(crate) fn apply_all(
             }
             Err(error) => {
                 failed += 1;
+
+                if let Change::Publish { name, .. } = &change.change {
+                    failed_crates.push(name);
+                }
+
                 tracing::error!("Failed to apply change: {error}");
 
                 for cause in error.chain().skip(1) {
@@ -499,8 +522,14 @@ where
             no_verify,
             allow_dirty,
             remove_dev,
+            circular_dev,
+            depends_on: _,
         } => {
             if save {
+                if cx.term.load(std::sync::atomic::Ordering::SeqCst) {
+                    bail!("{manifest_dir}: not publishing `{name}` since kick was interrupted");
+                }
+
                 tracing::info!("{}: publishing: {}", manifest_dir, name);
 
                 let mut command = Command::new("cargo");
@@ -518,48 +547,65 @@ where
                     command.arg("--dry-run");
                 }
 
-                let mut restore = Restore::default();
+                let path = cx.to_path(manifest_dir);
 
-                if *remove_dev {
+                publish::check_leftover_backup(&path)?;
+
+                let mut backup = None;
+
+                if *remove_dev || !circular_dev.is_empty() {
                     let cargo_toml = manifest_dir.join("Cargo.toml");
-                    let cargo_toml_keep = manifest_dir.join("Cargo.toml.keep");
 
                     let mut manifest = crate::cargo::open(cx.paths, &cargo_toml)?
                         .with_context(|| anyhow!("Missing {cargo_toml}"))?;
 
-                    if manifest.remove(crate::cargo::DEV_DEPENDENCIES) {
-                        let cargo_toml = cx.to_path(cargo_toml);
-                        let cargo_toml_keep = cx.to_path(cargo_toml_keep);
+                    let removed =
+                        publish::strip_dev_dependencies(&mut manifest, *remove_dev, circular_dev);
 
-                        if let Err(e) = fs::rename(&cargo_toml, &cargo_toml_keep) {
-                            return Err(e).context(anyhow!(
-                                "Failed to rename {} to {}",
-                                cargo_toml.display(),
-                                cargo_toml_keep.display()
-                            ));
-                        }
+                    for removed in &removed {
+                        tracing::info!("{manifest_dir}: Removing {removed}");
+                    }
 
-                        manifest.save_to(&cargo_toml)?;
-                        restore.insert(cargo_toml_keep, cargo_toml);
+                    if !removed.is_empty() {
+                        backup = Some(ManifestBackup::replace(&path, &manifest)?);
                     }
                 }
-
-                let path = cx.to_path(manifest_dir);
 
                 command
                     .args(&args[..])
                     .stdin(Stdio::null())
                     .current_dir(&path);
 
-                let status = command.status()?;
+                let result = publish::run_cargo_publish(&mut command, name);
 
-                restore.restore();
-
-                if !status.success() {
-                    bail!("{}: failed to publish: {status}", manifest_dir);
+                if let Some(mut backup) = backup {
+                    backup
+                        .restore()
+                        .with_context(|| anyhow!("{manifest_dir}: failed to restore Cargo.toml"))?;
                 }
 
-                tracing::info!("{status}");
+                let outcome = result?;
+
+                // A real publish stops with an error when the version is
+                // already published, which we treat as success so that a
+                // partially failed publish can be run again. A dry run only
+                // warns about it and still packages the crate.
+                if outcome.already_exists {
+                    if !*dry_run {
+                        tracing::warn!("{manifest_dir}: `{name}` is already published, skipping");
+                        return Ok(());
+                    }
+
+                    tracing::warn!(
+                        "{manifest_dir}: `{name}` is already published, a real publish would skip it"
+                    );
+                }
+
+                if !outcome.status.success() {
+                    bail!("{}: failed to publish: {}", manifest_dir, outcome.status);
+                }
+
+                tracing::info!("{}", outcome.status);
             } else {
                 tracing::info!("{manifest_dir}: would publish: {name}");
 
@@ -583,10 +629,28 @@ where
                                 "{manifest_dir}: With `--allow-dirty` due to `--remove-dev`."
                             );
                         }
+                        AllowDirty::CircularDevDependency => {
+                            tracing::info!(
+                                "{manifest_dir}: With `--allow-dirty` since circular dev-dependencies are removed."
+                            );
+                        }
                         AllowDirty::Argument => {
                             tracing::info!("{manifest_dir}: With `--allow-dirty` due to argument.");
                         }
                     }
+                }
+
+                if *remove_dev {
+                    tracing::info!(
+                        "{manifest_dir}: Would remove all dev-dependencies due to `--remove-dev`."
+                    );
+                }
+
+                for dev in circular_dev {
+                    tracing::info!(
+                        "{manifest_dir}: Would remove {dev}, since `{}` is published later.",
+                        dev.package
+                    );
                 }
             }
         }
@@ -720,6 +784,7 @@ pub(crate) enum NoVerify {
 pub(crate) enum AllowDirty {
     DevDependency,
     Argument,
+    CircularDevDependency,
 }
 
 /// A single change.
@@ -802,6 +867,12 @@ pub(crate) enum Change {
         remove_dev: bool,
         /// Extra arguments.
         args: Vec<OsString>,
+        /// Dev-dependencies to remove since they refer to crates which are
+        /// published later.
+        circular_dev: Vec<CircularDev>,
+        /// Crates in the same workspace which this crate depends on. If
+        /// publishing any of them fails, this crate is not published.
+        depends_on: Vec<String>,
     },
 }
 
@@ -977,6 +1048,57 @@ mod tests {
         let written = changes.iter().map(|c| c.written).collect::<Vec<_>>();
         // The failed change stays unwritten so it is saved for later.
         assert_eq!(written, [true, false, true, true]);
+    }
+
+    fn publish(name: &str, depends_on: &[&str]) -> ChangeWrapper {
+        ChangeWrapper {
+            change: Change::Publish {
+                name: name.to_owned(),
+                manifest_dir: RelativePathBuf::from(name),
+                dry_run: false,
+                no_verify: None,
+                allow_dirty: None,
+                remove_dev: false,
+                args: Vec::new(),
+                circular_dev: Vec::new(),
+                depends_on: depends_on.iter().map(|d| d.to_string()).collect(),
+            },
+            written: false,
+        }
+    }
+
+    #[test]
+    fn apply_all_skips_dependents_of_failed_publish() {
+        let mut changes = [
+            publish("core", &[]),
+            publish("other", &[]),
+            publish("lib", &["core"]),
+            publish("web", &["lib", "other"]),
+            publish("unrelated", &["other"]),
+        ];
+
+        let mut seen = Vec::new();
+
+        let failed = apply_all(&mut changes, true, |change| {
+            let Change::Publish { name, .. } = change else {
+                unreachable!();
+            };
+
+            seen.push(name.clone());
+
+            if name == "core" {
+                bail!("{name}: failed to publish");
+            }
+
+            Ok(())
+        });
+
+        // `lib` depends on `core` and `web` transitively, so neither is
+        // attempted.
+        assert_eq!(seen, ["core", "other", "unrelated"]);
+        assert_eq!(failed, 3);
+        let written = changes.iter().map(|c| c.written).collect::<Vec<_>>();
+        assert_eq!(written, [false, true, false, false, true]);
     }
 
     #[test]

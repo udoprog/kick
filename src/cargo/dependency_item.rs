@@ -17,6 +17,16 @@ impl DependencyItem {
         self.value.get("package").and_then(Item::as_str)
     }
 
+    /// Get the version requirement of the dependency, which is either the
+    /// dependency itself if it is a string or its `version` key.
+    pub(crate) fn version(&self) -> Option<&str> {
+        if let Some(version) = self.value.as_str() {
+            return Some(version);
+        }
+
+        self.value.get("version").and_then(Item::as_str)
+    }
+
     /// Test if dependency is optional
     pub(crate) fn is_optional(&self) -> Option<bool> {
         self.value.get("optional").and_then(Item::as_bool)

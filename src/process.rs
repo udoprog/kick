@@ -3,7 +3,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
-use std::process::{ChildStdin, ChildStdout, ExitStatus, Output, Stdio};
+use std::process::{ChildStderr, ChildStdin, ChildStdout, ExitStatus, Output, Stdio};
 use std::rc::Rc;
 
 use anyhow::{Context, Result, anyhow};
@@ -351,6 +351,16 @@ impl Child {
 
     pub(crate) fn stdout(&mut self) -> Result<ChildStdout> {
         self.child.stdout.take().context("Missing stdout")
+    }
+
+    pub(crate) fn stderr(&mut self) -> Result<ChildStderr> {
+        self.child.stderr.take().context("Missing stderr")
+    }
+
+    pub(crate) fn wait(&mut self) -> Result<ExitStatus> {
+        let status = self.child.wait()?;
+        tracing::trace!(?status);
+        Ok(status)
     }
 
     pub(crate) fn wait_with_output(self) -> Result<Output> {

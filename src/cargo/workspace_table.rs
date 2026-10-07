@@ -1,7 +1,7 @@
 use relative_path::RelativePath;
 use toml_edit::{Item, Table};
 
-use crate::cargo::{BUILD_DEPENDENCIES, DEPENDENCIES, DEV_DEPENDENCIES, DependenciesTable};
+use crate::cargo::{DEPENDENCIES, DependenciesTable};
 
 /// Represents the `[workspace]` section of a manifest.
 #[repr(transparent)]
@@ -33,18 +33,6 @@ impl WorkspaceTable {
     /// Workspace dependencies.
     pub(super) fn dependencies(&self) -> Option<&DependenciesTable> {
         let doc = self.doc.get(DEPENDENCIES).and_then(Item::as_table)?;
-        Some(DependenciesTable::new(doc))
-    }
-
-    /// Workspace dev-dependencies.
-    pub(super) fn dev_dependencies(&self) -> Option<&DependenciesTable> {
-        let doc = self.doc.get(DEV_DEPENDENCIES).and_then(Item::as_table)?;
-        Some(DependenciesTable::new(doc))
-    }
-
-    /// Workspace dev-dependencies.
-    pub(super) fn build_dependencies(&self) -> Option<&DependenciesTable> {
-        let doc = self.doc.get(BUILD_DEPENDENCIES).and_then(Item::as_table)?;
         Some(DependenciesTable::new(doc))
     }
 }
