@@ -104,7 +104,7 @@ impl ActionRunners {
 
                 if let Some(path) = pre_path {
                     pre = Some(Schedule::Group(ScheduleGroup::new(
-                        Some(rformat!("{} (post)", c.action_name()).as_rc()),
+                        Some(rformat!("{} (pre)", c.action_name()).as_rc()),
                         c.id().cloned(),
                         Rc::from([Schedule::NodeAction(ScheduleNodeAction::new(
                             path.clone(),
