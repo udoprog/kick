@@ -520,13 +520,19 @@ impl Batch {
     }
 }
 
-/// Truncate the given collection of files and ensure they exist.
+/// Truncate the given collection of files and ensure they exist, creating
+/// their parent directories as needed.
 fn truncate<I>(paths: I) -> Result<()>
 where
     I: IntoIterator<Item: AsRef<Path>>,
 {
     for path in paths {
         let path = path.as_ref();
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| anyhow!("Failed to create directory: {}", parent.display()))?;
+        }
 
         File::create(path)
             .with_context(|| anyhow!("Failed to truncate temporary file: {}", path.display()))?;
