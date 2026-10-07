@@ -128,8 +128,9 @@ The global configuration is loaded after every project `Kick.toml`, but it is
 the least specific layer: anything a project or repo `Kick.toml` sets takes
 precedence over it, so it's a good place for user defaults. Paths in it, such
 as `[repo."<path>"]` keys and template paths, may be absolute, start with
-`~/`, or be relative in which case they are resolved against your home
-directory.
+`~/`, or be relative in which case they are resolved against the directory
+holding the global `Kick.toml`, so `template = "data/ci.yml"` in
+`~/.config/kick/Kick.toml` refers to `~/.config/kick/data/ci.yml`.
 
 Path-valued settings in any `Kick.toml` interpolate a leading `~` and
 environment variables as `$VAR`, `${VAR}` or `${VAR:-default}`, and `$$` is a

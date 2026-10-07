@@ -7,7 +7,8 @@
 //!
 //! Paths in it, including the `[repo."<path>"]` keys, may be absolute, start
 //! with `~/`, or be relative in which case they are resolved against the
-//! user's home directory. Environment variables are interpolated in them as
+//! directory holding the global `Kick.toml`, just like relative paths in a
+//! project `Kick.toml`. Environment variables are interpolated in them as
 //! described in [`crate::interpolate`].
 
 use std::fs;
@@ -25,7 +26,7 @@ use crate::interpolate;
 pub(crate) struct Global {
     /// The path of the global `Kick.toml`.
     pub(crate) path: PathBuf,
-    /// The home directory which relative paths are resolved against.
+    /// The home directory, which a leading `~` expands to.
     pub(crate) home: PathBuf,
     /// Whether the global configuration provides the repos kick acts on. This
     /// is the case when kick runs outside of any project.
@@ -39,10 +40,17 @@ impl Global {
         display(&self.home, &self.path)
     }
 
+    /// The directory holding the global `Kick.toml`, which relative paths in
+    /// it are resolved against.
+    pub(crate) fn dir(&self) -> &Path {
+        config_dir(&self.path, &self.home)
+    }
+
     /// Resolve a path-valued setting from the global configuration,
-    /// interpolating `~` and environment variables in it.
+    /// interpolating `~` and environment variables in it. A relative path is
+    /// resolved against the directory holding the global `Kick.toml`.
     pub(crate) fn resolve(&self, value: &str) -> Result<PathBuf, interpolate::Error> {
-        resolve_config(&self.home, &self.home, value, interpolate::env)
+        resolve_config(&self.home, self.dir(), value, interpolate::env)
     }
 
     /// Resolve the `[repo."<key>"]` key of a repo declared in the global
@@ -53,6 +61,15 @@ impl Global {
         key: &str,
     ) -> Result<RelativePathBuf, interpolate::Error> {
         Ok(relative_to(root, &self.resolve(key)?))
+    }
+}
+
+/// The directory holding the configuration file at `path`, falling back to
+/// `home` if it has none.
+fn config_dir<'a>(path: &'a Path, home: &'a Path) -> &'a Path {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => home,
     }
 }
 
@@ -248,7 +265,8 @@ impl Projects {
         })
     }
 
-    /// List registered projects in the order they are declared.
+    /// List registered projects in the order they are declared. Relative keys
+    /// are resolved against the directory holding the configuration file.
     pub(crate) fn list(&self) -> Vec<Project> {
         let Some(repos) = self.doc.get("repo").and_then(|r| r.as_table_like()) else {
             return Vec::new();
@@ -258,7 +276,12 @@ impl Projects {
             .iter()
             .map(|(key, item)| Project {
                 key: key.to_owned(),
-                path: resolve_config(&self.home, &self.home, key, interpolate::env),
+                path: resolve_config(
+                    &self.home,
+                    config_dir(&self.path, &self.home),
+                    key,
+                    interpolate::env,
+                ),
                 url: item
                     .as_table_like()
                     .and_then(|t| t.get("url"))
@@ -460,6 +483,25 @@ mod tests {
         assert!(projects.remove("/opt/b", Path::new("/opt/b")).is_err());
         projects.save().unwrap();
         assert!(Projects::open(&config, &home).unwrap().list().is_empty());
+    }
+
+    #[test]
+    fn relative_keys_resolve_against_config_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let config = dir.path().join("config/kick/Kick.toml");
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+
+        fs::write(
+            &config,
+            "[repo.\"projects/a\"]\nurl = \"https://example.com/a\"\n\n[repo.\"~/b\"]\nurl = \"https://example.com/b\"\n",
+        )
+        .unwrap();
+
+        let list = Projects::open(&config, &home).unwrap().list();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].path, Ok(dir.path().join("config/kick/projects/a")));
+        assert_eq!(list[1].path, Ok(home.join("b")));
     }
 
     #[test]

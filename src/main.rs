@@ -125,8 +125,9 @@
 //! the least specific layer: anything a project or repo `Kick.toml` sets takes
 //! precedence over it, so it's a good place for user defaults. Paths in it, such
 //! as `[repo."<path>"]` keys and template paths, may be absolute, start with
-//! `~/`, or be relative in which case they are resolved against your home
-//! directory.
+//! `~/`, or be relative in which case they are resolved against the directory
+//! holding the global `Kick.toml`, so `template = "data/ci.yml"` in
+//! `~/.config/kick/Kick.toml` refers to `~/.config/kick/data/ci.yml`.
 //!
 //! Path-valued settings in any `Kick.toml` interpolate a leading `~` and
 //! environment variables as `$VAR`, `${VAR}` or `${VAR:-default}`, and `$$` is a
@@ -2627,7 +2628,7 @@ mod tests {
             dir.path(),
             &format!(
                 "license = \"global\"\n\
-                 lib = \"templates/lib.md\"\n\
+                 lib = \"~/templates/lib.md\"\n\
                  \n\
                  [deploy]\n\
                  user = \"global\"\n\
@@ -2635,7 +2636,7 @@ mod tests {
                  [repo.\"~/a\"]\n\
                  url = \"https://example.com/a\"\n\
                  \n\
-                 [repo.\"b\"]\n\
+                 [repo.\"~/b\"]\n\
                  url = \"https://example.com/b\"\n\
                  \n\
                  [repo.\"{}\"]\n\
@@ -2685,6 +2686,75 @@ mod tests {
         let global_source = loaded.sources.iter().find(|s| s.global).unwrap();
         assert!(!global_source.repos_ignored);
         assert!(global_source.repos.iter().any(|(p, _)| p == "a"));
+    }
+
+    #[test]
+    fn global_relative_paths_resolve_against_config_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let config_dir = dir.path().join("config/kick");
+
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(config_dir.join("data")).unwrap();
+        fs::create_dir_all(config_dir.join("repos/a")).unwrap();
+        fs::write(config_dir.join("data/lib.md"), "lib template\n").unwrap();
+
+        // A template with the same relative path under the home directory
+        // must not be the one used.
+        fs::create_dir_all(home.join("data")).unwrap();
+        fs::write(home.join("data/lib.md"), "wrong template\n").unwrap();
+
+        let global = global_config(
+            dir.path(),
+            "lib = \"data/lib.md\"\n\
+             \n\
+             [repo.\"repos/a\"]\n\
+             url = \"https://example.com/a\"\n",
+            true,
+        );
+
+        assert_eq!(global.dir(), config_dir);
+        assert_eq!(
+            global.resolve("data/lib.md").unwrap(),
+            config_dir.join("data/lib.md")
+        );
+
+        let templating = Templating::new().unwrap();
+        let defaults = config::defaults();
+
+        let paths = Paths {
+            root: &home,
+            current: None,
+            config: None,
+            cache: None,
+            redirect: None,
+        };
+
+        let loaded = config::load_all_with(paths, &templating, &defaults, Some(&global));
+        assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+        let config = loaded.config;
+
+        // The relative repo key resolves against the directory of the global
+        // `Kick.toml`, expressed relative to the root.
+        let keys = config.repos.keys().map(|k| k.as_str()).collect::<Vec<_>>();
+        assert_eq!(keys, ["../config/kick/repos/a"]);
+
+        let source = loaded.sources.iter().find(|s| s.global).unwrap();
+        assert!(
+            source
+                .repos
+                .iter()
+                .any(|(p, _)| p == "../config/kick/repos/a")
+        );
+
+        let (repos, _) = collect_repos(&config, &home, None).unwrap();
+        let a = &repos[0];
+        assert_eq!(a.path(), "../config/kick/repos/a");
+
+        // The template is read from the directory of the global `Kick.toml`.
+        let lib = config.lib(a).expect("lib template");
+        let rendered = lib.render(&serde_json::json!({})).unwrap();
+        assert_eq!(rendered, "lib template\n");
     }
 
     #[test]
@@ -2842,9 +2912,10 @@ mod tests {
         let config = loaded.config;
 
         // NB: `~` is only expanded at the start of a value, so the fallback
-        // `~/other` is a path relative to the home directory named `~`.
+        // `~/other` is a relative path starting with a directory named `~`,
+        // which is resolved against the directory of the global `Kick.toml`.
         let keys = config.repos.keys().map(|k| k.as_str()).collect::<Vec<_>>();
-        assert_eq!(keys, ["src/kick", "~/other"]);
+        assert_eq!(keys, ["../config/kick/~/other", "src/kick"]);
 
         let (repos, _) = collect_repos(&config, &home, None).unwrap();
         let kick = repos.iter().find(|r| r.path() == "src/kick").unwrap();

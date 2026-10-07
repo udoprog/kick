@@ -1523,7 +1523,7 @@ impl<'a> Cx<'a> {
     /// paths in it are resolved against.
     fn base_dir(&self) -> PathBuf {
         match self.global {
-            Some(global) => global.home.clone(),
+            Some(global) => global.dir().to_owned(),
             None => self.current.to_path(self.paths.root),
         }
     }
@@ -1706,8 +1706,8 @@ impl<'a> Cx<'a> {
     /// Read a template, returning the path it was read from with it.
     fn read_template_at(&self, value: toml::Value) -> Result<(PathBuf, String), ErrorMarker> {
         // NB: Template paths may be absolute, start with `~/`, or be relative
-        // to the directory of the configuration file (the home directory for
-        // the global configuration).
+        // to the directory of the configuration file (the directory holding
+        // the global `Kick.toml` for the global configuration).
         let path = self.interpolate_path(&self.string(value)?)?;
 
         let path = if path.is_absolute() {

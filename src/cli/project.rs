@@ -21,8 +21,10 @@ enum Action {
     List,
     /// Register a project directory in the global configuration.
     ///
-    /// Directories inside of the home directory are stored relative to it
-    /// with a `~/` prefix.
+    /// Directories inside of the home directory are stored with a `~/`
+    /// prefix, and other directories by their absolute path. A relative key
+    /// written by hand is resolved against the directory holding the global
+    /// `Kick.toml`.
     Add {
         /// The directory to register. Defaults to the git checkout containing
         /// the current directory, or the current directory itself.

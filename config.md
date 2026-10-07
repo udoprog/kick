@@ -19,8 +19,9 @@ A user-global `Kick.toml` in kick's user configuration directory
 (`~/.config/kick/Kick.toml` on Linux) is loaded after the project hierarchy as
 the least specific layer, so project and repo configuration takes precedence
 over it. Path-valued settings and `[repo."<path>"]` keys in it may be absolute,
-start with `~/`, or be relative to the home directory, and environment
-variables are interpolated in them (see [Paths and environment
+start with `~/`, or be relative to the directory holding the global
+`Kick.toml` (`~/.config/kick` on Linux), just like in a project `Kick.toml`.
+Environment variables are interpolated in them (see [Paths and environment
 variables](#paths-and-environment-variables)).
 
 Outside of a project (no `Kick.toml` or git checkout in the current directory
@@ -91,8 +92,9 @@ cargo_toml = "costs-$$5/Cargo.toml"  # a directory named `costs-$5`
 In a project `Kick.toml`, template paths and `[repo."<path>"]` keys may be
 absolute or start with `~`, and otherwise are relative to the directory of the
 `Kick.toml`. Other paths, like `cargo_toml`, must still be relative to the repo
-once interpolated. In the global configuration relative paths are resolved
-against the home directory. The `dest` of a `[deploy]` file is a path on the
+once interpolated. The global configuration behaves the same: relative
+template paths and `[repo."<path>"]` keys are resolved against the directory
+holding the global `Kick.toml`. The `dest` of a `[deploy]` file is a path on the
 remote host, so it is not interpolated.
 
 Values are interpolated when they are loaded, not when they are written:
