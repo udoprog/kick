@@ -135,134 +135,41 @@ pub(super) struct ActionContext<'repo> {
 }
 
 impl<'repo> ActionContext<'repo> {
-    /// Checkout the given object id.
-    pub(super) fn load(
-        self,
-        kind: ActionRunnerKind,
-        dir: &Path,
-        version: &str,
-        export: bool,
-    ) -> Result<Action> {
+    /// Load the action, exporting its tree into `dir` if `export` is set.
+    ///
+    /// The whole tree is exported for every kind of action, so that scripts
+    /// can resolve sibling modules (such as code-split chunks) and
+    /// `package.json` relative to their original location, just like on a
+    /// GitHub runner.
+    pub(super) fn load(self, kind: ActionRunnerKind, dir: &Path, export: bool) -> Result<Action> {
         let kind = match kind {
             ActionRunnerKind::Node(node) => {
                 let Ok(node_version) = u64::from_str(node.as_ref()) else {
                     return Err(anyhow!("Invalid node runner version `{node}`"));
                 };
 
-                let mut out = Vec::new();
-
                 let main = self
-                    .extract(
-                        version,
-                        node_version,
-                        dir,
-                        &mut out,
-                        self.main.as_deref(),
-                        "main",
-                    )?
+                    .script(dir, self.main.as_deref(), "main")?
                     .with_context(|| anyhow!("Missing main script"))?;
-                let pre = self.extract(
-                    version,
-                    node_version,
-                    dir,
-                    &mut out,
-                    self.pre.as_deref(),
-                    "pre",
-                )?;
-                let post = self.extract(
-                    version,
-                    node_version,
-                    dir,
-                    &mut out,
-                    self.post.as_deref(),
-                    "post",
-                )?;
-
-                if let Some(path) = &self.action_yml {
-                    let (action_yml, _) = self
-                        .paths
-                        .get(path)
-                        .with_context(|| anyhow!("Missing {path}"))?;
-
-                    let action_yml_path = Rc::<Path>::from(
-                        dir.join(format!("action-{node_version}-{node_version}.yml")),
-                    );
-
-                    out.push((action_yml_path, action_yml));
-                }
-
-                if export {
-                    for (path, id) in out {
-                        let object = id.object()?;
-                        tracing::debug!(?path, "Writing");
-
-                        fs::write(&path, &object.data[..]).with_context(|| {
-                            anyhow!("Failed to write main script to: {}", path.display())
-                        })?;
-                    }
-                }
+                let pre = self.script(dir, self.pre.as_deref(), "pre")?;
+                let post = self.script(dir, self.post.as_deref(), "post")?;
 
                 ActionKind::Node {
                     main,
                     pre,
-                    pre_if: self.pre_if.clone(),
+                    pre_if: self.pre_if,
                     post,
-                    post_if: self.post_if.clone(),
+                    post_if: self.post_if,
                     node_version,
                 }
             }
-            ActionRunnerKind::Composite => {
-                if export {
-                    tracing::debug!(?dir, "Exporting composite action");
-
-                    for (path, _) in self.dirs {
-                        let path = path.to_path(dir);
-
-                        match fs::create_dir(&path) {
-                            Ok(()) => {}
-                            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-                            Err(e) => {
-                                return Err(e).with_context(|| {
-                                    anyhow!("Failed to create directory: {}", path.display())
-                                });
-                            }
-                        }
-                    }
-
-                    for (path, (id, mode)) in self.paths {
-                        let path = path.to_path(dir);
-                        let object = id.object()?;
-
-                        let mut f = File::create(&path).with_context(|| {
-                            anyhow!("Failed to create file: {}", path.display())
-                        })?;
-
-                        f.write_all(&object.data[..])
-                            .with_context(|| anyhow!("Failed to write file: {}", path.display()))?;
-
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::PermissionsExt;
-
-                            let meta = f.metadata()?;
-                            let mut perm = meta.permissions();
-                            perm.set_mode(mode.value() as u32);
-
-                            f.set_permissions(perm).with_context(|| {
-                                anyhow!("Failed to set permissions on file: {}", path.display())
-                            })?;
-                        }
-
-                        #[cfg(not(unix))]
-                        {
-                            _ = mode;
-                        }
-                    }
-                }
-
-                ActionKind::Composite { steps: self.steps }
-            }
+            ActionRunnerKind::Composite => ActionKind::Composite { steps: self.steps },
         };
+
+        if export {
+            tracing::debug!(?dir, "Exporting action");
+            export_tree(dir, &self.dirs, &self.paths)?;
+        }
 
         Ok(Action {
             kind,
@@ -271,12 +178,10 @@ impl<'repo> ActionContext<'repo> {
         })
     }
 
-    fn extract(
-        &'repo self,
-        version: &str,
-        node_version: u64,
+    /// Resolve a script of a node action to its path in the exported tree.
+    fn script(
+        &self,
         dir: &Path,
-        exports: &mut Vec<(Rc<Path>, &Id<'repo>)>,
         relative_path: Option<&RelativePath>,
         name: &str,
     ) -> Result<Option<Rc<Path>>> {
@@ -284,15 +189,13 @@ impl<'repo> ActionContext<'repo> {
             return Ok(None);
         };
 
-        let path = Rc::<Path>::from(dir.join(format!("{name}-{node_version}-{version}.js")));
+        let relative_path = relative_path.normalize();
 
-        let (id, _) = self
-            .paths
-            .get(relative_path)
-            .with_context(|| anyhow!("Missing {name} script in repo: {relative_path}"))?;
+        if !self.paths.contains_key(&relative_path) {
+            bail!("Missing {name} script in repo: {relative_path}");
+        }
 
-        exports.push((path.clone(), id));
-        Ok(Some(path))
+        Ok(Some(Rc::from(relative_path.to_path(dir))))
     }
 
     fn process_actions_yml(&mut self, action_yml: &yaml::Document, eval: &Eval) -> Result<()> {
@@ -382,6 +285,58 @@ impl<'repo> ActionContext<'repo> {
     }
 }
 
+/// Export the given directories and files of an action into `dir`.
+fn export_tree(
+    dir: &Path,
+    dirs: &[(RelativePathBuf, EntryMode)],
+    paths: &HashMap<RelativePathBuf, (Id<'_>, EntryMode)>,
+) -> Result<()> {
+    // Directories are in breadth-first order, so parents come first.
+    for (path, _) in dirs {
+        let path = path.to_path(dir);
+
+        match fs::create_dir(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| anyhow!("Failed to create directory: {}", path.display()));
+            }
+        }
+    }
+
+    for (path, (id, mode)) in paths {
+        let path = path.to_path(dir);
+        let object = id.object()?;
+
+        let mut f = File::create(&path)
+            .with_context(|| anyhow!("Failed to create file: {}", path.display()))?;
+
+        f.write_all(&object.data[..])
+            .with_context(|| anyhow!("Failed to write file: {}", path.display()))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let meta = f.metadata()?;
+            let mut perm = meta.permissions();
+            perm.set_mode(mode.value() as u32);
+
+            f.set_permissions(perm).with_context(|| {
+                anyhow!("Failed to set permissions on file: {}", path.display())
+            })?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            _ = mode;
+        }
+    }
+
+    Ok(())
+}
+
 fn value_to_string(default: yaml::Value<'_>) -> Result<String> {
     let string = match default.into_any() {
         yaml::Any::Null => "null".to_owned(),
@@ -394,4 +349,100 @@ fn value_to_string(default: yaml::Value<'_>) -> Result<String> {
     };
 
     Ok(string)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+    use std::process::Command;
+
+    use anyhow::{Result, ensure};
+    use gix::ObjectId;
+
+    use super::ActionKind;
+    use crate::workflows::Eval;
+
+    fn git(dir: &Path, args: &[&str]) -> Result<String> {
+        let output = Command::new("git")
+            .args(["-c", "user.name=kick", "-c", "user.email=kick@example.com"])
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .output()?;
+        ensure!(output.status.success(), "git {args:?} failed: {output:?}");
+        Ok(String::from_utf8(output.stdout)?)
+    }
+
+    /// A node action whose main script imports a code-split sibling chunk, as
+    /// produced by rollup, esbuild or vite.
+    #[test]
+    fn node_action_imports_sibling_module() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let src = tmp.path().join("src");
+        let work = tmp.path().join("work");
+        fs::create_dir_all(src.join("dist"))?;
+        fs::create_dir_all(&work)?;
+
+        fs::write(
+            src.join("action.yml"),
+            "name: test\nruns:\n  using: node24\n  main: ./dist/main.js\n  post: dist/post.js\n",
+        )?;
+        fs::write(src.join("package.json"), r#"{"type": "module"}"#)?;
+        fs::write(
+            src.join("dist/chunk-ABC123.js"),
+            "export const greeting = 'hello from chunk';\n",
+        )?;
+        fs::write(
+            src.join("dist/main.js"),
+            "import { greeting } from './chunk-ABC123.js';\nconsole.log(greeting);\n",
+        )?;
+        fs::write(
+            src.join("dist/post.js"),
+            "import { greeting } from './chunk-ABC123.js';\nconsole.log('post: ' + greeting);\n",
+        )?;
+
+        git(&src, &["init", "-q"])?;
+        git(&src, &["add", "."])?;
+        git(&src, &["commit", "-q", "-m", "action"])?;
+        let id = git(&src, &["rev-parse", "HEAD"])?;
+        let id = ObjectId::from_hex(id.trim().as_bytes())?;
+
+        let repo = gix::open(&src)?;
+        let mut files = Vec::new();
+        let (kind, cx) = super::load(&repo, Eval::empty(), id, &mut files)?;
+        let action = cx.load(kind, &work, true)?;
+
+        let ActionKind::Node {
+            main,
+            pre,
+            post,
+            node_version,
+            ..
+        } = &action.kind
+        else {
+            panic!("expected a node action, got {:?}", action.kind);
+        };
+
+        assert_eq!(*node_version, 24);
+        assert_eq!(&**main, work.join("dist/main.js"));
+        assert!(pre.is_none());
+        assert_eq!(post.as_deref(), Some(&*work.join("dist/post.js")));
+        assert!(work.join("dist/chunk-ABC123.js").is_file());
+        assert!(work.join("package.json").is_file());
+        assert!(work.join("action.yml").is_file());
+
+        // Run the exported script the way kick does, if node is available.
+        if let Ok(output) = Command::new("node").arg(&**main).output() {
+            assert!(output.status.success(), "node failed: {output:?}");
+            assert_eq!(String::from_utf8(output.stdout)?, "hello from chunk\n");
+        }
+
+        Ok(())
+    }
 }

@@ -24,7 +24,15 @@ const GITHUB_BASE: &str = "https://github.com";
 const WORKDIR: &str = "workdir";
 const GIT: &str = "git";
 const KICK_META_JSON: &str = ".kick-meta.json";
-const CURRENT_VERSION: &str = "v1";
+/// Version of the workdir layout.
+///
+/// * `v1` exported only the main, pre and post scripts of node actions,
+///   renamed and flat in the workdir. Such workdirs are re-exported.
+/// * `v2` exports the whole tree of every action.
+const CURRENT_VERSION: &str = "v2";
+/// Older layout versions whose meta can still be read, but whose workdir must
+/// be re-exported.
+const STALE_VERSIONS: &[&str] = &["v1"];
 
 #[derive(PartialEq, Eq, Hash)]
 pub(crate) struct StringObjectId(pub(crate) ObjectId);
@@ -56,6 +64,9 @@ impl<'de> Deserialize<'de> for StringObjectId {
 struct KickMeta {
     id: StringObjectId,
     files: Vec<(RelativePathBuf, StringObjectId)>,
+    /// Whether the workdir uses the current layout.
+    #[serde(skip, default)]
+    current: bool,
 }
 
 #[derive(Serialize)]
@@ -201,12 +212,17 @@ fn sync_action(
                     anyhow!("Failed to create work directory: {}", work_dir.display())
                 })?;
 
-                let existing_meta = load_meta(&meta_path)?;
-
-                let meta = existing_meta.unwrap_or_else(|| KickMeta {
-                    id: StringObjectId(id),
-                    files: Vec::new(),
-                });
+                let meta = match load_meta(&meta_path)? {
+                    Some(meta) => KickMeta {
+                        id: StringObjectId(id),
+                        ..meta
+                    },
+                    None => KickMeta {
+                        id: StringObjectId(id),
+                        files: Vec::new(),
+                        current: false,
+                    },
+                };
 
                 found = Some((kind, action, files, meta));
             }
@@ -237,6 +253,10 @@ fn sync_action(
         .collect::<HashMap<_, _>>();
 
     let export = 'export: {
+        if !meta.current {
+            break 'export true;
+        }
+
         // TODO: Only look at files that we care about instead of every file.
         for (path, actual_hash) in &repo_files {
             let Some(hash) = current.remove(path) else {
@@ -248,12 +268,30 @@ fn sync_action(
             }
         }
 
-        false
+        // Files removed from the action.
+        !current.is_empty()
     };
 
     tracing::debug!(export, "Loading runner");
 
-    let action = action.load(kind, &work_dir, version, export)?;
+    if export {
+        // Start from an empty workdir, so that files from an older layout or
+        // an older version of the action do not linger.
+        match fs::remove_dir_all(&work_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    anyhow!("Failed to clear work directory: {}", work_dir.display())
+                });
+            }
+        }
+
+        fs::create_dir_all(&work_dir)
+            .with_context(|| anyhow!("Failed to create work directory: {}", work_dir.display()))?;
+    }
+
+    let action = action.load(kind, &work_dir, export)?;
 
     if export {
         write_meta(
@@ -297,13 +335,15 @@ fn load_meta(path: &Path) -> Result<Option<KickMeta>> {
         return Ok(None);
     };
 
-    if version != CURRENT_VERSION {
+    let current = version == CURRENT_VERSION;
+
+    if !current && !STALE_VERSIONS.contains(&version) {
         _ = fs::remove_file(path);
         return Ok(None);
     }
 
-    match serde_json::from_value(value) {
-        Ok(id) => Ok(Some(id)),
+    match serde_json::from_value::<KickMeta>(value) {
+        Ok(meta) => Ok(Some(KickMeta { current, ..meta })),
         Err(error) => {
             _ = fs::remove_file(path);
             tracing::warn!(?error, ?path, "Failed to parse kick meta");
