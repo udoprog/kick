@@ -91,6 +91,13 @@ repos/argwerk: https://github.com/udoprog/argwerk
     time: 2025-11-27
 ```
 
+To run over only some of the repos, pass `-p`/`--path`. A path to an existing
+directory, relative to the current directory, absolute or starting with `~/`,
+selects the repo containing it no matter how it is spelled, so `-p .` inside of
+a repo or `-p ~/repos/rune/src` both work. Anything else is matched against the
+repo paths relative to the root, like `-p repos/rune` or `-p 'repos/*'`. Inside
+of a repo kick only runs over that repo, pass `--all` to run over every repo.
+
 If you want a complete example of this setup, see [my `projects` repo]. For
 documentation on how kick can be further configured, see the [configuration
 documentation][config].
@@ -142,7 +149,10 @@ When kick runs *outside* of a project, that is when no `Kick.toml` or git
 checkout is found in the current directory or any of its parents, it acts on
 the repos declared in the global configuration instead. This lets you keep
 your list of projects per-user rather than in a `Kick.toml` hierarchy. Inside
-of a project the `[repo]` sections of the global configuration are ignored.
+of a project the `[repo]` sections of the global configuration are ignored,
+unless `--all` is passed or a `-p`/`--path` names a directory outside of the
+project which is inside of one of them, in which case kick acts on the global
+repos instead.
 
 ```toml
 # ~/.config/kick/Kick.toml

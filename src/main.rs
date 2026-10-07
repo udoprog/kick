@@ -88,6 +88,13 @@
 //!     time: 2025-11-27
 //! ```
 //!
+//! To run over only some of the repos, pass `-p`/`--path`. A path to an existing
+//! directory, relative to the current directory, absolute or starting with `~/`,
+//! selects the repo containing it no matter how it is spelled, so `-p .` inside of
+//! a repo or `-p ~/repos/rune/src` both work. Anything else is matched against the
+//! repo paths relative to the root, like `-p repos/rune` or `-p 'repos/*'`. Inside
+//! of a repo kick only runs over that repo, pass `--all` to run over every repo.
+//!
 //! If you want a complete example of this setup, see [my `projects` repo]. For
 //! documentation on how kick can be further configured, see the [configuration
 //! documentation][config].
@@ -139,7 +146,10 @@
 //! checkout is found in the current directory or any of its parents, it acts on
 //! the repos declared in the global configuration instead. This lets you keep
 //! your list of projects per-user rather than in a `Kick.toml` hierarchy. Inside
-//! of a project the `[repo]` sections of the global configuration are ignored.
+//! of a project the `[repo]` sections of the global configuration are ignored,
+//! unless `--all` is passed or a `-p`/`--path` names a directory outside of the
+//! project which is inside of one of them, in which case kick acts on the global
+//! repos instead.
 //!
 //! ```toml
 //! # ~/.config/kick/Kick.toml
@@ -815,12 +825,24 @@ impl SharedOptions {
 
 #[derive(Default, Debug, Parser)]
 struct RepoOptions {
-    /// Force processing of all repos, even if the root is currently inside of
-    /// an existing repo.
+    /// Force processing of all repos, even if the current directory is inside
+    /// of one of them.
+    ///
+    /// Inside of a project, this runs over the repos declared in the global
+    /// configuration instead if it declares any.
     #[arg(long)]
     all: bool,
-    /// Only run the specified set of repos.
-    #[arg(long = "path", short = 'p')]
+    /// Only run over the specified repos.
+    ///
+    /// A path to an existing directory (relative to the current directory,
+    /// absolute, or starting with `~/`) selects the repo containing it.
+    /// Anything else is matched against the repo paths relative to the root,
+    /// and may use `*` wildcards.
+    ///
+    /// Inside of a project, a directory outside of it which belongs to a repo
+    /// declared in the global configuration selects among the global repos
+    /// instead.
+    #[arg(long = "path", short = 'p', value_name = "PATH")]
     repos: Vec<String>,
     /// If we should fetch the latest updates from remotes before filtering.
     #[arg(long)]
@@ -1107,6 +1129,8 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
+    let current_dir = std::env::current_dir().context("Getting current directory")?;
+
     let (root, current_path, global_repos) = match &shared.root {
         Some(root) => {
             let root = root.canonicalize()?;
@@ -1121,8 +1145,27 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             (root.to_owned(), current_path, false)
         }
         None => {
-            let current_dir = std::env::current_dir().context("Getting current directory")?;
-            find_root(&current_dir, home.as_deref(), global_path.as_deref())
+            let found = find_root(&current_dir, home.as_deref(), global_path.as_deref());
+
+            match (&home, &global_path) {
+                (Some(home), Some(global_path))
+                    if !found.2
+                        && selects_global_repos(
+                            &current_dir,
+                            &found.0,
+                            repo_opts,
+                            home,
+                            global_path,
+                        ) =>
+                {
+                    tracing::trace!(
+                        "Using repos from global configuration {}",
+                        global_path.display()
+                    );
+                    (home.clone(), None, true)
+                }
+                _ => found,
+            }
         }
     };
 
@@ -1299,6 +1342,8 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         let result = apply_repo_options(
             opts,
             paths,
+            &current_dir,
+            home.as_deref(),
             &config,
             &os,
             &system,
@@ -1680,6 +1725,8 @@ impl LoadedPaths<'_, '_> {
 fn apply_repo_options(
     repo_opts: &RepoOptions,
     paths: Paths<'_>,
+    current_dir: &Path,
+    home: Option<&Path>,
     config: &Config<'_>,
     os: &Os,
     system: &system::System,
@@ -1718,14 +1765,15 @@ fn apply_repo_options(
         );
     }
 
-    let mut filters = Vec::new();
+    let filters = repo_opts
+        .repos
+        .iter()
+        .map(|raw| PathFilter::new(raw, current_dir, home, paths.root, repos))
+        .collect::<Vec<_>>();
 
-    for repo in &repo_opts.repos {
-        filters.push(Fragment::parse(repo));
-    }
-
-    // `-p` filters are matched against repo paths relative to the root, so a
-    // filter like `.` silently selects nothing. Refuse to run in that case.
+    // A `-p` filter which is neither a directory inside of a repo nor matches
+    // any repo path, like `.` at the root, would silently select nothing.
+    // Refuse to run in that case.
     if let Some(message) = unmatched_path_filters_message(
         paths.root,
         &repo_opts.repos,
@@ -1839,7 +1887,7 @@ const PATH_FILTER_EXAMPLES: usize = 2;
 fn unmatched_path_filters_message<'a>(
     root: &Path,
     raw: &[String],
-    filters: &[Fragment<'_>],
+    filters: &[PathFilter<'_>],
     repos: impl IntoIterator<Item = &'a RelativePath>,
 ) -> Option<String> {
     let repos = repos.into_iter().collect::<Vec<_>>();
@@ -1847,7 +1895,7 @@ fn unmatched_path_filters_message<'a>(
     let unmatched = raw
         .iter()
         .zip(filters)
-        .filter(|(_, filter)| !repos.iter().any(|repo| filter.is_match(repo.as_str())))
+        .filter(|(_, filter)| !repos.iter().any(|repo| filter.is_match(repo)))
         .map(|(raw, _)| format!("`{raw}`"))
         .collect::<Vec<_>>();
 
@@ -1878,7 +1926,7 @@ fn unmatched_path_filters_message<'a>(
     Some(format!(
         "The `-p`/`--path` {noun} {unmatched} {verb} not match any repo configured in `{kick_toml}`.\n\
          \n\
-         `-p` matches repo paths relative to `{root}`{examples}, and supports `*` wildcards.\n\
+         `-p` takes a directory inside of a repo, or a repo path relative to `{root}`{examples} which supports `*` wildcards.\n\
          Use `--all` to run over every repo, or `--set` to select repos by set.",
         unmatched = unmatched.join(", "),
         kick_toml = root.join(KICK_TOML).display(),
@@ -1904,7 +1952,7 @@ fn unregistered_checkout_message(
     format!(
         "The current directory looks like a project (git checkout `{dir}`) which is not tracked by kick's {KICK_TOML} at `{root}`.\n\
          \n\
-         Passing `--all` runs the command over every repo in that {KICK_TOML} hierarchy instead of just this project.\n\
+         Passing `--all` runs the command over every repo in that {KICK_TOML} hierarchy (or in the global configuration, if it declares any) instead of just this project.\n\
          Use `-p`/`--path` or `--set` to select repos explicitly.\n\
          \n\
          To make this error go away, register the project in `{kick_toml}`:\n\
@@ -1985,7 +2033,7 @@ fn filter_repos(
     in_current_path: Option<&RelativePath>,
     repo_opts: &RepoOptions,
     repos: &[model::Repo],
-    filters: &[Fragment<'_>],
+    filters: &[PathFilter<'_>],
     set: Option<&HashSet<RelativePathBuf>>,
     expected: &Os,
 ) -> Result<Vec<Option<Exclusion>>> {
@@ -2007,10 +2055,7 @@ fn filter_repos(
             return None;
         }
 
-        if filters
-            .iter()
-            .any(|filter| filter.is_match(repo.path().as_str()))
-        {
+        if filters.iter().any(|filter| filter.is_match(repo.path())) {
             None
         } else {
             Some(Exclusion::NoPathMatch)
@@ -2099,6 +2144,124 @@ fn find_from_current_dir(current_dir: &Path) -> Option<(PathBuf, RelativePathBuf
     first_git
 }
 
+/// A `-p`/`--path` filter.
+pub(crate) enum PathFilter<'a> {
+    /// The argument names a directory inside of the repo at this path.
+    Repo(RelativePathBuf),
+    /// The argument is matched against repo paths relative to the root.
+    Glob(Fragment<'a>),
+}
+
+impl<'a> PathFilter<'a> {
+    /// Interpret a `-p`/`--path` argument.
+    ///
+    /// If it names an existing directory, relative to `current_dir`, absolute
+    /// or starting with `~/`, it selects the repo containing that directory.
+    /// Otherwise it is matched against the repo paths relative to `root`,
+    /// which itself may be relative to `current_dir`.
+    fn new(
+        raw: &'a str,
+        current_dir: &Path,
+        home: Option<&Path>,
+        root: &Path,
+        repos: &[Repo],
+    ) -> Self {
+        if let Some(dir) = resolve_dir(raw, current_dir, home)
+            && let Some(repo) = repo_containing(&dir, &current_dir.join(root), repos)
+        {
+            return Self::Repo(repo.normalize());
+        }
+
+        Self::Glob(Fragment::parse(raw))
+    }
+
+    /// Test if the filter matches the repo at `path`.
+    pub(crate) fn is_match(&self, path: &RelativePath) -> bool {
+        match self {
+            Self::Repo(repo) => *repo == path.normalize(),
+            Self::Glob(fragment) => fragment.is_match(path.as_str()),
+        }
+    }
+}
+
+/// Resolve a `-p`/`--path` argument to the canonical path of the directory it
+/// names, if it names an existing directory.
+fn resolve_dir(raw: &str, current_dir: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    if raw.is_empty() {
+        return None;
+    }
+
+    let path = match home {
+        Some(home) => global::resolve(home, current_dir, raw),
+        None => current_dir.join(raw),
+    };
+
+    let path = path.canonicalize().ok()?;
+    path.is_dir().then_some(path)
+}
+
+/// Find the innermost of `repos` whose directory contains the canonical `dir`.
+fn repo_containing<'r>(dir: &Path, root: &Path, repos: &'r [Repo]) -> Option<&'r RelativePath> {
+    repos
+        .iter()
+        .filter_map(|repo| {
+            let repo_dir = repo.path().to_path(root).canonicalize().ok()?;
+            dir.starts_with(&repo_dir)
+                .then(|| (repo_dir.components().count(), repo.path()))
+        })
+        .max_by_key(|(depth, _)| *depth)
+        .map(|(_, path)| path)
+}
+
+/// Test if a command run from inside of the project at `root` should act on
+/// the repos declared in the global configuration at `global_path` instead.
+///
+/// This is the case if the global configuration declares repos and either
+/// `--all` is passed, or a `-p`/`--path` argument names a directory outside
+/// of the project which is inside of one of the global repos.
+fn selects_global_repos(
+    current_dir: &Path,
+    root: &Path,
+    repo_opts: Option<&RepoOptions>,
+    home: &Path,
+    global_path: &Path,
+) -> bool {
+    let Some(opts) = repo_opts else {
+        return false;
+    };
+
+    let declared = global::declared_repos(global_path);
+
+    if declared.is_empty() {
+        return false;
+    }
+
+    if opts.all {
+        return true;
+    }
+
+    let Ok(root) = current_dir.join(root).canonicalize() else {
+        return false;
+    };
+
+    let global = global::Global {
+        path: global_path.to_owned(),
+        home: home.to_owned(),
+        provides_repos: true,
+    };
+
+    let repo_dirs = declared
+        .iter()
+        .filter_map(|key| global.resolve(key).ok()?.canonicalize().ok())
+        .collect::<Vec<_>>();
+
+    opts.repos.iter().any(|raw| {
+        resolve_dir(raw, current_dir, Some(home)).is_some_and(|dir| {
+            !dir.starts_with(&root) && repo_dirs.iter().any(|repo| dir.starts_with(repo))
+        })
+    })
+}
+
 /// Find the root to use from the current directory, returning the root, the
 /// current directory relative to it, and whether the repos come from the
 /// global configuration at `global_path`.
@@ -2184,8 +2347,8 @@ mod tests {
     use relative_path::RelativePath;
 
     use super::{
-        RepoOptions, collect_repos, nested_worktree, unmatched_path_filters_message,
-        unregistered_checkout_message, unregistered_git_checkout,
+        PathFilter, RepoOptions, collect_repos, nested_worktree, selects_global_repos,
+        unmatched_path_filters_message, unregistered_checkout_message, unregistered_git_checkout,
     };
     use crate::config;
     use crate::ctxt::{Paths, Redirect};
@@ -2437,7 +2600,10 @@ mod tests {
 
     fn path_filters_message(filters: &[&str], repos: &[&str]) -> Option<String> {
         let raw = filters.iter().map(|f| f.to_string()).collect::<Vec<_>>();
-        let fragments = raw.iter().map(|f| Fragment::parse(f)).collect::<Vec<_>>();
+        let fragments = raw
+            .iter()
+            .map(|f| PathFilter::Glob(Fragment::parse(f)))
+            .collect::<Vec<_>>();
 
         unmatched_path_filters_message(
             Path::new("/nonexistent-kick-root"),
@@ -2464,7 +2630,7 @@ mod tests {
             Some(
                 "The `-p`/`--path` filter `.` does not match any repo configured in `/nonexistent-kick-root/Kick.toml`.\n\
                  \n\
-                 `-p` matches repo paths relative to `/nonexistent-kick-root`, such as `repos/foo` or `repos/bar`, and supports `*` wildcards.\n\
+                 `-p` takes a directory inside of a repo, or a repo path relative to `/nonexistent-kick-root`, such as `repos/foo` or `repos/bar` which supports `*` wildcards.\n\
                  Use `--all` to run over every repo, or `--set` to select repos by set."
             )
         );
@@ -2483,7 +2649,7 @@ mod tests {
             ),
             "{message}"
         );
-        assert!(message.contains("such as `repos/foo`, and"), "{message}");
+        assert!(message.contains("such as `repos/foo` which"), "{message}");
     }
 
     #[test]
@@ -2505,7 +2671,7 @@ mod tests {
             message,
             "The current directory looks like a project (git checkout `/src/repos/foo`) which is not tracked by kick's Kick.toml at `/src`.\n\
              \n\
-             Passing `--all` runs the command over every repo in that Kick.toml hierarchy instead of just this project.\n\
+             Passing `--all` runs the command over every repo in that Kick.toml hierarchy (or in the global configuration, if it declares any) instead of just this project.\n\
              Use `-p`/`--path` or `--set` to select repos explicitly.\n\
              \n\
              To make this error go away, register the project in `/src/Kick.toml`:\n\
@@ -3006,5 +3172,267 @@ mod tests {
             "{lib}"
         );
         assert!(lib.contains(&format!("`{UNSET}`")), "{lib}");
+    }
+
+    fn test_repos(paths: &[&str]) -> Vec<Repo> {
+        let url = url::Url::parse("https://example.com/repo").unwrap();
+
+        paths
+            .iter()
+            .map(|path| Repo::new([RepoSource::Git], (*path).into(), url.clone()))
+            .collect()
+    }
+
+    /// Resolve `-p` arguments from `current`, returning the paths of the
+    /// matching repos for each.
+    fn select(
+        raw: &[&str],
+        current: &Path,
+        home: &Path,
+        root: &Path,
+        repos: &[Repo],
+    ) -> Vec<Vec<String>> {
+        raw.iter()
+            .map(|raw| {
+                let filter = PathFilter::new(raw, current, Some(home), root, repos);
+
+                repos
+                    .iter()
+                    .filter(|repo| filter.is_match(repo.path()))
+                    .map(|repo| repo.path().to_string())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn path_filter_spellings() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        let root = home.join("projects");
+
+        fs::create_dir_all(root.join("repos/a/src/nested")).unwrap();
+        fs::create_dir_all(root.join("repos/ab")).unwrap();
+        fs::create_dir_all(root.join("repos/b")).unwrap();
+        fs::create_dir_all(root.join("other")).unwrap();
+
+        let repos = test_repos(&["repos/a", "repos/ab", "repos/b"]);
+        let repos_dir = root.join("repos");
+        let a = &[vec![String::from("repos/a")]][..];
+
+        // Relative to the current directory.
+        assert_eq!(select(&["a"], &repos_dir, &home, &root, &repos), a);
+        assert_eq!(select(&["./a"], &repos_dir, &home, &root, &repos), a);
+        assert_eq!(select(&["a/"], &repos_dir, &home, &root, &repos), a);
+        assert_eq!(select(&["../repos/a"], &repos_dir, &home, &root, &repos), a);
+        assert_eq!(
+            select(
+                &["../../projects/repos/a/"],
+                &repos_dir,
+                &home,
+                &root,
+                &repos
+            ),
+            a
+        );
+        assert_eq!(
+            select(&[".."], &root.join("repos/a/src"), &home, &root, &repos),
+            a
+        );
+        assert_eq!(
+            select(&["."], &root.join("repos/a"), &home, &root, &repos),
+            a
+        );
+
+        // Absolute and home-relative.
+        let absolute = root.join("repos/a");
+        let absolute = absolute.to_str().unwrap();
+        assert_eq!(select(&[absolute], &home, &home, &root, &repos), a);
+        assert_eq!(
+            select(&["~/projects/repos/a"], &root, &home, &root, &repos),
+            a
+        );
+        assert_eq!(
+            select(&["~/projects/repos/a/"], &root, &home, &root, &repos),
+            a
+        );
+
+        // A directory inside of a repo selects the repo.
+        assert_eq!(
+            select(&["a/src/nested"], &repos_dir, &home, &root, &repos),
+            a
+        );
+
+        // Spelled as a path relative to the root (from the root) as before.
+        assert_eq!(select(&["repos/a"], &root, &home, &root, &repos), a);
+
+        // A root which is relative to the current directory.
+        assert_eq!(
+            select(&["a"], &repos_dir, &home, Path::new(".."), &repos),
+            a
+        );
+
+        // Symlinks resolve to the repo they point to.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("repos/a"), home.join("link")).unwrap();
+            assert_eq!(select(&["~/link"], &root, &home, &root, &repos), a);
+            assert_eq!(select(&["link/src"], &home, &home, &root, &repos), a);
+        }
+    }
+
+    #[test]
+    fn path_filter_glob_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        let root = home.join("projects");
+
+        fs::create_dir_all(root.join("repos/a")).unwrap();
+        fs::create_dir_all(root.join("repos/b")).unwrap();
+        fs::create_dir_all(root.join("sub")).unwrap();
+
+        let repos = test_repos(&["repos/a", "repos/b"]);
+        let sub = root.join("sub");
+
+        // Not a directory relative to the current directory, so it is matched
+        // against the repo paths relative to the root.
+        assert_eq!(
+            select(&["repos/*", "repos/b", "*a"], &sub, &home, &root, &repos),
+            [
+                vec![String::from("repos/a"), String::from("repos/b")],
+                vec![String::from("repos/b")],
+                vec![String::from("repos/a")],
+            ]
+        );
+
+        // An existing directory which is not inside of a repo falls back as
+        // well, and matches nothing.
+        assert_eq!(
+            select(&[".", "nope"], &root, &home, &root, &repos),
+            [Vec::<String>::new(), Vec::new()]
+        );
+
+        // The unmatched error names the arguments as typed.
+        let raw = [
+            String::from("repos/a"),
+            String::from("."),
+            String::from("nope"),
+        ];
+        let filters = raw
+            .iter()
+            .map(|r| PathFilter::new(r, &root, Some(&home), &root, &repos))
+            .collect::<Vec<_>>();
+        let message =
+            unmatched_path_filters_message(&root, &raw, &filters, repos.iter().map(|r| r.path()))
+                .expect("unmatched filters should fail");
+        assert!(
+            message.contains("filters `.`, `nope` do not match"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn global_repos_from_inside_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let home = base.join("home");
+        let project = home.join("project");
+        let other = home.join("src/other");
+
+        fs::create_dir_all(project.join("repos/inner/src")).unwrap();
+        fs::create_dir_all(other.join("src")).unwrap();
+        fs::create_dir_all(home.join("src/third")).unwrap();
+        fs::create_dir_all(home.join("unregistered")).unwrap();
+        fs::write(project.join("Kick.toml"), "license = \"MIT\"\n").unwrap();
+
+        const GLOBAL: &str = "[repo.\"~/src/other\"]\nurl = \"https://example.com/other\"\n\
+             [repo.\"~/src/third\"]\nurl = \"https://example.com/third\"\n\
+             [repo.\"~/project\"]\nurl = \"https://example.com/project\"\n";
+
+        let global = global_config(&base, GLOBAL, true);
+
+        let current = project.join("repos/inner/src");
+        let (root, _, global_repos) = super::find_root(&current, Some(&home), Some(&global.path));
+        assert!(!global_repos);
+        assert_eq!(current.join(&root).canonicalize().unwrap(), project);
+
+        let opts = |all: bool, paths: &[&str]| RepoOptions {
+            all,
+            repos: paths.iter().map(|p| p.to_string()).collect(),
+            ..RepoOptions::default()
+        };
+
+        let switch = |opts: &RepoOptions, global_path: &Path| {
+            selects_global_repos(&current, &root, Some(opts), &home, global_path)
+        };
+
+        // A directory outside of the project inside of a global repo.
+        assert!(switch(
+            &opts(false, &["../../../../src/other"]),
+            &global.path
+        ));
+        assert!(switch(&opts(false, &["~/src/other/src"]), &global.path));
+        let absolute = other.to_str().unwrap();
+        assert!(switch(&opts(false, &[absolute]), &global.path));
+        // `--all` switches to the global repos.
+        assert!(switch(&opts(true, &[]), &global.path));
+
+        // Directories inside of the project, globs and directories outside of
+        // any global repo stay in the project.
+        assert!(!switch(&opts(false, &[]), &global.path));
+        assert!(!switch(&opts(false, &["."]), &global.path));
+        assert!(!switch(
+            &opts(false, &["~/project/repos/inner"]),
+            &global.path
+        ));
+        assert!(!switch(&opts(false, &["repos/*"]), &global.path));
+        assert!(!switch(&opts(false, &["~/unregistered"]), &global.path));
+
+        // Without global repos nothing changes.
+        let empty = global_config(&base, "license = \"MIT\"\n", true);
+        assert!(!switch(&opts(true, &[]), &empty.path));
+        assert!(!switch(&opts(false, &["~/src/other"]), &empty.path));
+
+        // Once switched, the root is the home directory and the same arguments
+        // select among the global repos.
+        let global = global_config(&base, GLOBAL, true);
+
+        let templating = Templating::new().unwrap();
+        let defaults = config::defaults();
+
+        let paths = Paths {
+            root: &home,
+            current: None,
+            config: None,
+            cache: None,
+            redirect: None,
+        };
+
+        let loaded = config::load_all_with(paths, &templating, &defaults, Some(&global));
+        assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+        let (repos, from_group) = collect_repos(&loaded.config, &home, None).unwrap();
+        assert!(from_group);
+
+        let mut all = repos
+            .iter()
+            .map(|r| r.path().to_string())
+            .collect::<Vec<_>>();
+        all.sort();
+        assert_eq!(all, ["project", "src/other", "src/third"]);
+
+        assert_eq!(
+            select(
+                &["../../../../src/other", "~/src/third/", ".."],
+                &current,
+                &home,
+                &home,
+                &repos
+            ),
+            [
+                vec![String::from("src/other")],
+                vec![String::from("src/third")],
+                vec![String::from("project")],
+            ]
+        );
     }
 }

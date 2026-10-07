@@ -26,8 +26,10 @@ variables](#paths-and-environment-variables)).
 
 Outside of a project (no `Kick.toml` or git checkout in the current directory
 or its parents) kick acts on the repos declared in the global configuration.
-Inside of a project its `[repo]` sections are ignored. Use `kick project add`,
-`kick project list` and `kick project remove` to manage them.
+Inside of a project its `[repo]` sections are ignored, unless `--all` is passed
+or a `-p`/`--path` names a directory outside of the project which is inside of
+one of them, in which case kick acts on the global repos instead. Use `kick
+project add`, `kick project list` and `kick project remove` to manage them.
 
 ```toml
 [repo."repos/OxidizeBot"]

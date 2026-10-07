@@ -1367,7 +1367,7 @@ mod tests {
     use crate::global::Global;
     use crate::model::{Repo, RepoSource};
     use crate::templates::Templating;
-    use crate::{Exclusion, RepoOptions, filter_repos};
+    use crate::{Exclusion, PathFilter, RepoOptions, filter_repos};
 
     fn paths(root: &Path) -> Paths<'_> {
         Paths {
@@ -2070,7 +2070,7 @@ mod tests {
             let filters = opts
                 .repos
                 .iter()
-                .map(|r| Fragment::parse(r))
+                .map(|r| PathFilter::Glob(Fragment::parse(r)))
                 .collect::<Vec<_>>();
             let set = set.map(|s| {
                 s.iter()
