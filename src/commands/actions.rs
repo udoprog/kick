@@ -177,7 +177,7 @@ fn sync_action(
 
     let (r, open) = match gix::open(&git_dir) {
         Ok(r) => (r, true),
-        Err(gix::open::Error::NotARepository { .. }) => (gix::init_bare(&git_dir)?, false),
+        Err(error) if error.is_not_found() => (gix::init_bare(&git_dir)?, false),
         Err(error) => return Err(error).context("Failed to open or initialize cache repository"),
     };
 

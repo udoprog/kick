@@ -55,7 +55,7 @@ pub(super) fn load<'repo>(
 
     while let Some((tree, mut path)) = queue.pop_front() {
         for entry in tree.iter() {
-            let entry = entry?;
+            let entry = entry.map_err(gix::Error::from)?;
             let id = entry.id();
             let header = id.header()?;
 
@@ -411,7 +411,7 @@ mod tests {
         git(&src, &["add", "."])?;
         git(&src, &["commit", "-q", "-m", "action"])?;
         let id = git(&src, &["rev-parse", "HEAD"])?;
-        let id = ObjectId::from_hex(id.trim().as_bytes())?;
+        let id = ObjectId::from_hex(id.trim().as_bytes()).map_err(gix::Error::from)?;
 
         let repo = gix::open(&src)?;
         let mut files = Vec::new();
