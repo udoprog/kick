@@ -172,13 +172,35 @@ impl RepoRef {
         Ok(workspace)
     }
 
+    /// The name used to seed [`RepoRef::random`].
+    ///
+    /// This is the repository name from its URL, falling back to the last
+    /// component of its path. It must not depend on where the repo is checked
+    /// out or how it was resolved (a repo configured globally and checked from
+    /// inside itself has the path `.`), since that would change the generated
+    /// values, like the weekly cron schedule.
+    fn seed_name(&self) -> &str {
+        let name = self
+            .url
+            .path_segments()
+            .and_then(|mut segments| segments.rfind(|s| !s.is_empty()))
+            .map(|s| s.strip_suffix(".git").unwrap_or(s))
+            .filter(|s| !s.is_empty());
+
+        if let Some(name) = name {
+            return name;
+        }
+
+        self.path.file_name().unwrap_or_else(|| self.path.as_str())
+    }
+
     /// Generate random variables which are consistent for a given repo name.
     pub(crate) fn random(&self) -> Random {
         use rand::prelude::*;
 
         let mut state = 0u64;
 
-        for c in self.path().as_str().chars() {
+        for c in self.seed_name().chars() {
             state = state.wrapping_shl(11);
             state ^= c as u64;
         }
@@ -415,4 +437,58 @@ fn url_from_github_action() -> Result<Url> {
     }
 
     Ok(url)
+}
+
+#[cfg(test)]
+mod tests {
+    use relative_path::RelativePathBuf;
+    use url::Url;
+
+    use super::RepoRef;
+
+    fn repo(path: &str, url: &str) -> RepoRef {
+        RepoRef {
+            path: RelativePathBuf::from(path),
+            url: Url::parse(url).unwrap(),
+        }
+    }
+
+    fn cron(repo: &RepoRef) -> String {
+        let r = repo.random();
+        format!("{} {} * * {}", r.minute, r.hour, r.day)
+    }
+
+    /// The seed must not depend on how the repo was resolved, so a repo
+    /// checked from inside itself (path `.`) gets the same schedule as when it
+    /// is checked from a project root.
+    #[test]
+    fn random_is_independent_of_path() {
+        let url = "https://github.com/udoprog/nondestructive";
+
+        for path in [
+            ".",
+            "",
+            "nondestructive",
+            "repos/nondestructive",
+            "other/wt",
+        ] {
+            assert_eq!(cron(&repo(path, url)), "25 9 * * 3", "path {path:?}");
+        }
+
+        assert_eq!(
+            cron(&repo(".", "https://github.com/udoprog/nondestructive.git")),
+            "25 9 * * 3"
+        );
+        assert_eq!(
+            cron(&repo(".", "https://github.com/udoprog/nondestructive/")),
+            "25 9 * * 3"
+        );
+    }
+
+    #[test]
+    fn random_falls_back_to_path() {
+        let r = repo("repos/nondestructive", "file:///");
+        assert_eq!(r.seed_name(), "nondestructive");
+        assert_eq!(cron(&r), "25 9 * * 3");
+    }
 }

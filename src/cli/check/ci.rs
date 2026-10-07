@@ -14,7 +14,7 @@ use crate::edits;
 use crate::keys::Keys;
 use crate::model::Repo;
 use crate::rstr::RStr;
-use crate::workflows::{Job, Step, StepMapping, WorkflowManifest, WorkflowManifests};
+use crate::workflows::{Eval, Job, Step, StepMapping, WorkflowManifest, WorkflowManifests};
 use crate::workspace::Crates;
 
 pub(crate) struct Ci<'a> {
@@ -174,12 +174,16 @@ fn validate_jobs(
         validate_on(cx, ci, w, config, value);
     }
 
+    // Missing features reported for this workflow, so that each is reported
+    // at most once even if it appears in multiple jobs or matrix entries.
+    let mut missing_features = HashSet::new();
+
     for job in w.jobs(&HashSet::new(), &[])? {
         check_strategy_rust_version(ci, &job);
         check_actions(ci, &job)?;
 
         if ci.crates.is_single_crate() {
-            verify_single_project_build(cx, ci, w, &job)?;
+            verify_single_project_build(cx, ci, w, &job, &mut missing_features)?;
         }
     }
 
@@ -438,6 +442,7 @@ fn verify_single_project_build(
     ci: &mut Ci<'_>,
     w: &WorkflowManifest<'_, '_>,
     job: &Job,
+    reported: &mut HashSet<String>,
 ) -> Result<()> {
     let mut cargo_combos = Vec::new();
     let features = ci.package.features(ci.crates)?;
@@ -445,10 +450,15 @@ fn verify_single_project_build(
     for (_, step) in &job.matrices {
         for step in &step.steps {
             if let Some(command) = &step.run {
-                let identity = identify_command(command, &features);
+                let args = evaluate_args(Eval::new(&step.tree), command);
+                let identity = identify_command(&args, &features);
 
                 if let RunIdentity::Cargo(cargo) = identity {
                     for feature in &cargo.missing_features {
+                        if !reported.insert(feature.clone()) {
+                            continue;
+                        }
+
                         cx.warning(Warning::MissingFeature {
                             path: w.path.clone(),
                             feature: feature.clone(),
@@ -514,22 +524,91 @@ fn ensure_feature_combo(cx: &Ctxt<'_>, w: &WorkflowManifest<'_, '_>, cargos: &[C
     false
 }
 
-fn identify_command(command: &str, features: &HashSet<String>) -> RunIdentity {
-    let mut it = command.split(' ').peekable();
+/// Split a run command into whitespace-separated arguments, keeping GitHub
+/// expressions like `${{ matrix.feature }}` within a single argument.
+fn split_args(command: &str) -> Vec<&str> {
+    let mut args = Vec::new();
+    let mut start = None;
+    let mut in_expr = false;
+    let mut it = command.char_indices().peekable();
 
-    if matches!(it.next(), Some("cargo")) {
+    while let Some((i, c)) = it.next() {
+        if in_expr {
+            if c == '}' && command[i..].starts_with("}}") {
+                it.next();
+                in_expr = false;
+            }
+
+            continue;
+        }
+
+        if c.is_whitespace() {
+            if let Some(s) = start.take() {
+                args.push(&command[s..i]);
+            }
+
+            continue;
+        }
+
+        if start.is_none() {
+            start = Some(i);
+        }
+
+        if command[i..].starts_with("${{") {
+            it.next();
+            it.next();
+            in_expr = true;
+        }
+    }
+
+    if let Some(s) = start {
+        args.push(&command[s..]);
+    }
+
+    args
+}
+
+/// Split a run command into arguments and evaluate any GitHub expressions in
+/// them using the step's environment, like its matrix.
+///
+/// An argument with an expression which cannot be evaluated to a non-empty
+/// value is `None`, since nothing can be said about its value.
+fn evaluate_args(eval: &Eval, command: &str) -> Vec<Option<String>> {
+    split_args(command)
+        .into_iter()
+        .map(|arg| {
+            if !arg.contains("${{") {
+                return Some(arg.to_owned());
+            }
+
+            let value = eval.eval(arg).ok()?;
+            let value = value.to_exposed();
+
+            if value.is_empty() || value.contains("${{") {
+                return None;
+            }
+
+            Some(value.into_owned())
+        })
+        .collect()
+}
+
+fn identify_command(args: &[Option<String>], features: &HashSet<String>) -> RunIdentity {
+    let mut it = args.iter().map(Option::as_deref).peekable();
+
+    if matches!(it.next(), Some(Some("cargo"))) {
         // Consume arguments.
         while it
             .peek()
-            .filter(|p| p.starts_with('+') || p.starts_with('-'))
+            .filter(|p| p.is_some_and(|p| p.starts_with('+') || p.starts_with('-')))
             .is_some()
         {
             it.next();
         }
 
         let kind = match it.next() {
-            Some("build") => CargoKind::Build,
-            Some("test") => CargoKind::Test,
+            Some(Some("build")) => CargoKind::Build,
+            Some(Some("test")) => CargoKind::Test,
             _ => CargoKind::None,
         };
 
@@ -547,7 +626,7 @@ fn identify_command(command: &str, features: &HashSet<String>) -> RunIdentity {
 }
 
 fn process_features<'a>(
-    mut it: std::iter::Peekable<impl Iterator<Item = &'a str>>,
+    mut it: impl Iterator<Item = Option<&'a str>>,
     features: &HashSet<String>,
 ) -> (CargoFeatures, Vec<String>, Vec<String>) {
     let mut cargo_features = CargoFeatures::Default;
@@ -555,6 +634,11 @@ fn process_features<'a>(
     let mut features_list = Vec::new();
 
     while let Some(arg) = it.next() {
+        // An argument which could not be evaluated.
+        let Some(arg) = arg else {
+            continue;
+        };
+
         match arg {
             "--no-default-features" => {
                 cargo_features = CargoFeatures::NoDefaultFeatures;
@@ -563,9 +647,14 @@ fn process_features<'a>(
                 cargo_features = CargoFeatures::AllFeatures;
             }
             "--features" | "-F" => {
-                if let Some(arg) = it.next() {
-                    for feature in arg.split(',').map(|s| s.trim()) {
-                        if !features.contains(feature) {
+                if let Some(Some(arg)) = it.next() {
+                    for feature in arg
+                        .split(|c: char| c == ',' || c.is_whitespace())
+                        .filter(|s| !s.is_empty())
+                    {
+                        // `default` always exists, but is not included in
+                        // the set of features of the manifest.
+                        if feature != "default" && !features.contains(feature) {
                             missing_features.push(feature.into());
                         }
 
@@ -578,4 +667,78 @@ fn process_features<'a>(
     }
 
     (cargo_features, missing_features, features_list)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use crate::workflows::{Eval, Tree};
+
+    use super::{RunIdentity, evaluate_args, identify_command, split_args};
+
+    fn features() -> HashSet<String> {
+        ["std", "yaml", "serde"]
+            .into_iter()
+            .map(String::from)
+            .collect()
+    }
+
+    fn missing(eval: &Eval, command: &str) -> Vec<String> {
+        match identify_command(&evaluate_args(eval, command), &features()) {
+            RunIdentity::Cargo(cargo) => cargo.missing_features,
+            RunIdentity::None => panic!("not a cargo command: {command}"),
+        }
+    }
+
+    #[test]
+    fn split_args_keeps_expressions() {
+        assert_eq!(
+            split_args("cargo check  --features ${{ matrix.feature }} --lib"),
+            [
+                "cargo",
+                "check",
+                "--features",
+                "${{ matrix.feature }}",
+                "--lib"
+            ]
+        );
+        assert_eq!(
+            split_args("cargo test -F a,${{ matrix.x }}"),
+            ["cargo", "test", "-F", "a,${{ matrix.x }}"]
+        );
+        assert_eq!(split_args("cargo ${{ a }}"), ["cargo", "${{ a }}"]);
+        assert_eq!(split_args("  "), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn matrix_features_are_evaluated() {
+        let command = "cargo check --workspace --lib --features ${{ matrix.feature }}";
+
+        for feature in ["std", "yaml", "serde", "default"] {
+            let mut tree = Tree::new();
+            tree.insert(["matrix", "feature"], feature);
+            assert!(missing(Eval::new(&tree), command).is_empty(), "{feature}");
+        }
+
+        let mut tree = Tree::new();
+        tree.insert(["matrix", "feature"], "bogus");
+        assert_eq!(missing(Eval::new(&tree), command), ["bogus"]);
+    }
+
+    #[test]
+    fn unevaluated_expressions_are_not_features() {
+        let eval = Eval::empty();
+
+        assert!(missing(eval, "cargo check --features ${{ matrix.feature }}").is_empty());
+        assert!(missing(eval, "cargo check --features ${{ github.event.x }} --lib").is_empty());
+        assert_eq!(
+            missing(
+                eval,
+                "cargo check --features std,${{ matrix.feature }},bogus"
+            ),
+            ["bogus"]
+        );
+        assert!(missing(eval, "cargo check --features ${{ broken").is_empty());
+    }
 }
