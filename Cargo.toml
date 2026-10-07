@@ -7,7 +7,6 @@ rust-version = "1.93"
 description = "Give your projects a good 🦶!"
 documentation = "https://docs.rs/kick"
 readme = "README.md"
-homepage = "https://github.com/udoprog/kick"
 repository = "https://github.com/udoprog/kick"
 license = "MIT OR Apache-2.0"
 keywords = ["project"]

@@ -171,7 +171,6 @@ impl Package {
     insert_field!(insert_license, "license");
     insert_field!(insert_readme, "readme");
     insert_field!(insert_repository, "repository");
-    insert_field!(insert_homepage, "homepage");
     insert_field!(insert_documentation, "documentation");
 
     insert_list!(insert_keywords, "keywords");
@@ -230,6 +229,11 @@ impl Package {
     /// Remove version.
     pub(crate) fn remove_version(&mut self) -> bool {
         self.doc.remove("version").is_some()
+    }
+
+    /// Remove homepage.
+    pub(crate) fn remove_homepage(&mut self) -> bool {
+        self.doc.remove("homepage").is_some()
     }
 
     /// Remove rust-version.

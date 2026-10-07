@@ -70,7 +70,6 @@ pub(crate) struct UpdateParams<'a> {
     pub(crate) license: Option<&'a str>,
     pub(crate) readme: Option<&'a str>,
     pub(crate) repository: Option<&'a str>,
-    pub(crate) homepage: Option<&'a str>,
     pub(crate) documentation: Option<&'a str>,
     pub(crate) authors: Vec<String>,
 }

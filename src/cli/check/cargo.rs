@@ -108,12 +108,15 @@ pub(crate) fn work_cargo_toml(
             WrongPackageRepository
         };
 
-        check! {
-            homepage,
-            insert_homepage,
-            MissingPackageHomepage,
-            WrongPackageHomepage
-        };
+        // Cargo warns when `package.homepage` is the same as
+        // `package.repository`, so remove it if it is redundant.
+        if let (Some(homepage), Some(repository)) = (package.homepage(), package.repository()) {
+            if homepage.trim_end_matches('/') == repository.trim_end_matches('/') {
+                package.remove_homepage();
+                issues.push(CargoIssue::RedundantPackageHomepage);
+                changed = true;
+            }
+        }
 
         check! {
             documentation,

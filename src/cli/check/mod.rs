@@ -71,7 +71,6 @@ fn check(cx: &Ctxt<'_>, repo: &Repo, urls: &mut Urls) -> Result<()> {
         license: Some(cx.config.license(repo)),
         readme: Some(readme::README_MD),
         repository: Some(&repo_url),
-        homepage: Some(&repo_url),
         documentation: documentation.as_deref(),
         authors: cx.config.authors(repo),
     };
