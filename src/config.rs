@@ -27,6 +27,7 @@ use crate::process;
 use crate::shell::Shell;
 use crate::systemd;
 use crate::templates::{Template, Templating};
+use crate::version_groups::VersionGroup;
 
 /// Default job name.
 const DEFAULT_CI_NAME: &str = "CI";
@@ -923,6 +924,8 @@ pub(crate) struct RepoConfig {
     pub(crate) variables: toml::Table,
     /// Files to look for in replacements.
     pub(crate) version: Vec<Replacement>,
+    /// Groups of crates which share a version.
+    pub(crate) version_group: Vec<VersionGroup>,
     /// Upgrade configuration.
     pub(crate) upgrade: Upgrade,
     /// RPM configuration.
@@ -962,6 +965,7 @@ impl RepoConfig {
         self.lib_badges.merge_with(other.lib_badges);
         self.readme_badges.merge_with(other.readme_badges);
         self.version.extend(other.version);
+        self.version_group.extend(other.version_group);
         self.upgrade.merge_with(other.upgrade);
         self.package.merge_with(other.package);
         self.actions.merge_with(other.actions);
@@ -1372,6 +1376,11 @@ impl Config<'_> {
     /// Get version replacements.
     pub(crate) fn version<'a>(&'a self, repo: &RepoRef) -> Vec<&'a Replacement> {
         self.repos(repo).flat_map(|r| &r.version).collect()
+    }
+
+    /// Get groups of crates which should be versioned together.
+    pub(crate) fn version_groups<'a>(&'a self, repo: &RepoRef) -> Vec<&'a VersionGroup> {
+        self.repos(repo).flat_map(|r| &r.version_group).collect()
     }
 
     /// Get crate for the given repo.
@@ -1960,6 +1969,15 @@ impl<'a> Cx<'a> {
             })
         });
 
+        let version_group = self.in_array(table, "version_group", None, |cx, value| {
+            cx.with_table(value, |cx, table| {
+                let crates =
+                    cx.require_in_key(table, "crates", |cx, value| cx.array(value, Self::string));
+
+                Ok(VersionGroup { crates: crates? })
+            })
+        });
+
         let cargo_toml = self.in_key(table, "cargo_toml", Self::relative_path);
 
         let upgrade = self.in_key(table, "upgrade", Self::upgrade);
@@ -2000,6 +2018,7 @@ impl<'a> Cx<'a> {
             readme_badges: readme_badges?,
             variables: variables?.unwrap_or_default(),
             version: version?,
+            version_group: version_group?,
             upgrade: upgrade?.unwrap_or_default(),
             package: package?.unwrap_or_default(),
             actions: actions?.unwrap_or_default(),
@@ -2811,6 +2830,48 @@ mod tests {
         let deploy = cx.target(value, section).ok();
         let errors = cx.errors.borrow().len();
         (deploy, errors)
+    }
+
+    #[test]
+    fn version_group() {
+        let templating = Templating::new().unwrap();
+
+        let paths = Paths {
+            root: Path::new("."),
+            current: None,
+            config: None,
+            cache: None,
+            redirect: None,
+        };
+
+        let cx = Cx::new(paths, RelativePath::new(""), &templating);
+
+        let value: toml::Value = toml::from_str(
+            r#"
+            [[version_group]]
+            crates = ["foo", "foo-macros"]
+
+            [[version_group]]
+            crates = ["bar"]
+            "#,
+        )
+        .unwrap();
+
+        let repo = cx.repo(value).ok().unwrap();
+        assert!(cx.errors.borrow().is_empty());
+        assert_eq!(repo.version_group.len(), 2);
+        assert_eq!(repo.version_group[0].crates, ["foo", "foo-macros"]);
+        assert_eq!(repo.version_group[1].crates, ["bar"]);
+
+        let value: toml::Value = toml::from_str(
+            r#"
+            [[version_group]]
+            members = ["foo"]
+            "#,
+        )
+        .unwrap();
+
+        assert!(cx.repo(value).is_err());
     }
 
     #[test]

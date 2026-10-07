@@ -56,3 +56,4 @@ See the following sections for documentation on the various configuration sectio
 * [Deploying projects using `[deploy]`](./config/deploy.md)
 * [Installing projects locally using `[install]`](./config/install.md)
 * [Keeping version strings up to date with `[version]`](./config/versions.md)
+* [Versioning crates together with `[version_group]`](./config/versions.md#version_group)

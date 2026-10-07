@@ -25,6 +25,11 @@ impl WorkspaceTable {
             .flat_map(|v| Some(RelativePath::new(v.as_str()?)))
     }
 
+    /// The `[workspace.package] version` field.
+    pub(crate) fn package_version(&self) -> Option<&str> {
+        self.doc.get("package")?.get("version")?.as_str()
+    }
+
     /// Workspace dependencies.
     pub(super) fn dependencies(&self) -> Option<&DependenciesTable> {
         let doc = self.doc.get(DEPENDENCIES).and_then(Item::as_table)?;

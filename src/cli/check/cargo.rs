@@ -2,6 +2,7 @@ use std::fmt;
 
 use anyhow::Result;
 use musli::{Decode, Encode};
+use semver::Version;
 use serde::{Deserialize, Serialize};
 
 use crate::cargo::rust_version::NO_PUBLISH_VERSION_OMIT;
@@ -9,6 +10,7 @@ use crate::cargo::{self, Manifest, RustVersion};
 use crate::changes::{CargoIssue, Change};
 use crate::ctxt::Ctxt;
 use crate::model::UpdateParams;
+use crate::version_groups::{self, PackageVersion};
 use crate::workspace::Crates;
 
 macro_rules! cargo_keys {
@@ -62,6 +64,7 @@ pub(crate) fn work_cargo_toml(
     manifest: &Manifest,
     update: &UpdateParams<'_>,
     rust_version: Option<RustVersion>,
+    group_version: Option<&Version>,
 ) -> Result<()> {
     let mut modified_manifest = manifest.clone();
     let package = modified_manifest.ensure_package_mut()?;
@@ -179,6 +182,32 @@ pub(crate) fn work_cargo_toml(
                 changed = true;
                 modified_manifest.ensure_package_mut()?.remove_version();
             }
+        }
+    }
+
+    if let Some(expected) = group_version {
+        let package = modified_manifest.ensure_package_mut()?;
+        let expected_string = expected.to_string();
+
+        match version_groups::package_version(
+            package,
+            version_groups::workspace_version(crates)?.as_ref(),
+        )? {
+            PackageVersion::Explicit(actual) => {
+                issues.push(CargoIssue::VersionGroupMismatch {
+                    actual: actual.to_string(),
+                    expected: expected_string.clone(),
+                });
+                package.set_version(&expected_string);
+                changed = true;
+            }
+            PackageVersion::Inherited(Some(actual)) => {
+                issues.push(CargoIssue::VersionGroupInheritedMismatch {
+                    actual: actual.to_string(),
+                    expected: expected_string,
+                });
+            }
+            _ => {}
         }
     }
 

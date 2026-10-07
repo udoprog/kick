@@ -514,6 +514,7 @@ mod systemd;
 mod templates;
 mod urls;
 mod utils;
+mod version_groups;
 mod wix;
 mod workflows;
 mod workspace;

@@ -1,6 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 use semver::{Comparator, Op, Prerelease, Version, VersionReq};
 use toml_edit::{Formatted, Item, TableLike, Value};
@@ -10,6 +10,7 @@ use crate::changes::Change;
 use crate::cli::WithRepos;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
+use crate::version_groups::{self, PackageVersion, ResolvedGroups};
 
 #[derive(Default, Debug, Parser)]
 pub(crate) struct Opts {
@@ -31,7 +32,14 @@ pub(crate) struct Opts {
     /// Make a commit with the current version with the message `Release <version>`.
     #[arg(long)]
     commit: bool,
+    /// Ignore `[[version_group]]` configuration, and only change the version of
+    /// the selected crates rather than every crate in their version group.
+    #[arg(long)]
+    no_group: bool,
     /// Filter crate names to bump.
+    ///
+    /// Crates in the same `[[version_group]]` as a selected crate are also
+    /// bumped to the same version unless `--no-group` is specified.
     crates: Vec<String>,
 }
 
@@ -76,9 +84,180 @@ pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Re
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct VersionChange {
     old: Version,
     new: Version,
+}
+
+/// A crate which is a candidate for having its version changed.
+#[derive(Debug)]
+struct Candidate {
+    name: String,
+    version: PackageVersion,
+}
+
+/// The planned version changes.
+#[derive(Debug, Default)]
+struct Plan {
+    /// Version changes for each crate.
+    versions: HashMap<String, VersionChange>,
+    /// The new `[workspace.package] version`, if it should change.
+    workspace: Option<Version>,
+}
+
+/// Plan version changes for the given candidates.
+fn plan(
+    candidates: &[Candidate],
+    groups: &ResolvedGroups,
+    filter: &HashSet<&str>,
+    version_set: &VersionSet,
+) -> Result<Plan> {
+    let by_name = candidates
+        .iter()
+        .map(|c| (c.name.as_str(), c))
+        .collect::<HashMap<_, _>>();
+
+    let is_selected = |name: &str| {
+        if filter.is_empty() || filter.contains(name) {
+            return true;
+        }
+
+        groups
+            .group_of(name)
+            .is_some_and(|group| group.iter().any(|m| filter.contains(m.as_str())))
+    };
+
+    // Expand overrides to cover every member of a group.
+    let mut overrides = HashMap::<&str, (&str, &Version)>::new();
+
+    for (name, version) in &version_set.crates {
+        let members = match groups.group_of(name) {
+            Some(group) => group.iter().map(String::as_str).collect::<Vec<_>>(),
+            None => vec![name.as_str()],
+        };
+
+        for member in members {
+            if let Some((other, existing)) = overrides.insert(member, (name, version))
+                && existing != version
+            {
+                bail!(
+                    "Conflicting version overrides for version group containing `{member}`: {other}={existing} and {name}={version}"
+                );
+            }
+        }
+    }
+
+    let mut versions = HashMap::new();
+
+    for candidate in candidates {
+        let name = candidate.name.as_str();
+
+        if !is_selected(name) {
+            continue;
+        }
+
+        let current = candidate.version.version();
+
+        if version_set.is_bump() {
+            let base = match groups.group_of(name) {
+                Some(group) => group
+                    .iter()
+                    .flat_map(|m| by_name.get(m.as_str())?.version.version())
+                    .max(),
+                None => current,
+            };
+
+            let Some(base) = base else {
+                continue;
+            };
+
+            let to = version_set.bump(base);
+
+            tracing::trace!(
+                name,
+                from = base.to_string(),
+                to = to.to_string(),
+                "Bump version"
+            );
+
+            versions.insert(
+                name.to_string(),
+                VersionChange {
+                    old: current.unwrap_or(&to).clone(),
+                    new: to,
+                },
+            );
+
+            continue;
+        }
+
+        let version = overrides
+            .get(name)
+            .map(|(_, v)| *v)
+            .or(version_set.any.as_ref());
+
+        if let Some(version) = version {
+            tracing::info!(?name, version = ?version.to_string(), "Set version");
+
+            versions.insert(
+                name.to_string(),
+                VersionChange {
+                    old: version.clone(),
+                    new: version.clone(),
+                },
+            );
+        }
+    }
+
+    // Crates which inherit their version from the workspace all share one
+    // version, so changing one of them changes the workspace version.
+    let mut workspace = None::<(&str, Version)>;
+
+    for candidate in candidates {
+        if !candidate.version.is_inherited() {
+            continue;
+        }
+
+        let Some(change) = versions.get(&candidate.name) else {
+            continue;
+        };
+
+        match &workspace {
+            Some((other, version)) if *version != change.new => {
+                bail!(
+                    "Crates `{other}` and `{}` inherit their version from the workspace but would get different versions: {version} and {}",
+                    candidate.name,
+                    change.new
+                );
+            }
+            Some(..) => {}
+            None => {
+                workspace = Some((&candidate.name, change.new.clone()));
+            }
+        }
+    }
+
+    let workspace = workspace.map(|(_, v)| v);
+
+    if let Some(new) = &workspace {
+        for candidate in candidates {
+            if candidate.version.is_inherited() && !versions.contains_key(&candidate.name) {
+                versions.insert(
+                    candidate.name.clone(),
+                    VersionChange {
+                        old: candidate.version.version().unwrap_or(new).clone(),
+                        new: new.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    Ok(Plan {
+        versions,
+        workspace,
+    })
 }
 
 #[tracing::instrument(skip_all)]
@@ -90,83 +269,41 @@ fn version(
     filter: &HashSet<&str>,
 ) -> Result<()> {
     let workspace = repo.workspace(cx)?;
+    let workspace_version = version_groups::workspace_version(workspace)?;
 
-    let mut versions = HashMap::new();
+    let mut candidates = Vec::new();
+    let mut known = BTreeSet::new();
 
     for manifest in workspace.manifests() {
         let Some(package) = manifest.as_package() else {
             continue;
         };
 
+        let name = package.name()?;
+        known.insert(name);
+
         if !package.is_publish() {
             continue;
         }
 
-        let name = package.name()?;
-
-        if !filter.is_empty() && !filter.contains(name) {
-            continue;
-        }
-
-        let current_version = if let Some(version) = package.version() {
-            Some(Version::parse(version)?)
-        } else {
-            None
-        };
-
-        if version_set.is_bump()
-            && let Some(from) = &current_version
-        {
-            let mut to = from.clone();
-
-            if version_set.major {
-                to.major += 1;
-                to.minor = 0;
-                to.patch = 0;
-                to.pre = Prerelease::default();
-            } else if version_set.minor {
-                to.minor += 1;
-                to.patch = 0;
-                to.pre = Prerelease::default();
-            } else if version_set.patch {
-                to.patch += 1;
-                to.pre = Prerelease::default();
-            }
-
-            if let Some(pre) = &version_set.pre {
-                to.pre = pre.clone();
-            }
-
-            tracing::trace!(
-                name,
-                from = from.to_string(),
-                to = to.to_string(),
-                "Bump version"
-            );
-
-            versions.insert(
-                name.to_string(),
-                VersionChange {
-                    old: from.clone(),
-                    new: to,
-                },
-            );
-
-            continue;
-        }
-
-        if let Some(version) = version_set.crates.get(name).or(version_set.any.as_ref()) {
-            tracing::info!(?name, version = ?version.to_string(), ?name, "Set version");
-
-            versions.insert(
-                name.to_string(),
-                VersionChange {
-                    old: version.clone(),
-                    new: version.clone(),
-                },
-            );
-        }
+        candidates.push(Candidate {
+            name: name.to_owned(),
+            version: version_groups::package_version(package, workspace_version.as_ref())?,
+        });
     }
+
+    let groups = if opts.no_group {
+        ResolvedGroups::default()
+    } else {
+        ResolvedGroups::resolve(cx.config.version_groups(repo), &known)?
+    };
+
+    let Plan {
+        versions,
+        workspace: new_workspace_version,
+    } = plan(&candidates, &groups, filter, version_set)?;
+
+    let mut workspace_version_updated = false;
 
     for manifest in workspace.manifests() {
         let mut changed_manifest = false;
@@ -192,7 +329,10 @@ fn version(
                     );
                 }
 
-                if package.version() != Some(version_string.as_str()) {
+                let inherited =
+                    version_groups::package_version(package, None).is_ok_and(|v| v.is_inherited());
+
+                if !inherited && package.version() != Some(version_string.as_str()) {
                     modified
                         .ensure_package_mut()?
                         .insert_version(&version_string)?;
@@ -234,6 +374,23 @@ fn version(
             .and_then(|d| d.as_table_like_mut())
         {
             handle_table_like(workspace)?;
+
+            if let Some(new) = &new_workspace_version
+                && let Some(version) = workspace
+                    .get_mut("package")
+                    .and_then(|p| p.as_table_like_mut())
+                    .and_then(|p| p.get_mut("version"))
+                    .and_then(Item::as_value_mut)
+                && version.as_str().is_some()
+            {
+                workspace_version_updated = true;
+                let new = new.to_string();
+
+                if version.as_str() != Some(new.as_str()) {
+                    *version = Value::String(Formatted::new(new));
+                    changed_manifest = true;
+                }
+            }
         }
 
         if changed_manifest {
@@ -245,6 +402,12 @@ fn version(
         for replaced in replaced {
             cx.change(Change::Replace { replaced });
         }
+    }
+
+    if let Some(new) = &new_workspace_version
+        && !workspace_version_updated
+    {
+        bail!("Cannot set workspace version to {new}: no `[workspace.package] version` found");
     }
 
     if opts.commit {
@@ -279,6 +442,31 @@ struct VersionSet {
 impl VersionSet {
     fn is_bump(&self) -> bool {
         self.major || self.minor || self.patch || self.pre.is_some()
+    }
+
+    /// Bump the given version.
+    fn bump(&self, from: &Version) -> Version {
+        let mut to = from.clone();
+
+        if self.major {
+            to.major += 1;
+            to.minor = 0;
+            to.patch = 0;
+            to.pre = Prerelease::default();
+        } else if self.minor {
+            to.minor += 1;
+            to.patch = 0;
+            to.pre = Prerelease::default();
+        } else if self.patch {
+            to.patch += 1;
+            to.pre = Prerelease::default();
+        }
+
+        if let Some(pre) = &self.pre {
+            to.pre = pre.clone();
+        }
+
+        to
     }
 }
 
@@ -394,4 +582,160 @@ fn modify_version_req(req: &str, o: &Version, n: &Version) -> Result<String> {
     let mut v = n.clone();
     v.build = Default::default();
     Ok(v.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeSet, HashSet};
+
+    use semver::Version;
+
+    use super::{Candidate, Plan, VersionChange, VersionSet, plan};
+    use crate::version_groups::{PackageVersion, ResolvedGroups, VersionGroup};
+
+    fn v(s: &str) -> Version {
+        Version::parse(s).unwrap()
+    }
+
+    fn explicit(name: &str, version: &str) -> Candidate {
+        Candidate {
+            name: name.to_owned(),
+            version: PackageVersion::Explicit(v(version)),
+        }
+    }
+
+    fn inherited(name: &str, version: &str) -> Candidate {
+        Candidate {
+            name: name.to_owned(),
+            version: PackageVersion::Inherited(Some(v(version))),
+        }
+    }
+
+    fn groups(candidates: &[Candidate], groups: &[&[&str]]) -> ResolvedGroups {
+        let known = candidates
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<BTreeSet<_>>();
+
+        let groups = groups
+            .iter()
+            .map(|g| VersionGroup {
+                crates: g.iter().map(|s| (*s).to_owned()).collect(),
+            })
+            .collect::<Vec<_>>();
+
+        ResolvedGroups::resolve(&groups, &known).unwrap()
+    }
+
+    fn change(old: &str, new: &str) -> VersionChange {
+        VersionChange {
+            old: v(old),
+            new: v(new),
+        }
+    }
+
+    fn patch() -> VersionSet {
+        VersionSet {
+            patch: true,
+            ..VersionSet::default()
+        }
+    }
+
+    #[test]
+    fn group_bump_uses_highest_version() {
+        let candidates = [
+            explicit("foo", "1.0.0"),
+            explicit("foo-macros", "1.2.0"),
+            explicit("bar", "0.1.0"),
+        ];
+        let groups = groups(&candidates, &[&["foo", "foo-macros"]]);
+        let filter = HashSet::from(["foo"]);
+
+        let Plan {
+            versions,
+            workspace,
+        } = plan(&candidates, &groups, &filter, &patch()).unwrap();
+
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions["foo"], change("1.0.0", "1.2.1"));
+        assert_eq!(versions["foo-macros"], change("1.2.0", "1.2.1"));
+        assert_eq!(workspace, None);
+    }
+
+    #[test]
+    fn no_group_bumps_individually() {
+        let candidates = [explicit("foo", "1.0.0"), explicit("foo-macros", "1.2.0")];
+        let groups = ResolvedGroups::default();
+        let filter = HashSet::from(["foo"]);
+
+        let plan = plan(&candidates, &groups, &filter, &patch()).unwrap();
+        assert_eq!(plan.versions.len(), 1);
+        assert_eq!(plan.versions["foo"], change("1.0.0", "1.0.1"));
+    }
+
+    #[test]
+    fn group_override_applies_to_group() {
+        let candidates = [
+            explicit("foo", "1.0.0"),
+            explicit("foo-macros", "1.2.0"),
+            explicit("bar", "0.1.0"),
+        ];
+        let groups = groups(&candidates, &[&["foo", "foo-macros"]]);
+
+        let mut set = VersionSet::default();
+        set.crates.insert("foo".to_owned(), v("2.0.0"));
+
+        let plan = plan(&candidates, &groups, &HashSet::new(), &set).unwrap();
+        assert_eq!(plan.versions.len(), 2);
+        assert_eq!(plan.versions["foo"].new, v("2.0.0"));
+        assert_eq!(plan.versions["foo-macros"].new, v("2.0.0"));
+    }
+
+    #[test]
+    fn conflicting_group_overrides() {
+        let candidates = [explicit("foo", "1.0.0"), explicit("foo-macros", "1.2.0")];
+        let groups = groups(&candidates, &[&["foo", "foo-macros"]]);
+
+        let mut set = VersionSet::default();
+        set.crates.insert("foo".to_owned(), v("2.0.0"));
+        set.crates.insert("foo-macros".to_owned(), v("2.1.0"));
+
+        let error = plan(&candidates, &groups, &HashSet::new(), &set).unwrap_err();
+        assert!(error.to_string().contains("Conflicting"), "{error}");
+
+        // Agreeing overrides are fine.
+        set.crates.insert("foo-macros".to_owned(), v("2.0.0"));
+        assert!(plan(&candidates, &groups, &HashSet::new(), &set).is_ok());
+    }
+
+    #[test]
+    fn inherited_members_update_workspace() {
+        let candidates = [
+            inherited("foo", "1.0.0"),
+            explicit("foo-macros", "1.1.0"),
+            inherited("bar", "1.0.0"),
+        ];
+        let groups = groups(&candidates, &[&["foo", "foo-macros"]]);
+        let filter = HashSet::from(["foo-macros"]);
+
+        let plan = plan(&candidates, &groups, &filter, &patch()).unwrap();
+        assert_eq!(plan.workspace, Some(v("1.1.1")));
+        assert_eq!(plan.versions["foo"], change("1.0.0", "1.1.1"));
+        assert_eq!(plan.versions["foo-macros"], change("1.1.0", "1.1.1"));
+        // `bar` shares the workspace version, so it changes too.
+        assert_eq!(plan.versions["bar"], change("1.0.0", "1.1.1"));
+    }
+
+    #[test]
+    fn inherited_conflict() {
+        let candidates = [
+            inherited("foo", "1.0.0"),
+            explicit("foo-macros", "1.1.0"),
+            inherited("bar", "1.0.0"),
+        ];
+        let groups = groups(&candidates, &[&["foo", "foo-macros"]]);
+
+        let error = plan(&candidates, &groups, &HashSet::new(), &patch()).unwrap_err();
+        assert!(error.to_string().contains("inherit"), "{error}");
+    }
 }

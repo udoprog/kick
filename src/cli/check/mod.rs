@@ -2,15 +2,19 @@ pub(crate) mod cargo;
 pub(crate) mod ci;
 pub(crate) mod readme;
 
+use std::collections::{BTreeSet, HashMap};
 use std::io::Write;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use semver::Version;
 
 use crate::changes;
 use crate::ctxt::Ctxt;
 use crate::model::{Repo, UpdateParams};
 use crate::urls::{UrlError, Urls};
+use crate::version_groups::{self, ResolvedGroups};
+use crate::workspace::Crates;
 
 use crate::cli::WithRepos;
 
@@ -75,9 +79,24 @@ fn check(cx: &Ctxt<'_>, repo: &Repo, urls: &mut Urls) -> Result<()> {
         authors: cx.config.authors(repo),
     };
 
+    let group_versions = version_group_mismatches(cx, repo, crates)?;
+
     for manifest in crates.packages() {
         let rust_version = primary_package.rust_version();
-        cargo::work_cargo_toml(cx, crates, manifest, &update_params, rust_version)?;
+
+        let group_version = match manifest.as_package() {
+            Some(package) => group_versions.get(package.name()?),
+            None => None,
+        };
+
+        cargo::work_cargo_toml(
+            cx,
+            crates,
+            manifest,
+            &update_params,
+            rust_version,
+            group_version,
+        )?;
     }
 
     if cx.config.is_enabled(repo, "ci") {
@@ -121,6 +140,47 @@ fn check(cx: &Ctxt<'_>, repo: &Repo, urls: &mut Urls) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Find crates whose version disagree with the rest of their
+/// `[[version_group]]`, and the version they are expected to have.
+fn version_group_mismatches(
+    cx: &Ctxt<'_>,
+    repo: &Repo,
+    crates: &Crates,
+) -> Result<HashMap<String, Version>> {
+    let groups = cx.config.version_groups(repo);
+
+    if groups.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let workspace_version = version_groups::workspace_version(crates)?;
+    let mut known = BTreeSet::new();
+    let mut versions = Vec::new();
+
+    for manifest in crates.packages() {
+        let Some(package) = manifest.as_package() else {
+            continue;
+        };
+
+        let name = package.name()?;
+        known.insert(name);
+
+        if !package.is_publish() {
+            continue;
+        }
+
+        let version = version_groups::package_version(package, workspace_version.as_ref())?;
+        versions.push((name, version.version().cloned()));
+    }
+
+    let groups = ResolvedGroups::resolve(groups, &known)?;
+
+    Ok(version_groups::mismatches(
+        &groups,
+        versions.iter().map(|(name, v)| (*name, v.as_ref())),
+    ))
 }
 
 /// Perform url checks.
