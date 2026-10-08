@@ -95,6 +95,11 @@
 //! repo paths relative to the root, like `-p repos/rune` or `-p 'repos/*'`. Inside
 //! of a repo kick only runs over that repo, pass `--all` to run over every repo.
 //!
+//! Repos can also be selected by name with `-n`/`--repo-name`, like `-n rune`. A
+//! repo's name is its `alias` if configured, else its `name`, else the last
+//! component of its directory. A name which matches no repo or more than one is an
+//! error, and `-n` combines with `-p` to select the repos matched by either.
+//!
 //! If you want a complete example of this setup, see [my `projects` repo]. For
 //! documentation on how kick can be further configured, see the [configuration
 //! documentation][config].
@@ -147,9 +152,10 @@
 //! the repos declared in the global configuration instead. This lets you keep
 //! your list of projects per-user rather than in a `Kick.toml` hierarchy. Inside
 //! of a project the `[repo]` sections of the global configuration are ignored,
-//! unless `--all` is passed or a `-p`/`--path` names a directory outside of the
-//! project which is inside of one of them, in which case kick acts on the global
-//! repos instead.
+//! unless `--all` is passed, a `-p`/`--path` names a directory outside of the
+//! project which is inside of one of them, or a `-n`/`--repo-name` matches no repo
+//! in the project but one of them, in which case kick acts on the global repos
+//! instead.
 //!
 //! ```toml
 //! # ~/.config/kick/Kick.toml
@@ -844,6 +850,17 @@ struct RepoOptions {
     /// instead.
     #[arg(long = "path", short = 'p', value_name = "PATH")]
     repos: Vec<String>,
+    /// Only run over the repos with the specified names.
+    ///
+    /// A repo's name is its `alias` if configured, else its `name`, else the
+    /// last component of its directory. A name which matches no repo, or more
+    /// than one, is an error. Combines with `-p`, selecting the repos matched
+    /// by either.
+    ///
+    /// Inside of a project, a name which matches no repo in it but one declared
+    /// in the global configuration selects among the global repos instead.
+    #[arg(long = "repo-name", short = 'n', value_name = "NAME")]
+    names: Vec<String>,
     /// If we should fetch the latest updates from remotes before filtering.
     #[arg(long)]
     fetch: bool,
@@ -1652,7 +1669,8 @@ fn nested_worktree(
         return Ok(checkout.map(|checkout| (RelativePathBuf::new(), checkout)));
     }
 
-    let explicit = !opts.repos.is_empty() || !opts.set.iter().all(|s| s.is_empty());
+    let explicit =
+        !opts.repos.is_empty() || !opts.names.is_empty() || !opts.set.iter().all(|s| s.is_empty());
 
     match worktree::detect(paths.root, current, repos.iter().map(|r| r.path())) {
         Some(worktree::Nested::Worktree { repo, checkout }) => Ok(Some((repo, checkout))),
@@ -1744,6 +1762,7 @@ fn apply_repo_options(
     if from_group
         && !repo_opts.all
         && repo_opts.repos.is_empty()
+        && repo_opts.names.is_empty()
         && !has_set
         && !in_repo_path
         && let Some(current) = paths.current
@@ -1765,7 +1784,7 @@ fn apply_repo_options(
         );
     }
 
-    let filters = repo_opts
+    let mut filters = repo_opts
         .repos
         .iter()
         .map(|raw| PathFilter::new(raw, current_dir, home, paths.root, repos))
@@ -1781,6 +1800,17 @@ fn apply_repo_options(
         repos.iter().map(|repo| repo.path()),
     ) {
         bail!("{message}");
+    }
+
+    if !repo_opts.names.is_empty() {
+        let named = repos
+            .iter()
+            .filter_map(|repo| Some((config.selection_name(paths.root, repo.path())?, repo.path())))
+            .collect::<Vec<_>>();
+
+        let selected =
+            select_by_name(&repo_opts.names, &named).map_err(|message| anyhow!("{message}"))?;
+        filters.extend(selected.into_iter().map(PathFilter::Repo));
     }
 
     let mut git_cache = GitCache::new(repos, paths, system, repo_opts.fetch);
@@ -1996,7 +2026,7 @@ pub(crate) enum Exclusion {
     NotInSet,
     /// The current directory is inside of another repo.
     OutsideCurrent(RelativePathBuf),
-    /// The repo matches none of the `-p`/`--path` filters.
+    /// The repo matches none of the `-p`/`--path` filters or `-n`/`--repo-name` names.
     NoPathMatch,
     /// The repo does not support the current operating system, and
     /// `--supported-os` was passed.
@@ -2013,7 +2043,9 @@ impl fmt::Display for Exclusion {
                 f,
                 "the current directory `{current}` is in another repo, pass `--all` to include it"
             ),
-            Exclusion::NoPathMatch => write!(f, "matches none of the `-p`/`--path` filters"),
+            Exclusion::NoPathMatch => {
+                write!(f, "not selected by any `-p`/`--path` or `-n`/`--repo-name`")
+            }
             Exclusion::UnsupportedOs(os) => write!(
                 f,
                 "`--supported-os` was passed and it only supports {}",
@@ -2144,6 +2176,121 @@ fn find_from_current_dir(current_dir: &Path) -> Option<(PathBuf, RelativePathBuf
     first_git
 }
 
+/// Display a repo path, using `.` for the root itself.
+fn display_repo_path(path: &RelativePath) -> String {
+    let path = path.normalize();
+
+    if path.as_str().is_empty() {
+        String::from(".")
+    } else {
+        path.to_string()
+    }
+}
+
+/// Number of known repo names to show when a `-n` name matches nothing.
+const NAME_EXAMPLES: usize = 5;
+
+/// Resolve `-n`/`--repo-name` arguments to the paths of the repos they name, given
+/// the selection name of each repo in `named`.
+///
+/// Every name must match exactly one repo. Otherwise the error lists the
+/// names which match nothing and the candidate paths of those which match
+/// more than one repo.
+fn select_by_name<S>(
+    names: &[String],
+    named: &[(S, &RelativePath)],
+) -> Result<Vec<RelativePathBuf>, String>
+where
+    S: AsRef<str>,
+{
+    let mut selected = Vec::new();
+    let mut unknown = Vec::new();
+    let mut ambiguous = Vec::new();
+
+    for name in names {
+        let mut candidates = named
+            .iter()
+            .filter(|(n, _)| n.as_ref() == name)
+            .map(|(_, path)| path.normalize())
+            .collect::<Vec<_>>();
+
+        candidates.sort();
+        candidates.dedup();
+
+        match candidates.len() {
+            0 => unknown.push(format!("`{name}`")),
+            1 => selected.extend(candidates),
+            _ => {
+                let candidates = candidates
+                    .iter()
+                    .map(|path| format!("`{}`", display_repo_path(path)))
+                    .collect::<Vec<_>>();
+
+                ambiguous.push(format!("`{name}` matches {}", candidates.join(", ")));
+            }
+        }
+    }
+
+    if unknown.is_empty() && ambiguous.is_empty() {
+        return Ok(selected);
+    }
+
+    let mut out = String::new();
+
+    if !unknown.is_empty() {
+        let (noun, verb) = if unknown.len() == 1 {
+            ("name", "does")
+        } else {
+            ("names", "do")
+        };
+
+        let mut known = named.iter().map(|(n, _)| n.as_ref()).collect::<Vec<_>>();
+        known.sort();
+        known.dedup();
+
+        let examples = if known.is_empty() {
+            String::from("No repos are configured.")
+        } else {
+            let mut examples = known
+                .iter()
+                .take(NAME_EXAMPLES)
+                .map(|n| format!("`{n}`"))
+                .collect::<Vec<_>>();
+
+            if known.len() > NAME_EXAMPLES {
+                examples.push(format!("and {} more", known.len() - NAME_EXAMPLES));
+            }
+
+            format!("Known names are {}.", examples.join(", "))
+        };
+
+        out.push_str(&format!(
+            "The `-n`/`--repo-name` {noun} {} {verb} not match any repo. {examples}\n",
+            unknown.join(", ")
+        ));
+    }
+
+    if !ambiguous.is_empty() {
+        let (noun, verb) = if ambiguous.len() == 1 {
+            ("name", "matches")
+        } else {
+            ("names", "match")
+        };
+
+        out.push_str(&format!(
+            "The `-n`/`--repo-name` {noun} {verb} more than one repo: {}.\n",
+            ambiguous.join("; ")
+        ));
+        out.push_str("Select one of them with `-p`/`--path`, or give it a distinct `alias` in its configuration.\n");
+    }
+
+    out.push_str(
+        "\nA repo's name is its `alias` if configured, else its `name`, else the last component of its directory.",
+    );
+
+    Err(out)
+}
+
 /// A `-p`/`--path` filter.
 pub(crate) enum PathFilter<'a> {
     /// The argument names a directory inside of the repo at this path.
@@ -2255,11 +2402,88 @@ fn selects_global_repos(
         .filter_map(|key| global.resolve(key).ok()?.canonicalize().ok())
         .collect::<Vec<_>>();
 
-    opts.repos.iter().any(|raw| {
+    let by_path = opts.repos.iter().any(|raw| {
         resolve_dir(raw, current_dir, Some(home)).is_some_and(|dir| {
             !dir.starts_with(&root) && repo_dirs.iter().any(|repo| dir.starts_with(repo))
         })
-    })
+    });
+
+    by_path || names_select_global_repos(&opts.names, &root, &global)
+}
+
+/// Test if a `-n`/`--repo-name` argument matches no repo in the project at `root`
+/// but does match one of the repos declared in the `global` configuration.
+fn names_select_global_repos(names: &[String], root: &Path, global: &global::Global) -> bool {
+    if names.is_empty() {
+        return false;
+    }
+
+    let Ok(templating) = templates::Templating::new() else {
+        return false;
+    };
+
+    let defaults = config::defaults();
+
+    let project = global::Global {
+        provides_repos: false,
+        ..global.clone()
+    };
+
+    let in_project = repo_names(root, &project, &templating, &defaults);
+
+    let unmatched = names
+        .iter()
+        .filter(|name| !in_project.iter().any(|n| n == *name))
+        .collect::<Vec<_>>();
+
+    if unmatched.is_empty() {
+        return false;
+    }
+
+    let in_global = repo_names(&global.home, global, &templating, &defaults);
+    unmatched
+        .iter()
+        .any(|name| in_global.iter().any(|n| n == *name))
+}
+
+/// The selection names of the repos kick would act on at `root`.
+///
+/// Errors loading the configuration are ignored here, they are reported when
+/// the configuration is loaded for real.
+fn repo_names(
+    root: &Path,
+    global: &global::Global,
+    templating: &templates::Templating,
+    defaults: &toml::Table,
+) -> Vec<String> {
+    let paths = Paths {
+        root,
+        current: None,
+        config: None,
+        cache: None,
+        redirect: None,
+    };
+
+    let loaded = config::load_all_with(paths, templating, defaults, Some(global));
+
+    let Ok((repos, _)) = collect_repos(&loaded.config, root, None) else {
+        return Vec::new();
+    };
+
+    let mut paths = repos
+        .iter()
+        .map(|repo| repo.path().to_owned())
+        .collect::<Vec<_>>();
+
+    // Without configured repos the root itself is the repo.
+    if paths.is_empty() && !global.provides_repos {
+        paths.push(RelativePathBuf::new());
+    }
+
+    paths
+        .iter()
+        .filter_map(|path| Some(loaded.config.selection_name(root, path)?.into_owned()))
+        .collect()
 }
 
 /// Find the root to use from the current directory, returning the root, the
@@ -3434,5 +3658,225 @@ mod tests {
                 vec![String::from("project")],
             ]
         );
+    }
+
+    #[test]
+    fn clap_definition() {
+        use clap::CommandFactory;
+        super::Opts::command().debug_assert();
+    }
+
+    fn names(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn select_by_name_matches() {
+        let named = [
+            ("a", RelativePath::new("repos/a")),
+            ("b", RelativePath::new("repos/b")),
+            ("dup", RelativePath::new("one/dup")),
+            ("dup", RelativePath::new("two/dup")),
+            ("root", RelativePath::new("")),
+        ];
+
+        assert_eq!(
+            super::select_by_name(&names(&["b", "a", "root"]), &named).unwrap(),
+            ["repos/b", "repos/a", ""]
+                .map(relative_path::RelativePathBuf::from)
+                .to_vec()
+        );
+
+        let message = super::select_by_name(&names(&["nope"]), &named).unwrap_err();
+        assert_eq!(
+            message,
+            "The `-n`/`--repo-name` name `nope` does not match any repo. Known names are `a`, `b`, `dup`, `root`.\n\
+             \n\
+             A repo's name is its `alias` if configured, else its `name`, else the last component of its directory."
+        );
+
+        let message = super::select_by_name(&names(&["a", "dup"]), &named).unwrap_err();
+        assert_eq!(
+            message,
+            "The `-n`/`--repo-name` name matches more than one repo: `dup` matches `one/dup`, `two/dup`.\n\
+             Select one of them with `-p`/`--path`, or give it a distinct `alias` in its configuration.\n\
+             \n\
+             A repo's name is its `alias` if configured, else its `name`, else the last component of its directory."
+        );
+
+        // Every problem is reported at once.
+        let message = super::select_by_name(&names(&["x", "dup", "y", "a"]), &named).unwrap_err();
+        assert!(
+            message.contains("names `x`, `y` do not match any repo"),
+            "{message}"
+        );
+        assert!(
+            message.contains("`dup` matches `one/dup`, `two/dup`"),
+            "{message}"
+        );
+
+        // The known names are capped.
+        let many = (0..7)
+            .map(|i| (format!("r{i}"), RelativePath::new("x")))
+            .collect::<Vec<_>>();
+        let message = super::select_by_name(&names(&["nope"]), &many).unwrap_err();
+        assert!(
+            message.contains("`r0`, `r1`, `r2`, `r3`, `r4`, and 2 more."),
+            "{message}"
+        );
+
+        let message = super::select_by_name::<&str>(&names(&["nope"]), &[]).unwrap_err();
+        assert!(message.contains("No repos are configured."), "{message}");
+    }
+
+    #[test]
+    fn selection_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap().join("project");
+        fs::create_dir_all(root.join("repos/plain")).unwrap();
+        fs::create_dir_all(root.join("repos/named")).unwrap();
+        fs::create_dir_all(root.join("repos/aliased")).unwrap();
+        fs::create_dir_all(root.join("repos/own")).unwrap();
+
+        fs::write(
+            root.join("Kick.toml"),
+            "[repo.\"repos/plain\"]\nurl = \"https://example.com/plain\"\n\
+             [repo.\"repos/named\"]\nurl = \"https://example.com/named\"\nname = \"crate-name\"\n\
+             [repo.\"repos/aliased\"]\nurl = \"https://example.com/aliased\"\nname = \"crate\"\nalias = \"short\"\n\
+             [repo.\"repos/own\"]\nurl = \"https://example.com/own\"\nname = \"outer\"\n",
+        )
+        .unwrap();
+
+        // A repo's own Kick.toml is more specific than the project's.
+        fs::write(root.join("repos/own/Kick.toml"), "alias = \"inner\"\n").unwrap();
+
+        let templating = Templating::new().unwrap();
+        let defaults = config::defaults();
+
+        let paths = Paths {
+            root: &root,
+            current: None,
+            config: None,
+            cache: None,
+            redirect: None,
+        };
+
+        let loaded = config::load_all(paths, &templating, &defaults);
+        assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+
+        let name = |path: &str| {
+            loaded
+                .config
+                .selection_name(&root, RelativePath::new(path))
+                .map(|n| n.into_owned())
+        };
+
+        assert_eq!(name("repos/plain").as_deref(), Some("plain"));
+        assert_eq!(name("repos/named").as_deref(), Some("crate-name"));
+        assert_eq!(name("repos/aliased").as_deref(), Some("short"));
+        assert_eq!(name("repos/own").as_deref(), Some("inner"));
+        // `alias` does not change the crate name.
+        let aliased = Repo::new(
+            [RepoSource::Git],
+            "repos/aliased".into(),
+            url::Url::parse("https://example.com/aliased").unwrap(),
+        );
+        assert_eq!(loaded.config.name(&aliased), Some("crate"));
+        // The root itself is named after its directory.
+        assert_eq!(name("").as_deref(), Some("project"));
+    }
+
+    #[test]
+    fn global_repos_by_name_from_inside_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let home = base.join("home");
+        let project = home.join("project");
+
+        fs::create_dir_all(project.join("repos/inner/src")).unwrap();
+        fs::create_dir_all(project.join("repos/shared")).unwrap();
+        fs::create_dir_all(home.join("src/other")).unwrap();
+        fs::create_dir_all(home.join("src/aiocp")).unwrap();
+        fs::create_dir_all(home.join("src/shared")).unwrap();
+        fs::write(
+            project.join("Kick.toml"),
+            "[repo.\"repos/inner\"]\nurl = \"https://example.com/inner\"\n\
+             [repo.\"repos/shared\"]\nurl = \"https://example.com/shared\"\n",
+        )
+        .unwrap();
+
+        const GLOBAL: &str = "[repo.\"~/src/other\"]\nurl = \"https://example.com/other\"\n\
+             [repo.\"~/src/aiocp\"]\nurl = \"https://example.com/aiocp\"\nname = \"iocp\"\n\
+             [repo.\"~/src/shared\"]\nurl = \"https://example.com/shared\"\n";
+
+        let global = global_config(&base, GLOBAL, true);
+
+        let current = project.join("repos/inner/src");
+        let (root, _, global_repos) = super::find_root(&current, Some(&home), Some(&global.path));
+        assert!(!global_repos);
+
+        let opts = |names: &[&str]| RepoOptions {
+            names: super::tests::names(names),
+            ..RepoOptions::default()
+        };
+
+        let switch = |opts: &RepoOptions| {
+            selects_global_repos(&current, &root, Some(opts), &home, &global.path)
+        };
+
+        // Names only found among the global repos switch to them.
+        assert!(switch(&opts(&["other"])));
+        assert!(switch(&opts(&["iocp"])));
+        // The directory name is not the name when `name` is set.
+        assert!(!switch(&opts(&["aiocp"])));
+        // Names in the project stay in the project, even if a global repo has
+        // the same name.
+        assert!(!switch(&opts(&["inner"])));
+        assert!(!switch(&opts(&["shared"])));
+        // Names matching nothing stay, and are reported as unknown later.
+        assert!(!switch(&opts(&["nope"])));
+        assert!(!switch(&opts(&[])));
+
+        // Without global repos nothing changes.
+        let empty = global_config(&base, "license = \"MIT\"\n", true);
+        assert!(!selects_global_repos(
+            &current,
+            &root,
+            Some(&opts(&["other"])),
+            &home,
+            &empty.path
+        ));
+    }
+
+    #[test]
+    fn project_root_repo_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let home = base.join("home");
+        // A standalone project without `[repo]` sections, so the root is the
+        // repo, named after its directory.
+        let project = home.join("standalone");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(home.join("src/standalone")).unwrap();
+        fs::write(project.join("Kick.toml"), "license = \"MIT\"\n").unwrap();
+
+        let global = global_config(
+            &base,
+            "[repo.\"~/src/standalone\"]\nurl = \"https://example.com/standalone\"\n",
+            true,
+        );
+
+        let opts = RepoOptions {
+            names: names(&["standalone"]),
+            ..RepoOptions::default()
+        };
+
+        assert!(!selects_global_repos(
+            &project,
+            &project,
+            Some(&opts),
+            &home,
+            &global.path
+        ));
     }
 }

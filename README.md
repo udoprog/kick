@@ -98,6 +98,11 @@ a repo or `-p ~/repos/rune/src` both work. Anything else is matched against the
 repo paths relative to the root, like `-p repos/rune` or `-p 'repos/*'`. Inside
 of a repo kick only runs over that repo, pass `--all` to run over every repo.
 
+Repos can also be selected by name with `-n`/`--repo-name`, like `-n rune`. A
+repo's name is its `alias` if configured, else its `name`, else the last
+component of its directory. A name which matches no repo or more than one is an
+error, and `-n` combines with `-p` to select the repos matched by either.
+
 If you want a complete example of this setup, see [my `projects` repo]. For
 documentation on how kick can be further configured, see the [configuration
 documentation][config].
@@ -150,9 +155,10 @@ checkout is found in the current directory or any of its parents, it acts on
 the repos declared in the global configuration instead. This lets you keep
 your list of projects per-user rather than in a `Kick.toml` hierarchy. Inside
 of a project the `[repo]` sections of the global configuration are ignored,
-unless `--all` is passed or a `-p`/`--path` names a directory outside of the
-project which is inside of one of them, in which case kick acts on the global
-repos instead.
+unless `--all` is passed, a `-p`/`--path` names a directory outside of the
+project which is inside of one of them, or a `-n`/`--repo-name` matches no repo
+in the project but one of them, in which case kick acts on the global repos
+instead.
 
 ```toml
 # ~/.config/kick/Kick.toml

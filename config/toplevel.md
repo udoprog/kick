@@ -10,6 +10,8 @@ so if an origin matching `https://github.com/udoprog/awesome` the name would be
 `awesome`.
 
 This is primarily used to figure out which is the primary crate in a workspace.
+It is also the name the repo is selected by with `-n`/`--repo-name`, unless an
+[`alias`](#alias) is set.
 
 <br>
 
@@ -19,6 +21,29 @@ This is primarily used to figure out which is the primary crate in a workspace.
 [repo."repos/OxidizeBot"]
 name = "oxidize"
 url = "https://github.com/udoprog/OxidizeBot"
+```
+
+<br>
+
+### `alias`
+
+Set the name the repo is selected by with `-n`/`--repo-name`, such as `kick
+check -n oxidize`, without changing the [`name`](#name) of its primary crate.
+
+A repo's selection name is its `alias` if set, else its `name`, else the last
+component of its directory. A `-n` name which matches no repo, or more than
+one, is an error listing the known names or the matching repo paths, so give
+repos which share a directory name distinct aliases.
+
+<br>
+
+#### Examples
+
+```toml
+[repo."~/repo/aiocp"]
+name = "iocp"     # the primary crate
+alias = "aiocp"   # selected with `-n aiocp`
+url = "https://github.com/udoprog/aiocp"
 ```
 
 <br>

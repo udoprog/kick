@@ -1,5 +1,6 @@
 use core::cell::RefCell;
 use core::mem;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, btree_map};
 use std::fmt;
 use std::fs::{self, File};
@@ -892,6 +893,9 @@ pub(crate) struct RepoConfig {
     pub(crate) sources: BTreeSet<RepoSource>,
     /// Override crate to use.
     pub(crate) name: Option<String>,
+    /// The name used to select the repo with `-n`/`--repo-name`, overriding
+    /// `name` for that purpose only.
+    pub(crate) alias: Option<String>,
     /// URLs to use.
     pub(crate) urls: BTreeSet<Url>,
     /// Supported operating system.
@@ -946,6 +950,7 @@ impl RepoConfig {
     /// Merge this config with another.
     pub(crate) fn merge_with(&mut self, mut other: Self) {
         self.name = other.name.or(self.name.take());
+        self.alias = other.alias.or(self.alias.take());
         self.os.extend(other.os);
         self.branch = other.branch.or(self.branch.take());
 
@@ -1356,6 +1361,36 @@ impl Config<'_> {
             .next()
     }
 
+    /// Get the name used to select the given repo with `-n`/`--repo-name`.
+    ///
+    /// This is the `alias` key if set, else the `name` key, else the last
+    /// component of the repo's directory, which is the last component of
+    /// `root` for the repo at the root itself.
+    pub(crate) fn selection_name<'a>(
+        &'a self,
+        root: &Path,
+        path: &RelativePath,
+    ) -> Option<Cow<'a, str>> {
+        let layers = self.repos_at(path).rev();
+
+        if let Some(alias) = layers.clone().flat_map(|r| r.alias.as_deref()).next() {
+            return Some(Cow::Borrowed(alias));
+        }
+
+        if let Some(name) = layers.flat_map(|r| r.name.as_deref()).next() {
+            return Some(Cow::Borrowed(name));
+        }
+
+        let path = path.normalize();
+
+        if let Some(name) = path.file_name() {
+            return Some(Cow::Owned(name.to_owned()));
+        }
+
+        let root = root.canonicalize().ok()?;
+        Some(Cow::Owned(root.file_name()?.to_str()?.to_owned()))
+    }
+
     /// Get Cargo.toml path for the given repo.
     pub(crate) fn cargo_toml<'a>(&'a self, repo: &RepoRef) -> Option<&'a RelativePath> {
         self.repos(repo)
@@ -1397,7 +1432,14 @@ impl Config<'_> {
     }
 
     fn repos<'a>(&'a self, repo: &RepoRef) -> impl DoubleEndedIterator<Item = &'a RepoConfig> {
-        [&self.base].into_iter().chain(self.repos.get(repo.path()))
+        self.repos_at(repo.path())
+    }
+
+    fn repos_at<'a>(
+        &'a self,
+        path: &RelativePath,
+    ) -> impl DoubleEndedIterator<Item = &'a RepoConfig> + Clone {
+        [&self.base].into_iter().chain(self.repos.get(path))
     }
 }
 
@@ -2017,6 +2059,7 @@ impl<'a> Cx<'a> {
 
     fn repo_table(&self, table: &mut toml::Table) -> Result<RepoConfig, ErrorMarker> {
         let name = self.in_key(table, "name", Self::string);
+        let alias = self.in_key(table, "alias", Self::string);
         let url = self.in_key(table, "url", Self::parse);
 
         let os: std::result::Result<_, ErrorMarker> =
@@ -2128,6 +2171,7 @@ impl<'a> Cx<'a> {
         Ok(RepoConfig {
             sources: BTreeSet::from_iter([RepoSource::Config(self.current.to_owned())]),
             name: name?,
+            alias: alias?,
             urls: BTreeSet::from_iter(url?),
             os: os?,
             branch: branch?,

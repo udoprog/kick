@@ -145,6 +145,7 @@ struct FileReport {
 struct SelectionReport {
     all: bool,
     paths: Vec<String>,
+    names: Vec<String>,
     sets: Vec<String>,
     supported_os: bool,
     os: String,
@@ -158,6 +159,8 @@ struct SelectionReport {
 #[derive(Debug, Serialize)]
 struct RepoReport {
     path: String,
+    /// The name which selects the repo with `-n`/`--repo-name`.
+    name: Option<String>,
     sources: Vec<String>,
     urls: Vec<String>,
     selected: bool,
@@ -366,6 +369,7 @@ fn build(cx: &Inspect<'_>, opts: &Opts) -> Report {
     let selection = SelectionReport {
         all: cx.repo_opts.all,
         paths: cx.repo_opts.repos.clone(),
+        names: cx.repo_opts.names.clone(),
         sets: cx
             .repo_opts
             .set
@@ -404,6 +408,10 @@ fn build(cx: &Inspect<'_>, opts: &Opts) -> Report {
 
         repos.push(RepoReport {
             path: display_repo(repo.path()),
+            name: cx
+                .config
+                .selection_name(paths.root, repo.path())
+                .map(|n| n.into_owned()),
             sources,
             urls,
             selected,
@@ -1032,6 +1040,10 @@ fn write_text(o: &mut impl Write, r: &Report) -> io::Result<()> {
         writeln!(o, "  -p: {}", s.paths.join(", "))?;
     }
 
+    if !s.names.is_empty() {
+        writeln!(o, "  -n: {}", s.names.join(", "))?;
+    }
+
     if !s.sets.is_empty() {
         writeln!(o, "  --set: {}", s.sets.join(", "))?;
     }
@@ -1086,6 +1098,10 @@ fn write_text(o: &mut impl Write, r: &Report) -> io::Result<()> {
             Some(reason) => writeln!(o, "      excluded: {reason}")?,
             None if repo.selected => writeln!(o, "      selected")?,
             None => writeln!(o, "      not selected, see the selection error")?,
+        }
+
+        if let Some(name) = &repo.name {
+            writeln!(o, "      name: {name}")?;
         }
 
         writeln!(o, "      from: {}", repo.sources.join(", "))?;
