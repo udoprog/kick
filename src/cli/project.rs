@@ -1,12 +1,16 @@
 //! The `kick project` command, which manages the projects registered in the
 //! global configuration.
 
+use std::ffi::OsString;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
-use crate::global::{self, Projects};
+use crate::config;
+use crate::global::{self, Global, Projects};
 use crate::system::Git;
 
 #[derive(Debug, Parser)]
@@ -38,6 +42,18 @@ enum Action {
     Remove {
         /// The directory of the project, or the key it is registered under.
         path: String,
+    },
+    /// Edit the settings of a project in the global configuration.
+    ///
+    /// The `[repo."<key>"]` table of the project is written to a temporary
+    /// file and opened in `$VISUAL`, `$EDITOR`, or a default editor. Once the
+    /// editor exits, the edited settings are validated and replace the
+    /// table, leaving the rest of the configuration untouched. If they are
+    /// invalid nothing is changed and the temporary file is kept.
+    Edit {
+        /// The directory of the project, or the key it is registered under.
+        /// Defaults to the git checkout containing the current directory.
+        path: Option<String>,
     },
 }
 
@@ -118,9 +134,161 @@ pub(crate) fn entry(cx: &Cx<'_>, opts: &Opts) -> Result<()> {
                 global::display(cx.home, cx.config)
             );
         }
+        Action::Edit { path } => {
+            let (raw, dir) = match path {
+                Some(path) => (Some(path.as_str()), resolve_arg(cx, path)),
+                None => (None, checkout_root(cx.current_dir)),
+            };
+
+            edit(cx, raw, &dir)?;
+        }
     }
 
     Ok(())
+}
+
+/// Edit the settings of the project registered under the key `raw` or at
+/// `dir` in an editor.
+fn edit(cx: &Cx<'_>, raw: Option<&str>, dir: &Path) -> Result<()> {
+    let mut projects = Projects::open(cx.config, cx.home)?;
+    let project = projects.get(raw, dir)?;
+    let original = projects.settings(&project.key)?;
+
+    let file = tempfile::Builder::new()
+        .prefix("kick-project-")
+        .suffix(".toml")
+        .tempfile()
+        .context("Creating a temporary file")?
+        .into_temp_path();
+
+    fs::write(&file, &original).with_context(|| format!("Writing {}", file.display()))?;
+
+    run_editor(&file)?;
+
+    let edited =
+        fs::read_to_string(&file).with_context(|| format!("Reading {}", file.display()))?;
+
+    if edited == original {
+        println!("No changes made to {}", project.key);
+        return Ok(());
+    }
+
+    let global = Global {
+        path: cx.config.to_owned(),
+        home: cx.home.to_owned(),
+        provides_repos: false,
+    };
+
+    if let Err(error) = apply(&mut projects, &global, &project.key, &edited) {
+        let kept = file
+            .keep()
+            .context("Keeping the temporary file with the edits")?;
+
+        return Err(error.context(format!(
+            "Edits to {} not saved, they are kept in {}",
+            project.key,
+            kept.display()
+        )));
+    }
+
+    projects.save()?;
+
+    println!(
+        "Updated {} in {}",
+        project.key,
+        global::display(cx.home, cx.config)
+    );
+
+    if !projects
+        .list()
+        .iter()
+        .any(|p| p.key == project.key && p.url.is_some())
+    {
+        println!(
+            "Note: {} has no url, kick ignores projects without a url",
+            project.key
+        );
+    }
+
+    Ok(())
+}
+
+/// Validate the edited settings of the project registered under `key` and
+/// replace its settings with them.
+fn apply(projects: &mut Projects, global: &Global, key: &str, edited: &str) -> Result<()> {
+    let table = toml::from_str::<toml::Table>(edited).context("Invalid TOML")?;
+    let errors = config::validate_global_repo(global, table)?;
+
+    if !errors.is_empty() {
+        let mut message = String::from("Invalid settings:");
+
+        for error in errors {
+            message.push_str("\n  ");
+            message.push_str(&error);
+        }
+
+        bail!(message);
+    }
+
+    projects.set_settings(key, edited).context("Invalid TOML")?;
+    Ok(())
+}
+
+/// Open `path` in the editor of the user, which is taken from `$VISUAL` or
+/// `$EDITOR` and may include arguments, such as `code --wait`.
+fn run_editor(path: &Path) -> Result<()> {
+    let editor = ["VISUAL", "EDITOR"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .find(|value| !value.is_empty());
+
+    let (mut command, display) = match editor {
+        Some(editor) => (
+            editor_command(&editor),
+            editor.to_string_lossy().into_owned(),
+        ),
+        None => {
+            let editor = if cfg!(windows) { "notepad" } else { "vi" };
+            (Command::new(editor), editor.to_owned())
+        }
+    };
+
+    let status = command
+        .arg(path)
+        .status()
+        .with_context(|| format!("Running editor `{display}`"))?;
+
+    if !status.success() {
+        bail!("Editor `{display}` exited with {status}, no changes made");
+    }
+
+    Ok(())
+}
+
+/// Build the command for an editor specified by the user, which may include
+/// arguments.
+///
+/// Like git, the editor is run through the shell so that it may quote its
+/// arguments, with the file to edit passed as an argument to it.
+#[cfg(not(windows))]
+fn editor_command(editor: &OsString) -> Command {
+    let mut script = editor.clone();
+    script.push(" \"$@\"");
+
+    let mut command = Command::new("sh");
+    command.arg("-c").arg(script).arg(editor);
+    command
+}
+
+/// Build the command for an editor specified by the user, which may include
+/// arguments separated by whitespace.
+#[cfg(windows)]
+fn editor_command(editor: &OsString) -> Command {
+    let editor = editor.to_string_lossy();
+    let mut parts = editor.split_whitespace();
+    let mut command = Command::new(parts.next().unwrap_or("notepad"));
+    command.args(parts);
+    command
 }
 
 /// Resolve a path given on the command line, which is relative to the

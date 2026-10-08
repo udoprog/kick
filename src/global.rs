@@ -17,7 +17,7 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use relative_path::RelativePathBuf;
-use toml_edit::{DocumentMut, Item, Table};
+use toml_edit::{DocumentMut, Item, Table, Value};
 
 use crate::interpolate;
 
@@ -361,6 +361,98 @@ impl Projects {
         Ok(project)
     }
 
+    /// Find the project registered under the key `raw` or at the resolved
+    /// `path`, failing with an error which points at `kick project add` if
+    /// there is none.
+    pub(crate) fn get(&self, raw: Option<&str>, path: &Path) -> Result<Project> {
+        match self.find(raw, path) {
+            Some(project) => Ok(project),
+            None => bail!(
+                "No project registered at {} in {}, register it with `kick project add`",
+                path.display(),
+                self.path.display()
+            ),
+        }
+    }
+
+    /// The settings of the project registered under `key`, which is the body
+    /// of its `[repo."<key>"]` table, as TOML.
+    pub(crate) fn settings(&self, key: &str) -> Result<String> {
+        let table = match self.repo_item(key)? {
+            Item::Table(table) => table.clone(),
+            Item::Value(Value::InlineTable(table)) => table.clone().into_table(),
+            _ => bail!("[repo.\"{key}\"] in {} is not a table", self.path.display()),
+        };
+
+        let mut doc = DocumentMut::new();
+        let root = doc.as_table_mut();
+        *root = table;
+        root.decor_mut().clear();
+        root.set_implicit(false);
+        root.set_position(Some(0));
+        Ok(doc.to_string())
+    }
+
+    /// Replace the settings of the project registered under `key` with
+    /// `settings`, which is the body of its `[repo."<key>"]` table as TOML.
+    ///
+    /// The table keeps its place and the comments in front of its header,
+    /// and the rest of the configuration is left untouched.
+    pub(crate) fn set_settings(&mut self, key: &str, settings: &str) -> Result<()> {
+        let mut doc = settings.parse::<DocumentMut>()?;
+
+        let path = self.path.clone();
+        let item = self.repo_item_mut(key)?;
+
+        let mut table = std::mem::take(doc.as_table_mut());
+        clear_positions(&mut table);
+
+        match item {
+            Item::Table(old) => {
+                *table.decor_mut() = old.decor().clone();
+                table.set_implicit(false);
+                table.set_position(old.position());
+                *old = table;
+            }
+            Item::Value(Value::InlineTable(old)) => {
+                let mut table = table.into_inline_table();
+                *table.decor_mut() = old.decor().clone();
+                *old = table;
+            }
+            _ => bail!("[repo.\"{key}\"] in {} is not a table", path.display()),
+        }
+
+        Ok(())
+    }
+
+    fn repo_item(&self, key: &str) -> Result<&Item> {
+        self.doc
+            .get("repo")
+            .and_then(|r| r.as_table_like())
+            .and_then(|r| r.get(key))
+            .with_context(|| {
+                format!(
+                    "No project registered as [repo.\"{key}\"] in {}",
+                    self.path.display()
+                )
+            })
+    }
+
+    fn repo_item_mut(&mut self, key: &str) -> Result<&mut Item> {
+        let path = &self.path;
+
+        self.doc
+            .get_mut("repo")
+            .and_then(|r| r.as_table_like_mut())
+            .and_then(|r| r.get_mut(key))
+            .with_context(|| {
+                format!(
+                    "No project registered as [repo.\"{key}\"] in {}",
+                    path.display()
+                )
+            })
+    }
+
     /// Write the configuration back to disk, creating its directory if
     /// needed.
     pub(crate) fn save(&self) -> Result<()> {
@@ -370,6 +462,26 @@ impl Projects {
 
         fs::write(&self.path, self.doc.to_string())
             .with_context(|| format!("Writing {}", self.path.display()))
+    }
+}
+
+/// Clear the positions of the tables nested under `table`, so that they are
+/// written directly after it in the order they are declared.
+fn clear_positions(table: &mut Table) {
+    for (_, item) in table.iter_mut() {
+        match item {
+            Item::Table(table) => {
+                table.set_position(None);
+                clear_positions(table);
+            }
+            Item::ArrayOfTables(array) => {
+                for table in array.iter_mut() {
+                    table.set_position(None);
+                    clear_positions(table);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -547,5 +659,138 @@ mod tests {
         assert!(written.starts_with("# My settings\nlicense = \"MIT\" # keep this\n"));
         assert!(written.contains("# the a project\n"));
         assert!(written.contains("[repo.\"~/b\"]\nurl = \"https://example.com/b\"\n"));
+    }
+
+    #[test]
+    fn edits_project_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let config = dir.path().join("Kick.toml");
+
+        let before = concat!(
+            "# My settings\n",
+            "license = \"MIT\" # keep this\n",
+            "\n",
+            "# The a project\n",
+            "[repo.\"~/a\"]\n",
+            "# its url\n",
+            "url = \"https://example.com/a\"\n",
+            "branch = \"main\"\n",
+            "\n",
+            "[repo.\"~/a\".workflows.ci]\n",
+            "name = \"CI\"\n",
+            "\n",
+            "# The b project\n",
+            "[repo.\"~/b\"]\n",
+            "url = \"https://example.com/b\" # b url\n",
+        );
+
+        fs::write(&config, before).unwrap();
+
+        let mut projects = Projects::open(&config, &home).unwrap();
+        let project = projects.get(None, &home.join("a")).unwrap();
+        assert_eq!(project.key, "~/a");
+
+        let settings = projects.settings("~/a").unwrap();
+        assert_eq!(
+            settings,
+            concat!(
+                "# its url\n",
+                "url = \"https://example.com/a\"\n",
+                "branch = \"main\"\n",
+                "\n",
+                "[workflows.ci]\n",
+                "name = \"CI\"\n",
+            )
+        );
+
+        // Writing back the settings unchanged leaves the file untouched.
+        projects.set_settings("~/a", &settings).unwrap();
+        projects.save().unwrap();
+        assert_eq!(fs::read_to_string(&config).unwrap(), before);
+
+        let edited = concat!(
+            "# its new url\n",
+            "url = \"https://example.com/a2\"\n",
+            "\n",
+            "[workflows.ci]\n",
+            "name = \"CI\"\n",
+            "\n",
+            "[workflows.weekly]\n",
+            "disable = true\n",
+        );
+
+        projects.set_settings("~/a", edited).unwrap();
+        projects.save().unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&config).unwrap(),
+            concat!(
+                "# My settings\n",
+                "license = \"MIT\" # keep this\n",
+                "\n",
+                "# The a project\n",
+                "[repo.\"~/a\"]\n",
+                "# its new url\n",
+                "url = \"https://example.com/a2\"\n",
+                "\n",
+                "[repo.\"~/a\".workflows.ci]\n",
+                "name = \"CI\"\n",
+                "\n",
+                "[repo.\"~/a\".workflows.weekly]\n",
+                "disable = true\n",
+                "\n",
+                "# The b project\n",
+                "[repo.\"~/b\"]\n",
+                "url = \"https://example.com/b\" # b url\n",
+            )
+        );
+
+        let list = Projects::open(&config, &home).unwrap().list();
+        assert_eq!(list[0].url.as_deref(), Some("https://example.com/a2"));
+        assert_eq!(list[1].url.as_deref(), Some("https://example.com/b"));
+    }
+
+    #[test]
+    fn edits_inline_project_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let config = dir.path().join("Kick.toml");
+
+        fs::write(
+            &config,
+            "repo = { \"~/a\" = { url = \"https://example.com/a\" } }\n",
+        )
+        .unwrap();
+
+        let mut projects = Projects::open(&config, &home).unwrap();
+        let settings = projects.settings("~/a").unwrap();
+        assert_eq!(settings, "url = \"https://example.com/a\"\n");
+
+        projects
+            .set_settings("~/a", "url = \"https://example.com/a2\"\n")
+            .unwrap();
+        let list = projects.list();
+        assert_eq!(list[0].url.as_deref(), Some("https://example.com/a2"));
+    }
+
+    #[test]
+    fn rejects_invalid_project_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let config = dir.path().join("Kick.toml");
+        let before = "[repo.\"~/a\"]\nurl = \"https://example.com/a\"\n";
+        fs::write(&config, before).unwrap();
+
+        let mut projects = Projects::open(&config, &home).unwrap();
+        assert!(projects.set_settings("~/a", "url = ").is_err());
+        assert!(projects.set_settings("~/missing", "").is_err());
+        projects.save().unwrap();
+        assert_eq!(fs::read_to_string(&config).unwrap(), before);
+
+        // Unregistered projects point at `kick project add`.
+        let error = projects.get(None, &home.join("b")).unwrap_err();
+        assert!(error.to_string().contains("kick project add"), "{error}");
+        assert!(projects.get(Some("~/a"), Path::new("/nope")).is_ok());
     }
 }

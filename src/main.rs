@@ -171,10 +171,17 @@
 //! kick project add ~/src/foo --url https://github.com/udoprog/foo
 //! kick project list
 //! kick project remove ~/src/foo
+//! kick project edit ~/src/foo      # edit its settings in $VISUAL or $EDITOR
 //! ```
 //!
 //! `kick project add` stores directories inside of your home directory with a `~/`
 //! prefix, and detects the url from the `origin` remote unless `--url` is given.
+//! `kick project edit` (which defaults to the git checkout of the current
+//! directory) writes the `[repo."<key>"]` table of a project to a temporary file
+//! and opens it in `$VISUAL`, `$EDITOR` or `vi` (`notepad` on Windows). Once the
+//! editor exits the edited settings are validated and merged back into the global
+//! configuration; if they are invalid nothing is changed and the temporary file is
+//! kept so the edits are not lost.
 //! Repo sets and staged changes made while acting on global repos are stored in
 //! the user configuration directory.
 //!

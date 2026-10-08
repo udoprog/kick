@@ -2779,6 +2779,46 @@ pub(crate) fn load_with<'a>(
     Ok(loaded.config)
 }
 
+/// Validate the settings of a `[repo."<key>"]` section of the global
+/// configuration, which are given as the body of the table, returning the
+/// errors found in them.
+///
+/// Paths in the settings, such as templates, are resolved as they would be in
+/// the global configuration.
+pub(crate) fn validate_global_repo(global: &Global, table: toml::Table) -> Result<Vec<String>> {
+    let templating = Templating::new()?;
+
+    let root = global.dir();
+
+    let paths = Paths {
+        root,
+        current: None,
+        config: None,
+        cache: None,
+        redirect: None,
+    };
+
+    let mut cx = Cx::new(paths, RelativePath::new(""), &templating);
+    cx.global = Some(global);
+    let _ = cx.repo(toml::Value::Table(table));
+
+    let prefix = format!("{}: ", global.path.display());
+
+    let errors = cx
+        .errors
+        .into_inner()
+        .into_iter()
+        .map(|error| {
+            let error = error.to_string();
+            let error = error.strip_prefix(&prefix).unwrap_or(&error);
+            let error = error.strip_prefix(".: ").unwrap_or(error);
+            error.to_owned()
+        })
+        .collect();
+
+    Ok(errors)
+}
+
 /// Load configuration from the given path, keeping going past errors and
 /// recording every configuration file which was looked for.
 #[cfg(test)]
@@ -3055,9 +3095,11 @@ mod tests {
     use relative_path::RelativePath;
 
     use super::{
-        Build, CommandLine, ConfigCommand, Cx, Deploy, DeployKind, Section, SystemdScope, load_base,
+        Build, CommandLine, ConfigCommand, Cx, Deploy, DeployKind, Section, SystemdScope,
+        load_base, validate_global_repo,
     };
     use crate::ctxt::Paths;
+    use crate::global::Global;
     use crate::shell::Shell;
     use crate::systemd;
     use crate::templates::Templating;
@@ -3733,5 +3775,34 @@ host = \"moore\"",
             load_repo_keys(&["sub", "~/sub", "{root}/sub", "../other"]),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn validates_global_repo_settings() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let global = Global {
+            path: dir.path().join("Kick.toml"),
+            home: dir.path().to_owned(),
+            provides_repos: false,
+        };
+
+        let validate = |settings: &str| {
+            validate_global_repo(&global, toml::from_str(settings).unwrap()).unwrap()
+        };
+
+        assert!(validate("url = \"https://example.com/a\"\nbranch = \"main\"").is_empty());
+
+        let errors = validate("url = \"https://example.com/a\"\nunknown = 1");
+        assert_eq!(errors, vec![String::from("got unsupported key: unknown")]);
+
+        let errors = validate("url = 42");
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("expected string"), "{errors:?}");
+
+        // Templates are resolved against the directory of the configuration.
+        let errors = validate("readme = \"missing.md\"");
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("missing.md"), "{errors:?}");
     }
 }
