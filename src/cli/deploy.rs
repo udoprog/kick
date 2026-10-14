@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::env::consts::EXE_EXTENSION;
+use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::io::{IsTerminal as _, Write as _};
 use std::ops::Deref;
@@ -452,7 +453,10 @@ pub(crate) fn deploy(
 
     let targets = targets(&plan, &base, opts)?;
     check_systemd(&plan, opts)?;
-    let homes = check_access(o, opts, &plan, &targets)?;
+    // NB: Closes any connections the access check leaves open when dropped,
+    // whether the deployment succeeds or not.
+    let mut ssh = Ssh::new(&plan, opts)?;
+    let homes = check_access(o, opts, &plan, &targets, &mut ssh)?;
 
     let binary = match &plan.binary {
         Some(binary) => Some(binary.clone()),
@@ -571,7 +575,7 @@ pub(crate) fn deploy(
             print_details(o, &plan, binary.as_deref(), &host, &script)?;
         }
 
-        run_script(o, opts, &plan, &host, &root, &script)?;
+        run_script(o, opts, &plan, &ssh, index, &host, &root, &script)?;
     }
 
     Ok(())
@@ -694,12 +698,13 @@ fn check_access(
     opts: &Opts,
     plan: &Plan,
     targets: &[Target],
+    ssh: &mut Ssh,
 ) -> Result<Vec<Option<String>>> {
     let mut homes = Vec::with_capacity(targets.len());
 
     match plan.kind {
         DeployKind::Ssh => {
-            for target in targets {
+            for (index, target) in targets.iter().enumerate() {
                 if opts.no_check {
                     homes.push(None);
                 } else {
@@ -707,6 +712,8 @@ fn check_access(
                         o,
                         opts,
                         &plan.config,
+                        ssh,
+                        index,
                         target,
                         plan.sudo,
                         plan.systemd.is_some(),
@@ -1275,28 +1282,28 @@ fn print_details(
 }
 
 /// Run the install script for a host.
+#[allow(clippy::too_many_arguments)]
 fn run_script(
     o: &mut StandardStream,
     opts: &Opts,
     plan: &Plan,
+    ssh: &Ssh,
+    index: usize,
     host: &HostDeployment<'_>,
     root: &Path,
     script: &str,
 ) -> Result<()> {
     match plan.kind {
-        DeployKind::Ssh => {
-            // NB: Everything happens over a single connection. The files are
-            // streamed as a tar archive over the stdin of the remote script,
-            // which unpacks them into the staging directory before it installs
-            // anything.
-            let mut command = ssh(opts, &plan.config, host.target);
-            command.arg(script);
-            let repr = command
-                .display()
-                .abbreviated_as("remote script")
-                .to_string();
-            run_with_payload(o, opts, &mut command, &repr, &host.uploads)
-        }
+        DeployKind::Ssh => run_remote(
+            o,
+            opts,
+            &plan.config,
+            ssh,
+            index,
+            host.target,
+            script,
+            &host.uploads,
+        ),
         DeployKind::Local => {
             let mut command = Command::new("sh");
             command.arg("-c");
@@ -1306,6 +1313,31 @@ fn run_script(
             run_as(o, opts, &mut command, &repr)
         }
     }
+}
+
+/// Run a script on a host, with the given files streamed to it.
+///
+/// Everything happens over a single command. The files are streamed as a tar
+/// archive over the stdin of the remote script, which unpacks them into the
+/// staging directory before it installs anything.
+#[allow(clippy::too_many_arguments)]
+fn run_remote(
+    o: &mut StandardStream,
+    opts: &Opts,
+    config: &Deploy,
+    ssh: &Ssh,
+    index: usize,
+    target: &Target,
+    script: &str,
+    uploads: &[(PathBuf, String)],
+) -> Result<()> {
+    let mut command = ssh.command(opts, config, index, target);
+    command.arg(remote_command(script));
+    let repr = command
+        .display()
+        .abbreviated_as("remote script")
+        .to_string();
+    run_with_payload(o, opts, &mut command, &repr, uploads)
 }
 
 /// The error raised when a path starts with `~` but the home directory it
@@ -2126,18 +2158,223 @@ fn profile_dir(profile: &str) -> &str {
     }
 }
 
-/// Construct an `ssh` command towards the given host.
-fn ssh(opts: &Opts, config: &Deploy, target: &Target) -> Command {
-    let mut command = Command::new("ssh");
+/// How long a shared connection outlives its last use.
+///
+/// The master is closed explicitly once the deployment is over, so this only
+/// matters if `kick` is interrupted, and if the build outlasts it, which only
+/// costs the deployment a second login.
+const CONTROL_PERSIST: &str = "1h";
 
-    if let Some(port) = config.port {
-        command.arg("-p");
-        command.arg(port.to_string());
+/// The `ssh` connections of a deployment.
+///
+/// Where OpenSSH connection multiplexing can be used, the access check of each
+/// host opens a master connection which stays open while the project is built,
+/// and the deployment to the host is run over it, so each host is only logged
+/// into once while an unreachable host is still found out about before
+/// building. The masters are closed when this is dropped.
+///
+/// Multiplexing is not used on Windows, whose OpenSSH doesn't support it, with
+/// `--no-check` where there is only one connection per host anyway, or when the
+/// configured `options` set up multiplexing of their own.
+struct Ssh {
+    program: OsString,
+    /// The directory holding the control sockets, if connections are shared.
+    control: Option<tempfile::TempDir>,
+    /// The masters which have been opened, as `(destination, control path)`.
+    masters: Vec<(String, PathBuf)>,
+    /// Environment variables for the stand-in `ssh` of tests.
+    #[cfg(test)]
+    env: Vec<(String, PathBuf)>,
+}
+
+impl Ssh {
+    fn new(plan: &Plan, opts: &Opts) -> Result<Self> {
+        let multiplex = plan.kind == DeployKind::Ssh
+            && !cfg!(windows)
+            && !opts.no_check
+            && !configures_multiplexing(&plan.config.options);
+
+        Self::with_program("ssh", multiplex)
     }
 
-    options(&mut command, opts, config);
-    command.arg(&target.ssh);
-    command
+    fn with_program(program: impl Into<OsString>, multiplex: bool) -> Result<Self> {
+        let control = if multiplex {
+            // NB: Control sockets are unix sockets, whose paths are limited to
+            // around a hundred bytes, so they are kept short.
+            let dir = tempfile::Builder::new()
+                .prefix("kick-ssh-")
+                .tempdir()
+                .context("Creating directory for ssh control sockets")?;
+            Some(dir)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            program: program.into(),
+            control,
+            masters: Vec::new(),
+            #[cfg(test)]
+            env: Vec::new(),
+        })
+    }
+
+    fn control_path(&self, index: usize) -> Option<PathBuf> {
+        Some(self.control.as_ref()?.path().join(index.to_string()))
+    }
+
+    fn program(&self) -> Command {
+        #[allow(unused_mut)]
+        let mut command = Command::new(&self.program);
+
+        #[cfg(test)]
+        for (key, value) in &self.env {
+            command.env(key, value);
+        }
+
+        command
+    }
+
+    fn base(&self, opts: &Opts, config: &Deploy) -> Command {
+        let mut command = self.program();
+
+        if let Some(port) = config.port {
+            command.arg("-p");
+            command.arg(port.to_string());
+        }
+
+        options(&mut command, opts, config);
+        command
+    }
+
+    /// Construct an `ssh` command towards the given host which opens the
+    /// shared connection to it, if connections are shared.
+    fn master(&mut self, opts: &Opts, config: &Deploy, index: usize, target: &Target) -> Command {
+        let mut command = self.base(opts, config);
+
+        if let Some(path) = self.control_path(index) {
+            command.args(["-o", "ControlMaster=yes", "-o"]);
+            command.arg(control_path_option(&path));
+            command.args(["-o", &format!("ControlPersist={CONTROL_PERSIST}")]);
+            self.masters.push((target.ssh.clone(), path));
+        }
+
+        command.arg(&target.ssh);
+        command
+    }
+
+    /// Construct an `ssh` command towards the given host, which runs over the
+    /// shared connection if one is open and logs in otherwise.
+    fn command(&self, opts: &Opts, config: &Deploy, index: usize, target: &Target) -> Command {
+        let mut command = self.base(opts, config);
+
+        if let Some(path) = self.control_path(index) {
+            command.args(["-o", "ControlMaster=no", "-o"]);
+            command.arg(control_path_option(&path));
+        }
+
+        command.arg(&target.ssh);
+        command
+    }
+}
+
+impl Drop for Ssh {
+    fn drop(&mut self) {
+        for (destination, path) in std::mem::take(&mut self.masters) {
+            // NB: A master which never came up, since logging in failed, has no
+            // socket to close.
+            if !path.exists() {
+                continue;
+            }
+
+            let mut command = self.program();
+            command.arg("-o");
+            command.arg(control_path_option(&path));
+            command.args(["-O", "exit"]);
+            command.arg(&destination);
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+
+            if let Err(error) = command.status() {
+                tracing::warn!("Failed to close the ssh connection to `{destination}`: {error}");
+            }
+        }
+    }
+}
+
+fn control_path_option(path: &Path) -> String {
+    format!("ControlPath={}", path.display())
+}
+
+/// Test if the given `-o` options configure connection multiplexing, which the
+/// deployment then leaves to them.
+fn configures_multiplexing(options: &[String]) -> bool {
+    options.iter().any(|option| {
+        let key = option
+            .trim_start()
+            .split(|c: char| c == '=' || c.is_whitespace())
+            .next()
+            .unwrap_or_default();
+
+        ["ControlMaster", "ControlPath", "ControlPersist"]
+            .iter()
+            .any(|name| key.eq_ignore_ascii_case(name))
+    })
+}
+
+/// The command which runs a script on a remote host.
+///
+/// `ssh` hands its command to the login shell of the remote user, which might
+/// not be a POSIX shell (such as fish), so the script is run with `/bin/sh`
+/// instead of being interpreted by it.
+fn remote_command(script: &str) -> String {
+    format!("exec /bin/sh -c {}", quote_portable(script))
+}
+
+/// Quote a value as a single literal word which reads back the same in a POSIX
+/// shell and in fish.
+///
+/// The two agree on everything inside single quotes except a backslash, which
+/// fish treats as an escape before a quote or another backslash. So single
+/// quotes and backslashes are escaped outside of the quotes, where both read
+/// them the same.
+fn quote_portable(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    let mut open = false;
+
+    for c in value.chars() {
+        match c {
+            '\'' | '\\' => {
+                if open {
+                    out.push('\'');
+                    open = false;
+                }
+
+                out.push('\\');
+                out.push(c);
+            }
+            c => {
+                if !open {
+                    out.push('\'');
+                    open = true;
+                }
+
+                out.push(c);
+            }
+        }
+    }
+
+    if open {
+        out.push('\'');
+    }
+
+    if out.is_empty() {
+        out.push_str("''");
+    }
+
+    out
 }
 
 fn options(command: &mut Command, opts: &Opts, config: &Deploy) {
@@ -2266,10 +2503,13 @@ where
 ///
 /// Returns the home directory of the user being logged in as, if it could be
 /// determined.
+#[allow(clippy::too_many_arguments)]
 fn check(
     o: &mut StandardStream,
     opts: &Opts,
     config: &Deploy,
+    ssh: &mut Ssh,
+    index: usize,
     target: &Target,
     use_sudo: bool,
     systemd: bool,
@@ -2315,8 +2555,8 @@ fn check(
         details(o, "access check", script.lines())?;
     }
 
-    let mut command = ssh(opts, config, target);
-    command.arg(&script);
+    let mut command = ssh.master(opts, config, index, target);
+    command.arg(remote_command(&script));
 
     let repr = command.display().abbreviated_as("access check").to_string();
 
@@ -3637,5 +3877,250 @@ kick: failed while checking that kanban is active (exit 1)
                 (long, Vec::new()),
             ]
         );
+    }
+
+    #[test]
+    fn multiplexing_options() {
+        let options = |values: &[&str]| {
+            super::configures_multiplexing(
+                &values.iter().map(|v| String::from(*v)).collect::<Vec<_>>(),
+            )
+        };
+
+        assert!(!options(&[]));
+        assert!(!options(&[
+            "StrictHostKeyChecking=no",
+            "ServerAliveInterval 5"
+        ]));
+        assert!(options(&["ControlMaster=auto"]));
+        assert!(options(&["controlpath ~/.ssh/%C"]));
+        assert!(options(&["ControlPersist = 10m"]));
+    }
+
+    #[test]
+    fn remote_command_runs_sh() {
+        assert_eq!(
+            super::remote_command("echo 'a' \\ $HOME"),
+            "exec /bin/sh -c 'echo '\\''a'\\'' '\\\\' $HOME'"
+        );
+        assert_eq!(super::quote_portable(""), "''");
+    }
+
+    /// Scripts reach the remote end intact whichever of these shells the
+    /// remote user logs in with.
+    #[cfg(unix)]
+    #[test]
+    fn quote_portable_round_trips() {
+        use std::process::Command;
+
+        let values = [
+            "",
+            "plain",
+            "it's",
+            "back\\slash \\\\ and \\' quote",
+            "$HOME `x` $(y) \"z\" !1 * ? ~ # ; & | < >",
+            "new\nline\ttab",
+            "''\\\\''",
+        ];
+
+        let mut tested = 0;
+
+        for shell in ["sh", "dash", "bash", "zsh", "fish"] {
+            let Ok(probe) = Command::new(shell).arg("-c").arg("true").output() else {
+                continue;
+            };
+
+            if !probe.status.success() {
+                continue;
+            }
+
+            tested += 1;
+
+            for value in values {
+                let line = format!("printf %s {}", super::quote_portable(value));
+                let output = Command::new(shell).arg("-c").arg(&line).output().unwrap();
+                assert!(output.status.success(), "{shell}: {line}");
+                assert_eq!(
+                    String::from_utf8_lossy(&output.stdout),
+                    value,
+                    "{shell}: {line}"
+                );
+            }
+        }
+
+        assert!(tested > 0);
+    }
+
+    /// Deploys over a stand-in for `ssh` which records how it is called and
+    /// runs the remote command locally, to check how connections are shared.
+    #[cfg(target_os = "linux")]
+    mod ssh {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+        use std::path::{Path, PathBuf};
+
+        use termcolor::{ColorChoice, StandardStream};
+
+        use crate::config::Deploy;
+
+        use super::super::{Opts, Ssh, Target, check, run_remote};
+
+        /// Records each call as `<what> <destination> <control path>`, where
+        /// what is `master` for a call which opens a shared connection,
+        /// `reuse` for one which runs over it, `login` for one which logs in
+        /// on its own and `exit` for one which closes it. A master leaves a
+        /// file in place of its socket, which `exit` removes.
+        const FAKE: &str = r#"#!/bin/sh
+path= master= op= dest= cmd=
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o)
+            case "$2" in
+                ControlPath=*) path=${2#ControlPath=} ;;
+                ControlMaster=yes) master=1 ;;
+            esac
+            shift 2 ;;
+        -O) op=$2; shift 2 ;;
+        -p|-i) shift 2 ;;
+        -*) shift ;;
+        *) if [ -z "$dest" ]; then dest=$1; else cmd=$1; fi; shift ;;
+    esac
+done
+if [ -n "$op" ]; then
+    echo "$op $dest $path" >> "$KICK_TEST_LOG"
+    rm -f "$path"
+    exit 0
+fi
+case "$cmd" in
+    "exec /bin/sh -c "*) ;;
+    *) echo "not run with /bin/sh: $cmd" >&2; exit 1 ;;
+esac
+if [ -n "$master" ]; then
+    echo "master $dest $path" >> "$KICK_TEST_LOG"
+    : > "$path"
+elif [ -n "$path" ] && [ -e "$path" ]; then
+    echo "reuse $dest $path" >> "$KICK_TEST_LOG"
+else
+    echo "login $dest $path" >> "$KICK_TEST_LOG"
+fi
+exec sh -c "$cmd"
+"#;
+
+        struct Fixture {
+            dir: tempfile::TempDir,
+        }
+
+        impl Fixture {
+            fn new() -> Self {
+                let dir = tempfile::TempDir::new().unwrap();
+                let ssh = dir.path().join("ssh");
+                fs::write(&ssh, FAKE).unwrap();
+                fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
+                fs::write(dir.path().join("payload"), "deployed\n").unwrap();
+                Self { dir }
+            }
+
+            fn path(&self, name: &str) -> PathBuf {
+                self.dir.path().join(name)
+            }
+
+            /// Check access to and deploy to each host over the fake ssh,
+            /// returning what it recorded and the control paths used.
+            fn deploy(&self, hosts: &[&str], multiplex: bool) -> (Vec<String>, Vec<PathBuf>) {
+                let log = self.path("ssh.log");
+                let _ = fs::remove_file(&log);
+
+                let mut ssh = Ssh::with_program(self.path("ssh"), multiplex).unwrap();
+                ssh.env = vec![(String::from("KICK_TEST_LOG"), log.clone())];
+
+                let mut o = StandardStream::stdout(ColorChoice::Never);
+                let opts = Opts::default();
+                let config = Deploy::default();
+
+                let targets = hosts
+                    .iter()
+                    .map(|host| Target::new(None, host))
+                    .collect::<Vec<_>>();
+
+                for (index, target) in targets.iter().enumerate() {
+                    check(
+                        &mut o, &opts, &config, &mut ssh, index, target, false, false,
+                    )
+                    .unwrap();
+                }
+
+                let paths = (0..targets.len())
+                    .filter_map(|index| ssh.control_path(index))
+                    .collect::<Vec<_>>();
+
+                for (index, target) in targets.iter().enumerate() {
+                    let out = self.path(&format!("out-{index}"));
+                    let script = format!("tar -xOf - > '{}'", out.display());
+                    let uploads = [(self.path("payload"), String::from("payload"))];
+
+                    run_remote(
+                        &mut o, &opts, &config, &ssh, index, target, &script, &uploads,
+                    )
+                    .unwrap();
+
+                    assert_eq!(fs::read_to_string(&out).unwrap(), "deployed\n");
+                }
+
+                drop(ssh);
+
+                let log = fs::read_to_string(&log)
+                    .unwrap()
+                    .lines()
+                    .map(str::to_owned)
+                    .collect();
+
+                (log, paths)
+            }
+        }
+
+        fn display(path: &Path) -> String {
+            path.display().to_string()
+        }
+
+        #[test]
+        fn shares_one_connection_per_host() {
+            let f = Fixture::new();
+            let (log, paths) = f.deploy(&["moore", "deploy@dahl"], true);
+
+            let [moore, dahl] = &paths[..] else {
+                panic!("{paths:?}");
+            };
+
+            assert_ne!(moore, dahl);
+
+            let moore = display(moore);
+            let dahl = display(dahl);
+
+            assert_eq!(
+                log,
+                [
+                    format!("master moore {moore}"),
+                    format!("master deploy@dahl {dahl}"),
+                    format!("reuse moore {moore}"),
+                    format!("reuse deploy@dahl {dahl}"),
+                    format!("exit moore {moore}"),
+                    format!("exit deploy@dahl {dahl}"),
+                ]
+            );
+
+            // The sockets and the directory holding them are gone.
+            for path in &paths {
+                assert!(!path.exists(), "{}", path.display());
+                assert!(!path.parent().unwrap().exists(), "{}", path.display());
+            }
+        }
+
+        #[test]
+        fn logs_in_twice_without_multiplexing() {
+            let f = Fixture::new();
+            let (log, paths) = f.deploy(&["moore"], false);
+            assert!(paths.is_empty());
+            assert_eq!(log, ["login moore ", "login moore "]);
+        }
     }
 }

@@ -13,12 +13,13 @@ options. Everything here applies to `[install]` too, unless it says otherwise.
 Deploying performs the following steps:
 
 * Every remote host is [checked for access](#access-check) before any work is
-  done.
+  done. The connection the check logs in with is kept open for the deployment.
 * The project is [built](./build.md) locally, once regardless of how many hosts
   are being deployed to.
 * The binary to deploy is located in `<target>/<profile>/<binary>`, where
   `<target>` is the target directory cargo reports.
-* Then, for each host in turn, a single `ssh` invocation:
+* Then, for each host in turn, a single `ssh` invocation, running over the
+  connection opened by the access check:
   * Receives the binary, any [extra files](#deployfiles) and the rendered
     [systemd unit](#systemd), along with its [socket unit](#socket-units) if it
     has one, as a `tar` archive streamed over its stdin, and
@@ -175,9 +176,9 @@ The following options are available:
   section. Also available as `--user <user>`.
 * `port` the port to connect over. Passed to `ssh` with `-p`.
 * `identity_file` the identity file used to authenticate. Passed with `-i`.
-* `options` a list of extra options passed to `ssh` with `-o`, such as the
-  ones which [share a connection](#connections) between the access check and
-  the deployment.
+* `options` a list of extra options passed to `ssh` with `-o`, such as
+  `StrictHostKeyChecking=accept-new`. Setting any of the multiplexing options
+  turns off the [connection sharing](#connections) `kick` does by itself.
 * `sudo` whether privileged remote commands are prefixed with `sudo`. Defaults
   to `true` over ssh and `false` for a local deployment, set it to `false` when
   deploying as `root`. See [sudo and interactivity](#sudo-and-interactivity),
@@ -1220,37 +1221,30 @@ performed for `--dry-run` as well. It can be skipped with `--no-check`. A
 
 ### Connections
 
-Each host is logged into twice: once by the [access check](#access-check)
-before the build, and once to deploy, which sends the files and installs them
-over the same connection. With `--no-check` that is once per host.
+Each host is logged into once. The [access check](#access-check) opens a
+connection before the build, so that an unreachable host is found out about up
+front and the home directory it reports can be used to
+[expand](#home-directories) the paths being deployed to. That connection is kept
+open in the background while the project is built, and the deployment, which
+sends the files and installs them, runs over it. It is closed once the
+deployment is over, whether it succeeded or not.
 
-The access check is a separate connection on purpose, since it runs before what
-can be a lengthy build so that an unreachable host is found out about up front,
-and since the home directory it reports is needed to [expand](#home-directories)
-the paths being deployed to.
+This uses OpenSSH connection multiplexing, with a control socket in a temporary
+directory which only `kick` uses. If the connection sits idle for over an hour,
+such as during a very long build, or is lost in the meantime, the deployment
+simply logs in again.
+Multiplexing is not used, and each host is logged into twice, when:
 
-If logging in is expensive, such as when it prompts for a password or a second
-factor, OpenSSH can share a single authenticated connection between the two
-through connection multiplexing. `kick` doesn't do this for you, since it isn't
-available everywhere (notably not in the OpenSSH which ships with Windows) and
-since it would override any multiplexing you have configured yourself, but it
-only takes a few `options`:
+* `kick` runs on Windows, whose OpenSSH doesn't support it.
+* The `options` set `ControlMaster`, `ControlPath` or `ControlPersist`, in which
+  case connections are shared, or not, the way they say.
 
-```toml
-[deploy]
-host = "integration@moore"
-options = [
-    "ControlMaster=auto",
-    "ControlPath=~/.ssh/kick-%C",
-    "ControlPersist=10m",
-]
-```
+With `--no-check` there is no access check, so each host is logged into once by
+the deployment itself.
 
-`ControlPersist` keeps the connection open in the background after the access
-check exits, and needs to outlive the build for the deployment to reuse it.
-The same thing can be done for every connection to a host with a `Host` block
-in `~/.ssh/config`. Run `ssh -O exit -o ControlPath=~/.ssh/kick-%C <host>` to
-close a shared connection early.
+Every script `kick` runs on a remote host is run with `/bin/sh`, whatever the
+login shell of the user being logged in as is, so a user whose shell is fish or
+some other shell which isn't POSIX compatible can be deployed as.
 
 <br>
 

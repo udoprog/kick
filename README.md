@@ -479,13 +479,15 @@ binary along with anything else you have defined.
 
 [minijinja]: https://docs.rs/minijinja
 
-Before any of this happens the host is logged into once to make sure that we can
+Before any of this happens the host is logged into to make sure that we can
 actually reach it as the user we expect, that the commands being used are
 available, and that `sudo` doesn't need a password. Finding that out after a
-lengthy build is not very helpful.
+lengthy build is not very helpful. The connection is kept open while building
+and the deployment reuses it, so the host is only logged into once.
 
 That last one matters because the install script is handed to `ssh` as a single
-non-interactive command. There is no terminal for a password prompt to be
+non-interactive command, which runs under `/bin/sh` whatever the login shell
+of the user is. There is no terminal for a password prompt to be
 answered on, so every privileged command uses `sudo -n` and the deploying user is
 expected to have a `NOPASSWD` entry in sudoers.
 
