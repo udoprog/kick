@@ -220,14 +220,28 @@ they can be updated. It reports every declaration in each repo's workspace,
 including renamed, target-specific and workspace dependencies. An optional
 semver selector after the crate name, like `sqll <= 0.14.7` or `serde@^1`,
 limits it to declarations whose lowest admitted version matches, so `1.2`
-is tested as `1.2.0`. This only reads local manifests and never contacts a
-registry:
+is tested as `1.2.0`. Without `--outdated` this only reads local manifests
+and never contacts a registry:
 
 ```text
 > kick deps serde '<1.0.200'
 repos/kick: Cargo.toml [dependencies] serde = "1.0.100"
 repos/other: crates/a/Cargo.toml [dependencies] serde = "1.0.150" (workspace)
 2 declarations in 2 repos
+```
+
+With `--outdated`, it instead reports the versioned registry dependencies
+whose requirement does not admit the newest non-yanked version on the
+crates.io index, ignoring pre-releases unless the requirement names one. The
+crate is optional here, and without it every dependency is checked. Use
+`--index` to compare against another sparse index (`sparse+https://...`) or
+a local directory or `file://` URL with the same layout:
+
+```text
+> kick deps --outdated
+repos/kick: Cargo.toml [dependencies] serde = "=1.0.100" (latest 1.0.228)
+repos/other: Cargo.toml [workspace.dependencies] syn = "1.0.50" (latest 2.0.100)
+2 outdated declarations in 2 repos
 ```
 
 And much much more!

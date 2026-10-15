@@ -1,10 +1,17 @@
 use core::fmt;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::fs;
+use std::io;
+use std::path::PathBuf;
+use std::rc::Rc;
 
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
 use relative_path::RelativePath;
+use reqwest::{StatusCode, Url};
 use semver::{Op, Version, VersionReq};
+use tokio::sync::OnceCell;
 
 use crate::cargo::{
     BUILD_DEPENDENCIES, DEPENDENCIES, DEPS, DEV_DEPENDENCIES, Dependencies, DependencyItem,
@@ -26,9 +33,26 @@ pub(crate) struct Opts {
     /// A declaration matches the selector when the lowest version its
     /// requirement admits does, so `1.2` is tested as `1.2.0`. Path and git
     /// dependencies without a version only match when no selector is given.
-    #[arg(value_name = "CRATE [SELECTOR]", required = true, num_args = 1..)]
+    ///
+    /// Optional with `--outdated`, which then checks every dependency.
+    #[arg(
+        value_name = "CRATE [SELECTOR]",
+        required_unless_present = "outdated",
+        num_args = 1..
+    )]
     spec: Vec<String>,
+    /// Only report versioned registry dependencies whose requirement does not
+    /// admit the newest version published on the index.
+    #[arg(long)]
+    outdated: bool,
+    /// The index to compare against with `--outdated`: a sparse index URL
+    /// (`sparse+https://...`), a `file://` URL or a local directory with the
+    /// same layout.
+    #[arg(long, value_name = "URL", requires = "outdated", default_value = CRATES_IO)]
+    index: String,
 }
+
+const CRATES_IO: &str = "sparse+https://index.crates.io/";
 
 #[derive(Debug, Clone)]
 struct Spec {
@@ -71,7 +95,11 @@ fn parse_spec(input: &str) -> Result<Spec, String> {
     })
 }
 
-pub(crate) fn entry(with_repos: &mut WithRepos<'_>, opts: &Opts) -> Result<()> {
+pub(crate) async fn entry(with_repos: &mut WithRepos<'_>, opts: &Opts) -> Result<()> {
+    if opts.outdated {
+        return outdated_entry(with_repos, opts).await;
+    }
+
     let spec = parse_spec(&opts.spec.join(" ")).map_err(anyhow::Error::msg)?;
     let matches = Cell::new(0usize);
     let repos = Cell::new(0usize);
@@ -106,7 +134,7 @@ fn deps(cx: &Ctxt<'_>, repo: &Repo, spec: &Spec) -> Result<usize> {
         return Ok(0);
     };
 
-    let found = find(&crates, spec)?;
+    let found = find(&crates, Some(spec))?;
 
     for found in &found {
         let manifest = found
@@ -118,6 +146,295 @@ fn deps(cx: &Ctxt<'_>, repo: &Repo, spec: &Spec) -> Result<usize> {
     }
 
     Ok(found.len())
+}
+
+async fn outdated_entry(with_repos: &mut WithRepos<'_>, opts: &Opts) -> Result<()> {
+    let spec = if opts.spec.is_empty() {
+        None
+    } else {
+        Some(parse_spec(&opts.spec.join(" ")).map_err(anyhow::Error::msg)?)
+    };
+
+    let index = Index::open(&opts.index)?;
+    let (mut matches, mut repos) = (0usize, 0usize);
+
+    with_repos
+        .run_async(
+            "find outdated dependencies",
+            format_args!("deps --outdated: {spec:?}"),
+            async |cx, repo| {
+                let Some(crates) = workspace::open(cx, repo)? else {
+                    return Ok(Vec::new());
+                };
+
+                let found = outdated(&crates, spec.as_ref(), &index).await?;
+                let mut lines = Vec::with_capacity(found.len());
+
+                for (found, latest) in &found {
+                    let manifest = found
+                        .manifest
+                        .strip_prefix(repo.path())
+                        .unwrap_or(found.manifest);
+
+                    lines.push(format!(
+                        "{}: {manifest} {found} (latest {latest})",
+                        repo.path()
+                    ));
+                }
+
+                Ok(lines)
+            },
+            |lines| {
+                if !lines.is_empty() {
+                    matches += lines.len();
+                    repos += 1;
+                }
+
+                for line in lines {
+                    println!("{line}");
+                }
+
+                Ok(())
+            },
+        )
+        .await?;
+
+    let s = |n: usize| if n == 1 { "" } else { "s" };
+    println!(
+        "{matches} outdated declaration{} in {repos} repo{}",
+        s(matches),
+        s(repos)
+    );
+    Ok(())
+}
+
+/// Find every versioned declaration in a workspace whose requirement does not
+/// admit the latest version on the index, together with that version.
+async fn outdated<'a>(
+    crates: &'a Crates,
+    spec: Option<&Spec>,
+    index: &Index,
+) -> Result<Vec<(Found<'a>, Version)>> {
+    let mut output = Vec::new();
+
+    for found in find(crates, spec)? {
+        let Some(version) = found.version else {
+            continue;
+        };
+
+        let Ok(requirement) = VersionReq::parse(version) else {
+            tracing::warn!(
+                "{}: Ignoring unparseable requirement `{version}` for `{}`",
+                found.manifest,
+                found.package
+            );
+            continue;
+        };
+
+        let Some(releases) = index.releases(found.package).await? else {
+            continue;
+        };
+
+        let Some(latest) = latest(&releases, &requirement) else {
+            continue;
+        };
+
+        if !requirement.matches(latest) {
+            let latest = latest.clone();
+            output.push((found, latest));
+        }
+    }
+
+    Ok(output)
+}
+
+/// A version published on an index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Release {
+    version: Version,
+    yanked: bool,
+}
+
+/// The newest non-yanked release, ignoring pre-releases unless the
+/// requirement names one.
+fn latest<'a>(releases: &'a [Release], requirement: &VersionReq) -> Option<&'a Version> {
+    let pre = requirement.comparators.iter().any(|c| !c.pre.is_empty());
+
+    releases
+        .iter()
+        .filter(|r| !r.yanked && (pre || r.version.pre.is_empty()))
+        .map(|r| &r.version)
+        .max()
+}
+
+/// The path of a crate's file in an index, relative to its root.
+fn index_path(name: &str) -> String {
+    let name = name.to_ascii_lowercase();
+
+    match name.len() {
+        1 => format!("1/{name}"),
+        2 => format!("2/{name}"),
+        3 => format!("3/{}/{name}", &name[..1]),
+        _ => format!("{}/{}/{name}", &name[..2], &name[2..4]),
+    }
+}
+
+/// Parse the JSON lines of an index file.
+fn parse_releases(input: &str) -> Result<Vec<Release>> {
+    #[derive(serde::Deserialize)]
+    struct Line {
+        vers: String,
+        #[serde(default)]
+        yanked: bool,
+    }
+
+    let mut releases = Vec::new();
+
+    for line in input.lines() {
+        let line = line.trim();
+
+        if line.is_empty() {
+            continue;
+        }
+
+        let line: Line = serde_json::from_str(line)?;
+
+        let Ok(version) = Version::parse(&line.vers) else {
+            tracing::warn!("Ignoring unparseable version `{}` on index", line.vers);
+            continue;
+        };
+
+        releases.push(Release {
+            version,
+            yanked: line.yanked,
+        });
+    }
+
+    Ok(releases)
+}
+
+enum Source {
+    Sparse { client: reqwest::Client, base: Url },
+    Local(PathBuf),
+}
+
+type Cached = Rc<OnceCell<Option<Rc<[Release]>>>>;
+
+/// A registry index, looking up each crate at most once.
+struct Index {
+    source: Source,
+    cache: RefCell<HashMap<String, Cached>>,
+}
+
+impl Index {
+    fn open(index: &str) -> Result<Self> {
+        let source = if let Some(url) = index.strip_prefix("sparse+") {
+            let mut base = Url::parse(url).with_context(|| anyhow!("Invalid index `{index}`"))?;
+
+            if !base.path().ends_with('/') {
+                base.set_path(&format!("{}/", base.path()));
+            }
+
+            let client = reqwest::Client::builder()
+                .user_agent(crate::USER_AGENT.clone())
+                .build()?;
+
+            Source::Sparse { client, base }
+        } else if index.starts_with("file://") {
+            let url = Url::parse(index).with_context(|| anyhow!("Invalid index `{index}`"))?;
+
+            let path = url
+                .to_file_path()
+                .map_err(|()| anyhow!("Invalid index `{index}`: not a local path"))?;
+
+            Source::Local(path)
+        } else if index.contains("://") {
+            bail!(
+                "Unsupported index `{index}`, expected `sparse+<url>`, `file://<path>` or a directory"
+            );
+        } else {
+            Source::Local(PathBuf::from(index))
+        };
+
+        Ok(Self {
+            source,
+            cache: RefCell::new(HashMap::new()),
+        })
+    }
+
+    /// The releases of a crate, or `None` with a warning if the index does
+    /// not have it.
+    async fn releases(&self, name: &str) -> Result<Option<Rc<[Release]>>> {
+        let cell = self
+            .cache
+            .borrow_mut()
+            .entry(name.to_ascii_lowercase())
+            .or_default()
+            .clone();
+
+        let releases = cell
+            .get_or_try_init(async || {
+                let releases = self.fetch(name).await?;
+
+                if releases.is_none() {
+                    tracing::warn!("Crate `{name}` was not found on the index");
+                }
+
+                Ok::<_, anyhow::Error>(releases.map(Rc::from))
+            })
+            .await?;
+
+        Ok(releases.clone())
+    }
+
+    async fn fetch(&self, name: &str) -> Result<Option<Vec<Release>>> {
+        let path = index_path(name);
+
+        let input = match &self.source {
+            Source::Sparse { client, base } => {
+                let url = base.join(&path)?;
+
+                let response = client
+                    .get(url.clone())
+                    .send()
+                    .await
+                    .with_context(|| anyhow!("Fetching {url}"))?;
+
+                if matches!(
+                    response.status(),
+                    StatusCode::NOT_FOUND
+                        | StatusCode::GONE
+                        | StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS
+                ) {
+                    return Ok(None);
+                }
+
+                let response = response
+                    .error_for_status()
+                    .with_context(|| anyhow!("Fetching {url}"))?;
+
+                response
+                    .text()
+                    .await
+                    .with_context(|| anyhow!("Fetching {url}"))?
+            }
+            Source::Local(root) => {
+                let path = root.join(&path);
+
+                match fs::read_to_string(&path) {
+                    Ok(input) => input,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+                    Err(e) => {
+                        return Err(e).with_context(|| anyhow!("Reading {}", path.display()));
+                    }
+                }
+            }
+        };
+
+        let releases =
+            parse_releases(&input).with_context(|| anyhow!("Parsing index entry for `{name}`"))?;
+        Ok(Some(releases))
+    }
 }
 
 /// A declaration of the searched for crate.
@@ -154,8 +471,8 @@ impl fmt::Display for Found<'_> {
 }
 
 /// Find every declaration of the crate in `spec` across the manifests of a
-/// workspace which matches its selector.
-fn find<'a>(crates: &'a Crates, spec: &Spec) -> Result<Vec<Found<'a>>> {
+/// workspace which matches its selector, or every declaration without a spec.
+fn find<'a>(crates: &'a Crates, spec: Option<&Spec>) -> Result<Vec<Found<'a>>> {
     let mut output = Vec::new();
 
     for manifest in crates.manifests() {
@@ -163,13 +480,13 @@ fn find<'a>(crates: &'a Crates, spec: &Spec) -> Result<Vec<Found<'a>>> {
             for dep in dependencies.iter() {
                 let package = *dep.package()?;
 
-                if package != spec.name {
+                if spec.is_some_and(|spec| package != spec.name) {
                     continue;
                 }
 
                 let version = dep.lookup(DependencyItem::version)?.map(|v| *v);
 
-                if let Some(selector) = &spec.selector {
+                if let Some(selector) = spec.and_then(|spec| spec.selector.as_ref()) {
                     let Some(version) = version else {
                         continue;
                     };
@@ -295,7 +612,7 @@ mod tests {
     fn search(crates: &Crates, spec: &str) -> Vec<String> {
         let spec = parse_spec(spec).unwrap();
 
-        find(crates, &spec)
+        find(crates, Some(&spec))
             .unwrap()
             .into_iter()
             .map(|found| format!("{} {found}", found.manifest))
@@ -527,5 +844,209 @@ mod tests {
         assert!(parse_spec("<=1").is_err());
         assert!(parse_spec("").is_err());
         assert!(parse_spec("serde@").is_err());
+    }
+
+    #[test]
+    fn opts() {
+        let parse = |args: &[&str]| Opts::try_parse_from([&["deps"][..], args].concat());
+
+        assert!(parse(&[]).is_err());
+        assert!(parse(&["--index", "dir", "serde"]).is_err());
+
+        let opts = parse(&["--outdated"]).unwrap();
+        assert!(opts.spec.is_empty());
+        assert_eq!(opts.index, CRATES_IO);
+
+        let opts = parse(&["--outdated", "--index", "dir", "serde", "<2"]).unwrap();
+        assert_eq!(opts.spec, ["serde", "<2"]);
+        assert_eq!(opts.index, "dir");
+    }
+
+    #[test]
+    fn index_paths() {
+        assert_eq!(index_path("a"), "1/a");
+        assert_eq!(index_path("xz"), "2/xz");
+        assert_eq!(index_path("syn"), "3/s/syn");
+        assert_eq!(index_path("serde"), "se/rd/serde");
+        assert_eq!(index_path("Inflector"), "in/fl/inflector");
+        assert_eq!(index_path("tokio-util"), "to/ki/tokio-util");
+    }
+
+    fn releases(input: &[(&str, bool)]) -> Vec<Release> {
+        input
+            .iter()
+            .map(|&(version, yanked)| Release {
+                version: Version::parse(version).unwrap(),
+                yanked,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn latest_version() {
+        let releases = releases(&[
+            ("1.0.0", false),
+            ("1.2.0", false),
+            ("1.3.0", true),
+            ("2.0.0-beta.1", false),
+            ("1.10.0-rc.1", false),
+        ]);
+
+        let latest =
+            |req: &str| latest(&releases, &VersionReq::parse(req).unwrap()).map(|v| v.to_string());
+
+        assert_eq!(latest("1").as_deref(), Some("1.2.0"));
+        assert_eq!(latest("=1.10.0-rc.1").as_deref(), Some("2.0.0-beta.1"));
+        assert_eq!(latest("^2.0.0-beta.1").as_deref(), Some("2.0.0-beta.1"));
+
+        let only_yanked = self::releases(&[("0.1.0", true), ("0.2.0-alpha", false)]);
+        assert_eq!(
+            super::latest(&only_yanked, &VersionReq::parse("0.1").unwrap()),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_index_lines() {
+        let input = concat!(
+            "{\"name\":\"a\",\"vers\":\"0.1.0\",\"deps\":[],\"cksum\":\"x\",\"features\":{},\"yanked\":false}\n",
+            "\n",
+            "{\"name\":\"a\",\"vers\":\"0.2.0\",\"yanked\":true,\"v\":2}\n",
+            "{\"name\":\"a\",\"vers\":\"not-a-version\",\"yanked\":false}\n",
+        );
+
+        assert_eq!(
+            parse_releases(input).unwrap(),
+            releases(&[("0.1.0", false), ("0.2.0", true)])
+        );
+        assert!(parse_releases("{").is_err());
+    }
+
+    #[test]
+    fn index_sources() {
+        assert!(matches!(
+            Index::open(CRATES_IO).unwrap().source,
+            Source::Sparse { ref base, .. } if base.as_str() == "https://index.crates.io/"
+        ));
+        assert!(matches!(
+            Index::open("sparse+http://localhost/index").unwrap().source,
+            Source::Sparse { ref base, .. } if base.as_str() == "http://localhost/index/"
+        ));
+        assert!(matches!(
+            Index::open("file:///srv/index").unwrap().source,
+            Source::Local(ref path) if path == std::path::Path::new("/srv/index")
+        ));
+        assert!(matches!(
+            Index::open("some/index").unwrap().source,
+            Source::Local(ref path) if path == std::path::Path::new("some/index")
+        ));
+        assert!(Index::open("https://index.crates.io/").is_err());
+    }
+
+    fn write_index(root: &std::path::Path, name: &str, versions: &[(&str, bool)]) {
+        let path = root.join(index_path(name));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        let lines = versions
+            .iter()
+            .map(|(vers, yanked)| {
+                format!(
+                    "{{\"name\":\"{name}\",\"vers\":\"{vers}\",\"deps\":[],\"yanked\":{yanked}}}\n"
+                )
+            })
+            .collect::<String>();
+
+        fs::write(path, lines).unwrap();
+    }
+
+    async fn search_outdated(crates: &Crates, spec: Option<&str>, index: &Index) -> Vec<String> {
+        let spec = spec.map(|spec| parse_spec(spec).unwrap());
+
+        outdated(crates, spec.as_ref(), index)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(found, latest)| format!("{} {found} (latest {latest})", found.manifest))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn outdated_local_index() {
+        let dir = tempfile::tempdir().unwrap();
+
+        write_index(
+            dir.path(),
+            "serde",
+            &[("1.0.100", false), ("1.0.228", false), ("1.0.229", true)],
+        );
+        write_index(dir.path(), "syn", &[("1.0.109", false), ("2.0.100", false)]);
+        write_index(
+            dir.path(),
+            "rand",
+            &[("0.8.5", false), ("0.9.0-beta.1", false)],
+        );
+        write_index(dir.path(), "bytes", &[("1.10.1", false)]);
+
+        let crates = crates(&[
+            (
+                "Cargo.toml",
+                r#"
+                [workspace]
+                members = ["a"]
+
+                [workspace.dependencies]
+                syn = "1.0.50"
+                "#,
+            ),
+            (
+                "a/Cargo.toml",
+                r#"
+                [package]
+                name = "a"
+
+                [dependencies]
+                serde = "1.0.100"
+                pinned = { package = "serde", version = "=1.0.100" }
+                syn = { workspace = true }
+                rand = "0.8"
+                bytes = "1"
+                local = { path = "../local" }
+                missing = "1"
+
+                [target.'cfg(unix)'.dev-dependencies]
+                syn = ">=1, <3"
+                "#,
+            ),
+        ]);
+
+        let index = Index::open(&format!("file://{}", dir.path().display())).unwrap();
+
+        assert_eq!(
+            search_outdated(&crates, None, &index).await,
+            [
+                "Cargo.toml [workspace.dependencies] syn = \"1.0.50\" (latest 2.0.100)",
+                "a/Cargo.toml [dependencies] pinned (package = \"serde\") = \"=1.0.100\" (latest 1.0.228)",
+                "a/Cargo.toml [dependencies] syn = \"1.0.50\" (workspace) (latest 2.0.100)",
+            ]
+        );
+
+        assert_eq!(
+            search_outdated(&crates, Some("serde"), &index).await,
+            [
+                "a/Cargo.toml [dependencies] pinned (package = \"serde\") = \"=1.0.100\" (latest 1.0.228)"
+            ]
+        );
+        assert!(
+            search_outdated(&crates, Some("serde >=1.0.200"), &index)
+                .await
+                .is_empty()
+        );
+
+        // Every crate was read once, unknown ones included.
+        let cached = index.cache.borrow();
+        let mut names = cached.keys().map(String::as_str).collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(names, ["bytes", "missing", "rand", "serde", "syn"]);
+        assert!(cached["missing"].get().unwrap().is_none());
     }
 }
