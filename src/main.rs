@@ -208,6 +208,10 @@
 //! * Want to do something with every project that is out-of-sync with their
 //!   remote? Try `kick run --outdated`.
 //!
+//! Commands run by `kick run` have their stdin closed, so a tool which prompts
+//! for input sees end of input instead of stalling the run. Pass `--interactive`
+//! to let them read from the terminal.
+//!
 //! And much much more!
 //!
 //! <br>

@@ -257,6 +257,12 @@ impl Command {
         self
     }
 
+    /// Test if stdin has been configured, otherwise it is inherited.
+    #[cfg(test)]
+    pub(crate) fn has_stdin(&self) -> bool {
+        self.stdin.is_some()
+    }
+
     pub(crate) fn stdout<T>(&mut self, stdout: T) -> &mut Self
     where
         T: Into<Stdio>,

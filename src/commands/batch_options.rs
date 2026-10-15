@@ -35,6 +35,13 @@ pub(crate) struct BatchOptions {
     /// Don't actually run any commands, just print what would be done.
     #[arg(long)]
     pub(super) dry_run: bool,
+    /// Let commands read from the terminal.
+    ///
+    /// By default commands are run with stdin closed, so a tool which prompts
+    /// for input (such as a credential prompt or a y/N question) sees end of
+    /// input instead of stalling a run over many repos.
+    #[arg(long)]
+    pub(super) interactive: bool,
     /// If there are any system remediations that have to be performed before
     /// running commands, apply them automatically.
     #[arg(long)]
@@ -83,6 +90,10 @@ impl BatchOptions {
 
         if self.dry_run {
             c.dry_run = true;
+        }
+
+        if self.interactive {
+            c.interactive = true;
         }
 
         for env in &self.env {

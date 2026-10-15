@@ -7,6 +7,7 @@ use std::fmt;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::rc::Rc;
 use std::str;
 
@@ -451,6 +452,7 @@ impl Batch {
                         session.remove_path(&p);
                     }
 
+                    set_stdin(&mut run_command, c.interactive);
                     let status = run_command.status()?;
 
                     ensure!(status.success(), status);
@@ -517,6 +519,14 @@ impl Batch {
         set.extend(opts.iter().cloned());
         set.insert((self.run_on, self.os.clone()));
         set
+    }
+}
+
+/// Commands run with stdin closed unless `interactive` is set, in which case
+/// they inherit it.
+fn set_stdin(command: &mut Command, interactive: bool) {
+    if !interactive {
+        command.stdin(Stdio::null());
     }
 }
 
@@ -916,5 +926,29 @@ where
         }
 
         Ok(())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    fn reads_eof(interactive: bool) -> Command {
+        let mut command = Command::new("sh");
+        command.args(["-c", "if read line; then exit 1; else exit 0; fi"]);
+        set_stdin(&mut command, interactive);
+        command
+    }
+
+    #[test]
+    fn stdin_is_closed_by_default() {
+        let mut command = reads_eof(false);
+        assert!(command.has_stdin());
+        assert!(command.status().unwrap().success());
+    }
+
+    #[test]
+    fn interactive_inherits_stdin() {
+        assert!(!reads_eof(true).has_stdin());
     }
 }
