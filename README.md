@@ -215,6 +215,20 @@ Commands run by `kick run` have their stdin closed, so a tool which prompts
 for input sees end of input instead of stalling the run. Pass `--interactive`
 to let them read from the terminal.
 
+Kick can find the repos which depend on a crate with `kick deps`, so that
+they can be updated. It reports every declaration in each repo's workspace,
+including renamed, target-specific and workspace dependencies. An optional
+semver selector after `@` limits it to declarations whose lowest admitted
+version matches, so `1.2` is tested as `1.2.0`. This only reads local
+manifests and never contacts a registry:
+
+```text
+> kick deps serde@<1.0.200
+repos/kick: Cargo.toml [dependencies] serde = "1.0.100"
+repos/other: crates/a/Cargo.toml [dependencies] serde = "1.0.150" (workspace)
+2 declarations in 2 repos
+```
+
 And much much more!
 
 <br>

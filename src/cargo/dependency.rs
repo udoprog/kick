@@ -32,6 +32,11 @@ impl<'a> Dependency<'a> {
         self.dependency
     }
 
+    /// Test if the dependency is inherited with `workspace = true`.
+    pub(crate) fn is_workspace(&self) -> bool {
+        self.value.is_workspace().unwrap_or(false)
+    }
+
     /// Test if the dependency declares a version requirement, either directly
     /// or through the workspace. Cargo strips dependencies without one when
     /// packaging.

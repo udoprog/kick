@@ -278,6 +278,20 @@ impl Manifest {
         Some(Dependencies::new(doc, crates, WorkspaceTable::dependencies))
     }
 
+    /// Access `[workspace.dependencies]`.
+    pub(crate) fn workspace_dependencies<'a>(
+        &'a self,
+        crates: &'a Crates,
+    ) -> Option<Dependencies<'a>> {
+        let doc = self
+            .doc
+            .get(WORKSPACE)?
+            .get(DEPENDENCIES)
+            .and_then(Item::as_table)?;
+
+        Some(Dependencies::new(doc, crates, WorkspaceTable::dependencies))
+    }
+
     /// Access dependencies of the given kind (one of [`DEPS`]) declared in
     /// `[target.<cfg>.<kind>]` tables, together with the `<cfg>` they are
     /// declared under.

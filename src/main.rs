@@ -212,6 +212,20 @@
 //! for input sees end of input instead of stalling the run. Pass `--interactive`
 //! to let them read from the terminal.
 //!
+//! Kick can find the repos which depend on a crate with `kick deps`, so that
+//! they can be updated. It reports every declaration in each repo's workspace,
+//! including renamed, target-specific and workspace dependencies. An optional
+//! semver selector after `@` limits it to declarations whose lowest admitted
+//! version matches, so `1.2` is tested as `1.2.0`. This only reads local
+//! manifests and never contacts a registry:
+//!
+//! ```text
+//! > kick deps serde@<1.0.200
+//! repos/kick: Cargo.toml [dependencies] serde = "1.0.100"
+//! repos/other: crates/a/Cargo.toml [dependencies] serde = "1.0.150" (workspace)
+//! 2 declarations in 2 repos
+//! ```
+//!
 //! And much much more!
 //!
 //! <br>
@@ -664,6 +678,13 @@ enum Command {
     Define(SharedAction<cli::define::Opts>),
     /// Deploy a project over ssh.
     Deploy(SharedAction<cli::deploy::Opts>),
+    /// Find the repos which depend on a crate.
+    ///
+    /// Reports every declaration of the crate in the Cargo.toml files of each
+    /// repo's workspace, including renamed, target-specific and workspace
+    /// dependencies. This only reads local manifests and never contacts a
+    /// registry.
+    Deps(SharedAction<cli::deps::Opts>),
     /// Interact with the github API parameterized over repositories.
     #[command(name = "gh")]
     Github(SharedAction<cli::gh::Opts>),
@@ -733,6 +754,7 @@ impl Command {
             Command::Deb(c) => &c.shared,
             Command::Define(c) => &c.shared,
             Command::Deploy(c) => &c.shared,
+            Command::Deps(c) => &c.shared,
             Command::Github(c) => &c.shared,
             Command::GithubAction(c) => &c.shared,
             Command::Gzip(c) => &c.shared,
@@ -762,6 +784,7 @@ impl Command {
             Command::Deb(c) => Some(&c.repo),
             Command::Define(c) => Some(&c.repo),
             Command::Deploy(c) => Some(&c.repo),
+            Command::Deps(c) => Some(&c.repo),
             Command::Github(c) => Some(&c.repo),
             Command::GithubAction(c) => Some(&c.repo),
             Command::Gzip(c) => Some(&c.repo),
@@ -1518,6 +1541,9 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         }
         Command::Deploy(opts) => {
             cli::deploy::entry(&mut with_repos, &opts.action)?;
+        }
+        Command::Deps(opts) => {
+            cli::deps::entry(&mut with_repos, &opts.action)?;
         }
         Command::Install(opts) => {
             cli::install::entry(&mut with_repos, &opts.action)?;

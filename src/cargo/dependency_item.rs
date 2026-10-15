@@ -27,6 +27,13 @@ impl DependencyItem {
         self.value.get("version").and_then(Item::as_str)
     }
 
+    /// The non-registry source of the dependency, `path` or `git`, if any.
+    pub(crate) fn source(&self) -> Option<&'static str> {
+        ["path", "git"]
+            .into_iter()
+            .find(|key| self.value.get(key).is_some())
+    }
+
     /// Test if dependency is optional
     pub(crate) fn is_optional(&self) -> Option<bool> {
         self.value.get("optional").and_then(Item::as_bool)
