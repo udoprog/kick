@@ -43,6 +43,10 @@ pub(crate) const BUILD_DEPENDENCIES: &str = "build-dependencies";
 pub(crate) const DEPS: [&str; 3] = [DEPENDENCIES, DEV_DEPENDENCIES, BUILD_DEPENDENCIES];
 /// The "target" field.
 pub(crate) const TARGET: &str = "target";
+/// The "patch" field.
+pub(crate) const PATCH: &str = "patch";
+/// The legacy "replace" field.
+pub(crate) const REPLACE: &str = "replace";
 
 /// Open a `Cargo.toml`.
 pub(crate) fn open(paths: Paths<'_>, manifest_path: &RelativePath) -> Result<Option<Manifest>> {
@@ -319,6 +323,37 @@ impl Manifest {
         }
 
         output
+    }
+
+    /// Access the `[patch.<source>]` tables, together with the `<source>` they
+    /// override, such as `crates-io` or a git URL.
+    pub(crate) fn patches<'a>(&'a self, crates: &'a Crates) -> Vec<(&'a str, Dependencies<'a>)> {
+        let Some(patch) = self.doc.get(PATCH).and_then(Item::as_table) else {
+            return Vec::new();
+        };
+
+        let mut output = Vec::new();
+
+        for (source, value) in patch.iter() {
+            let Some(table) = value.as_table() else {
+                continue;
+            };
+
+            // Patch entries cannot be inherited, so the accessor goes unused.
+            output.push((
+                source,
+                Dependencies::new(table, crates, WorkspaceTable::dependencies),
+            ));
+        }
+
+        output
+    }
+
+    /// Access the legacy `[replace]` table, whose keys are package id specs
+    /// such as `foo:1.2.3`.
+    pub(crate) fn replace<'a>(&'a self, crates: &'a Crates) -> Option<Dependencies<'a>> {
+        let doc = self.doc.get(REPLACE).and_then(Item::as_table)?;
+        Some(Dependencies::new(doc, crates, WorkspaceTable::dependencies))
     }
 
     /// Remove the dependency declared under `key` in the `[dev-dependencies]`

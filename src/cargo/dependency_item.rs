@@ -34,6 +34,15 @@ impl DependencyItem {
             .find(|key| self.value.get(key).is_some())
     }
 
+    /// The string-valued source keys of the dependency (`path`, `git`,
+    /// `branch`, `tag`, `rev` and `registry`) in that order, with their values.
+    pub(crate) fn source_details(&self) -> Vec<(&'static str, &str)> {
+        ["path", "git", "branch", "tag", "rev", "registry"]
+            .into_iter()
+            .filter_map(|key| Some((key, self.value.get(key)?.as_str()?)))
+            .collect()
+    }
+
     /// Test if dependency is optional
     pub(crate) fn is_optional(&self) -> Option<bool> {
         self.value.get("optional").and_then(Item::as_bool)

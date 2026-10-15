@@ -244,6 +244,21 @@ repos/other: Cargo.toml [workspace.dependencies] syn = "1.0.50" (latest 2.0.100)
 2 outdated declarations in 2 repos
 ```
 
+With `--patched`, it instead reports the crates overridden through
+`[patch.<source>]` tables and legacy `[replace]` entries in each repo's
+manifests, with the path or git source they point to. The crate is optional
+here too; a selector matches a patch entry's `version` or the version in a
+`[replace]` spec such as `foo:1.2.3`. Patches in `.cargo/config.toml` are not
+read:
+
+```text
+> kick deps --patched
+repos/kick: Cargo.toml [patch.crates-io] serde (path = "../serde")
+repos/other: Cargo.toml [patch.'https://github.com/example/repo'] foo = "0.2.1" (git = "https://example.com/foo", branch = "fix")
+repos/other: Cargo.toml [replace] bytes:1.10.1 (path = "../bytes")
+3 patched declarations in 2 repos
+```
+
 And much much more!
 
 <br>

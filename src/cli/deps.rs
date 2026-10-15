@@ -34,10 +34,11 @@ pub(crate) struct Opts {
     /// requirement admits does, so `1.2` is tested as `1.2.0`. Path and git
     /// dependencies without a version only match when no selector is given.
     ///
-    /// Optional with `--outdated`, which then checks every dependency.
+    /// Optional with `--outdated` and `--patched`, which then report every
+    /// dependency.
     #[arg(
         value_name = "CRATE [SELECTOR]",
-        required_unless_present = "outdated",
+        required_unless_present_any = ["outdated", "patched"],
         num_args = 1..
     )]
     spec: Vec<String>,
@@ -45,10 +46,25 @@ pub(crate) struct Opts {
     /// admit the newest version published on the index.
     #[arg(long)]
     outdated: bool,
+    /// Report crates overridden through `[patch.<source>]` tables or legacy
+    /// `[replace]` entries instead of dependency declarations.
+    ///
+    /// A selector matches the `version` of a patch entry, or the version of a
+    /// `[replace]` spec such as `foo:1.2.3`.
+    #[arg(long, conflicts_with = "outdated")]
+    patched: bool,
     /// The index to compare against with `--outdated`: a sparse index URL
     /// (`sparse+https://...`), a `file://` URL or a local directory with the
     /// same layout.
-    #[arg(long, value_name = "URL", requires = "outdated", default_value = CRATES_IO)]
+    // Clap waives `requires` for an arg that conflicts with a present one, so
+    // the conflict with `patched` is spelled out.
+    #[arg(
+        long,
+        value_name = "URL",
+        requires = "outdated",
+        conflicts_with = "patched",
+        default_value = CRATES_IO
+    )]
     index: String,
 }
 
@@ -100,6 +116,10 @@ pub(crate) async fn entry(with_repos: &mut WithRepos<'_>, opts: &Opts) -> Result
         return outdated_entry(with_repos, opts).await;
     }
 
+    if opts.patched {
+        return patched_entry(with_repos, opts);
+    }
+
     let spec = parse_spec(&opts.spec.join(" ")).map_err(anyhow::Error::msg)?;
     let matches = Cell::new(0usize);
     let repos = Cell::new(0usize);
@@ -148,13 +168,61 @@ fn deps(cx: &Ctxt<'_>, repo: &Repo, spec: &Spec) -> Result<usize> {
     Ok(found.len())
 }
 
-async fn outdated_entry(with_repos: &mut WithRepos<'_>, opts: &Opts) -> Result<()> {
-    let spec = if opts.spec.is_empty() {
-        None
-    } else {
-        Some(parse_spec(&opts.spec.join(" ")).map_err(anyhow::Error::msg)?)
-    };
+fn optional_spec(opts: &Opts) -> Result<Option<Spec>> {
+    if opts.spec.is_empty() {
+        return Ok(None);
+    }
 
+    Ok(Some(
+        parse_spec(&opts.spec.join(" ")).map_err(anyhow::Error::msg)?,
+    ))
+}
+
+fn patched_entry(with_repos: &mut WithRepos<'_>, opts: &Opts) -> Result<()> {
+    let spec = optional_spec(opts)?;
+    let matches = Cell::new(0usize);
+    let repos = Cell::new(0usize);
+
+    with_repos.run(
+        "find patched dependencies",
+        format_args!("deps --patched: {spec:?}"),
+        |cx, repo| {
+            let Some(crates) = workspace::open(cx, repo)? else {
+                return Ok(());
+            };
+
+            let found = find_patched(&crates, spec.as_ref())?;
+
+            for found in &found {
+                let manifest = found
+                    .manifest
+                    .strip_prefix(repo.path())
+                    .unwrap_or(found.manifest);
+
+                println!("{}: {manifest} {found}", repo.path());
+            }
+
+            if !found.is_empty() {
+                matches.set(matches.get() + found.len());
+                repos.set(repos.get() + 1);
+            }
+
+            Ok(())
+        },
+    )?;
+
+    let (matches, repos) = (matches.get(), repos.get());
+    let s = |n: usize| if n == 1 { "" } else { "s" };
+    println!(
+        "{matches} patched declaration{} in {repos} repo{}",
+        s(matches),
+        s(repos)
+    );
+    Ok(())
+}
+
+async fn outdated_entry(with_repos: &mut WithRepos<'_>, opts: &Opts) -> Result<()> {
+    let spec = optional_spec(opts)?;
     let index = Index::open(&opts.index)?;
     let (mut matches, mut repos) = (0usize, 0usize);
 
@@ -445,6 +513,9 @@ struct Found<'a> {
     package: &'a str,
     version: Option<&'a str>,
     source: Option<&'static str>,
+    /// Source keys with their values, shown in place of `source` when set.
+    details: Vec<(&'static str, &'a str)>,
+    renamed: bool,
     workspace: bool,
 }
 
@@ -452,14 +523,29 @@ impl fmt::Display for Found<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[{}] {}", self.table, self.key)?;
 
-        if self.key != self.package {
+        if self.renamed {
             write!(f, " (package = {:?})", self.package)?;
         }
 
         match (self.version, self.source) {
             (Some(version), _) => write!(f, " = {version:?}")?,
+            _ if !self.details.is_empty() => {}
             (None, Some(source)) => write!(f, " = {source}")?,
             (None, None) => write!(f, " = (no version)")?,
+        }
+
+        if !self.details.is_empty() {
+            write!(f, " (")?;
+
+            for (n, (key, value)) in self.details.iter().enumerate() {
+                if n > 0 {
+                    write!(f, ", ")?;
+                }
+
+                write!(f, "{key} = {value:?}")?;
+            }
+
+            write!(f, ")")?;
         }
 
         if self.workspace {
@@ -479,21 +565,10 @@ fn find<'a>(crates: &'a Crates, spec: Option<&Spec>) -> Result<Vec<Found<'a>>> {
         for (table, dependencies) in tables(manifest, crates) {
             for dep in dependencies.iter() {
                 let package = *dep.package()?;
-
-                if spec.is_some_and(|spec| package != spec.name) {
-                    continue;
-                }
-
                 let version = dep.lookup(DependencyItem::version)?.map(|v| *v);
 
-                if let Some(selector) = spec.and_then(|spec| spec.selector.as_ref()) {
-                    let Some(version) = version else {
-                        continue;
-                    };
-
-                    if !matches(selector, version) {
-                        continue;
-                    }
+                if !spec.is_none_or(|spec| spec_matches(spec, package, version)) {
+                    continue;
                 }
 
                 output.push(Found {
@@ -503,6 +578,8 @@ fn find<'a>(crates: &'a Crates, spec: Option<&Spec>) -> Result<Vec<Found<'a>>> {
                     package,
                     version,
                     source: dep.lookup(DependencyItem::source)?.map(|v| *v),
+                    details: Vec::new(),
+                    renamed: dep.key() != package,
                     workspace: dep.is_workspace(),
                 });
             }
@@ -510,6 +587,88 @@ fn find<'a>(crates: &'a Crates, spec: Option<&Spec>) -> Result<Vec<Found<'a>>> {
     }
 
     Ok(output)
+}
+
+/// Find every `[patch.<source>]` entry and legacy `[replace]` entry across the
+/// manifests of a workspace which overrides the crate in `spec` and matches
+/// its selector, or every entry without a spec.
+fn find_patched<'a>(crates: &'a Crates, spec: Option<&Spec>) -> Result<Vec<Found<'a>>> {
+    let mut output = Vec::new();
+
+    for manifest in crates.manifests() {
+        let mut tables = manifest
+            .patches(crates)
+            .into_iter()
+            .map(|(source, entries)| (format!("patch.{}", toml_key(source)), entries, false))
+            .collect::<Vec<_>>();
+
+        tables.extend(
+            manifest
+                .replace(crates)
+                .map(|entries| ("replace".to_owned(), entries, true)),
+        );
+
+        for (table, entries, replace) in tables {
+            for entry in entries.iter() {
+                let version = entry.lookup(DependencyItem::version)?.map(|v| *v);
+
+                let (package, selected) = if replace {
+                    replace_spec(entry.key())
+                } else {
+                    (*entry.package()?, version)
+                };
+
+                if !spec.is_none_or(|spec| spec_matches(spec, package, selected)) {
+                    continue;
+                }
+
+                let details = entry
+                    .lookup(|item| Some(item.source_details()))?
+                    .map(|v| v.into_value())
+                    .unwrap_or_default();
+
+                output.push(Found {
+                    manifest: manifest.path(),
+                    table: table.clone(),
+                    key: entry.key(),
+                    package,
+                    version,
+                    source: entry.lookup(DependencyItem::source)?.map(|v| *v),
+                    details,
+                    renamed: !replace && entry.key() != package,
+                    workspace: false,
+                });
+            }
+        }
+    }
+
+    Ok(output)
+}
+
+/// The package name and version of a `[replace]` package id spec such as
+/// `foo:1.2.3` or `https://github.com/rust-lang/crates.io-index#foo:1.2.3`.
+fn replace_spec(key: &str) -> (&str, Option<&str>) {
+    let key = key.rsplit_once('#').map_or(key, |(_, key)| key);
+
+    match key.split_once(['@', ':']) {
+        Some((package, version)) => (package, Some(version)),
+        None => (key, None),
+    }
+}
+
+/// Test if a declaration of `package` with the given version requirement
+/// matches `spec`. Declarations without a version only match without a
+/// selector.
+fn spec_matches(spec: &Spec, package: &str, version: Option<&str>) -> bool {
+    if package != spec.name {
+        return false;
+    }
+
+    match (&spec.selector, version) {
+        (None, _) => true,
+        (Some(selector), Some(version)) => matches(selector, version),
+        (Some(_), None) => false,
+    }
 }
 
 /// Every dependency table in a manifest, with its display name.
@@ -860,6 +1019,138 @@ mod tests {
         let opts = parse(&["--outdated", "--index", "dir", "serde", "<2"]).unwrap();
         assert_eq!(opts.spec, ["serde", "<2"]);
         assert_eq!(opts.index, "dir");
+
+        let opts = parse(&["--patched"]).unwrap();
+        assert!(opts.patched && opts.spec.is_empty());
+        let opts = parse(&["--patched", "serde", "<2"]).unwrap();
+        assert_eq!(opts.spec, ["serde", "<2"]);
+        assert!(parse(&["--patched", "--outdated"]).is_err());
+        assert!(parse(&["--patched", "--index", "dir"]).is_err());
+    }
+
+    fn search_patched(crates: &Crates, spec: Option<&str>) -> Vec<String> {
+        let spec = spec.map(|spec| parse_spec(spec).unwrap());
+
+        find_patched(crates, spec.as_ref())
+            .unwrap()
+            .into_iter()
+            .map(|found| format!("{} {found}", found.manifest))
+            .collect()
+    }
+
+    #[test]
+    fn patched() {
+        let crates = crates(&[
+            (
+                "Cargo.toml",
+                r#"
+                [workspace]
+                members = ["a"]
+
+                [workspace.dependencies]
+                serde = "1.0.100"
+
+                [patch.crates-io]
+                serde = { path = "../serde" }
+                tokio = { git = "https://github.com/tokio-rs/tokio", branch = "fix", version = "1.40.0" }
+                sd = { package = "serde_derive", git = "https://example.com/serde", rev = "abc123" }
+                not-serde = { package = "other", version = "1.0.0", path = "../other" }
+
+                [patch."https://github.com/example/repo"]
+                foo = { path = "../foo", version = "0.2.1" }
+                bar = { git = "https://example.com/bar.git", tag = "v1" }
+
+                [replace]
+                "serde:1.0.150" = { git = "https://github.com/serde-rs/serde", rev = "def456" }
+                "https://github.com/rust-lang/crates.io-index#foo:0.1.0" = { path = "../foo" }
+                "#,
+            ),
+            (
+                "a/Cargo.toml",
+                r#"
+                [package]
+                name = "a"
+
+                [dependencies]
+                serde = { workspace = true }
+
+                [patch.crates-io]
+                bytes = { path = "../bytes" }
+                "#,
+            ),
+        ]);
+
+        assert_eq!(
+            search_patched(&crates, None),
+            [
+                "Cargo.toml [patch.crates-io] serde (path = \"../serde\")",
+                "Cargo.toml [patch.crates-io] tokio = \"1.40.0\" (git = \"https://github.com/tokio-rs/tokio\", branch = \"fix\")",
+                "Cargo.toml [patch.crates-io] sd (package = \"serde_derive\") (git = \"https://example.com/serde\", rev = \"abc123\")",
+                "Cargo.toml [patch.crates-io] not-serde (package = \"other\") = \"1.0.0\" (path = \"../other\")",
+                "Cargo.toml [patch.'https://github.com/example/repo'] foo = \"0.2.1\" (path = \"../foo\")",
+                "Cargo.toml [patch.'https://github.com/example/repo'] bar (git = \"https://example.com/bar.git\", tag = \"v1\")",
+                "Cargo.toml [replace] serde:1.0.150 (git = \"https://github.com/serde-rs/serde\", rev = \"def456\")",
+                "Cargo.toml [replace] https://github.com/rust-lang/crates.io-index#foo:0.1.0 (path = \"../foo\")",
+                "a/Cargo.toml [patch.crates-io] bytes (path = \"../bytes\")",
+            ]
+        );
+
+        // Renamed entries match their package, not their key.
+        assert_eq!(
+            search_patched(&crates, Some("serde_derive")),
+            [
+                "Cargo.toml [patch.crates-io] sd (package = \"serde_derive\") (git = \"https://example.com/serde\", rev = \"abc123\")"
+            ]
+        );
+        assert!(search_patched(&crates, Some("not-serde")).is_empty());
+        assert!(search_patched(&crates, Some("sd")).is_empty());
+
+        assert_eq!(
+            search_patched(&crates, Some("serde")),
+            [
+                "Cargo.toml [patch.crates-io] serde (path = \"../serde\")",
+                "Cargo.toml [replace] serde:1.0.150 (git = \"https://github.com/serde-rs/serde\", rev = \"def456\")",
+            ]
+        );
+
+        // Entries without a version only match without a selector.
+        assert_eq!(
+            search_patched(&crates, Some("serde <1.0.200")),
+            [
+                "Cargo.toml [replace] serde:1.0.150 (git = \"https://github.com/serde-rs/serde\", rev = \"def456\")"
+            ]
+        );
+        assert!(search_patched(&crates, Some("serde >=1.0.200")).is_empty());
+        assert_eq!(search_patched(&crates, Some("tokio@^1.40")).len(), 1);
+        assert!(search_patched(&crates, Some("tokio@<1.40")).is_empty());
+        assert_eq!(
+            search_patched(&crates, Some("foo <1")),
+            [
+                "Cargo.toml [patch.'https://github.com/example/repo'] foo = \"0.2.1\" (path = \"../foo\")",
+                "Cargo.toml [replace] https://github.com/rust-lang/crates.io-index#foo:0.1.0 (path = \"../foo\")",
+            ]
+        );
+        assert!(search_patched(&crates, Some("bar *")).is_empty());
+
+        // Plain searches are unaffected by patches.
+        assert_eq!(
+            search(&crates, "serde"),
+            [
+                "Cargo.toml [workspace.dependencies] serde = \"1.0.100\"",
+                "a/Cargo.toml [dependencies] serde = \"1.0.100\" (workspace)",
+            ]
+        );
+    }
+
+    #[test]
+    fn replace_specs() {
+        assert_eq!(replace_spec("foo:1.2.3"), ("foo", Some("1.2.3")));
+        assert_eq!(replace_spec("foo@1.2.3"), ("foo", Some("1.2.3")));
+        assert_eq!(replace_spec("foo"), ("foo", None));
+        assert_eq!(
+            replace_spec("https://github.com/rust-lang/crates.io-index#foo:0.1.0"),
+            ("foo", Some("0.1.0"))
+        );
     }
 
     #[test]
