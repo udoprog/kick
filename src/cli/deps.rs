@@ -17,14 +17,17 @@ use crate::workspace::{self, Crates};
 
 #[derive(Debug, Parser)]
 pub(crate) struct Opts {
-    /// The crate to look for, optionally followed by `@` and a semver selector
-    /// such as `serde@<1.0.200` or `tokio@^0.2`.
+    /// The crate to look for, optionally followed by a semver selector such as
+    /// `serde <1.0.200`, `sqll <= 0.14.7` or `tokio@^0.2`.
+    ///
+    /// The selector may be part of the same argument or given as further
+    /// arguments, which are joined with spaces, and may be preceded by `@`.
     ///
     /// A declaration matches the selector when the lowest version its
     /// requirement admits does, so `1.2` is tested as `1.2.0`. Path and git
     /// dependencies without a version only match when no selector is given.
-    #[arg(value_name = "CRATE[@SELECTOR]", value_parser = parse_spec)]
-    spec: Spec,
+    #[arg(value_name = "CRATE [SELECTOR]", required = true, num_args = 1..)]
+    spec: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -34,18 +37,33 @@ struct Spec {
 }
 
 fn parse_spec(input: &str) -> Result<Spec, String> {
-    let (name, selector) = match input.split_once('@') {
-        Some((name, selector)) => {
-            let selector = VersionReq::parse(selector)
-                .map_err(|error| format!("invalid selector `{selector}`: {error}"))?;
-            (name, Some(selector))
-        }
-        None => (input, None),
-    };
+    let input = input.trim();
+
+    let split = input
+        .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_')))
+        .unwrap_or(input.len());
+
+    let (name, rest) = input.split_at(split);
 
     if name.is_empty() {
-        return Err("missing crate name".to_owned());
+        return Err(format!("missing crate name in `{input}`"));
     }
+
+    let rest = rest.trim_start();
+
+    let selector = match rest.strip_prefix('@') {
+        Some(selector) => Some(selector.trim()),
+        None if rest.is_empty() => None,
+        None => Some(rest),
+    };
+
+    let selector = match selector {
+        Some(selector) => Some(
+            VersionReq::parse(selector)
+                .map_err(|error| format!("invalid selector `{selector}`: {error}"))?,
+        ),
+        None => None,
+    };
 
     Ok(Spec {
         name: name.to_owned(),
@@ -54,14 +72,15 @@ fn parse_spec(input: &str) -> Result<Spec, String> {
 }
 
 pub(crate) fn entry(with_repos: &mut WithRepos<'_>, opts: &Opts) -> Result<()> {
+    let spec = parse_spec(&opts.spec.join(" ")).map_err(anyhow::Error::msg)?;
     let matches = Cell::new(0usize);
     let repos = Cell::new(0usize);
 
     with_repos.run(
         "find dependents",
-        format_args!("deps: {opts:?}"),
+        format_args!("deps: {spec:?}"),
         |cx, repo| {
-            let count = deps(cx, repo, &opts.spec)?;
+            let count = deps(cx, repo, &spec)?;
 
             if count > 0 {
                 matches.set(matches.get() + count);
@@ -476,9 +495,37 @@ mod tests {
     }
 
     #[test]
+    fn spec_forms() {
+        let spec = |input: &str| {
+            let spec = parse_spec(input).unwrap();
+            (spec.name, spec.selector.map(|s| s.to_string()))
+        };
+
+        let sqll = || ("sqll".to_owned(), Some("<=0.14.7".to_owned()));
+
+        assert_eq!(spec("sqll <= 0.14.7"), sqll());
+        assert_eq!(spec("sqll<=0.14.7"), sqll());
+        assert_eq!(spec("sqll@<=0.14.7"), sqll());
+        assert_eq!(spec("sqll @ <= 0.14.7"), sqll());
+        assert_eq!(spec(&["sqll", "<=0.14.7"].join(" ")), sqll());
+        assert_eq!(spec(&["sqll", "<=", "0.14.7"].join(" ")), sqll());
+        assert_eq!(spec("serde_json"), ("serde_json".to_owned(), None));
+        assert_eq!(spec("tokio-util "), ("tokio-util".to_owned(), None));
+        assert_eq!(
+            spec("serde >=1, <2"),
+            ("serde".to_owned(), Some(">=1, <2".to_owned()))
+        );
+    }
+
+    #[test]
     fn invalid_selector() {
-        assert!(parse_spec("serde@not a version").is_err());
+        let error = parse_spec("serde@not a version").unwrap_err();
+        assert!(error.contains("`not a version`"), "{error}");
+        let error = parse_spec("serde <= banana").unwrap_err();
+        assert!(error.contains("`<= banana`"), "{error}");
         assert!(parse_spec("@1").is_err());
+        assert!(parse_spec("<=1").is_err());
+        assert!(parse_spec("").is_err());
         assert!(parse_spec("serde@").is_err());
     }
 }

@@ -218,12 +218,13 @@ to let them read from the terminal.
 Kick can find the repos which depend on a crate with `kick deps`, so that
 they can be updated. It reports every declaration in each repo's workspace,
 including renamed, target-specific and workspace dependencies. An optional
-semver selector after `@` limits it to declarations whose lowest admitted
-version matches, so `1.2` is tested as `1.2.0`. This only reads local
-manifests and never contacts a registry:
+semver selector after the crate name, like `sqll <= 0.14.7` or `serde@^1`,
+limits it to declarations whose lowest admitted version matches, so `1.2`
+is tested as `1.2.0`. This only reads local manifests and never contacts a
+registry:
 
 ```text
-> kick deps serde@<1.0.200
+> kick deps serde '<1.0.200'
 repos/kick: Cargo.toml [dependencies] serde = "1.0.100"
 repos/other: crates/a/Cargo.toml [dependencies] serde = "1.0.150" (workspace)
 2 declarations in 2 repos
