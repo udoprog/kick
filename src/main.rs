@@ -209,8 +209,10 @@
 //!   remote? Try `kick run --outdated`.
 //!
 //! Commands run by `kick run` have their stdin closed, so a tool which prompts
-//! for input sees end of input instead of stalling the run. Pass `--interactive`
-//! to let them read from the terminal.
+//! for input sees end of input instead of stalling the run, and `GIT_PAGER` and
+//! `PAGER` set to `cat`, so `git log` or `git grep` print straight through
+//! instead of opening a pager per repo. Pass `--interactive` to let them read
+//! from the terminal and page as usual.
 //!
 //! Kick can find the repos which depend on a crate with `kick deps`, so that
 //! they can be updated. It reports every declaration in each repo's workspace,

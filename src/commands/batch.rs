@@ -452,7 +452,7 @@ impl Batch {
                         session.remove_path(&p);
                     }
 
-                    set_stdin(&mut run_command, c.interactive);
+                    set_interactive(&mut run_command, c.interactive);
                     let status = run_command.status()?;
 
                     ensure!(status.success(), status);
@@ -522,11 +522,21 @@ impl Batch {
     }
 }
 
-/// Commands run with stdin closed unless `interactive` is set, in which case
-/// they inherit it.
-fn set_stdin(command: &mut Command, interactive: bool) {
-    if !interactive {
-        command.stdin(Stdio::null());
+/// Commands run with stdin closed and pagers disabled unless `interactive` is
+/// set, in which case they inherit both. Pagers read keys from the terminal
+/// rather than stdin, so closing stdin alone does not stop them. A pager set
+/// explicitly in the command's environment is kept.
+fn set_interactive(command: &mut Command, interactive: bool) {
+    if interactive {
+        return;
+    }
+
+    command.stdin(Stdio::null());
+
+    for key in ["GIT_PAGER", "PAGER"] {
+        if !command.env.iter().any(|(k, _)| k == key) {
+            command.env(key, "cat");
+        }
     }
 }
 
@@ -936,8 +946,18 @@ mod tests {
     fn reads_eof(interactive: bool) -> Command {
         let mut command = Command::new("sh");
         command.args(["-c", "if read line; then exit 1; else exit 0; fi"]);
-        set_stdin(&mut command, interactive);
+        set_interactive(&mut command, interactive);
         command
+    }
+
+    fn pagers(command: &mut Command) -> String {
+        command.args([
+            "-c",
+            "printf '%s,%s' \"${GIT_PAGER-unset}\" \"${PAGER-unset}\"",
+        ]);
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
     }
 
     #[test]
@@ -950,5 +970,27 @@ mod tests {
     #[test]
     fn interactive_inherits_stdin() {
         assert!(!reads_eof(true).has_stdin());
+    }
+
+    #[test]
+    fn pagers_are_disabled_by_default() {
+        let mut command = Command::new("sh");
+        set_interactive(&mut command, false);
+        assert_eq!(pagers(&mut command), "cat,cat");
+    }
+
+    #[test]
+    fn explicit_pager_is_kept() {
+        let mut command = Command::new("sh");
+        command.env("PAGER", "more");
+        set_interactive(&mut command, false);
+        assert_eq!(pagers(&mut command), "cat,more");
+    }
+
+    #[test]
+    fn interactive_keeps_pagers() {
+        let mut command = Command::new("sh");
+        set_interactive(&mut command, true);
+        assert!(command.env.is_empty());
     }
 }
