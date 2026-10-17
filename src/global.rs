@@ -5,12 +5,17 @@
 //! `Kick.toml` and is loaded after every project `Kick.toml` as the least
 //! specific layer.
 //!
-//! Paths in it, including the `[repo."<path>"]` keys, may be absolute, start
+//! Every `*.toml` file under the `user.d/` directory next to it, in nested
+//! sub-directories too, is loaded after it as a further global layer, sorted
+//! by its path relative to `user.d/`. Later files are more specific.
+//!
+//! Paths in them, including the `[repo."<path>"]` keys, may be absolute, start
 //! with `~/`, or be relative in which case they are resolved against the
-//! directory holding the global `Kick.toml`, just like relative paths in a
+//! directory holding the file which sets them, just like relative paths in a
 //! project `Kick.toml`. Environment variables are interpolated in them as
 //! described in [`crate::interpolate`].
 
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -21,19 +26,102 @@ use toml_edit::{DocumentMut, Item, Table, Value};
 
 use crate::interpolate;
 
+/// The directory next to the global `Kick.toml` holding further global
+/// configuration files.
+pub(crate) const USER_D: &str = "user.d";
+
 /// The user-global configuration.
 #[derive(Debug, Clone)]
 pub(crate) struct Global {
-    /// The path of the global `Kick.toml`.
+    /// The path of the global `Kick.toml`, or of the single file this layer
+    /// is loaded from.
     pub(crate) path: PathBuf,
     /// The home directory, which a leading `~` expands to.
     pub(crate) home: PathBuf,
     /// Whether the global configuration provides the repos kick acts on. This
     /// is the case when kick runs outside of any project.
     pub(crate) provides_repos: bool,
+    /// The `*.toml` files under `user.d/`, in load order.
+    pub(crate) user_d: Vec<PathBuf>,
 }
 
 impl Global {
+    /// The global configuration at `path`, discovering the files under the
+    /// `user.d/` directory next to it.
+    pub(crate) fn new(path: &Path, home: &Path, provides_repos: bool) -> Self {
+        let user_d = user_d_files(&config_dir(path, home).join(USER_D));
+
+        Self {
+            path: path.to_owned(),
+            home: home.to_owned(),
+            provides_repos,
+            user_d,
+        }
+    }
+
+    /// Every global configuration file in load order, from least to most
+    /// specific: the global `Kick.toml` followed by the files under `user.d/`.
+    pub(crate) fn files(&self) -> impl Iterator<Item = &Path> {
+        [self.path.as_path()]
+            .into_iter()
+            .chain(self.user_d.iter().map(PathBuf::as_path))
+    }
+
+    /// The layer of the global configuration loaded from the file at `path`,
+    /// which relative paths in it are resolved against.
+    pub(crate) fn layer(&self, path: &Path) -> Self {
+        Self {
+            path: path.to_owned(),
+            home: self.home.clone(),
+            provides_repos: self.provides_repos,
+            user_d: Vec::new(),
+        }
+    }
+
+    /// Every layer of the global configuration in load order.
+    pub(crate) fn layers(&self) -> impl Iterator<Item = Self> {
+        self.files().map(|path| self.layer(path))
+    }
+
+    /// Test if `path` is, or would be, a global configuration file: the global
+    /// `Kick.toml`, or a `*.toml` file under `user.d/` which is not hidden.
+    pub(crate) fn loads(&self, path: &Path) -> bool {
+        let path = normalize(path);
+
+        if path == normalize(&self.path) || self.files().any(|f| same_path(f, &path)) {
+            return true;
+        }
+
+        let user_d = normalize(&self.dir().join(USER_D));
+
+        let Ok(rest) = path.strip_prefix(&user_d) else {
+            return false;
+        };
+
+        path.extension().is_some_and(|e| e == "toml")
+            && rest.components().all(|c| match c {
+                Component::Normal(name) => !name.to_string_lossy().starts_with('.'),
+                _ => false,
+            })
+    }
+
+    /// Test if any global configuration file declares a repo kick can act on.
+    pub(crate) fn declares_repos(&self) -> bool {
+        self.files().any(|path| !declared_repos(path).is_empty())
+    }
+
+    /// The resolved directories of the repos declared in every global
+    /// configuration file which declare a `url`.
+    pub(crate) fn repo_dirs(&self) -> Vec<PathBuf> {
+        self.layers()
+            .flat_map(|layer| {
+                declared_repos(&layer.path)
+                    .into_iter()
+                    .filter_map(move |key| layer.resolve(&key).ok())
+            })
+            .collect()
+    }
+
     /// The path of the global configuration as it is shown to the user, with
     /// the home directory abbreviated to `~`.
     pub(crate) fn display_path(&self) -> String {
@@ -213,6 +301,74 @@ fn to_slashes(path: &Path) -> String {
         .join("/")
 }
 
+/// Find the `*.toml` files under the `user.d` directory `dir`, recursively,
+/// sorted by their path relative to it.
+///
+/// Hidden files and directories (such as `.git`) are skipped. Symbolic links
+/// are followed, but a directory is only visited once so link loops end. A
+/// missing directory has no files, and errors reading one are logged and
+/// otherwise ignored.
+pub(crate) fn user_d_files(dir: &Path) -> Vec<PathBuf> {
+    fn visit(
+        root: &Path,
+        dir: &Path,
+        seen: &mut HashSet<PathBuf>,
+        out: &mut Vec<(PathBuf, PathBuf)>,
+    ) {
+        let Ok(canonical) = dir.canonicalize() else {
+            return;
+        };
+
+        if !seen.insert(canonical) {
+            return;
+        }
+
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                if e.kind() != io::ErrorKind::NotFound {
+                    tracing::warn!("Reading {}: {e}", dir.display());
+                }
+
+                return;
+            }
+        };
+
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    tracing::warn!("Reading {}: {e}", dir.display());
+                    continue;
+                }
+            };
+
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+
+            let path = entry.path();
+
+            // NB: Follows symbolic links.
+            let Ok(metadata) = fs::metadata(&path) else {
+                continue;
+            };
+
+            if metadata.is_dir() {
+                visit(root, &path, seen, out);
+            } else if metadata.is_file() && path.extension().is_some_and(|e| e == "toml") {
+                let relative = path.strip_prefix(root).unwrap_or(&path).to_owned();
+                out.push((relative, path));
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    visit(dir, dir, &mut HashSet::new(), &mut out);
+    out.sort();
+    out.into_iter().map(|(_, path)| path).collect()
+}
+
 /// The `[repo."<path>"]` keys in the global configuration at `path` which
 /// declare a `url`, and so are repos kick can act on.
 ///
@@ -303,8 +459,13 @@ impl Projects {
             .collect()
     }
 
+    /// The path of the configuration file.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// Find a registered project by its key or its resolved path.
-    fn find(&self, key: Option<&str>, path: &Path) -> Option<Project> {
+    pub(crate) fn find(&self, key: Option<&str>, path: &Path) -> Option<Project> {
         let path = normalize(path);
 
         self.list().into_iter().find(|p| {
@@ -502,7 +663,9 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    use super::{Projects, declared_repos, display, normalize, relative_to, resolve};
+    use super::{
+        Global, Projects, declared_repos, display, normalize, relative_to, resolve, user_d_files,
+    };
 
     #[test]
     fn resolves_paths() {
@@ -792,5 +955,58 @@ mod tests {
         let error = projects.get(None, &home.join("b")).unwrap_err();
         assert!(error.to_string().contains("kick project add"), "{error}");
         assert!(projects.get(Some("~/a"), Path::new("/nope")).is_ok());
+    }
+
+    #[test]
+    fn finds_user_d_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let user_d = dir.path().join("user.d");
+
+        assert!(user_d_files(&user_d).is_empty());
+
+        fs::create_dir_all(user_d.join("b/nested")).unwrap();
+        fs::create_dir_all(user_d.join(".git")).unwrap();
+        fs::write(user_d.join("z.toml"), "").unwrap();
+        fs::write(user_d.join("b/nested/x.toml"), "").unwrap();
+        fs::write(user_d.join("b/a.toml"), "").unwrap();
+        fs::write(user_d.join("b/notes.md"), "").unwrap();
+        fs::write(user_d.join(".hidden.toml"), "").unwrap();
+        fs::write(user_d.join(".git/config.toml"), "").unwrap();
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&user_d, user_d.join("b/loop")).unwrap();
+
+        assert_eq!(
+            user_d_files(&user_d),
+            [
+                user_d.join("b/a.toml"),
+                user_d.join("b/nested/x.toml"),
+                user_d.join("z.toml"),
+            ]
+        );
+    }
+
+    #[test]
+    fn loads_global_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let kick = dir.path().join("kick");
+        let config = kick.join("Kick.toml");
+        fs::create_dir_all(kick.join("user.d/private")).unwrap();
+        fs::write(kick.join("user.d/private/a.toml"), "").unwrap();
+
+        let global = Global::new(&config, &home, false);
+        assert_eq!(
+            global.files().map(Path::to_owned).collect::<Vec<_>>(),
+            [config.clone(), kick.join("user.d/private/a.toml")]
+        );
+
+        assert!(global.loads(&config));
+        assert!(global.loads(&kick.join("user.d/private/a.toml")));
+        assert!(global.loads(&kick.join("user.d/new/b.toml")));
+        assert!(!global.loads(&kick.join("user.d/.git/b.toml")));
+        assert!(!global.loads(&kick.join("user.d/b.txt")));
+        assert!(!global.loads(&kick.join("other.toml")));
+        assert!(!global.loads(&kick.join("user.d/../other.toml")));
     }
 }

@@ -1,5 +1,6 @@
 //! The `kick project` command, which manages the projects registered in the
-//! global configuration.
+//! global configuration, that is the global `Kick.toml` and the files under
+//! `user.d/` next to it.
 
 use std::ffi::OsString;
 use std::fs;
@@ -10,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
 use crate::config;
-use crate::global::{self, Global, Projects};
+use crate::global::{self, Global, Project, Projects, USER_D};
 use crate::system::Git;
 
 #[derive(Debug, Parser)]
@@ -21,14 +22,14 @@ pub(crate) struct Opts {
 
 #[derive(Debug, Subcommand)]
 enum Action {
-    /// List the projects registered in the global configuration.
+    /// List the projects registered in every global configuration file.
     List,
     /// Register a project directory in the global configuration.
     ///
     /// Directories inside of the home directory are stored with a `~/`
     /// prefix, and other directories by their absolute path. A relative key
-    /// written by hand is resolved against the directory holding the global
-    /// `Kick.toml`.
+    /// written by hand is resolved against the directory holding the file
+    /// which declares it.
     Add {
         /// The directory to register. Defaults to the git checkout containing
         /// the current directory, or the current directory itself.
@@ -37,11 +38,20 @@ enum Action {
         /// of the git checkout.
         #[arg(long)]
         url: Option<String>,
+        /// The global configuration file to register the project in, the
+        /// global `Kick.toml` or a `*.toml` file under `user.d/` next to it.
+        /// Defaults to the global `Kick.toml`.
+        #[arg(long, value_name = "PATH")]
+        config: Option<PathBuf>,
     },
-    /// Remove a project from the global configuration.
+    /// Remove a project from the global configuration file which declares it.
     Remove {
         /// The directory of the project, or the key it is registered under.
         path: String,
+        /// The global configuration file to remove the project from, needed if
+        /// more than one declares it.
+        #[arg(long, value_name = "PATH")]
+        config: Option<PathBuf>,
     },
     /// Edit the settings of a project in the global configuration.
     ///
@@ -54,12 +64,16 @@ enum Action {
         /// The directory of the project, or the key it is registered under.
         /// Defaults to the git checkout containing the current directory.
         path: Option<String>,
+        /// The global configuration file to edit the project in, needed if
+        /// more than one declares it.
+        #[arg(long, value_name = "PATH")]
+        config: Option<PathBuf>,
     },
 }
 
 /// What the `project` command needs to run.
 pub(crate) struct Cx<'a> {
-    /// The path of the global configuration.
+    /// The path of the global `Kick.toml`.
     pub(crate) config: &'a Path,
     /// The home directory.
     pub(crate) home: &'a Path,
@@ -70,18 +84,28 @@ pub(crate) struct Cx<'a> {
 }
 
 pub(crate) fn entry(cx: &Cx<'_>, opts: &Opts) -> Result<()> {
+    let global = Global::new(cx.config, cx.home, false);
+
     match &opts.action {
         Action::List => {
-            let projects = Projects::open(cx.config, cx.home)?;
-            let list = projects.list();
+            let mut list = Vec::new();
+
+            for path in global.files() {
+                let projects = Projects::open(path, cx.home)?;
+                list.extend(projects.list().into_iter().map(|p| (path, p)));
+            }
 
             if list.is_empty() {
-                println!("No projects registered in {}", cx.config.display());
+                println!(
+                    "No projects registered in {} or {}",
+                    cx.config.display(),
+                    global.dir().join(USER_D).display()
+                );
                 println!("Register one with `kick project add <path>`");
                 return Ok(());
             }
 
-            for project in list {
+            for (file, project) in list {
                 match &project.path {
                     Ok(path) => {
                         let exists = if path.is_dir() { "" } else { " (missing)" };
@@ -102,9 +126,13 @@ pub(crate) fn entry(cx: &Cx<'_>, opts: &Opts) -> Result<()> {
                     Some(url) => println!("  url: {url}"),
                     None => println!("  url: none, kick ignores projects without a url"),
                 }
+
+                if file != cx.config {
+                    println!("  config: {}", global::display(cx.home, file));
+                }
             }
         }
-        Action::Add { path, url } => {
+        Action::Add { path, url, config } => {
             let dir = match path {
                 Some(path) => resolve_arg(cx, &path.to_string_lossy()),
                 None => checkout_root(cx.current_dir),
@@ -115,43 +143,125 @@ pub(crate) fn entry(cx: &Cx<'_>, opts: &Opts) -> Result<()> {
                 None => detect_url(cx.git, &dir)?,
             };
 
-            let mut projects = Projects::open(cx.config, cx.home)?;
+            let file = match config {
+                Some(config) => config_file(cx, &global, config)?,
+                None => cx.config.to_owned(),
+            };
+
+            for path in global.files().filter(|path| *path != file) {
+                if let Some(existing) = Projects::open(path, cx.home)?.find(None, &dir) {
+                    bail!(
+                        "{} is already registered as [repo.\"{}\"] in {}",
+                        dir.display(),
+                        existing.key,
+                        path.display()
+                    );
+                }
+            }
+
+            let mut projects = Projects::open(&file, cx.home)?;
             let key = projects.add(&dir, &url)?;
             projects.save()?;
             println!(
                 "Registered {key} ({url}) in {}",
-                global::display(cx.home, cx.config)
+                global::display(cx.home, &file)
             );
         }
-        Action::Remove { path } => {
+        Action::Remove { path, config } => {
             let dir = resolve_arg(cx, path);
-            let mut projects = Projects::open(cx.config, cx.home)?;
-            let removed = projects.remove(path, &dir)?;
+            let (mut projects, project) =
+                declaring(cx, &global, config.as_deref(), Some(path), &dir)?;
+            let removed = projects.remove(&project.key, &dir)?;
             projects.save()?;
             println!(
                 "Removed {} from {}",
                 removed.key,
-                global::display(cx.home, cx.config)
+                global::display(cx.home, projects.path())
             );
         }
-        Action::Edit { path } => {
+        Action::Edit { path, config } => {
             let (raw, dir) = match path {
                 Some(path) => (Some(path.as_str()), resolve_arg(cx, path)),
                 None => (None, checkout_root(cx.current_dir)),
             };
 
-            edit(cx, raw, &dir)?;
+            let (projects, project) = declaring(cx, &global, config.as_deref(), raw, &dir)?;
+            edit(cx, &global, projects, project)?;
         }
     }
 
     Ok(())
 }
 
-/// Edit the settings of the project registered under the key `raw` or at
-/// `dir` in an editor.
-fn edit(cx: &Cx<'_>, raw: Option<&str>, dir: &Path) -> Result<()> {
-    let mut projects = Projects::open(cx.config, cx.home)?;
-    let project = projects.get(raw, dir)?;
+/// Resolve the `--config` argument `config` to the global configuration file
+/// it names, which must be one kick loads.
+fn config_file(cx: &Cx<'_>, global: &Global, config: &Path) -> Result<PathBuf> {
+    let path = resolve_arg(cx, &config.to_string_lossy());
+
+    if !global.loads(&path) {
+        bail!(
+            "{} is not a global configuration file, use {} or a `*.toml` file under {}",
+            path.display(),
+            cx.config.display(),
+            global.dir().join(USER_D).display()
+        );
+    }
+
+    Ok(path)
+}
+
+/// Open the global configuration file which declares the project registered
+/// under the key `raw` or at `dir`, or the file `config` if it is given.
+fn declaring(
+    cx: &Cx<'_>,
+    global: &Global,
+    config: Option<&Path>,
+    raw: Option<&str>,
+    dir: &Path,
+) -> Result<(Projects, Project)> {
+    if let Some(config) = config {
+        let projects = Projects::open(&config_file(cx, global, config)?, cx.home)?;
+        let project = projects.get(raw, dir)?;
+        return Ok((projects, project));
+    }
+
+    let mut found = Vec::new();
+
+    for path in global.files() {
+        let projects = Projects::open(path, cx.home)?;
+
+        if let Some(project) = projects.find(raw, dir) {
+            found.push((projects, project));
+        }
+    }
+
+    if found.len() > 1 {
+        let files = found
+            .iter()
+            .map(|(projects, _)| global::display(cx.home, projects.path()))
+            .collect::<Vec<_>>();
+
+        bail!(
+            "{} is registered in more than one global configuration file ({}), pick one with --config",
+            dir.display(),
+            files.join(", ")
+        );
+    }
+
+    match found.pop() {
+        Some(found) => Ok(found),
+        None => bail!(
+            "No project registered at {} in {} or {}, register it with `kick project add`",
+            dir.display(),
+            cx.config.display(),
+            global.dir().join(USER_D).display()
+        ),
+    }
+}
+
+/// Edit the settings of `project` in an editor, saving them to the global
+/// configuration file `projects` which declares it.
+fn edit(cx: &Cx<'_>, global: &Global, mut projects: Projects, project: Project) -> Result<()> {
     let original = projects.settings(&project.key)?;
 
     let file = tempfile::Builder::new()
@@ -173,11 +283,7 @@ fn edit(cx: &Cx<'_>, raw: Option<&str>, dir: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let global = Global {
-        path: cx.config.to_owned(),
-        home: cx.home.to_owned(),
-        provides_repos: false,
-    };
+    let global = global.layer(projects.path());
 
     if let Err(error) = apply(&mut projects, &global, &project.key, &edited) {
         let kept = file
@@ -196,7 +302,7 @@ fn edit(cx: &Cx<'_>, raw: Option<&str>, dir: &Path) -> Result<()> {
     println!(
         "Updated {} in {}",
         project.key,
-        global::display(cx.home, cx.config)
+        global::display(cx.home, projects.path())
     );
 
     if !projects

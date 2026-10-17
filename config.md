@@ -24,6 +24,24 @@ start with `~/`, or be relative to the directory holding the global
 Environment variables are interpolated in them (see [Paths and environment
 variables](#paths-and-environment-variables)).
 
+Every `*.toml` file under `user.d/` next to the global `Kick.toml`
+(`~/.config/kick/user.d/` on Linux), recursively, is loaded after it as a
+further global layer with the same schema. The files are loaded sorted by their
+path relative to `user.d/`, and later files take precedence over earlier ones;
+a `[repo."<path>"]` declared in more than one global file is merged, the later
+file winning per key. Hidden files and directories (such as `.git`) are
+skipped, a missing `user.d/` is not an error, and relative paths in a file are
+resolved against the directory holding that file. This lets a private checkout
+at, for example, `~/.config/kick/user.d/private/` declare repos and carry
+templates which a public `~/.config/kick` must not contain:
+
+```toml
+# ~/.config/kick/user.d/private/repos.toml
+[repo."~/repo/army"]
+url = "https://example.com/army"
+lib = "data/lib.md"  # ~/.config/kick/user.d/private/data/lib.md
+```
+
 Outside of a project (no `Kick.toml` or git checkout in the current directory
 or its parents) kick acts on the repos declared in the global configuration.
 Inside of a project its `[repo]` sections are ignored, unless `--all` is passed,
@@ -31,7 +49,8 @@ a `-p`/`--path` names a directory outside of the project which is inside of one
 of them, or a `-n`/`--repo-name` matches no repo in the project but one of them
 (see [`alias`](config/toplevel.md#alias)), in which case kick acts on the global
 repos instead. Use `kick project add`, `kick project list` and `kick project
-remove` to manage them.
+remove` to manage them; `kick project add --config <path>` registers a project
+in a file under `user.d/` instead of the global `Kick.toml`.
 
 ```toml
 [repo."repos/OxidizeBot"]
@@ -98,7 +117,7 @@ absolute or start with `~`, and otherwise are relative to the directory of the
 `Kick.toml`. Other paths, like `cargo_toml`, must still be relative to the repo
 once interpolated. The global configuration behaves the same: relative
 template paths and `[repo."<path>"]` keys are resolved against the directory
-holding the global `Kick.toml`. The `dest` of a `[deploy]` file is a path on the
+holding the global `Kick.toml`, or the `user.d/` file which sets them. The `dest` of a `[deploy]` file is a path on the
 remote host, so it is not interpolated.
 
 Values are interpolated when they are loaded, not when they are written:

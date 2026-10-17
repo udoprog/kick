@@ -17,7 +17,7 @@ use crate::config::{
     UnitTemplate,
 };
 use crate::ctxt::Paths;
-use crate::global::Global;
+use crate::global::{Global, USER_D};
 use crate::model::{Repo, RepoSource};
 use crate::systemd::{self, Directives, UnitKind};
 use crate::{Exclusion, GITHUB_TOKEN, KICK_TOML, RepoOptions};
@@ -354,8 +354,8 @@ fn build(cx: &Inspect<'_>, opts: &Opts) -> Report {
         dir: paths.config.map(absolute),
         files: cx
             .global
-            .map(|g| g.path.clone())
             .into_iter()
+            .flat_map(|g| g.files().map(Path::to_owned))
             .chain(paths.config.into_iter().map(|p| p.join(GITHUB_TOKEN)))
             .chain((!provides_repos).then(|| paths.root.join(GITHUB_TOKEN)))
             .map(|p| FileReport {
@@ -400,7 +400,7 @@ fn build(cx: &Inspect<'_>, opts: &Opts) -> Report {
         let exclusion = cx.collected.exclusions.get(index).cloned().flatten();
         let selected = exclusion.is_none() && cx.collected.selection_error.is_none();
 
-        let sources = repo_sources(repo);
+        let sources = repo_sources(repo, &cx.collected.sources);
         let mut urls = vec![repo.url().to_string()];
 
         if let Some(c) = cx.config.repos.get(repo.path()) {
@@ -465,14 +465,33 @@ fn defaults_keys(defaults: &toml::Table) -> Vec<String> {
         .collect()
 }
 
-fn repo_sources(repo: &Repo) -> Vec<String> {
-    repo.source_list()
-        .map(|source| match source {
-            RepoSource::Git => String::from("the git checkout at the root"),
-            RepoSource::Config(path) => format!("{KICK_TOML} [repo.\"{path}\"]"),
-            RepoSource::Global(key) => format!("global {KICK_TOML} [repo.\"{key}\"]"),
-        })
-        .collect()
+fn repo_sources(repo: &Repo, sources: &[ConfigSource]) -> Vec<String> {
+    let path = repo.path().normalize();
+    let mut out = Vec::new();
+
+    for source in repo.source_list() {
+        match source {
+            RepoSource::Git => out.push(String::from("the git checkout at the root")),
+            RepoSource::Config(path) => out.push(format!("{KICK_TOML} [repo.\"{path}\"]")),
+            RepoSource::Global(key) => {
+                let files = sources
+                    .iter()
+                    .filter(|s| s.global && !s.repos_ignored)
+                    .filter(|s| s.repos.iter().any(|(p, _)| p.normalize() == path))
+                    .map(|s| format!("global {} [repo.\"{key}\"]", s.config_path))
+                    .collect::<Vec<_>>();
+
+                if files.is_empty() {
+                    out.push(format!("global {KICK_TOML} [repo.\"{key}\"]"));
+                } else {
+                    out.extend(files);
+                }
+            }
+        }
+    }
+
+    out.dedup();
+    out
 }
 
 /// The configuration layers which apply to the repo at `path`, from least to
@@ -1032,7 +1051,7 @@ fn write_text(o: &mut impl Write, r: &Report) -> io::Result<()> {
     match &r.user_config.dir {
         Some(dir) => writeln!(
             o,
-            "User configuration: {} (`{KICK_TOML}` and `{GITHUB_TOKEN}`)",
+            "User configuration: {} (`{KICK_TOML}`, `{USER_D}/**/*.toml` and `{GITHUB_TOKEN}`)",
             dir.display()
         )?,
         None => writeln!(o, "User configuration: no directory")?,
@@ -1106,7 +1125,7 @@ fn write_text(o: &mut impl Write, r: &Report) -> io::Result<()> {
     let from = match (r.repos_from, &r.global) {
         ("config", _) => format!("from [repo] sections in {KICK_TOML}"),
         ("global", Some(global)) => format!(
-            "outside of a project, so from [repo] sections in the global {}",
+            "outside of a project, so from [repo] sections in the global {} and {USER_D}/",
             global.display()
         ),
         _ => String::from("no [repo] sections, so the git checkout at the root"),
@@ -1515,6 +1534,7 @@ mod tests {
             path: global_path,
             home,
             provides_repos: false,
+            user_d: Vec::new(),
         };
 
         let templating = Templating::new().unwrap();

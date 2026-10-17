@@ -1578,8 +1578,8 @@ struct Cx<'a> {
     templating: &'a Templating,
     errors: RefCell<Vec<Error>>,
     sources: RefCell<Vec<ConfigSource>>,
-    /// Set while the global configuration is being loaded.
-    global: Option<&'a Global>,
+    /// The layer of the global configuration being loaded, if any.
+    global: Option<Global>,
     /// The home directory, which a leading `~` in path-valued settings
     /// expands to.
     home: Option<PathBuf>,
@@ -1602,7 +1602,7 @@ impl<'a> Cx<'a> {
 
     /// Interpolate `~` and environment variables in a path-valued setting.
     fn interpolate_path(&self, value: &str) -> Result<PathBuf, ErrorMarker> {
-        let home = match self.global {
+        let home = match &self.global {
             Some(global) => Some(global.home.as_path()),
             None => self.home.as_deref(),
         };
@@ -1614,7 +1614,7 @@ impl<'a> Cx<'a> {
     /// The directory of the configuration file being loaded, which relative
     /// paths in it are resolved against.
     fn base_dir(&self) -> PathBuf {
-        match self.global {
+        match &self.global {
             Some(global) => global.dir().to_owned(),
             None => self.current.to_path(self.paths.root),
         }
@@ -1627,7 +1627,7 @@ impl<'a> Cx<'a> {
     /// file, or to the root for the global configuration. A key which
     /// resolves to an absolute path is made relative to it.
     fn repo_key(&self, key: &str) -> Result<RelativePathBuf, ErrorMarker> {
-        let base = match self.global {
+        let base = match &self.global {
             // NB: The repos of the global configuration are ignored inside of
             // a project, so its keys are left alone.
             Some(global) if !global.provides_repos => return Ok(RelativePathBuf::from(key)),
@@ -1659,7 +1659,7 @@ impl<'a> Cx<'a> {
 
     /// The path of the configuration file being loaded.
     fn config_file(&self) -> PathBuf {
-        match self.global {
+        match &self.global {
             Some(global) => global.path.clone(),
             None => self.paths.to_path(&self.config_path),
         }
@@ -1676,7 +1676,7 @@ impl<'a> Cx<'a> {
             repos: Vec::new(),
             errors: Vec::new(),
             global: self.global.is_some(),
-            repos_ignored: self.global.is_some_and(|g| !g.provides_repos),
+            repos_ignored: self.global.as_ref().is_some_and(|g| !g.provides_repos),
         });
 
         let value = self.read_config();
@@ -1689,7 +1689,7 @@ impl<'a> Cx<'a> {
 
                     // Repos declared in the global configuration are shown
                     // by the path they resolve to.
-                    if let Some(global) = self.global.filter(|g| g.provides_repos) {
+                    if let Some(global) = self.global.as_ref().filter(|g| g.provides_repos) {
                         for (path, _) in &mut source.repos {
                             // NB: Errors are reported when the repo is loaded.
                             if let Ok(resolved) = global.repo_path(self.paths.root, path.as_str()) {
@@ -1709,7 +1709,7 @@ impl<'a> Cx<'a> {
     }
 
     fn read_config(&self) -> Result<Option<toml::Value>, ErrorMarker> {
-        let string = match self.global {
+        let string = match &self.global {
             Some(global) => match fs::read_to_string(&global.path) {
                 Ok(string) => Some(string),
                 Err(e) if e.kind() == io::ErrorKind::NotFound => None,
@@ -2876,7 +2876,7 @@ pub(crate) fn load_with<'a>(
 /// errors found in them.
 ///
 /// Paths in the settings, such as templates, are resolved as they would be in
-/// the global configuration.
+/// the global configuration file at `global.path`.
 pub(crate) fn validate_global_repo(global: &Global, table: toml::Table) -> Result<Vec<String>> {
     let templating = Templating::new()?;
 
@@ -2891,7 +2891,7 @@ pub(crate) fn validate_global_repo(global: &Global, table: toml::Table) -> Resul
     };
 
     let mut cx = Cx::new(paths, RelativePath::new(""), &templating);
-    cx.global = Some(global);
+    cx.global = Some(global.clone());
     let _ = cx.repo(toml::Value::Table(table));
 
     let prefix = format!("{}: ", global.path.display());
@@ -2926,8 +2926,9 @@ pub(crate) fn load_all<'a>(
 /// configuration if `global` is specified.
 ///
 /// The global configuration is the least specific layer: project
-/// configuration takes precedence over it. If it provides the repos (outside
-/// of a project) the repos declared in it are used and no project
+/// configuration takes precedence over it. Each of its files is loaded in
+/// turn, with later files merged over earlier ones. If it provides the repos
+/// (outside of a project) the repos declared in it are used and no project
 /// configuration is loaded at the root, otherwise its `[repo]` sections are
 /// ignored.
 pub(crate) fn load_all_with<'a>(
@@ -3059,39 +3060,56 @@ fn load_base(
     })
 }
 
-/// Load the global configuration, returning its base configuration and, if it
-/// provides the repos, the repos declared in it keyed by their path relative
-/// to the root.
-fn load_global<'a>(
-    cx: &mut Cx<'a>,
-    global: &'a Global,
+/// Load every file of the global configuration, returning their merged base
+/// configuration and, if it provides the repos, the repos declared in them
+/// keyed by their path relative to the root.
+///
+/// Later files are merged over earlier ones, also for a repo declared in more
+/// than one of them.
+fn load_global(
+    cx: &mut Cx<'_>,
+    global: &Global,
 ) -> (Option<RepoConfig>, BTreeMap<RelativePathBuf, RepoConfig>) {
-    let config_path = RelativePathBuf::from(global.display_path());
-    let old_config_path = mem::replace(&mut cx.config_path, config_path);
-    let old_keys = mem::take(&mut cx.keys);
-    cx.global = Some(global);
+    let mut base = None::<RepoConfig>;
+    let mut repos = BTreeMap::<RelativePathBuf, RepoConfig>::new();
 
-    let loaded = match cx.config() {
-        Ok(Some(config)) => load_base(cx, config).ok(),
-        _ => None,
-    };
+    for layer in global.layers() {
+        let config_path = RelativePathBuf::from(layer.display_path());
+        let old_config_path = mem::replace(&mut cx.config_path, config_path);
+        let old_keys = mem::take(&mut cx.keys);
+        cx.global = Some(layer);
 
-    cx.global = None;
-    cx.keys = old_keys;
-    cx.config_path = old_config_path;
+        let loaded = match cx.config() {
+            Ok(Some(config)) => load_base(cx, config).ok(),
+            _ => None,
+        };
 
-    let mut repos = BTreeMap::new();
+        cx.global = None;
+        cx.keys = old_keys;
+        cx.config_path = old_config_path;
 
-    let base = loaded.map(|(base, declared)| {
+        let Some((layer_base, declared)) = loaded else {
+            continue;
+        };
+
+        base = Some(match base {
+            Some(under) => merge_under(under, layer_base),
+            None => layer_base,
+        });
+
         if global.provides_repos {
             for (path, (key, mut config)) in declared {
                 config.sources = BTreeSet::from([RepoSource::Global(key)]);
+
+                let config = match repos.remove(&path) {
+                    Some(under) => merge_under(under, config),
+                    None => config,
+                };
+
                 repos.insert(path, config);
             }
         }
-
-        base
-    });
+    }
 
     (base, repos)
 }
@@ -3934,6 +3952,7 @@ host = \"moore\"",
             path: dir.path().join("Kick.toml"),
             home: dir.path().to_owned(),
             provides_repos: false,
+            user_d: Vec::new(),
         };
 
         let validate = |settings: &str| {

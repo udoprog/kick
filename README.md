@@ -144,6 +144,16 @@ as `[repo."<path>"]` keys and template paths, may be absolute, start with
 holding the global `Kick.toml`, so `template = "data/ci.yml"` in
 `~/.config/kick/Kick.toml` refers to `~/.config/kick/data/ci.yml`.
 
+Every `*.toml` file under `~/.config/kick/user.d/`, in nested directories too,
+is loaded after the global `Kick.toml` as a further global layer, sorted by its
+path relative to `user.d/`. Later files take precedence over earlier ones, and a
+`[repo."<path>"]` declared in more than one file is merged, the later file
+winning per key. Hidden files and directories such as `.git` are skipped, so a
+private git checkout can live at `~/.config/kick/user.d/private/` while
+`~/.config/kick` is a public one. Relative paths in such a file resolve against
+the directory holding it, so it can carry its own templates. `kick inspect`
+lists every global file which was loaded and what each one sets.
+
 Path-valued settings in any `Kick.toml` interpolate a leading `~` and
 environment variables as `$VAR`, `${VAR}` or `${VAR:-default}`, and `$$` is a
 literal `$`. Referencing an unset variable without a `:-` fallback is an error,
@@ -172,6 +182,7 @@ edits it in place while preserving formatting and comments:
 ```sh
 kick project add                 # register the git checkout of the current directory
 kick project add ~/src/foo --url https://github.com/udoprog/foo
+kick project add ~/src/army --config ~/.config/kick/user.d/private/repos.toml
 kick project list
 kick project remove ~/src/foo
 kick project edit ~/src/foo      # edit its settings in $VISUAL or $EDITOR
@@ -179,6 +190,10 @@ kick project edit ~/src/foo      # edit its settings in $VISUAL or $EDITOR
 
 `kick project add` stores directories inside of your home directory with a `~/`
 prefix, and detects the url from the `origin` remote unless `--url` is given.
+It writes to the global `Kick.toml` unless `--config` names a file under
+`user.d/`. `kick project list` lists the projects of every global file, and
+`kick project remove` and `kick project edit` change the file which declares
+the project, or the one named with `--config` if several do.
 `kick project edit` (which defaults to the git checkout of the current
 directory) writes the `[repo."<key>"]` table of a project to a temporary file
 and opens it in `$VISUAL`, `$EDITOR` or `vi` (`notepad` on Windows). Once the
