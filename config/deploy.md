@@ -44,7 +44,8 @@ and runs the same install script through the local shell instead.
 ### Only what changed
 
 The install script compares each file it deploys (the binary, every
-[`files`](#deployfiles) entry, the unit and its socket unit) with the installed
+[`files`](#deployfiles) entry, the unit, its socket unit and its
+[sysusers.d file](#system-users)) with the installed
 one, by contents and by the mode kick installs it with, before it touches
 anything. The owner is not compared, since kick leaves it to whoever installs
 the file. Then:
@@ -652,6 +653,8 @@ enable = false
   [user units](#user-units).
 * `socket` a socket unit which activates the service, see [socket
   units](#socket-units).
+* `sysusers` a sysusers.d file which creates the user the service runs as, see
+  [system users](#system-users).
 * `unit`, `service` and `install` tables of [directives](#pass-through-directives)
   which are written as they are into the `[Unit]`, `[Service]` and `[Install]`
   sections of the unit.
@@ -990,6 +993,82 @@ rendered units and the script without changing anything.
 
 <br>
 
+#### System users
+
+A system service usually runs as a user of its own, which is created with
+[systemd-sysusers]. The `sysusers` option of the `systemd` section installs a
+sysusers.d file for it and runs `systemd-sysusers` on it, rather than shipping
+the file through [`files`](#deployfiles) and running `systemd-sysusers` from
+`post_install` on every deployment:
+
+```toml
+[deploy.systemd]
+user = "track"
+sysusers = true
+```
+
+With `true`, the file is generated from the unit. It creates the user the
+service runs as, from `user`, a `User` [directive](#pass-through-directives) or
+`--service-user`, with a group of the same name. A different group, from
+`group`, a `Group` directive or `--group`, is created and made the user's
+primary group instead. The description of the unit is the user's description,
+and its home directory is `/var/lib/<name>` where `<name>` is the name of the
+unit. The configuration above installs `/etc/sysusers.d/track.conf` with:
+
+```text
+# Created by kick for track.service
+u track - "track service" /var/lib/track
+```
+
+systemd-sysusers does not create home directories, so the [built-in
+template](#the-built-in-template) adds `StateDirectory=<name>` to the unit when
+the home directory is the default one. systemd then creates `/var/lib/<name>`,
+owned by the user, when the service starts, so `WorkingDirectory=~` works. A
+custom template is left alone.
+
+Point it at a file to install your own instead, for anything the generated file
+doesn't cover. It is installed as it is:
+
+```toml
+[deploy.systemd]
+sysusers = "systemd/sysusers.conf"
+```
+
+Or as a table:
+
+```toml
+[deploy.systemd.sysusers]
+home = "/srv/track"
+members = ["integration"]
+```
+
+* `file` the path to your own sysusers.d file, relative to the repo, which is
+  what the string form sets. `home` and `members` do not apply to it.
+* `name` the name of the file without `.conf`. Defaults to the name of the unit.
+* `home` the home directory of the generated user. Defaults to
+  `/var/lib/<name>`.
+* `members` users which are added to the group of the generated user, as `m
+  <member> <group>` lines. Lists are appended to across layers and profiles.
+* `dir` the directory the file is installed into. Defaults to
+  `/etc/sysusers.d`.
+
+A profile can turn it off with `sysusers = false`.
+
+The file is compared and installed like the unit, with mode `0644` and with
+sudo when it is enabled. `systemd-sysusers <dir>/<name>.conf` only runs when
+the file was new or changed, or when a user it creates is missing according to
+`getent passwd`, which repairs a machine where the file was put in place by
+hand. It runs right after the files are installed, before any unit is reloaded
+or the service is (re)started, since `User=` and `SocketGroup=` need the user
+and group to exist. `--dry-run` and `-V` print the file along with the units.
+
+A user unit (`scope = "user"`) runs as the user it belongs to, so `sysusers`
+is refused for it.
+
+[systemd-sysusers]: https://www.freedesktop.org/software/systemd/man/latest/systemd-sysusers.html
+
+<br>
+
 #### Templates
 
 Unit templates are rendered with [minijinja], so they use jinja2 syntax, unlike
@@ -1062,14 +1141,18 @@ In addition to what you define, the following are always available:
   `kanban.socket`, when there is one. A socket template has `service`, the file
   name of the service, instead.
 * `directives` the [pass-through directives](#pass-through-directives).
+* `state_directory` the name of the unit, when the user the service runs as is
+  created by a generated [sysusers.d file](#system-users) with the default home
+  directory. It is only provided to the built-in template, and can be defined
+  in the `systemd` section to name another state directory.
 
 These win over the global variables. Defining one in the `systemd` section is
 an error, since the template would then describe something other than what is
 being installed, and the error says which option to set instead. `name`, `scope`
 and `socket` are options of the section rather than variables.
 
-The exception is `exec`, which can be defined to start the binary through
-something else, such as a wrapper:
+The exceptions are `state_directory`, see above, and `exec`, which can be
+defined to start the binary through something else, such as a wrapper:
 
 ```toml
 [deploy.systemd]
@@ -1118,6 +1201,8 @@ In `[Service]`:
   *service* runs as, and has nothing to do with the `user` option in the
   `[deploy]` section, which is the user being logged in as.
 * `WorkingDirectory=` from `working_directory`.
+* `StateDirectory=` from `state_directory`, which defaults to the name of the
+  unit when its user is created by a generated [sysusers.d file](#system-users).
 * `KillSignal=` from `kill_signal`.
 * `Environment=` from `environment`, a table which becomes one `Environment=`
   per entry.
@@ -1340,7 +1425,8 @@ Every remote host being deployed to is expected to:
   tar, bsdtar and busybox tar will do.
 * Have `cmp` available, which is part of diffutils, to compare what is being
   deployed with what is installed.
-* Have `systemd` available if the `systemd` option is in use.
+* Have `systemd` available if the `systemd` option is in use, and
+  `systemd-sysusers` and `getent` if [`sysusers`](#system-users) is.
 
 <br>
 

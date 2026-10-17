@@ -521,6 +521,9 @@ pub(crate) struct Systemd {
     pub(crate) scope: Option<SystemdScope>,
     /// The socket unit which activates the service, if any.
     pub(crate) socket: Option<SystemdSocket>,
+    /// The sysusers.d file which creates the user the service runs as, if
+    /// any.
+    pub(crate) sysusers: Option<Sysusers>,
     /// Directives written verbatim into the `[Unit]`, `[Service]` and
     /// `[Install]` sections of the unit.
     pub(crate) directives: systemd::Directives,
@@ -542,6 +545,7 @@ impl Default for Systemd {
             enable: None,
             scope: None,
             socket: None,
+            sysusers: None,
             directives: systemd::Directives::default(),
             variables: toml::Table::new(),
         }
@@ -566,8 +570,54 @@ impl Systemd {
             _ => {}
         }
 
+        match (&mut self.sysusers, other.sysusers) {
+            (Some(sysusers), Some(other)) => sysusers.merge_with(other),
+            (sysusers @ None, other) => *sysusers = other,
+            _ => {}
+        }
+
         self.directives.merge_with(other.directives);
         merge_map(&mut self.variables, other.variables);
+    }
+}
+
+/// A sysusers.d file read from the project, which is installed as it is.
+#[derive(Debug, Clone)]
+pub(crate) struct SysusersFile {
+    /// The path the file was read from.
+    pub(crate) path: PathBuf,
+    /// The contents of the file.
+    pub(crate) contents: Box<str>,
+}
+
+/// The sysusers.d file which creates the user and group a system service runs
+/// as.
+#[derive(Default, Debug, Clone)]
+pub(crate) struct Sysusers {
+    /// Whether the file is installed at all, which is how `sysusers = false`
+    /// is represented. Defaults to `true` once the option is present.
+    pub(crate) enabled: Option<bool>,
+    /// The project's own file, installed instead of a generated one.
+    pub(crate) file: Option<SysusersFile>,
+    /// The name of the file without its `.conf` suffix, defaults to the name
+    /// of the unit.
+    pub(crate) name: Option<String>,
+    /// The home directory of the generated user.
+    pub(crate) home: Option<String>,
+    /// Users added to the group of the generated user.
+    pub(crate) members: Vec<String>,
+    /// The directory the file is installed into.
+    pub(crate) dir: Option<String>,
+}
+
+impl Sysusers {
+    fn merge_with(&mut self, mut other: Self) {
+        self.enabled = other.enabled.or(self.enabled.take());
+        self.file = other.file.take().or(self.file.take());
+        self.name = other.name.or(self.name.take());
+        self.home = other.home.or(self.home.take());
+        self.members.append(&mut other.members);
+        self.dir = other.dir.or(self.dir.take());
     }
 }
 
@@ -2463,6 +2513,7 @@ impl<'a> Cx<'a> {
                 let enable = self.in_key(&mut table, "enable", Self::boolean);
                 let scope = self.in_key(&mut table, "scope", Self::parse);
                 let socket = self.in_key(&mut table, "socket", Self::systemd_socket);
+                let sysusers = self.in_key(&mut table, "sysusers", Self::sysusers);
                 let directives = self.directives(&mut table, systemd::UnitKind::Service);
                 let reserved = self.reserved_variables(&table, systemd::UnitKind::Service);
 
@@ -2477,6 +2528,7 @@ impl<'a> Cx<'a> {
                     enable: enable?,
                     scope: scope?,
                     socket: socket?,
+                    sysusers: sysusers?,
                     directives: directives?,
                     variables: reserved.map(|()| table)?,
                     ..Systemd::default()
@@ -2514,6 +2566,46 @@ impl<'a> Cx<'a> {
                     ..SystemdSocket::default()
                 })
             }
+        }
+    }
+
+    /// Read a sysusers.d file which is installed as it is.
+    fn sysusers_file(&self, value: toml::Value) -> Result<SysusersFile, ErrorMarker> {
+        let (path, contents) = self.read_template_at(value)?;
+
+        Ok(SysusersFile {
+            path,
+            contents: contents.into(),
+        })
+    }
+
+    fn sysusers(&self, value: toml::Value) -> Result<Sysusers, ErrorMarker> {
+        match value {
+            toml::Value::Boolean(enabled) => Ok(Sysusers {
+                enabled: Some(enabled),
+                ..Sysusers::default()
+            }),
+            // NB: The bare string form is the path to the project's own file.
+            value @ toml::Value::String(..) => Ok(Sysusers {
+                file: Some(self.sysusers_file(value)?),
+                ..Sysusers::default()
+            }),
+            value => self.with_table(value, |cx, table| {
+                let file = cx.in_key(table, "file", Self::sysusers_file);
+                let name = cx.in_key(table, "name", Self::string);
+                let home = cx.in_key(table, "home", Self::string);
+                let members = cx.in_array(table, "members", None, Self::string);
+                let dir = cx.in_key(table, "dir", Self::string);
+
+                Ok(Sysusers {
+                    enabled: None,
+                    file: file?,
+                    name: name?,
+                    home: home?,
+                    members: members?,
+                    dir: dir?,
+                })
+            }),
         }
     }
 
@@ -3247,6 +3339,63 @@ host = "moore"
         assert!(systemd.variables.contains_key("working_directory"));
 
         assert_eq!(deploy.profiles["remote"].host, ["moore"]);
+    }
+
+    #[test]
+    fn deploy_sysusers() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sysusers.conf");
+        std::fs::write(&file, "u track - \"Track\"\n").unwrap();
+
+        let (deploy, errors) = parse_deploy(&format!(
+            r#"
+[systemd]
+user = "track"
+
+[systemd.sysusers]
+home = "/srv/track"
+members = ["alice"]
+
+[profiles.off.systemd]
+sysusers = false
+
+[profiles.own.systemd]
+sysusers = {file:?}
+
+[profiles.more.systemd.sysusers]
+members = ["bob"]
+dir = "/usr/lib/sysusers.d"
+"#,
+            file = file.display().to_string()
+        ));
+
+        assert_eq!(errors, 0);
+
+        let deploy = deploy.unwrap();
+        let systemd = deploy.systemd.as_ref().unwrap();
+        // NB: `sysusers` is an option, not a variable.
+        assert!(!systemd.variables.contains_key("sysusers"));
+
+        let sysusers = systemd.sysusers.as_ref().unwrap();
+        assert_eq!(sysusers.enabled, None);
+        assert_eq!(sysusers.home.as_deref(), Some("/srv/track"));
+        assert_eq!(sysusers.members, ["alice"]);
+
+        let off = deploy.with_profile("off").unwrap();
+        assert_eq!(off.systemd.unwrap().sysusers.unwrap().enabled, Some(false));
+
+        let own = deploy.with_profile("own").unwrap();
+        let own = own.systemd.unwrap().sysusers.unwrap();
+        assert_eq!(&*own.file.unwrap().contents, "u track - \"Track\"\n");
+
+        let more = deploy.with_profile("more").unwrap();
+        let more = more.systemd.unwrap().sysusers.unwrap();
+        assert_eq!(more.members, ["alice", "bob"]);
+        assert_eq!(more.dir.as_deref(), Some("/usr/lib/sysusers.d"));
+        assert_eq!(more.home.as_deref(), Some("/srv/track"));
+
+        let (_, errors) = parse_deploy("[systemd.sysusers]\nshell = \"/bin/sh\"\n");
+        assert_eq!(errors, 1);
     }
 
     #[test]

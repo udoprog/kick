@@ -39,6 +39,8 @@ pub(crate) const LOCAL_HOST: &str = "localhost";
 const REQUIRED_COMMANDS: &[&str] = &["install", "tar", "cmp", "stat"];
 /// Remote commands which are needed to install a systemd unit.
 const SYSTEMD_COMMANDS: &[&str] = &["systemctl"];
+/// Remote commands which are needed to install a sysusers.d file.
+const SYSUSERS_COMMANDS: &[&str] = &["systemd-sysusers", "getent"];
 
 /// The options shared by `kick install` and `kick deploy`.
 #[derive(Default, Debug, Clone, Args)]
@@ -485,7 +487,13 @@ pub(crate) fn deploy(
 
     let unit_name = plan.unit_name(binary.as_deref());
     let socket_name = plan.socket_name(unit_name.as_deref());
-    check_staged(&files.uploads, unit_name.as_deref(), socket_name.as_deref())?;
+    let sysusers_file = plan.sysusers_file(unit_name.as_deref());
+    check_staged(
+        &files.uploads,
+        unit_name.as_deref(),
+        socket_name.as_deref(),
+        sysusers_file.as_deref(),
+    )?;
 
     // The unit file is generated locally into a temporary directory so that it
     // can be uploaded under its expected name. Each host gets its own
@@ -516,6 +524,8 @@ pub(crate) fn deploy(
 
         let mut uploads = files.uploads.clone();
 
+        let mut sysusers = None;
+
         let units = match (&unit_name, &binary) {
             (Some(name), Some(binary)) => {
                 let units = render_units(
@@ -544,6 +554,17 @@ pub(crate) fn deploy(
                     uploads.push((path, unit.file_name.clone()));
                 }
 
+                if let Some(file_name) = &sysusers_file {
+                    let conf = render_sysusers(&plan, &units, file_name)?;
+                    let path = dir.join(&conf.file_name);
+
+                    std::fs::write(&path, &conf.contents)
+                        .with_context(|| anyhow!("Writing {}", path.display()))?;
+
+                    uploads.push((path, conf.file_name.clone()));
+                    sysusers = Some(conf);
+                }
+
                 Some(units)
             }
             _ => None,
@@ -556,6 +577,7 @@ pub(crate) fn deploy(
             installs,
             uploads,
             units,
+            sysusers,
         };
 
         // NB: With `commands` installing the binary there might be nothing
@@ -670,6 +692,27 @@ fn check_systemd(plan: &Plan, opts: &Opts) -> Result<()> {
         }
     }
 
+    if let Some(sysusers) = plan.sysusers() {
+        if plan.scope == SystemdScope::User {
+            bail!(
+                "Cannot use `sysusers` in `{label}` with a user unit (`scope = \"user\"`), since a user unit runs as the user it belongs to"
+            );
+        }
+
+        if sysusers.file.is_some() {
+            for (key, set) in [
+                ("home", sysusers.home.is_some()),
+                ("members", !sysusers.members.is_empty()),
+            ] {
+                if set {
+                    tracing::warn!(
+                        "Ignoring `{key}` in `{label}.sysusers` since the sysusers.d file is the project's own"
+                    );
+                }
+            }
+        }
+    }
+
     if template.is_none()
         && !opts.args.is_empty()
         && systemd.directives.contains("service", "ExecStart")
@@ -702,6 +745,16 @@ fn check_access(
 ) -> Result<Vec<Option<String>>> {
     let mut homes = Vec::with_capacity(targets.len());
 
+    let mut commands = REQUIRED_COMMANDS.to_vec();
+
+    if plan.systemd.is_some() {
+        commands.extend(SYSTEMD_COMMANDS);
+    }
+
+    if plan.sysusers().is_some() {
+        commands.extend(SYSUSERS_COMMANDS);
+    }
+
     match plan.kind {
         DeployKind::Ssh => {
             for (index, target) in targets.iter().enumerate() {
@@ -716,7 +769,7 @@ fn check_access(
                         index,
                         target,
                         plan.sudo,
-                        plan.systemd.is_some(),
+                        &commands,
                     )?);
                 }
             }
@@ -860,6 +913,7 @@ fn check_staged(
     uploads: &[(PathBuf, String)],
     unit_name: Option<&str>,
     socket_name: Option<&str>,
+    sysusers_file: Option<&str>,
 ) -> Result<()> {
     let mut staged = HashMap::new();
 
@@ -894,6 +948,24 @@ fn check_staged(
                 "The systemd socket unit and {} would both be staged as `{file_name}`",
                 existing.display()
             );
+        }
+    }
+
+    if let Some(file_name) = sysusers_file {
+        if let Some(existing) = staged.get(file_name) {
+            bail!(
+                "The sysusers.d file and {} would both be staged as `{file_name}`",
+                existing.display()
+            );
+        }
+
+        let units = [
+            unit_name.map(|name| plan::unit_file(name, UnitKind::Service)),
+            socket_name.map(|name| plan::unit_file(name, UnitKind::Socket)),
+        ];
+
+        if units.iter().flatten().any(|unit| unit == file_name) {
+            bail!("The sysusers.d file and a systemd unit would both be staged as `{file_name}`");
         }
     }
 
@@ -945,6 +1017,7 @@ pub(crate) fn render_units(
 
     let file_name = plan::unit_file(name, UnitKind::Service);
     let socket_file_name = socket_name.map(|name| plan::unit_file(name, UnitKind::Socket));
+    let state_directory = plan.state_directory(name);
 
     // NB: Both units are rendered with the same set of built-in variables,
     // but each with its own name.
@@ -961,6 +1034,7 @@ pub(crate) fn render_units(
                 host: string(&target.host),
                 scope: string(plan.scope.as_str()),
                 peer: peer.map(string),
+                state_directory: state_directory.as_deref().map(string),
             };
 
             for (key, value) in builtins.into_vec(kind) {
@@ -1090,6 +1164,140 @@ pub(crate) fn render_units(
     })
 }
 
+/// A sysusers.d file rendered for a host.
+pub(crate) struct SysusersConf {
+    /// The file name the file is installed as.
+    pub(crate) file_name: String,
+    /// The contents of the file.
+    pub(crate) contents: String,
+    /// The users the file creates, which the script checks exist.
+    pub(crate) users: Vec<String>,
+}
+
+/// Render the sysusers.d file which creates the user a service runs as, or
+/// use the project's own.
+///
+/// The generated file creates the user the service runs as, with a group of
+/// its own unless the service runs with another group, and adds the
+/// configured members to that group.
+pub(crate) fn render_sysusers(plan: &Plan, units: &Units, file_name: &str) -> Result<SysusersConf> {
+    let (Some(systemd), Some(sysusers)) = (&plan.systemd, plan.sysusers()) else {
+        bail!("No sysusers.d file is being installed");
+    };
+
+    let label = format!("[{}.systemd]", plan.section.as_str());
+    let variables = &units.service.variables;
+
+    // NB: Mirrors how the unit is rendered: an option beats a directive, which
+    // beats a variable.
+    let value = |variable: &str, section: &str, directive: &str| -> Option<String> {
+        let from_variable = || variables.get(variable).and_then(toml::Value::as_str);
+
+        if variables.origin(variable) == Some(systemd::Origin::Option) {
+            return from_variable().map(str::to_owned);
+        }
+
+        let from_directive = systemd
+            .directives
+            .section(section)
+            .and_then(|table| table.get(directive))
+            .and_then(|value| match value {
+                toml::Value::Array(values) => values.last().and_then(toml::Value::as_str),
+                value => value.as_str(),
+            });
+
+        from_directive.or_else(from_variable).map(str::to_owned)
+    };
+
+    let user = value("user", "service", "User").filter(|user| !user.is_empty());
+
+    if let Some(file) = &sysusers.file {
+        // NB: The users the project's own file creates are what the script
+        // checks for, so that a machine where they are missing is repaired.
+        let users = file
+            .contents
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                (fields.next()? == "u").then_some(fields.next()?)
+            })
+            .filter(|name| !name.contains('%'))
+            .map(str::to_owned)
+            .collect();
+
+        return Ok(SysusersConf {
+            file_name: file_name.to_owned(),
+            contents: file.contents.to_string(),
+            users,
+        });
+    }
+
+    let Some(user) = user else {
+        bail!(
+            "Missing the user to create with `sysusers` in `{label}`, set `user` in `{label}` or pass `--service-user`"
+        );
+    };
+
+    let group = value("group", "service", "Group")
+        .filter(|group| !group.is_empty())
+        .unwrap_or_else(|| user.clone());
+
+    let unit_name = &units.service.name;
+    let home = plan.sysusers_home(unit_name);
+
+    let description = value("description", "unit", "Description")
+        .unwrap_or_else(|| format!("{unit_name} service"));
+
+    let field = |what: &str, value: &str| -> Result<String> {
+        if value.is_empty() || value.contains(char::is_whitespace) || value.contains('"') {
+            bail!("The {what} `{value}` cannot be written into a sysusers.d file");
+        }
+
+        // NB: `%` starts a specifier in sysusers.d.
+        Ok(value.replace('%', "%%"))
+    };
+
+    let gecos = description
+        .replace(['"', '\\'], "")
+        .replace(['\n', '\r'], " ")
+        .replace('%', "%%");
+
+    let mut contents = String::new();
+    writeln!(
+        contents,
+        "# Created by kick for {}",
+        units.service.file_name
+    )?;
+
+    let user_field = field("user", &user)?;
+    let group_field = field("group", &group)?;
+
+    if group == user {
+        writeln!(
+            contents,
+            "u {user_field} - \"{gecos}\" {}",
+            field("home directory", &home)?
+        )?;
+    } else {
+        writeln!(contents, "g {group_field} -")?;
+        writeln!(
+            contents,
+            "u {user_field} -:{group_field} \"{gecos}\" {}",
+            field("home directory", &home)?
+        )?;
+    }
+
+    for member in &sysusers.members {
+        writeln!(contents, "m {} {group_field}", field("member", member)?)?;
+    }
+
+    Ok(SysusersConf {
+        file_name: file_name.to_owned(),
+        contents,
+        users: vec![user],
+    })
+}
+
 /// What is deployed to one host.
 struct HostDeployment<'a> {
     target: &'a Target,
@@ -1104,6 +1312,8 @@ struct HostDeployment<'a> {
     uploads: Vec<(PathBuf, String)>,
     /// The units rendered for the host.
     units: Option<Units>,
+    /// The sysusers.d file rendered for the host.
+    sysusers: Option<SysusersConf>,
 }
 
 impl HostDeployment<'_> {
@@ -1136,6 +1346,11 @@ fn host_script(plan: &Plan, opts: &Opts, host: &HostDeployment<'_>) -> Result<St
             socket: units
                 .and_then(|units| units.socket.as_ref())
                 .map(|socket| &*socket.file_name),
+            sysusers: host.sysusers.as_ref().map(|conf| SysusersScript {
+                dir: &host.dirs.sysusers_dir,
+                file_name: &conf.file_name,
+                users: &conf.users,
+            }),
         },
     )
 }
@@ -1155,6 +1370,7 @@ fn print_details(
         bin_dir,
         unit_dir,
         staging_dir,
+        sysusers_dir,
     } = &host.dirs;
     let unit = host.units.as_ref().map(|units| &units.service);
     let socket = host.units.as_ref().and_then(|units| units.socket.as_ref());
@@ -1210,6 +1426,10 @@ fn print_details(
             lines.push(format!("socket: {}", socket.file_name));
         }
 
+        if let Some(conf) = &host.sysusers {
+            lines.push(format!("sysusers: {sysusers_dir}/{}", conf.file_name));
+        }
+
         lines.push(format!("scope: {}", plan.scope));
     }
 
@@ -1263,6 +1483,14 @@ fn print_details(
         ));
     }
 
+    if let Some(conf) = &host.sysusers {
+        installed.push(format!(
+            "{} -> {sysusers_dir}/{} (0644)",
+            from(&conf.file_name),
+            conf.file_name
+        ));
+    }
+
     details(o, "installs", installed.iter().map(String::as_str))?;
 
     for unit in unit.into_iter().chain(socket) {
@@ -1270,6 +1498,14 @@ fn print_details(
             o,
             &format!("{unit_dir}/{}", unit.file_name),
             unit.contents.lines(),
+        )?;
+    }
+
+    if let Some(conf) = &host.sysusers {
+        details(
+            o,
+            &format!("{sysusers_dir}/{}", conf.file_name),
+            conf.contents.lines(),
         )?;
     }
 
@@ -1478,6 +1714,19 @@ struct ScriptOpts<'a> {
     unit: Option<(&'a str, &'a str)>,
     /// The file name of the socket unit which activates the service, if any.
     socket: Option<&'a str>,
+    /// The sysusers.d file installed with the service, if any.
+    sysusers: Option<SysusersScript<'a>>,
+}
+
+/// The sysusers.d file a script installs.
+#[derive(Clone, Copy)]
+struct SysusersScript<'a> {
+    /// The directory the file is installed into.
+    dir: &'a str,
+    /// The file name of the file.
+    file_name: &'a str,
+    /// The users the file creates.
+    users: &'a [String],
 }
 
 /// Something the script installs, which it only does if it differs from what
@@ -1523,6 +1772,7 @@ fn script(
         sources,
         unit,
         socket,
+        sysusers,
     } = s;
 
     let escape = move |value: &str| shell.escape(value).into_owned();
@@ -1588,6 +1838,17 @@ fn script(
                 reason: socket.to_owned(),
             });
         }
+    }
+
+    if let Some(conf) = sysusers {
+        items.push(Item {
+            var: String::from("kick_sysusers"),
+            source: source(conf.file_name),
+            dest: format!("{}/{}", conf.dir, conf.file_name),
+            mode: 0o644,
+            sudo: unit_sudo,
+            reason: conf.file_name.to_owned(),
+        });
     }
 
     // NB: The service is only touched when it is installed and the deployment
@@ -1788,6 +2049,11 @@ fn script(
                 writeln!(script, "  {sudo}install -m {mode:04o} {source} {escaped}")?;
                 writeln!(script, "  kick_reload=yes")?;
             }
+            "kick_sysusers" => {
+                let dir = sysusers.map_or("", |conf| conf.dir);
+                writeln!(script, "  {sudo}mkdir -p {}", shell.escape(dir))?;
+                writeln!(script, "  {sudo}install -m {mode:04o} {source} {escaped}")?;
+            }
             _ => {
                 writeln!(
                     script,
@@ -1807,6 +2073,44 @@ fn script(
             "  printf '%s: unchanged\\n' {}",
             shell.escape_string(dest)
         )?;
+        writeln!(script, "fi")?;
+    }
+
+    // NB: The users have to exist before a unit which runs as them is
+    // (re)started, so systemd-sysusers runs as soon as its file is in place.
+    // It only runs when the file changed, or when one of its users is
+    // missing, such as on a machine where the file was put in place by hand.
+    if let Some(conf) = sysusers {
+        let dest = format!("{}/{}", conf.dir, conf.file_name);
+
+        writeln!(script, "kick_sysusers_why=$kick_sysusers")?;
+
+        for user in conf.users {
+            writeln!(
+                script,
+                "if [ -z \"$kick_sysusers_why\" ] && ! getent passwd {} >/dev/null 2>&1; then",
+                shell.escape(user)
+            )?;
+            writeln!(
+                script,
+                "  kick_sysusers_why={}",
+                shell.escape_string(&format!("user {user} missing"))
+            )?;
+            writeln!(script, "fi")?;
+        }
+
+        writeln!(script, "if [ -n \"$kick_sysusers_why\" ]; then")?;
+        step(
+            &mut script,
+            "  ",
+            &format!("running systemd-sysusers {dest}"),
+        )?;
+        writeln!(
+            script,
+            "  printf '%s: running systemd-sysusers (%s)\\n' {} \"$kick_sysusers_why\"",
+            shell.escape_string(&dest)
+        )?;
+        writeln!(script, "  {unit_sudo}systemd-sysusers {}", escape(&dest))?;
         writeln!(script, "fi")?;
     }
 
@@ -1956,6 +2260,7 @@ fn script(
         names.extend(installs.iter().map(|(name, _, _)| name.as_str()));
         names.extend(unit.map(|(_, file_name)| file_name));
         names.extend(socket);
+        names.extend(sysusers.map(|conf| conf.file_name));
 
         if !names.is_empty() {
             step(&mut script, "", "cleaning up the uploaded files")?;
@@ -2512,15 +2817,9 @@ fn check(
     index: usize,
     target: &Target,
     use_sudo: bool,
-    systemd: bool,
+    commands: &[&str],
 ) -> Result<Option<String>> {
     let host = &target.ssh;
-
-    let mut commands = REQUIRED_COMMANDS.to_vec();
-
-    if systemd {
-        commands.extend(SYSTEMD_COMMANDS);
-    }
 
     let mut script = String::new();
 
@@ -2616,7 +2915,7 @@ fn check(
         }
     }
 
-    for command in commands {
+    for &command in commands {
         if available.contains(command) {
             continue;
         }
@@ -2627,6 +2926,9 @@ fn check(
             ),
             "tar" => bail!(
                 "Missing `tar` on `{host}`, which is needed to receive the files being deployed"
+            ),
+            "systemd-sysusers" | "getent" => bail!(
+                "Missing `{command}` on `{host}`, which is needed to create the users of the sysusers.d file (set `sysusers = false` in the systemd section to skip it)"
             ),
             command => bail!(
                 "Missing `{command}` on `{host}`, which is needed to install the files being deployed"
@@ -2911,7 +3213,195 @@ mod tests {
             sources: Sources::Staged(".kick-deploy"),
             unit,
             socket,
+            sysusers: None,
         }
+    }
+
+    /// Render the service and sysusers.d file of a deployment of `track`.
+    fn render_sysusers(
+        systemd: &str,
+        opts: &Common,
+    ) -> anyhow::Result<(super::Units, super::SysusersConf)> {
+        let table: toml::Table = toml::from_str(systemd).unwrap();
+        let mut directives = crate::systemd::Directives::default();
+        let mut variables = table.clone();
+
+        for section in ["unit", "service"] {
+            if let Some(toml::Value::Table(t)) = variables.remove(section) {
+                let t = t
+                    .into_iter()
+                    .map(|(k, v)| {
+                        let v = crate::systemd::directive(&k, v).unwrap();
+                        (k, v)
+                    })
+                    .collect();
+                directives.insert(section, t);
+            }
+        }
+
+        let sysusers = match variables.remove("sysusers") {
+            Some(toml::Value::Table(t)) => crate::config::Sysusers {
+                home: t.get("home").and_then(|v| v.as_str()).map(str::to_owned),
+                members: t
+                    .get("members")
+                    .and_then(|v| v.as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect(),
+                ..crate::config::Sysusers::default()
+            },
+            _ => crate::config::Sysusers::default(),
+        };
+
+        let base = Deploy {
+            host: vec![String::from("example")],
+            systemd: Some(Systemd {
+                sysusers: Some(sysusers),
+                directives,
+                variables,
+                ..Systemd::default()
+            }),
+            ..Deploy::default()
+        };
+
+        let plan = super::Plan::new(
+            Section::Deploy,
+            &base,
+            base.clone(),
+            None,
+            &Build::default(),
+            opts,
+        );
+
+        let target = Target::new(None, "example");
+        let file_name = plan.sysusers_file(Some("track")).unwrap();
+        let units = super::render_units(
+            &plan,
+            opts,
+            &toml::Table::new(),
+            &target,
+            None,
+            &plan.dirs,
+            "track",
+            "track",
+            None,
+        )?;
+        let conf = super::render_sysusers(&plan, &units, &file_name)?;
+        Ok((units, conf))
+    }
+
+    #[test]
+    fn sysusers_generated_from_the_unit() {
+        let (units, conf) = render_sysusers(
+            "user = \"track\"\ndescription = \"Track 100% of it\"\n",
+            &Common::default(),
+        )
+        .unwrap();
+
+        assert_eq!(conf.file_name, "track.conf");
+        assert_eq!(
+            conf.contents,
+            "# Created by kick for track.service\nu track - \"Track 100%% of it\" /var/lib/track\n"
+        );
+        assert_eq!(conf.users, ["track"]);
+        assert!(
+            units.service.contents.contains("\nStateDirectory=track\n"),
+            "{}",
+            units.service.contents
+        );
+    }
+
+    #[test]
+    fn sysusers_with_group_members_and_home() {
+        let (units, conf) = render_sysusers(
+            "user = \"track\"\ngroup = \"web\"\n[sysusers]\nhome = \"/srv/track\"\nmembers = [\"alice\", \"bob\"]\n",
+            &Common::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            conf.contents,
+            "\
+# Created by kick for track.service
+g web -
+u track -:web \"track service\" /srv/track
+m alice web
+m bob web
+"
+        );
+        // NB: Only the default home is created as the state directory.
+        assert!(
+            !units.service.contents.contains("StateDirectory="),
+            "{}",
+            units.service.contents
+        );
+    }
+
+    #[test]
+    fn sysusers_options_and_directives() {
+        // A directive beats a variable.
+        let (_, conf) = render_sysusers(
+            "user = \"track\"\n[service]\nUser = \"other\"\nStateDirectory = \"elsewhere\"\n",
+            &Common::default(),
+        )
+        .unwrap();
+        assert_eq!(conf.users, ["other"]);
+
+        // An option beats both, and the group follows it.
+        let opts = Common {
+            service_user: Some(String::from("svc")),
+            ..Common::default()
+        };
+        let (units, conf) =
+            render_sysusers("user = \"track\"\n[service]\nUser = \"other\"\n", &opts).unwrap();
+        assert!(conf.contents.contains("\nu svc - "), "{}", conf.contents);
+        assert!(units.service.contents.contains("\nUser=svc\n"));
+
+        // A configured state directory is kept.
+        let (units, _) = render_sysusers(
+            "user = \"track\"\nstate_directory = \"data\"\n",
+            &Common::default(),
+        )
+        .unwrap();
+        assert!(
+            units.service.contents.contains("\nStateDirectory=data\n"),
+            "{}",
+            units.service.contents
+        );
+
+        let Err(error) = render_sysusers("", &Common::default()) else {
+            panic!("expected an error");
+        };
+        assert!(
+            error.to_string().starts_with("Missing the user to create"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn sysusers_refused_for_user_units() {
+        let base = Deploy {
+            systemd: Some(Systemd {
+                scope: Some(SystemdScope::User),
+                sysusers: Some(crate::config::Sysusers::default()),
+                ..Systemd::default()
+            }),
+            ..Deploy::default()
+        };
+
+        let opts = Opts::default();
+        let plan = super::Plan::new(
+            Section::Deploy,
+            &base,
+            base.clone(),
+            None,
+            &Build::default(),
+            &opts,
+        );
+
+        let error = super::check_systemd(&plan, &opts).unwrap_err();
+        assert!(error.to_string().contains("with a user unit"), "{error}");
     }
 
     /// The whole script for the most common deployment, a binary and a
@@ -3137,6 +3627,7 @@ fi
                 sources: Sources::Staged("s"),
                 unit: Some(("kanban", "kanban.service")),
                 socket: Some("kanban.socket"),
+                sysusers: None,
             },
         )
         .unwrap();
@@ -3184,6 +3675,7 @@ fi
                 sources: Sources::Staged("s"),
                 unit: None,
                 socket: None,
+                sysusers: None,
             },
         )
         .unwrap();
@@ -3289,6 +3781,7 @@ kick_step='cleaning up the uploaded files'
             sources: Sources::Local(&uploads),
             unit: None,
             socket: None,
+            sysusers: None,
         };
 
         let script = script(&config, &Opts::default(), &[], s()).unwrap();
@@ -3345,6 +3838,7 @@ printf '%s: %s\\n' 'localhost' \"$kick_summary\"
                 sources: Sources::Local(&[]),
                 unit: None,
                 socket: None,
+                sysusers: None,
             },
         )
         .unwrap();
@@ -3392,7 +3886,7 @@ printf '%s: %s\\n' 'localhost' \"$kick_summary\"
         use crate::config::{CommandLine, ConfigCommand, Deploy, SystemdScope};
         use crate::packaging::Mode;
 
-        use super::super::{Common, Opts, ScriptOpts, Sources, script};
+        use super::super::{Common, Opts, ScriptOpts, Sources, SysusersScript, script};
 
         struct Output {
             success: bool,
@@ -3420,9 +3914,10 @@ printf '%s: %s\\n' 'localhost' \"$kick_summary\"
 
                 let fake = "#!/bin/sh\n\
                     echo \"$(basename \"$0\") $*\" >> \"$KICK_TEST_LOG\"\n\
-                    case \"$*\" in *is-active*) exit \"${KICK_TEST_ACTIVE:-0}\";; esac\n";
+                    case \"$*\" in *is-active*) exit \"${KICK_TEST_ACTIVE:-0}\";; esac\n\
+                    case \"$(basename \"$0\")\" in getent) exit \"${KICK_TEST_GETENT:-0}\";; esac\n";
 
-                for name in ["systemctl", "journalctl"] {
+                for name in ["systemctl", "journalctl", "systemd-sysusers", "getent"] {
                     let path = root.join("fake").join(name);
                     fs::write(&path, fake).unwrap();
                     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -3479,6 +3974,7 @@ printf '%s: %s\\n' 'localhost' \"$kick_summary\"
                         sources: Sources::Local(&uploads),
                         unit: Some(("kanban", "kanban.service")),
                         socket: None,
+                        sysusers: None,
                     },
                 )
                 .unwrap();
@@ -3520,6 +4016,164 @@ printf '%s: %s\\n' 'localhost' \"$kick_summary\"
 
         fn mode(path: &Path) -> u32 {
             fs::metadata(path).unwrap().permissions().mode() & 0o7777
+        }
+
+        /// Run a system deployment with a sysusers.d file, with `getent`
+        /// exiting with `getent`.
+        fn run_sysusers(f: &Fixture, getent: u8) -> Output {
+            let root = f.dir.path();
+            let path = |name: &str| root.join(name).display().to_string();
+
+            let uploads = vec![
+                (root.join("src/kanban"), String::from("kanban")),
+                (
+                    root.join("src/kanban.service"),
+                    String::from("kanban.service"),
+                ),
+                (root.join("src/kanban.conf"), String::from("kanban.conf")),
+            ];
+
+            let bin_dir = path("bin");
+            let unit_dir = path("units");
+            let sysusers_dir = path("sysusers.d");
+            let users = [String::from("kanban")];
+
+            let script = script(
+                &Deploy::default(),
+                &Opts::default(),
+                &[],
+                ScriptOpts {
+                    host: "localhost",
+                    sudo: "",
+                    scope: SystemdScope::System,
+                    binary: Some("kanban"),
+                    bin_dir: &bin_dir,
+                    unit_dir: &unit_dir,
+                    sources: Sources::Local(&uploads),
+                    unit: Some(("kanban", "kanban.service")),
+                    socket: None,
+                    sysusers: Some(SysusersScript {
+                        dir: &sysusers_dir,
+                        file_name: "kanban.conf",
+                        users: &users,
+                    }),
+                },
+            )
+            .unwrap();
+
+            let log = root.join("systemctl.log");
+            let _ = fs::remove_file(&log);
+
+            let search = format!(
+                "{}:{}",
+                root.join("fake").display(),
+                std::env::var("PATH").unwrap_or_default()
+            );
+
+            let output = Command::new("sh")
+                .arg("-c")
+                .arg(&script)
+                .env("PATH", search)
+                .env("KICK_TEST_LOG", &log)
+                .env("KICK_TEST_GETENT", getent.to_string())
+                .output()
+                .unwrap();
+
+            let replace =
+                |s: &[u8]| String::from_utf8_lossy(s).replace(&format!("{}/", root.display()), "");
+
+            Output {
+                success: output.status.success(),
+                stdout: replace(&output.stdout),
+                stderr: replace(&output.stderr),
+                systemctl: fs::read_to_string(&log)
+                    .unwrap_or_default()
+                    .lines()
+                    .map(|line| line.replace(&format!("{}/", root.display()), ""))
+                    .collect(),
+            }
+        }
+
+        /// systemd-sysusers only runs when its file changed or a user it
+        /// creates is missing, and before the service is restarted.
+        #[test]
+        fn sysusers_only_runs_when_needed() {
+            let f = Fixture::new();
+            fs::write(f.path("src/kanban.conf"), "u kanban - \"Kanban\"\n").unwrap();
+
+            let out = run_sysusers(&f, 0);
+            assert!(out.success, "{}", out.stderr);
+            assert_eq!(
+                out.stdout,
+                "\
+kanban: stopping (binary changed)
+bin/kanban: updated (new)
+units/kanban.service: updated (new)
+sysusers.d/kanban.conf: updated (new)
+sysusers.d/kanban.conf: running systemd-sysusers (new)
+kanban: restarting (binary, kanban.service, kanban.conf changed)
+kanban: restarted, active
+localhost: changed 3 of 3 files, kanban restarted
+"
+            );
+            assert_eq!(
+                out.systemctl,
+                [
+                    "systemctl stop kanban",
+                    "systemd-sysusers sysusers.d/kanban.conf",
+                    "systemctl daemon-reload",
+                    "systemctl enable kanban",
+                    "systemctl restart kanban",
+                    "systemctl is-active --quiet kanban",
+                ]
+            );
+            assert_eq!(mode(&f.path("sysusers.d/kanban.conf")), 0o644);
+
+            // Nothing changed and the user exists.
+            let out = run_sysusers(&f, 0);
+            assert!(out.success, "{}", out.stderr);
+            assert!(!out.stdout.contains("systemd-sysusers"), "{}", out.stdout);
+            assert_eq!(
+                out.systemctl,
+                [
+                    "getent passwd kanban",
+                    "systemctl enable kanban",
+                    "systemctl is-active --quiet kanban",
+                ]
+            );
+
+            // The user is missing although the file is unchanged.
+            let out = run_sysusers(&f, 2);
+            assert!(out.success, "{}", out.stderr);
+            assert!(
+                out.stdout.contains(
+                    "sysusers.d/kanban.conf: running systemd-sysusers (user kanban missing)\n"
+                ),
+                "{}",
+                out.stdout
+            );
+            assert!(
+                out.stdout
+                    .ends_with("localhost: up to date, 3 files unchanged, kanban not restarted\n"),
+                "{}",
+                out.stdout
+            );
+
+            // A changed file runs it without asking for the user.
+            fs::write(f.path("src/kanban.conf"), "u kanban - \"Kanban!\"\n").unwrap();
+            let out = run_sysusers(&f, 0);
+            assert!(out.success, "{}", out.stderr);
+            assert!(
+                out.stdout
+                    .contains("sysusers.d/kanban.conf: running systemd-sysusers (changed)\n"),
+                "{}",
+                out.stdout
+            );
+            assert!(
+                !out.systemctl.iter().any(|line| line.starts_with("getent")),
+                "{:?}",
+                out.systemctl
+            );
         }
 
         #[test]
@@ -3789,6 +4443,7 @@ kick: failed while checking that kanban is active (exit 1)
                     sources: Sources::Local(&uploads),
                     unit: None,
                     socket: None,
+                    sysusers: None,
                 },
             )
             .unwrap();
@@ -4044,7 +4699,14 @@ exec sh -c "$cmd"
 
                 for (index, target) in targets.iter().enumerate() {
                     check(
-                        &mut o, &opts, &config, &mut ssh, index, target, false, false,
+                        &mut o,
+                        &opts,
+                        &config,
+                        &mut ssh,
+                        index,
+                        target,
+                        false,
+                        super::super::REQUIRED_COMMANDS,
                     )
                     .unwrap();
                 }

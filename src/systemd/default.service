@@ -43,6 +43,9 @@ Group={{ group }}
 {%- if "WorkingDirectory" not in service_directives and working_directory is defined %}
 WorkingDirectory={{ working_directory }}
 {%- endif %}
+{%- if "StateDirectory" not in service_directives and state_directory is defined %}
+StateDirectory={{ state_directory }}
+{%- endif %}
 {%- if "KillSignal" not in service_directives and kill_signal is defined %}
 KillSignal={{ kill_signal }}
 {%- endif %}

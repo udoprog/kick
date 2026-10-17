@@ -61,7 +61,9 @@ apply over ssh: `kind`, `host`, `user`, `port`, `identity_file`, `options` and
 * `systemd` a [systemd unit](./deploy.md#systemd) to install. Unlike a
   deployment, an install has no unit unless the section is present, since most
   things which are installed are not services. The unit is a
-  [user unit](./deploy.md#user-units) unless `scope` says otherwise.
+  [user unit](./deploy.md#user-units) unless `scope` says otherwise, and a
+  system unit can have its user created with
+  [`sysusers`](./deploy.md#system-users).
 * `sudo` whether privileged commands use `sudo`, which defaults to `false`.
 * `build` a table which is [layered](./build.md#layering) over the `[build]`
   section for installs alone.

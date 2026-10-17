@@ -89,6 +89,7 @@ impl UnitKind {
                 ("user", "service", "User"),
                 ("group", "service", "Group"),
                 ("working_directory", "service", "WorkingDirectory"),
+                ("state_directory", "service", "StateDirectory"),
                 ("kill_signal", "service", "KillSignal"),
                 ("environment", "service", "Environment"),
                 ("environment_file", "service", "EnvironmentFile"),
@@ -303,7 +304,7 @@ pub(crate) fn reserved(kind: UnitKind, key: &str) -> Option<String> {
 
 /// Variables which are provided by kick, but which can be configured to
 /// override what kick would have provided.
-const OVERRIDABLE: &[&str] = &["exec"];
+const OVERRIDABLE: &[&str] = &["exec", "state_directory"];
 
 /// Where a template variable comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -368,6 +369,11 @@ impl Variables {
         }
 
         self.insert(key, value, Origin::BuiltIn);
+    }
+
+    /// Get the value of a variable.
+    pub(crate) fn get(&self, key: &str) -> Option<&toml::Value> {
+        self.values.get(key)
     }
 
     /// Get where a variable came from.

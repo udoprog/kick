@@ -5,7 +5,9 @@
 //! lets `kick inspect` report what `kick install` and `kick deploy` will do
 //! from the same code which decides it.
 
-use crate::config::{Build, Deploy, DeployKind, Section, Systemd, SystemdScope, SystemdSocket};
+use crate::config::{
+    Build, Deploy, DeployKind, Section, Systemd, SystemdScope, SystemdSocket, Sysusers,
+};
 use crate::systemd::UnitKind;
 
 use super::Common;
@@ -19,6 +21,8 @@ const DEFAULT_CARGO_BIN_DIR: &str = "~/.cargo/bin";
 const DEFAULT_UNIT_DIR: &str = "/etc/systemd/system";
 /// The directory user units are installed into by default.
 const DEFAULT_USER_UNIT_DIR: &str = "~/.config/systemd/user";
+/// The directory sysusers.d files are installed into by default.
+const DEFAULT_SYSUSERS_DIR: &str = "/etc/sysusers.d";
 /// The remote directory files are uploaded to by default, relative to the home
 /// directory of the user being logged in as.
 const DEFAULT_STAGING_DIR: &str = ".kick-deploy";
@@ -99,6 +103,15 @@ impl Plan {
             Section::Deploy => true,
         };
 
+        let sysusers_dir = trim_dir(
+            systemd_config
+                .sysusers
+                .as_ref()
+                .and_then(|s| s.dir.as_deref())
+                .unwrap_or(DEFAULT_SYSUSERS_DIR),
+        )
+        .to_owned();
+
         let systemd = (systemd_config.enabled.unwrap_or(systemd_default) && !opts.no_systemd)
             .then_some(systemd_config);
 
@@ -138,6 +151,7 @@ impl Plan {
             .to_owned(),
             staging_dir: trim_dir(config.staging_dir.as_deref().unwrap_or(DEFAULT_STAGING_DIR))
                 .to_owned(),
+            sysusers_dir,
         };
 
         Self {
@@ -171,6 +185,48 @@ impl Plan {
             .as_ref()
             .and_then(|systemd| systemd.socket.as_ref())
             .filter(|socket| socket.enabled.unwrap_or(true))
+    }
+
+    /// The sysusers.d file installed with the service, if any.
+    pub(crate) fn sysusers(&self) -> Option<&Sysusers> {
+        self.systemd
+            .as_ref()
+            .and_then(|systemd| systemd.sysusers.as_ref())
+            .filter(|sysusers| sysusers.enabled.unwrap_or(true))
+    }
+
+    /// The file name of the sysusers.d file, given the name of the service.
+    pub(crate) fn sysusers_file(&self, unit_name: Option<&str>) -> Option<String> {
+        let sysusers = self.sysusers()?;
+        let name = sysusers.name.as_deref().or(unit_name)?;
+        Some(format!("{name}.conf"))
+    }
+
+    /// The home directory of a generated sysusers.d user, given the name of
+    /// the service.
+    pub(crate) fn sysusers_home(&self, unit_name: &str) -> String {
+        match self.sysusers().and_then(|s| s.home.as_deref()) {
+            Some(home) => home.to_owned(),
+            None => default_sysusers_home(unit_name),
+        }
+    }
+
+    /// The `StateDirectory=` the built-in template adds for a generated
+    /// sysusers.d user, given the name of the service.
+    ///
+    /// systemd-sysusers creates no home directory, so the default home under
+    /// `/var/lib` is created by systemd as the state directory of the service
+    /// instead.
+    pub(crate) fn state_directory(&self, unit_name: &str) -> Option<String> {
+        let systemd = self.systemd.as_ref()?;
+        let sysusers = self.sysusers()?;
+
+        if systemd.template.is_some() || sysusers.file.is_some() {
+            return None;
+        }
+
+        (self.sysusers_home(unit_name) == default_sysusers_home(unit_name))
+            .then(|| unit_name.to_owned())
     }
 
     /// The name of the service unit, given the binary it runs.
@@ -237,6 +293,8 @@ pub(crate) struct Dirs {
     pub(crate) unit_dir: String,
     /// The remote directory files are uploaded to.
     pub(crate) staging_dir: String,
+    /// The directory sysusers.d files are installed into.
+    pub(crate) sysusers_dir: String,
 }
 
 impl Dirs {
@@ -249,6 +307,7 @@ impl Dirs {
             bin_dir: expand_or_keep(&self.bin_dir, home)?,
             unit_dir: expand_or_keep(&self.unit_dir, home)?,
             staging_dir: expand_or_keep(&self.staging_dir, home)?,
+            sysusers_dir: expand_or_keep(&self.sysusers_dir, home)?,
         })
     }
 }
@@ -273,6 +332,9 @@ pub(crate) struct Builtins<V> {
     /// The file name of the unit the unit is paired with: the socket unit
     /// which activates a service, if any, or the service a socket activates.
     pub(crate) peer: Option<V>,
+    /// The state directory of a service whose user is created by a generated
+    /// sysusers.d file, see [`Plan::state_directory`].
+    pub(crate) state_directory: Option<V>,
 }
 
 impl<V> Builtins<V> {
@@ -297,6 +359,10 @@ impl<V> Builtins<V> {
             out.push((peer, value));
         }
 
+        if let (UnitKind::Service, Some(value)) = (kind, self.state_directory) {
+            out.push(("state_directory", value));
+        }
+
         out
     }
 }
@@ -312,6 +378,11 @@ pub(crate) fn unit_file(name: &str, kind: UnitKind) -> String {
         UnitKind::Service => format!("{name}.service"),
         UnitKind::Socket => format!("{name}.socket"),
     }
+}
+
+/// The home directory of a generated sysusers.d user unless told otherwise.
+fn default_sysusers_home(unit_name: &str) -> String {
+    format!("/var/lib/{unit_name}")
 }
 
 /// The directory a binary is installed into unless told otherwise.

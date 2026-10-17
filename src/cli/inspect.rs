@@ -249,6 +249,17 @@ struct SystemdReport {
     #[serde(flatten)]
     unit: UnitReport,
     socket: Option<SocketReport>,
+    sysusers: Option<SysusersReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct SysusersReport {
+    /// The project's own file, or `None` when the file is generated.
+    file: Option<PathBuf>,
+    /// Where the file is installed.
+    dest: String,
+    home: Option<String>,
+    members: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -683,6 +694,15 @@ fn section(
 
         let exec = binary.map(|binary| plan::exec(bin_dir, binary));
 
+        let state_directory = match &name {
+            Some(name) => plan
+                .state_directory(name)
+                .map(|dir| Provided::Value(string(&dir))),
+            None => plan
+                .state_directory("")
+                .map(|_| Provided::Note("same as name")),
+        };
+
         let builtins =
             |kind: UnitKind, name: Option<&String>, note: &'static str, peer: Option<Provided>| {
                 Builtins {
@@ -694,6 +714,7 @@ fn section(
                     host: host.clone(),
                     scope: Provided::Value(string(scope.as_str())),
                     peer,
+                    state_directory: state_directory.clone(),
                 }
                 .into_vec(kind)
             };
@@ -758,6 +779,18 @@ fn section(
             }
         });
 
+        let sysusers = plan.sysusers().map(|s| SysusersReport {
+            file: s.file.as_ref().map(|f| absolute(&f.path)),
+            dest: format!(
+                "{}/{}",
+                dirs.sysusers_dir,
+                plan.sysusers_file(name.as_deref())
+                    .unwrap_or_else(|| String::from("<name>.conf"))
+            ),
+            home: s.home.clone(),
+            members: s.members.clone(),
+        });
+
         SystemdReport {
             template: systemd_config.template.as_ref().map(|t| absolute(&t.path)),
             name: systemd_config.name.clone(),
@@ -765,6 +798,7 @@ fn section(
             scope: scope.to_string(),
             unit,
             socket,
+            sysusers,
         }
     });
 
@@ -1317,6 +1351,23 @@ fn write_section(o: &mut impl Write, name: &str, s: &SectionReport) -> io::Resul
                 }
 
                 write_unit(o, &socket.unit, "        ")?;
+            }
+
+            if let Some(sysusers) = &systemd.sysusers {
+                let file = match &sysusers.file {
+                    Some(path) => path.display().to_string(),
+                    None => String::from("generated"),
+                };
+
+                writeln!(o, "      sysusers: {file} -> {}", sysusers.dest)?;
+
+                if let Some(home) = &sysusers.home {
+                    writeln!(o, "        home: {home}")?;
+                }
+
+                if !sysusers.members.is_empty() {
+                    writeln!(o, "        members: {}", sysusers.members.join(", "))?;
+                }
             }
         }
         None => writeln!(o, "    systemd: no unit")?,
