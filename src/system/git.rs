@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 use std::str;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD_NO_PAD;
 use bstr::ByteSlice;
@@ -396,13 +396,22 @@ impl Git {
 
     /// Get remote url.
     pub(crate) fn get_url(&self, dir: impl AsRef<Path>, remote: &str) -> Result<Url> {
-        let output = Command::new(&self.path)
-            .args(["remote", "get-url", remote])
-            .current_dir(dir)
-            .stdout(Stdio::piped())
-            .output()?;
+        let dir = dir.as_ref();
+        let args = ["remote", "get-url", remote];
+        let output = self.run(dir, &args)?;
 
-        ensure!(output.status.success(), output.status);
+        if !output.status.success() {
+            // NB: git exits with 2 when the remote does not exist.
+            if output.status.code() == Some(2) {
+                bail!(
+                    "Repository at {} has no `{remote}` remote; kick uses it to identify the project. Add one with `git remote add {remote} <url>`",
+                    absolute(dir).display()
+                );
+            }
+
+            return Err(failed(&output)).with_context(|| running(dir, &args));
+        }
+
         let url = String::from_utf8(output.stdout)?;
         let url = url.trim();
         parse_url(url).with_context(|| format!("Parsing url of remote `{remote}`: {url}"))
@@ -663,6 +672,36 @@ mod tests {
         let error = g.is_outdated(base, false).unwrap_err();
         let error = format!("{error:#}");
         assert!(error.contains("not a git repository"), "{error}");
+    }
+
+    #[test]
+    fn get_url_explains_failures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        let repo = base.join("repo");
+
+        git(base, &["init", repo.to_str().unwrap()]);
+
+        let g = Git::new("git".into());
+
+        let error = format!("{:#}", g.get_url(&repo, "origin").unwrap_err());
+        assert!(error.contains("has no `origin` remote"), "{error}");
+        assert!(error.contains(repo.to_str().unwrap()), "{error}");
+        assert!(error.contains("git remote add origin <url>"), "{error}");
+
+        let error = format!("{:#}", g.get_url(base, "origin").unwrap_err());
+        assert!(error.contains("git remote get-url origin"), "{error}");
+        assert!(error.contains("not a git repository"), "{error}");
+
+        git(
+            &repo,
+            &["remote", "add", "origin", "https://github.com/udoprog/kick"],
+        );
+
+        assert_eq!(
+            g.get_url(&repo, "origin").unwrap().as_str(),
+            "https://github.com/udoprog/kick"
+        );
     }
 
     #[test]

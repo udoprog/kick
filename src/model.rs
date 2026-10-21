@@ -386,6 +386,7 @@ pub(crate) fn load_from_git(
         let git = git.context("no working git command available")?;
         tracing::trace!("Using repository: {}", root.display());
         return Ok(Some(from_git(git, root).with_context(|| {
+            let root = std::path::absolute(root).unwrap_or_else(|_| root.to_owned());
             format!("Loading repository from git: {}", root.display())
         })?));
     }
