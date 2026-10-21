@@ -151,7 +151,6 @@ impl Edits {
 pub(crate) enum Change {
     /// Insert an entry into a map.
     Insert {
-        #[musli(with = musli::serde)]
         at: yaml::Id,
         reason: String,
         key: String,
@@ -159,14 +158,12 @@ pub(crate) enum Change {
     },
     /// Oudated version of an action.
     Set {
-        #[musli(with = musli::serde)]
         at: yaml::Id,
         reason: String,
         value: Value,
     },
     /// Change to remove a key.
     RemoveKey {
-        #[musli(with = musli::serde)]
         mapping: yaml::Id,
         reason: String,
         key: String,

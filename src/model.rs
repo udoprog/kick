@@ -100,7 +100,7 @@ pub(crate) enum RepoSource {
     /// Module loaded from local .git
     Git,
     /// Module loaded from configuration.
-    Config(#[musli(with = musli::serde)] RelativePathBuf),
+    Config(RelativePathBuf),
     /// Module declared in the global configuration under the given
     /// `[repo."<key>"]` key.
     Global(String),
@@ -119,7 +119,6 @@ impl fmt::Display for RepoSource {
 #[derive(Debug, Clone, Encode, Decode, Serialize, Deserialize)]
 pub(crate) struct RepoRef {
     /// Path to module.
-    #[musli(with = musli::serde)]
     path: RelativePathBuf,
     /// URL of module.
     #[musli(with = musli::serde)]

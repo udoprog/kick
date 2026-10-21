@@ -793,30 +793,24 @@ pub(crate) struct ChangeWrapper {
 pub(crate) enum Change {
     MissingWorkflow {
         id: String,
-        #[musli(with = musli::serde)]
         path: RelativePathBuf,
         repo: RepoRef,
     },
     BadWorkflow {
-        #[musli(with = musli::serde)]
         path: RelativePathBuf,
-        #[musli(with = musli::serde)]
         doc: yaml::Document,
         edits: Edits,
         errors: Vec<WorkflowError>,
     },
     UpdateLib {
-        #[musli(with = musli::serde)]
         path: RelativePathBuf,
         lib: Arc<File>,
     },
     UpdateReadme {
-        #[musli(with = musli::serde)]
         path: RelativePathBuf,
         readme: Arc<File>,
     },
     CargoTomlIssues {
-        #[musli(with = musli::serde)]
         path: RelativePathBuf,
         cargo: Option<Manifest>,
         issues: Vec<CargoIssue>,
@@ -836,7 +830,6 @@ pub(crate) enum Change {
     },
     ReleaseCommit {
         /// Perform a release commit.
-        #[musli(with = musli::serde)]
         path: RelativePathBuf,
         /// Version to commit.
         #[musli(with = musli::serde)]
@@ -847,7 +840,6 @@ pub(crate) enum Change {
         /// Name of the crate being published.
         name: String,
         /// Directory to publish.
-        #[musli(with = musli::serde)]
         manifest_dir: RelativePathBuf,
         /// Whether we perform a dry run or not.
         dry_run: bool,
@@ -1161,6 +1153,70 @@ mod tests {
         let mut w = GzEncoder::new(std::fs::File::create(path).unwrap(), Compression::default());
         w.write_all(bytes).unwrap();
         w.finish().unwrap();
+    }
+
+    fn bad_workflow_sample() -> Vec<ChangeWrapper> {
+        let doc = nondestructive::yaml::from_slice(
+            "name: CI\non:\n  push: {}\njobs:\n  test:\n    runs-on: ubuntu-latest # os\n    steps:\n      - uses: actions/checkout@v3\n        with: { x: 1.5 }\n      - run: ~\n",
+        )
+        .unwrap();
+        let root = doc.as_ref().id();
+        let mut edits = crate::edits::Edits::default();
+        edits.set(root, "reason", "value");
+        edits.insert(
+            root,
+            "ins",
+            "key".to_owned(),
+            crate::edits::Value::String("v".to_owned()),
+        );
+        edits.remove_key(root, "rm", "name".to_owned());
+
+        vec![ChangeWrapper {
+            change: Change::BadWorkflow {
+                path: RelativePathBuf::from(".github/workflows/ci.yml"),
+                doc,
+                edits,
+                errors: vec![super::WorkflowError::Error {
+                    name: "n".to_owned(),
+                    reason: "r".to_owned(),
+                }],
+            },
+            written: false,
+        }]
+    }
+
+    #[test]
+    fn bad_workflow_round_trips() {
+        let changes = bad_workflow_sample();
+        let bytes = ENCODING.to_vec(&changes).unwrap();
+        let decoded: Vec<ChangeWrapper> = ENCODING.from_slice(&bytes).unwrap();
+
+        let (
+            Change::BadWorkflow {
+                doc: expected,
+                edits: expected_edits,
+                ..
+            },
+            Change::BadWorkflow { doc, edits, .. },
+        ) = (&changes[0].change, &decoded[0].change)
+        else {
+            panic!("expected BadWorkflow");
+        };
+
+        assert_eq!(doc.to_string(), expected.to_string());
+        assert_eq!(doc.as_ref().id(), expected.as_ref().id());
+        assert_eq!(edits.changes().count(), expected_edits.changes().count());
+
+        let edit = |doc: &nondestructive::yaml::Document| {
+            let mut doc = doc.clone();
+            let mut root = doc.as_mut().into_mapping_mut().unwrap();
+            root.insert("added", nondestructive::yaml::Separator::Auto)
+                .set_string("value");
+            assert!(root.remove("name"));
+            doc.to_string()
+        };
+
+        assert_eq!(edit(doc), edit(expected));
     }
 
     #[test]

@@ -3700,16 +3700,16 @@ dependencies = [
 
 [[package]]
 name = "nondestructive"
-version = "0.0.28"
+version = "0.0.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3fb281d4f1c9f49989bc7582396e0a841ee4e2a991737da8d026732daf3ee3b"
+checksum = "a3b9f05fde5972a499cd968895b35b065df62ad76dc5b2d188ac0dfbf0d50e9d"
 dependencies = [
  "bstr",
  "itoa",
  "lexical-core",
  "memchr",
+ "musli-core",
  "ryu",
- "serde",
  "slab",
  "twox-hash",
 ]
@@ -4518,11 +4518,12 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "relative-path"
-version = "2.0.1"
+version = "2.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bca40a312222d8ba74837cb474edef44b37f561da5f773981007a10bbaa992b0"
+checksum = "38540a682c6e9bca04a8bca9e5ec5a6ba168dfbb04c9998fe517a9befb92eb68"
 dependencies = [
- "serde",
+ "musli-core",
+ "serde_core",
 ]
 
 [[package]]
@@ -5116,9 +5117,6 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
-dependencies = [
- "serde",
-]
 
 [[package]]
 name = "slh-dsa"

@@ -122,7 +122,6 @@ impl ManifestBinary {
 /// A parsed `Cargo.toml`.
 #[derive(Debug, Clone, Encode, Decode)]
 pub(crate) struct Manifest {
-    #[musli(with = musli::serde)]
     path: Box<RelativePath>,
     #[musli(with = musli::display)]
     doc: DocumentMut,

@@ -31,13 +31,13 @@ handlebars = "6.2.0"
 md5 = "0.8.0"
 minijinja = { version = "2.24.0", features = ["custom_syntax"] }
 musli = { version = "0.2.0", features = ["serde", "storage"] }
-nondestructive = { version = "0.0.28", features = ["serde-edits"] }
+nondestructive = { version = "0.0.29", features = ["musli02"] }
 # The version gix uses, for its progress tree and line renderer.
 prodash = { version = "31.0.1", default-features = false, features = ["progress-tree", "render-line", "render-line-crossterm", "render-line-autoconfigure", "unit-bytes"] }
 pulldown-cmark = "0.13.0"
 rand = "0.10.0"
 regex = "1.7.3"
-relative-path = { version = "2.0.1", features = ["serde"] }
+relative-path = { version = "2.0.3", features = ["musli02", "serde"] }
 reqwest = { version = "0.13.1", features = ["json", "stream"] }
 rpm = "0.30.1"
 semver = { version = "1.0.17", features = ["serde"] }
