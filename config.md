@@ -55,7 +55,7 @@ in a file under `user.d/` instead of the global `Kick.toml`.
 
 ```toml
 [repo."repos/OxidizeBot"]
-crate = "oxidize"
+name = "oxidize"
 
 [repo."repos/OxidizeBot".upgrade]
 exclude = [
@@ -71,7 +71,7 @@ it is.
 
 ```toml
 # repos/OxidizeBot/Kick.toml
-crate = "oxidize"
+name = "oxidize"
 
 [upgrade]
 exclude = [
