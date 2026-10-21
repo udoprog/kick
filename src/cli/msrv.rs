@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
+use std::fs;
+use std::path::Path;
 use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
@@ -189,16 +191,14 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
             }
 
             if save {
-                move_paths(&manifest_path, &original_path)?;
                 tracing::debug!("Saving {}", manifest.path());
-                manifest.save_to(&manifest_path)?;
-                restore.insert(&original_path, manifest_path);
+                let content = manifest.to_toml_string().into_bytes();
+                replace_temporarily(&mut restore, &manifest_path, &original_path, content)?;
             }
         }
 
         if !opts.keep_cargo_lock && cargo_lock.is_file() {
-            move_paths(&cargo_lock, &cargo_lock_original)?;
-            restore.insert(&cargo_lock_original, &cargo_lock);
+            move_aside(&mut restore, &cargo_lock, &cargo_lock_original)?;
         }
 
         let mut failures = Vec::new();
@@ -244,7 +244,7 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
             candidates.fail();
         }
 
-        restore.restore();
+        restore.restore()?;
     }
 
     let Some(version) = candidates.get() else {
@@ -261,6 +261,49 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
             repo: (**repo).clone(),
             version,
         })?;
+    }
+
+    Ok(())
+}
+
+/// Move `path` aside to `original`, to be moved back by `restore`.
+fn move_aside(restore: &mut Restore, path: &Path, original: &Path) -> Result<()> {
+    check_leftover(path, original)?;
+    move_paths(path, original)?;
+    restore.insert(original, path);
+    Ok(())
+}
+
+/// Replace `path` with `content` until restored, keeping the original at
+/// `original`. It is only restored if `path` still has `content` by then.
+fn replace_temporarily(
+    restore: &mut Restore,
+    path: &Path,
+    original: &Path,
+    content: Vec<u8>,
+) -> Result<()> {
+    check_leftover(path, original)?;
+    move_paths(path, original)?;
+
+    if let Err(error) = fs::write(path, &content) {
+        if let Err(e) = move_paths(original, path) {
+            tracing::error!("Failed to restore {}: {e:#}", path.display());
+        }
+
+        return Err(error).with_context(|| path.display().to_string());
+    }
+
+    restore.insert_written(original, path, content);
+    Ok(())
+}
+
+fn check_leftover(path: &Path, original: &Path) -> Result<()> {
+    if original.exists() {
+        bail!(
+            "{}: Found what might be the original of {} kept by an interrupted kick msrv. Move it back, or remove it if it is stale, before running again",
+            original.display(),
+            path.display()
+        );
     }
 
     Ok(())
@@ -334,3 +377,6 @@ impl Bisect {
 fn midpoint(start: u64, end: u64) -> u64 {
     (start + (end - start) / 2).clamp(start, end)
 }
+
+#[cfg(test)]
+mod tests;

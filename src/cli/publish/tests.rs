@@ -260,6 +260,31 @@ fn manifest_backup_restores() -> Result<()> {
 }
 
 #[test]
+fn manifest_backup_keeps_changed_manifest() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let cargo_toml = dir.path().join("Cargo.toml");
+    fs::write(&cargo_toml, B)?;
+
+    let mut manifest = Manifest::parse_for_test("Cargo.toml", B)?;
+    strip_dev_dependencies(&mut manifest, false, &[dev(None, "a", "a")]);
+
+    let mut backup = ManifestBackup::replace(dir.path(), &manifest)?;
+    fs::write(&cargo_toml, "edited")?;
+
+    let error = backup.restore().unwrap_err().to_string();
+    let kept = dir.path().join("target/kick-publish/Cargo.toml.keep");
+    assert!(error.contains(&cargo_toml.display().to_string()), "{error}");
+    assert!(error.contains(&kept.display().to_string()), "{error}");
+    drop(backup);
+
+    assert_eq!(fs::read_to_string(&cargo_toml)?, "edited");
+    assert_eq!(fs::read_to_string(&kept)?, B);
+    // The next publish is refused until it has been sorted out.
+    assert!(check_leftover_backup(dir.path()).is_err());
+    Ok(())
+}
+
+#[test]
 fn leftover_backup_is_detected() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let cargo_toml = dir.path().join("Cargo.toml");

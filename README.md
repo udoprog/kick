@@ -321,6 +321,13 @@ repos/kick/foo-macros/Cargo.toml:
 2026-10-21T12:00:00.000000Z  INFO kick::changes: Would make tag `0.2.0`
 ```
 
+Kick can upgrade dependencies with `kick upgrade`, which runs `cargo upgrade`
+(from cargo-edit) in each repo, excluding the crates listed under
+`[upgrade] exclude` in its configuration. The manifests and lock files it
+changes are put back as they were, and the changes are staged like any others
+(see [Staged changes](#staged-changes)): they are shown as a diff and only
+written with `--save`, or later with `kick changes --save`.
+
 And much much more!
 
 <br>

@@ -20,7 +20,6 @@ pub(crate) use self::rust_version::RustVersion;
 pub(crate) mod rust_version;
 
 use std::collections::HashSet;
-use std::path::Path;
 use std::{fs, io};
 
 use anyhow::{Context, Result, anyhow};
@@ -197,16 +196,6 @@ impl Manifest {
     pub(crate) fn as_package_mut(&mut self) -> Option<&mut Package> {
         let doc = self.doc.get_mut("package")?.as_table_mut()?;
         Some(Package::new_mut(doc))
-    }
-
-    /// Save to the given path.
-    pub(crate) fn save_to<P>(&self, path: P) -> Result<()>
-    where
-        P: AsRef<Path>,
-    {
-        let string = self.doc.to_string();
-        fs::write(path, string.as_bytes())?;
-        Ok(())
     }
 
     /// List of features.

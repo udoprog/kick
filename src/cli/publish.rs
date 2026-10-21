@@ -16,7 +16,7 @@ use crate::cli::WithRepos;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::process::Command;
-use crate::utils::move_paths;
+use crate::restore::restore_written;
 use crate::workspace::{CARGO_TOML, Crates};
 
 /// Directory, relative to the package being published, where the original
@@ -534,6 +534,9 @@ pub(crate) struct ManifestBackup {
     backup: PathBuf,
     /// Directories which were created for the backup and should be removed.
     created: Vec<PathBuf>,
+    /// The content written to the manifest, which it must still have to be
+    /// restored.
+    written: Vec<u8>,
     armed: bool,
 }
 
@@ -546,6 +549,7 @@ impl ManifestBackup {
             manifest: dir.join(CARGO_TOML),
             backup: backup_dir(dir).join(BACKUP_NAME),
             created: Vec::new(),
+            written: manifest.to_toml_string().into_bytes(),
             armed: false,
         };
 
@@ -571,17 +575,17 @@ impl ManifestBackup {
 
         this.armed = true;
 
-        manifest
-            .save_to(&this.manifest)
+        fs::write(&this.manifest, &this.written)
             .with_context(|| anyhow!("Writing {}", this.manifest.display()))?;
 
         Ok(this)
     }
 
-    /// Put the original manifest back.
+    /// Put the original manifest back, unless the manifest was changed by
+    /// something else while it was replaced.
     pub(crate) fn restore(&mut self) -> Result<()> {
         if std::mem::take(&mut self.armed) {
-            move_paths(&self.backup, &self.manifest)?;
+            restore_written(&self.backup, &self.manifest, &self.written)?;
         }
 
         for dir in self.created.drain(..).rev() {
@@ -599,7 +603,7 @@ impl Drop for ManifestBackup {
     fn drop(&mut self) {
         if let Err(error) = self.restore() {
             tracing::error!(
-                "Failed to restore {} from {}: {error}",
+                "Failed to restore {} from {}: {error:#}",
                 self.manifest.display(),
                 self.backup.display()
             );

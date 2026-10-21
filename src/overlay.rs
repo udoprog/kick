@@ -133,6 +133,12 @@ impl Overlay {
         }
     }
 
+    /// Test if the given path has a pending write.
+    pub(crate) fn is_pending(&self, path: &Path) -> bool {
+        let files = self.files.borrow();
+        files.get(&key(path)).is_some_and(|e| e.pending.is_some())
+    }
+
     /// Get the names of files which are pending to be written directly in
     /// the given directory.
     pub(crate) fn pending_in(&self, dir: &Path) -> Vec<PathBuf> {
@@ -401,7 +407,7 @@ fn remove_dirs(created: &[PathBuf]) {
 
 /// Write a file by persisting a temporary file next to it, keeping the
 /// permissions of an existing file and writing through symbolic links.
-fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
     let path = match fs::canonicalize(path) {
         Ok(path) => path,
         Err(e) if e.kind() == io::ErrorKind::NotFound => path.to_owned(),
@@ -441,7 +447,7 @@ fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn read_original(path: &Path) -> io::Result<Original> {
+pub(crate) fn read_original(path: &Path) -> io::Result<Original> {
     match fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),

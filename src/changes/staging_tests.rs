@@ -285,6 +285,45 @@ fn staged_changes_are_verified_when_loaded() {
     assert!(project.read("Cargo.toml").contains("version = \"0.1.0\""));
 }
 
+#[test]
+fn upgrade_is_staged() {
+    use relative_path::RelativePathBuf;
+
+    use crate::changes::{Change, UpgradedFile};
+
+    let project = Project::new();
+    let changes_path = project.dir.path().join("changes.gz");
+    let original = project.read("Cargo.toml");
+    let upgraded = original.replace(
+        "edition = \"2024\"",
+        "edition = \"2024\"\n\n[dependencies]\nserde = \"1.0.200\"",
+    );
+
+    let stage = |r: &mut WithRepos<'_>| {
+        r.cx.change(Change::Upgrade {
+            path: RelativePathBuf::from("proj"),
+            files: vec![UpgradedFile {
+                path: RelativePathBuf::from("proj/Cargo.toml"),
+                content: upgraded.clone().into_bytes(),
+            }],
+        })
+    };
+
+    let ((), cx) = project.with_cx(stage);
+    let (output, failed) = apply(&cx, false, false);
+    assert_eq!(failed, 0);
+    assert!(output.contains("+serde = \"1.0.200\""), "{output}");
+    assert_eq!(project.read("Cargo.toml"), original);
+    super::save_changes(&cx.changes(), &cx.overlay.expected(), &changes_path).unwrap();
+    drop(cx);
+
+    let ((), cx) = project.with_cx(|r| crate::cli::changes::entry(&r.cx, &changes_path));
+    let (output, failed) = apply(&cx, true, false);
+    assert_eq!(failed, 0);
+    assert!(output.contains("Cargo.toml: Saved"), "{output}");
+    assert_eq!(project.read("Cargo.toml"), upgraded);
+}
+
 /// The readme is in sync with lib.rs before versions change.
 #[test]
 fn check_alone_leaves_readme() {

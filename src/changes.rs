@@ -475,6 +475,11 @@ pub(crate) fn stage(cx: &Ctxt<'_>, change: &Change) -> Result<Vec<(PathBuf, Vec<
         Change::Replace { replaced } => {
             writes.push((replaced.path().to_owned(), replaced.to_bytes()));
         }
+        Change::Upgrade { files, .. } => {
+            for file in files {
+                writes.push((cx.to_path(&file.path), file.content.clone()));
+            }
+        }
         Change::ReleaseCommit { .. } | Change::Publish { .. } => {}
     }
 
@@ -588,6 +593,13 @@ where
             }
         }
         Change::SavePackage { .. } => {}
+        Change::Upgrade { path, .. } => {
+            if save {
+                tracing::info!(path = path.as_str(), "Saving upgraded dependencies");
+            } else {
+                tracing::info!(path = path.as_str(), "Would save upgraded dependencies");
+            }
+        }
         Change::Replace { replaced } => {
             tracing::info!(
                 "{}: version replacement: {}",
@@ -962,6 +974,20 @@ pub(crate) enum Change {
         /// publishing any of them fails, this crate is not published.
         depends_on: Vec<String>,
     },
+    /// Files changed by `cargo upgrade` in a repo.
+    Upgrade {
+        /// The path of the repo.
+        path: RelativePathBuf,
+        /// The files changed by the upgrade.
+        files: Vec<UpgradedFile>,
+    },
+}
+
+/// A file with the content an upgrade gave it.
+#[derive(Clone, Encode, Decode)]
+pub(crate) struct UpgradedFile {
+    pub(crate) path: RelativePathBuf,
+    pub(crate) content: Vec<u8>,
 }
 
 impl Change {
@@ -1007,6 +1033,9 @@ impl fmt::Display for Change {
             }
             Change::Publish { name, .. } => {
                 write!(f, "Publish `{name}`")
+            }
+            Change::Upgrade { path, files } => {
+                write!(f, "{path}: Upgrade dependencies in {} file(s)", files.len())
             }
         }
     }
