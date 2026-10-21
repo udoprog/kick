@@ -280,6 +280,34 @@ repos/other: Cargo.toml [replace] bytes:1.10.1 (path = "../bytes")
 3 patched declarations in 2 repos
 ```
 
+Kick can change crate versions with `kick version`. Without `--major`,
+`--minor`, `--patch`, `--pre` or `--override` it lists the current version of
+each publishable crate, marking crates which inherit
+`workspace.package.version` and the `[[version_group]]` they belong to.
+Crate names given as arguments narrow both the listing and the crates which
+are changed:
+
+```text
+> kick version
+repos/kick: foo 0.1.0 (workspace; group: foo, foo-macros)
+repos/kick: foo-macros 0.1.0 (group: foo, foo-macros)
+```
+
+When versions change, each changed crate is reported with its old and new
+version, along with the workspace version when it changes. Changes are staged
+like any others (see [Staged changes](#staged-changes)), and `--dry-run`
+prints what would be saved and committed without recording anything:
+
+```text
+> kick version --minor --dry-run --commit
+repos/kick: [workspace.package] version 0.1.0 -> 0.2.0
+repos/kick: foo 0.1.0 -> 0.2.0
+repos/kick: foo-macros 0.1.0 -> 0.2.0
+Would save repos/kick/Cargo.toml
+Would save repos/kick/foo-macros/Cargo.toml
+Would commit `Release 0.2.0` in repos/kick
+```
+
 And much much more!
 
 <br>

@@ -32,6 +32,10 @@ pub(crate) struct Opts {
     /// Make a commit with the current version with the message `Release <version>`.
     #[arg(long)]
     commit: bool,
+    /// Print the planned version changes, the files which would be saved and
+    /// the release commit without recording any change.
+    #[arg(long)]
+    dry_run: bool,
     /// Ignore `[[version_group]]` configuration, and only change the version of
     /// the selected crates rather than every crate in their version group.
     #[arg(long)]
@@ -43,7 +47,24 @@ pub(crate) struct Opts {
     crates: Vec<String>,
 }
 
+impl Opts {
+    /// Test if the command only reports, so it records no changes.
+    pub(crate) fn is_read_only(&self) -> bool {
+        self.dry_run || !self.is_change()
+    }
+
+    fn is_change(&self) -> bool {
+        self.major || self.minor || self.patch || self.pre.is_some() || !self.r#override.is_empty()
+    }
+}
+
 pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {
+    if opts.commit && !opts.is_change() {
+        bail!(
+            "`--commit` requires one of `--major`, `--minor`, `--patch`, `--pre` or `--override`"
+        );
+    }
+
     let mut version_set = VersionSet {
         major: opts.major,
         minor: opts.minor,
@@ -198,12 +219,12 @@ fn plan(
             .or(version_set.any.as_ref());
 
         if let Some(version) = version {
-            tracing::info!(?name, version = ?version.to_string(), "Set version");
+            tracing::trace!(?name, version = ?version.to_string(), "Set version");
 
             versions.insert(
                 name.to_string(),
                 VersionChange {
-                    old: version.clone(),
+                    old: current.unwrap_or(version).clone(),
                     new: version.clone(),
                 },
             );
@@ -298,11 +319,26 @@ fn version(
         ResolvedGroups::resolve(cx.config.version_groups(repo), &known)?
     };
 
+    if !opts.is_change() {
+        for line in listing(&candidates, &groups, filter) {
+            println!("{}: {line}", repo.path());
+        }
+
+        return Ok(());
+    }
+
+    let plan = plan(&candidates, &groups, filter, version_set)?;
+
+    for line in report(&candidates, workspace_version.as_ref(), &plan) {
+        println!("{}: {line}", repo.path());
+    }
+
     let Plan {
         versions,
         workspace: new_workspace_version,
-    } = plan(&candidates, &groups, filter, version_set)?;
+    } = plan;
 
+    let mut changes = Vec::new();
     let mut workspace_version_updated = false;
 
     for manifest in workspace.manifests() {
@@ -394,13 +430,11 @@ fn version(
         }
 
         if changed_manifest {
-            cx.change(Change::SavePackage {
-                manifest: modified.clone(),
-            });
+            changes.push(Change::SavePackage { manifest: modified });
         }
 
         for replaced in replaced {
-            cx.change(Change::Replace { replaced });
+            changes.push(Change::Replace { replaced });
         }
     }
 
@@ -420,13 +454,109 @@ fn version(
             .new
             .clone();
 
-        cx.change(Change::ReleaseCommit {
+        changes.push(Change::ReleaseCommit {
             path: manifest.dir().to_owned(),
             version,
         });
     }
 
+    for change in changes {
+        if !opts.dry_run {
+            cx.change(change);
+            continue;
+        }
+
+        match change {
+            Change::SavePackage { manifest } => {
+                println!("Would save {}", manifest.path());
+            }
+            Change::Replace { replaced } => {
+                println!(
+                    "Would save {} (replacement: {})",
+                    replaced.path().display(),
+                    replaced.replacement()
+                );
+            }
+            Change::ReleaseCommit { version, .. } => {
+                println!("Would commit `Release {version}` in {}", repo.path());
+            }
+            _ => {}
+        }
+    }
+
     Ok(())
+}
+
+/// List the current version of each selected candidate.
+fn listing(
+    candidates: &[Candidate],
+    groups: &ResolvedGroups,
+    filter: &HashSet<&str>,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    for candidate in candidates {
+        let name = candidate.name.as_str();
+
+        if !filter.is_empty() && !filter.contains(name) {
+            continue;
+        }
+
+        let mut line = format!("{name} {}", display_version(candidate.version.version()));
+        let mut notes = Vec::new();
+
+        if candidate.version.is_inherited() {
+            notes.push(String::from("workspace"));
+        }
+
+        if let Some(group) = groups.group_of(name) {
+            notes.push(format!("group: {}", group.join(", ")));
+        }
+
+        if !notes.is_empty() {
+            line.push_str(&format!(" ({})", notes.join("; ")));
+        }
+
+        lines.push(line);
+    }
+
+    lines
+}
+
+/// Report the version change of each crate and of the workspace in a plan.
+fn report(candidates: &[Candidate], workspace: Option<&Version>, plan: &Plan) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    if let Some(new) = &plan.workspace {
+        lines.push(change_line("[workspace.package] version", workspace, new));
+    }
+
+    for candidate in candidates {
+        if let Some(change) = plan.versions.get(&candidate.name) {
+            lines.push(change_line(
+                &candidate.name,
+                candidate.version.version(),
+                &change.new,
+            ));
+        }
+    }
+
+    lines
+}
+
+fn change_line(what: &str, old: Option<&Version>, new: &Version) -> String {
+    if old == Some(new) {
+        format!("{what} {new} (unchanged)")
+    } else {
+        format!("{what} {} -> {new}", display_version(old))
+    }
+}
+
+fn display_version(version: Option<&Version>) -> String {
+    match version {
+        Some(version) => version.to_string(),
+        None => String::from("(none)"),
+    }
 }
 
 #[derive(Debug, Default)]
@@ -590,7 +720,7 @@ mod tests {
 
     use semver::Version;
 
-    use super::{Candidate, Plan, VersionChange, VersionSet, plan};
+    use super::{Candidate, Plan, VersionChange, VersionSet, listing, plan, report};
     use crate::version_groups::{PackageVersion, ResolvedGroups, VersionGroup};
 
     fn v(s: &str) -> Version {
@@ -737,5 +867,104 @@ mod tests {
 
         let error = plan(&candidates, &groups, &HashSet::new(), &patch()).unwrap_err();
         assert!(error.to_string().contains("inherit"), "{error}");
+    }
+
+    #[test]
+    fn listing_without_bump() {
+        let candidates = [
+            inherited("foo", "1.0.0"),
+            explicit("foo-macros", "1.1.0"),
+            explicit("bar", "0.1.0"),
+            Candidate {
+                name: "baz".to_owned(),
+                version: PackageVersion::Missing,
+            },
+        ];
+        let groups = groups(&candidates, &[&["foo", "foo-macros"]]);
+
+        assert_eq!(
+            listing(&candidates, &groups, &HashSet::new()),
+            [
+                "foo 1.0.0 (workspace; group: foo, foo-macros)",
+                "foo-macros 1.1.0 (group: foo, foo-macros)",
+                "bar 0.1.0",
+                "baz (none)",
+            ]
+        );
+
+        let filter = HashSet::from(["foo-macros", "bar"]);
+
+        assert_eq!(
+            listing(&candidates, &groups, &filter),
+            ["foo-macros 1.1.0 (group: foo, foo-macros)", "bar 0.1.0"]
+        );
+    }
+
+    #[test]
+    fn override_reports_current_version() {
+        let candidates = [
+            explicit("foo", "1.0.0"),
+            explicit("foo-macros", "1.2.0"),
+            explicit("bar", "0.1.0"),
+        ];
+        let groups = groups(&candidates, &[&["foo", "foo-macros"]]);
+
+        let mut set = VersionSet::default();
+        set.crates.insert("foo".to_owned(), v("1.2.0"));
+
+        let planned = plan(&candidates, &groups, &HashSet::new(), &set).unwrap();
+        assert_eq!(planned.versions.len(), 2);
+        assert_eq!(planned.versions["foo"], change("1.0.0", "1.2.0"));
+        assert_eq!(planned.versions["foo-macros"], change("1.2.0", "1.2.0"));
+
+        assert_eq!(
+            report(&candidates, None, &planned),
+            ["foo 1.0.0 -> 1.2.0", "foo-macros 1.2.0 (unchanged)"]
+        );
+
+        let set = VersionSet {
+            any: Some(v("0.3.0")),
+            ..VersionSet::default()
+        };
+
+        let plan = plan(
+            &candidates,
+            &ResolvedGroups::default(),
+            &HashSet::new(),
+            &set,
+        )
+        .unwrap();
+        assert_eq!(plan.versions["bar"], change("0.1.0", "0.3.0"));
+        assert_eq!(
+            report(&candidates, None, &plan),
+            [
+                "foo 1.0.0 -> 0.3.0",
+                "foo-macros 1.2.0 -> 0.3.0",
+                "bar 0.1.0 -> 0.3.0"
+            ]
+        );
+    }
+
+    #[test]
+    fn report_workspace_change() {
+        let candidates = [
+            inherited("foo", "1.0.0"),
+            explicit("foo-macros", "1.1.0"),
+            inherited("bar", "1.0.0"),
+        ];
+        let groups = groups(&candidates, &[&["foo", "foo-macros"]]);
+        let filter = HashSet::from(["foo-macros"]);
+
+        let plan = plan(&candidates, &groups, &filter, &patch()).unwrap();
+
+        assert_eq!(
+            report(&candidates, Some(&v("1.0.0")), &plan),
+            [
+                "[workspace.package] version 1.0.0 -> 1.1.1",
+                "foo 1.0.0 -> 1.1.1",
+                "foo-macros 1.1.0 -> 1.1.1",
+                "bar 1.0.0 -> 1.1.1",
+            ]
+        );
     }
 }
