@@ -113,7 +113,7 @@ pub(crate) fn build(cx: &Ctxt<'_>, package: &Manifest, repo: &Repo, crates: &Cra
             id: id.clone(),
             path: ci.workflows.path(&id),
             repo: (**ci.repo).clone(),
-        });
+        })?;
     }
 
     Ok(())
@@ -152,7 +152,7 @@ fn validate_workflow(
             doc: w.doc.clone(),
             edits: take(&mut ci.edits),
             errors: take(&mut ci.errors),
-        });
+        })?;
     }
 
     Ok(())

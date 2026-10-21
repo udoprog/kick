@@ -1,4 +1,3 @@
-use std::io;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -77,13 +76,13 @@ struct MarkdownChecks {
 
 /// Validate the current model.
 fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
-    if !cx.to_path(rm.readme_path).is_file() {
+    if !cx.is_file(&cx.to_path(rm.readme_path)) {
         cx.warning(Warning::MissingReadme {
             path: rm.readme_path.to_owned(),
         });
     }
 
-    if !cx.to_path(rm.entry).is_file() {
+    if !cx.is_file(&cx.to_path(rm.entry)) {
         return Ok(());
     }
 
@@ -102,7 +101,7 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
         cx.change(Change::UpdateLib {
             path: rm.entry.to_owned(),
             lib: lib_rs,
-        });
+        })?;
     }
 
     let checks = markdown_checks(rm, &file)?;
@@ -138,17 +137,16 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
 
     let path = cx.to_path(rm.readme_path);
 
-    let readme = match File::read(&path) {
-        Ok(file) => file,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => File::new(),
-        Err(e) => return Err(e).context(path.display().to_string()),
+    let readme = match cx.read_path_to_string(&path)? {
+        Some(string) => File::from_string(string),
+        None => File::new(),
     };
 
     if rm.do_readme && readme != readme_from_lib_rs {
         cx.change(Change::UpdateReadme {
             path: rm.readme_path.to_owned(),
             readme: Arc::new(readme_from_lib_rs),
-        });
+        })?;
     }
 
     Ok(())
@@ -206,7 +204,13 @@ fn process_lib_rs(
     rm: &Readme<'_, '_>,
     badges: &[BadgeParams],
 ) -> Result<(Arc<File>, Arc<File>, File)> {
-    let source = File::read(cx.to_path(rm.entry))?;
+    let path = cx.to_path(rm.entry);
+
+    let source = cx
+        .read_path_to_string(&path)?
+        .with_context(|| anyhow!("{}: missing file", path.display()))?;
+
+    let source = File::from_string(source);
     let mut lib_rs = File::new();
 
     let mut source_lines = source.lines().peekable();

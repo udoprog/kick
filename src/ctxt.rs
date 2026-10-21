@@ -11,9 +11,10 @@ use relative_path::{RelativePath, RelativePathBuf};
 
 use super::system::{Git, System};
 use crate::cargo::{self, Package, RustVersion};
-use crate::changes::{Change, ChangeWrapper, Warning};
+use crate::changes::{self, Change, ChangeWrapper, Warning};
 use crate::config::{Config, Distribution, Os};
 use crate::env::{Env, SecretString};
+use crate::overlay::Overlay;
 use crate::model::{RenderRustVersions, Repo, RepoParams, RepoRef, State};
 use crate::process::Command;
 use crate::repo_sets::RepoSets;
@@ -128,6 +129,8 @@ pub(crate) struct Ctxt<'a> {
     pub(crate) changes: RefCell<Vec<ChangeWrapper>>,
     pub(crate) sets: &'a mut RepoSets,
     pub(crate) env: &'a Env,
+    /// Pending file writes of staged changes.
+    pub(crate) overlay: Overlay,
 }
 
 impl<'a> Ctxt<'a> {
@@ -216,12 +219,60 @@ impl<'a> Ctxt<'a> {
         self.warnings.borrow_mut().push(warning);
     }
 
-    /// Push a change.
-    pub(crate) fn change(&self, change: Change) {
-        self.changes.borrow_mut().push(ChangeWrapper {
+    /// Stage a change, adding the files it writes to the overlay.
+    pub(crate) fn change(&self, change: Change) -> Result<()> {
+        self.stage(ChangeWrapper {
             change,
             written: false,
-        });
+        })
+    }
+
+    /// Stage a change, adding the files it writes to the overlay unless it
+    /// has been written.
+    pub(crate) fn stage(&self, change: ChangeWrapper) -> Result<()> {
+        let writes = if change.written {
+            Vec::new()
+        } else {
+            changes::stage(self, &change.change)?
+        };
+
+        let mut changes = self.changes.borrow_mut();
+        let index = changes.len();
+
+        for (path, content) in writes {
+            self.overlay.write(&path, content, index)?;
+        }
+
+        changes.push(change);
+        Ok(())
+    }
+
+    /// Read a file relative to the root through the overlay.
+    ///
+    /// Returns `None` if the given path does not exist.
+    pub(crate) fn read_to_string(&self, path: impl AsRef<RelativePath>) -> Result<Option<String>> {
+        self.read_path_to_string(&self.to_path(path))
+    }
+
+    /// Read a file through the overlay.
+    ///
+    /// Returns `None` if the given path does not exist.
+    pub(crate) fn read_path_to_string(&self, path: &Path) -> Result<Option<String>> {
+        self.overlay
+            .read_to_string(path)
+            .with_context(|| format!("Reading {}", path.display()))
+    }
+
+    /// Read a file through the overlay, `None` if it does not exist.
+    pub(crate) fn read_path(&self, path: &Path) -> Result<Option<Vec<u8>>> {
+        self.overlay
+            .read(path)
+            .with_context(|| format!("Reading {}", path.display()))
+    }
+
+    /// Test if the given path is a file as seen through the overlay.
+    pub(crate) fn is_file(&self, path: &Path) -> bool {
+        self.overlay.is_file(path)
     }
 
     /// Get a list of warnings.

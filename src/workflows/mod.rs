@@ -13,7 +13,6 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fmt;
 use std::fs;
-use std::io;
 use std::mem::take;
 use std::rc::Rc;
 use std::str;
@@ -157,10 +156,8 @@ impl<'a, 'cx> WorkflowManifests<'a, 'cx> {
         let path = self.path(id);
         let p = self.cx.to_path(&path);
 
-        let bytes = match fs::read(&p) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e).context(p.display().to_string()),
+        let Some(bytes) = self.cx.read_path(&p)? else {
+            return Ok(None);
         };
 
         let doc = yaml::from_slice(bytes)
@@ -1016,15 +1013,22 @@ fn list_workflow_ids(cx: &Ctxt<'_>, path: &RelativePath) -> Result<BTreeSet<Stri
     let path = cx.to_path(path);
 
     let read_dir = match fs::read_dir(&path) {
-        Ok(read_dir) => read_dir,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(ids),
+        Ok(read_dir) => Some(read_dir),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e).context(path.display().to_string()),
     };
 
-    for e in read_dir {
+    for e in read_dir.into_iter().flatten() {
         let entry = e.with_context(|| path.display().to_string())?;
         let path = entry.path();
 
+        if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
+            ids.insert(id.to_owned());
+        }
+    }
+
+    // Workflows which are pending to be written.
+    for path in cx.overlay.pending_in(&path) {
         if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
             ids.insert(id.to_owned());
         }

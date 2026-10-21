@@ -255,12 +255,12 @@ fn msrv(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
         cx.change(Change::SetRustVersion {
             repo: (**repo).clone(),
             version,
-        });
+        })?;
     } else {
         cx.change(Change::RemoveRustVersion {
             repo: (**repo).clone(),
             version,
-        });
+        })?;
     }
 
     Ok(())

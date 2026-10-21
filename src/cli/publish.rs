@@ -140,7 +140,7 @@ fn publish(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
             args: opts.cargo_options.clone(),
             circular_dev,
             depends_on: planned.depends_on,
-        });
+        })?;
     }
 
     Ok(())

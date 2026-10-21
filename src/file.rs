@@ -1,7 +1,4 @@
 use std::fmt;
-use std::fs;
-use std::io;
-use std::path::Path;
 
 use anyhow::Result;
 use musli::{Decode, Encode};
@@ -26,15 +23,6 @@ impl File {
             data: String::new(),
             line_starts: vec![0],
         }
-    }
-
-    /// Load a file from the given path.
-    pub(crate) fn read<P>(path: P) -> io::Result<Self>
-    where
-        P: AsRef<Path>,
-    {
-        let string = fs::read_to_string(path)?;
-        Ok(Self::from_string(string))
     }
 
     /// Construct a new rust file wrapper.

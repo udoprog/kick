@@ -257,7 +257,7 @@ pub(crate) fn work_cargo_toml(
             path: manifest.path().to_owned(),
             cargo: changed.then_some(modified_manifest),
             issues,
-        });
+        })?;
     }
 
     Ok(())

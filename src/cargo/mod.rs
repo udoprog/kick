@@ -28,7 +28,7 @@ use musli::{Decode, Encode};
 use relative_path::{RelativePath, RelativePathBuf};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
-use crate::ctxt::{Ctxt, Paths};
+use crate::ctxt::Ctxt;
 use crate::workspace::Crates;
 
 /// The "workspace" field.
@@ -49,8 +49,8 @@ pub(crate) const PATCH: &str = "patch";
 pub(crate) const REPLACE: &str = "replace";
 
 /// Open a `Cargo.toml`.
-pub(crate) fn open(paths: Paths<'_>, manifest_path: &RelativePath) -> Result<Option<Manifest>> {
-    let Some(input) = paths.read_to_string(manifest_path)? else {
+pub(crate) fn open(cx: &Ctxt<'_>, manifest_path: &RelativePath) -> Result<Option<Manifest>> {
+    let Some(input) = cx.read_to_string(manifest_path)? else {
         return Ok(None);
     };
 
@@ -75,21 +75,28 @@ impl ManifestBinary {
                 let dir = cx.to_path(dir);
 
                 let entries = match fs::read_dir(&dir) {
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                        return Ok(());
-                    }
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => None,
                     Err(e) => {
                         return Err(e).with_context(|| dir.display().to_string());
                     }
-                    Ok(entries) => entries,
+                    Ok(entries) => Some(entries),
                 };
 
-                for entry in entries {
+                let mut paths = Vec::new();
+
+                for entry in entries.into_iter().flatten() {
                     let entry = entry.with_context(|| anyhow!("listing: {}", dir.display()))?;
+                    paths.push(entry.path());
+                }
 
-                    let path = entry.path();
+                for path in cx.overlay.pending_in(&dir) {
+                    if !paths.iter().any(|p| p.file_name() == path.file_name()) {
+                        paths.push(path);
+                    }
+                }
 
-                    if !path.is_file() {
+                for path in paths {
+                    if !cx.is_file(&path) {
                         continue;
                     }
 
@@ -107,7 +114,7 @@ impl ManifestBinary {
             ManifestBinary::AutoMain(name, path) => {
                 let path = cx.to_path(path);
 
-                if !path.is_file() {
+                if !cx.is_file(&path) {
                     return Ok(());
                 }
 
@@ -389,7 +396,6 @@ impl Manifest {
     }
 
     /// Render the manifest to a string.
-    #[cfg(test)]
     pub(crate) fn to_toml_string(&self) -> String {
         self.doc.to_string()
     }

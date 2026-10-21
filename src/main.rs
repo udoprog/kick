@@ -674,6 +674,7 @@ mod interpolate;
 mod keys;
 mod model;
 mod octokit;
+mod overlay;
 mod packaging;
 mod process;
 mod release;
@@ -907,8 +908,15 @@ struct SharedOptions {
     #[arg(long)]
     root: Option<PathBuf>,
     /// Save any proposed or loaded changes.
+    ///
+    /// Nothing is saved if any file changed since its changes were staged or
+    /// fails to save, unless `--partial` is specified.
     #[arg(long)]
     save: bool,
+    /// With `--save`, save every change which can be saved and keep the rest
+    /// staged, rather than saving nothing if any change can't be saved.
+    #[arg(long)]
+    partial: bool,
     /// Enable trace level logging.
     #[arg(long)]
     trace: bool,
@@ -1553,10 +1561,12 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         changes: RefCell::new(Vec::new()),
         sets: &mut sets,
         env: &env,
+        overlay: overlay::Overlay::new(),
     };
 
     let mut with_repos = WithRepos::new(cx, shared.parallelism);
-    // Leaves an existing changes.gz alone for commands which only report.
+    // Commands which only show changes neither save them nor touch an
+    // existing changes.gz.
     let mut read_only = false;
 
     match &opts.action {
@@ -1682,18 +1692,23 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         changes::report(&mut o, &cx, warning)?;
     }
 
-    let failed = changes::apply_all(&mut cx.changes_mut(), shared.save, |change| {
-        changes::apply(&mut o, &cx, change, shared.save)
-    });
+    if shared.save && read_only && cx.can_save() {
+        tracing::warn!("Not saving changes since they are only being shown");
+    }
 
-    if cx.can_save() {
+    let save = shared.save && !read_only;
+    let failed = changes::apply_changes(&mut o, &cx, save, shared.partial)?;
+
+    if read_only {
+        // Shown changes are not recorded.
+    } else if cx.can_save() {
         tracing::info!(
             "Writing to {}, use `kick changes` to review it later",
             changes_path.display()
         );
-        changes::save_changes(&cx.changes(), &changes_path)
+        changes::save_changes(&cx.changes(), &cx.overlay.expected(), &changes_path)
             .with_context(|| anyhow!("{}", changes_path.display()))?;
-    } else if !read_only {
+    } else {
         match std::fs::remove_file(&changes_path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

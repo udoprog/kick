@@ -60,6 +60,17 @@ pub(crate) async fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts)
 #[tracing::instrument(skip_all)]
 fn check(cx: &Ctxt<'_>, repo: &Repo, urls: &mut Urls) -> Result<()> {
     let crates = repo.workspace(cx)?;
+    check_crates(cx, repo, crates, urls)
+}
+
+/// Check a repo with the given workspace, staging changes for what needs
+/// fixing.
+pub(crate) fn check_crates(
+    cx: &Ctxt<'_>,
+    repo: &Repo,
+    crates: &Crates,
+    urls: &mut Urls,
+) -> Result<()> {
     let primary_manifest = crates.primary_package()?;
     let primary_package = primary_manifest.ensure_package()?;
     let primary_params = cx.repo_params(primary_package, repo)?;

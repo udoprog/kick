@@ -15,7 +15,6 @@ use anyhow::{Context, Error, Result, anyhow, bail};
 use musli::{Decode, Encode};
 use relative_path::{RelativePath, RelativePathBuf};
 use semver::Version;
-use tempfile::NamedTempFile;
 use url::Url;
 
 use crate::KICK_TOML;
@@ -25,6 +24,7 @@ use crate::global::{self, Global};
 use crate::interpolate;
 use crate::keys::Keys;
 use crate::model::{Repo, RepoParams, RepoRef, RepoSource};
+use crate::overlay::Overlay;
 use crate::packaging::Mode;
 use crate::process;
 use crate::shell::Shell;
@@ -90,17 +90,12 @@ impl Replaced {
         Ok(())
     }
 
-    /// Perform the given write.
-    pub(crate) fn save(&self) -> Result<()> {
-        let Some(parent) = self.path.parent() else {
-            bail!("{}: missing parent directory", self.path.display());
-        };
-
-        let mut file = NamedTempFile::new_in(parent)?;
-        self.write_ranges(&mut file)
-            .with_context(|| self.path.display().to_string())?;
-        file.persist(&self.path)?;
-        Ok(())
+    /// The content with every replacement performed.
+    pub(crate) fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.content.len());
+        self.write_ranges(&mut out)
+            .expect("writing to a vector cannot fail");
+        out
     }
 }
 
@@ -779,6 +774,7 @@ impl Replacement {
     /// Find and perform replacements in the given root path.
     pub(crate) fn replace_in(
         &self,
+        overlay: &Overlay,
         root: &Path,
         group: &str,
         replacement: &str,
@@ -792,9 +788,9 @@ impl Replacement {
                 let path = path?;
                 let output_path = path.to_path(root);
 
-                let content = match fs::read(&output_path) {
-                    Ok(content) => content,
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                let content = match overlay.read(&output_path) {
+                    Ok(Some(content)) => content,
+                    Ok(None) => {
                         tracing::warn!("{path}: failed to read");
                         continue;
                     }

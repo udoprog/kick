@@ -3,7 +3,7 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Write};
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -27,12 +27,27 @@ use crate::ctxt::Ctxt;
 use crate::edits::{self, Edits};
 use crate::file::{File, LineColumn};
 use crate::model::RepoRef;
+use crate::overlay::{self, Expected, PendingWrite};
 use crate::process::Command;
 
 const ENCODING: Encoding = Encoding::new();
 
-/// Save changes to the given path.
-pub(crate) fn load_changes(path: &Path) -> Result<Option<Vec<ChangeWrapper>>> {
+/// Prefix of staged changes which record the files they expect, which can
+/// never start a file holding only a list of changes as written by older
+/// versions of kick.
+const MAGIC: &[u8] = b"\0kick\x02";
+
+/// Changes staged in `changes.gz`.
+#[derive(Default, Encode, Decode)]
+pub(crate) struct Staged {
+    /// The staged changes.
+    pub(crate) changes: Vec<ChangeWrapper>,
+    /// The content each file written by the changes is expected to have.
+    pub(crate) expected: Vec<Expected>,
+}
+
+/// Load staged changes from the given path.
+pub(crate) fn load_changes(path: &Path) -> Result<Option<Staged>> {
     use std::io::Read;
 
     use flate2::read::GzDecoder;
@@ -48,18 +63,42 @@ pub(crate) fn load_changes(path: &Path) -> Result<Option<Vec<ChangeWrapper>>> {
     let mut buf = Vec::new();
     encoder.read_to_end(&mut buf)?;
 
-    let value: Vec<ChangeWrapper> = ENCODING.from_slice_traced(&buf)?;
-    Ok(Some(value))
+    if let Some(rest) = buf.strip_prefix(MAGIC) {
+        return Ok(Some(ENCODING.from_slice_traced(rest)?));
+    }
+
+    let changes: Vec<ChangeWrapper> = ENCODING.from_slice_traced(&buf)?;
+
+    tracing::warn!(
+        "{}: staged by an older version of kick, files are not verified to be unchanged since then",
+        path.display()
+    );
+
+    Ok(Some(Staged {
+        changes,
+        expected: Vec::new(),
+    }))
 }
 
-/// Save changes to the given path.
-pub(crate) fn save_changes(changes: &[ChangeWrapper], path: &Path) -> Result<()> {
+/// Save staged changes to the given path.
+pub(crate) fn save_changes(
+    changes: &[ChangeWrapper],
+    expected: &[Expected],
+    path: &Path,
+) -> Result<()> {
     use flate2::Compression;
     use flate2::write::GzEncoder;
 
+    #[derive(Encode)]
+    struct StagedRef<'a> {
+        changes: &'a [ChangeWrapper],
+        expected: &'a [Expected],
+    }
+
     let f = fs::File::create(path)?;
     let mut w = GzEncoder::new(f, Compression::default());
-    ENCODING.to_writer(&mut w, changes)?;
+    w.write_all(MAGIC)?;
+    ENCODING.to_writer(&mut w, &StagedRef { changes, expected })?;
     let mut f = w.finish()?;
     f.flush()?;
     Ok(())
@@ -175,17 +214,20 @@ where
     Ok(())
 }
 
-/// Apply every change which has not been written yet using `apply`.
+/// Apply every action which has not been written yet using `apply`.
 ///
-/// Changes which apply successfully are marked as written when `save` is set.
-/// A failing change is logged and the remaining changes are still applied, so
+/// Changes which are not actions are skipped, since their files are saved by
+/// [`apply_changes`] before any action runs.
+///
+/// Actions which apply successfully are marked as written when `save` is set.
+/// A failing action is logged and the remaining actions are still applied, so
 /// the ones which failed stay unwritten and are kept for `kick changes`.
 ///
 /// A crate is not published if a crate in the same workspace which it
 /// depends on failed to publish, since that could only fail too or pick up an
 /// older version from the registry. It counts as failed.
 ///
-/// Returns the number of changes which failed to apply.
+/// Returns the number of actions which failed to apply.
 pub(crate) fn apply_all(
     changes: &mut [ChangeWrapper],
     save: bool,
@@ -195,7 +237,7 @@ pub(crate) fn apply_all(
     let mut failed_crates = Vec::<&str>::new();
 
     for change in changes.iter_mut() {
-        if change.written {
+        if change.written || !change.change.is_action() {
             continue;
         }
 
@@ -225,11 +267,7 @@ pub(crate) fn apply_all(
                     failed_crates.push(name);
                 }
 
-                tracing::error!("Failed to apply change: {error}");
-
-                for cause in error.chain().skip(1) {
-                    tracing::error!("Caused by: {cause}");
-                }
+                log_error("Failed to apply change", &error);
             }
         }
     }
@@ -237,104 +275,272 @@ pub(crate) fn apply_all(
     failed
 }
 
-/// Report and apply a asingle change.
-pub(crate) fn apply<W>(o: &mut W, cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()>
+fn log_error(what: impl fmt::Display, error: &anyhow::Error) {
+    tracing::error!("{what}: {error}");
+
+    for cause in error.chain().skip(1) {
+        tracing::error!("Caused by: {cause}");
+    }
+}
+
+/// Report, save and apply every staged change which has not been written yet.
+///
+/// Every pending file write is shown as a diff. When `save` is set, the files
+/// are saved with [`overlay::commit`] before any action, like a release commit
+/// or publish, is applied. Unless `partial` is set, nothing is saved and no
+/// action is applied if any file fails to be saved.
+///
+/// Returns the number of changes which failed to apply.
+pub(crate) fn apply_changes<W>(o: &mut W, cx: &Ctxt<'_>, save: bool, partial: bool) -> Result<usize>
 where
     W: ?Sized + WriteColor,
 {
     let col = Colors::new();
+    let mut changes = cx.changes_mut();
+    let mut failed = 0;
+
+    for change in changes.iter() {
+        if !change.written && !change.change.is_action() {
+            apply(o, cx, &change.change, save)?;
+        }
+    }
+
+    let writes = cx.overlay.pending();
+
+    for write in &writes {
+        if !write.is_unchanged() {
+            write_diff(o, &col, write)?;
+        }
+    }
+
+    let mut files_saved = true;
+
+    if save {
+        let commit = overlay::commit(&writes, partial);
+
+        for conflict in &commit.conflicts {
+            tracing::error!("{conflict}");
+        }
+
+        for (path, error) in &commit.errors {
+            log_error(format_args!("{}: Failed to save", path.display()), error);
+        }
+
+        for (path, error) in &commit.rollback_errors {
+            log_error(
+                format_args!("{}: Failed to restore after a failed save", path.display()),
+                error,
+            );
+        }
+
+        files_saved = commit.is_complete();
+
+        if !files_saved && !partial {
+            tracing::error!(
+                "Not saving any changes since not every file could be saved, use `--partial` to save what can be saved"
+            );
+        }
+
+        for path in &commit.written {
+            if let Some(w) = writes.iter().find(|w| w.path == *path)
+                && !w.is_unchanged()
+            {
+                writeln!(o, "{}: Saved", w.display.display())?;
+            }
+
+            cx.overlay.saved(path);
+        }
+
+        let unsaved = cx
+            .overlay
+            .pending()
+            .into_iter()
+            .flat_map(|w| w.changes)
+            .collect::<std::collections::BTreeSet<_>>();
+
+        for (index, change) in changes.iter_mut().enumerate() {
+            if change.written || change.change.is_action() {
+                continue;
+            }
+
+            if unsaved.contains(&index) {
+                failed += 1;
+            } else {
+                change.written = true;
+            }
+        }
+    }
+
+    if !files_saved && !partial {
+        let actions = changes
+            .iter()
+            .filter(|c| !c.written && c.change.is_action())
+            .count();
+
+        if actions > 0 {
+            tracing::error!("Not applying {actions} action(s) since files failed to save");
+            failed += actions;
+        }
+    } else {
+        failed += apply_all(&mut changes, save, |change| apply(o, cx, change, save));
+    }
+
+    Ok(failed)
+}
+
+/// Compute the file writes the given change results in.
+///
+/// Files are read through the overlay of the context, so a change sees the
+/// pending writes of changes staged before it.
+pub(crate) fn stage(cx: &Ctxt<'_>, change: &Change) -> Result<Vec<(PathBuf, Vec<u8>)>> {
+    let mut writes = Vec::new();
 
     match change {
         Change::MissingWorkflow { id, path, repo } => {
             let path = cx.to_path(path);
-            writeln!(o, "{}: Missing workflow", path.display())?;
+            let workspace = repo.require_workspace(cx)?;
+            let primary_package = workspace.primary_package()?.ensure_package()?;
+            let params = cx.repo_params(primary_package, repo)?;
 
-            if save {
-                if let Some(parent) = path.parent()
-                    && !parent.is_dir()
-                {
-                    fs::create_dir_all(parent)?;
-                }
+            let Some(string) = cx.config.workflow(repo, id, params)? else {
+                tracing::warn!(
+                    "{}: workflows.{id}: Missing workflow template",
+                    path.display()
+                );
+                return Ok(writes);
+            };
 
-                let workspace = repo.require_workspace(cx)?;
-                let primary_package = workspace.primary_package()?.ensure_package()?;
-                let params = cx.repo_params(primary_package, repo)?;
+            writes.push((path, string.into_bytes()));
+        }
+        Change::BadWorkflow {
+            path, doc, edits, ..
+        } => {
+            if !edits.is_empty() {
+                let path = cx.to_path(path);
+                let doc = edited_workflow(&path, doc, edits)?;
+                writes.push((path, doc.to_string().into_bytes()));
+            }
+        }
+        Change::UpdateLib { path, lib: file } | Change::UpdateReadme { path, readme: file } => {
+            writes.push((cx.to_path(path), file.as_str().as_bytes().to_vec()));
+        }
+        Change::CargoTomlIssues {
+            path,
+            cargo: Some(manifest),
+            ..
+        } => {
+            writes.push((cx.to_path(path), manifest.to_toml_string().into_bytes()));
+        }
+        Change::CargoTomlIssues { cargo: None, .. } => {}
+        Change::SetRustVersion { repo, version } => {
+            let workspace = repo.require_workspace(cx)?;
 
-                let Some(string) = cx.config.workflow(repo, id, params)? else {
-                    writeln!(o, "  workflows.{id}: Missing workflow template!")?;
-                    return Ok(());
+            for manifest in workspace.packages() {
+                let Some(package) = manifest.as_package() else {
+                    continue;
                 };
 
-                fs::write(path, string)?;
+                if !package.is_publish() || package.rust_version() == Some(*version) {
+                    continue;
+                }
+
+                let mut manifest = manifest.clone();
+                let package = manifest.ensure_package_mut()?;
+                package.sort_package_keys()?;
+                package.set_rust_version(version);
+                let path = cx.to_path(manifest.path());
+                writes.push((path, manifest.to_toml_string().into_bytes()));
             }
+        }
+        Change::RemoveRustVersion { repo, .. } => {
+            let workspace = repo.require_workspace(cx)?;
+
+            for manifest in workspace.packages() {
+                let mut manifest = manifest.clone();
+
+                let Some(package) = manifest.as_package_mut() else {
+                    continue;
+                };
+
+                if package.remove_rust_version() {
+                    let path = cx.to_path(manifest.path());
+                    writes.push((path, manifest.to_toml_string().into_bytes()));
+                }
+            }
+        }
+        Change::SavePackage { manifest } => {
+            let path = cx.to_path(manifest.path());
+            writes.push((path, manifest.to_toml_string().into_bytes()));
+        }
+        Change::Replace { replaced } => {
+            writes.push((replaced.path().to_owned(), replaced.to_bytes()));
+        }
+        Change::ReleaseCommit { .. } | Change::Publish { .. } => {}
+    }
+
+    Ok(writes)
+}
+
+/// Apply the edits of a bad workflow to its document.
+fn edited_workflow(path: &Path, doc: &yaml::Document, edits: &Edits) -> Result<yaml::Document> {
+    let mut doc = doc.clone();
+
+    for change in edits.changes() {
+        match change {
+            edits::Change::Insert { at, key, value, .. } => {
+                let mut mapping = doc.value_mut(*at);
+
+                if let Some(mut mapping) = mapping.as_mapping_mut() {
+                    let at = mapping
+                        .insert(key.clone(), yaml::Separator::Auto)
+                        .as_ref()
+                        .id();
+                    value.replace(&mut doc, at);
+                }
+            }
+            edits::Change::Set { at, value, .. } => {
+                value.replace(&mut doc, *at);
+            }
+            edits::Change::RemoveKey { mapping, key, .. } => {
+                if let Some(mut m) = doc.value_mut(*mapping).into_mapping_mut()
+                    && !m.remove(key)
+                {
+                    bail!("{}: failed to remove key `{key}`", path.display());
+                }
+            }
+        }
+    }
+
+    Ok(doc)
+}
+
+/// Report a single change, and apply it if it is an action.
+///
+/// The files changes write are saved by [`apply_changes`], so for those this
+/// only reports what they are about.
+pub(crate) fn apply<W>(o: &mut W, cx: &Ctxt<'_>, change: &Change, save: bool) -> Result<()>
+where
+    W: ?Sized + WriteColor,
+{
+    match change {
+        Change::MissingWorkflow { path, .. } => {
+            let path = cx.to_path(path);
+            writeln!(o, "{}: Missing workflow", path.display())?;
         }
         Change::BadWorkflow {
             path,
-            doc,
             edits,
             errors,
+            ..
         } => {
             let path = cx.to_path(path);
 
-            if !edits.is_empty() {
-                let mut doc = doc.clone();
-                let mut edited = false;
+            for change in edits.changes() {
+                let (edits::Change::Insert { reason, .. }
+                | edits::Change::Set { reason, .. }
+                | edits::Change::RemoveKey { reason, .. }) = change;
 
-                for change in edits.changes() {
-                    match change {
-                        edits::Change::Insert {
-                            at,
-                            reason,
-                            key,
-                            value,
-                        } => {
-                            writeln!(o, "{}: {reason}", path.display())?;
-
-                            if save {
-                                let mut mapping = doc.value_mut(*at);
-
-                                if let Some(mut mapping) = mapping.as_mapping_mut() {
-                                    let at = mapping
-                                        .insert(key.clone(), yaml::Separator::Auto)
-                                        .as_ref()
-                                        .id();
-                                    value.replace(&mut doc, at);
-                                }
-
-                                edited = true;
-                            }
-                        }
-                        edits::Change::Set { at, reason, value } => {
-                            writeln!(o, "{}: {reason}", path.display())?;
-
-                            if save {
-                                value.replace(&mut doc, *at);
-                                edited = true;
-                            }
-                        }
-                        edits::Change::RemoveKey {
-                            mapping,
-                            reason,
-                            key,
-                        } => {
-                            writeln!(o, "{}: {reason}", path.display())?;
-
-                            if save && let Some(mut m) = doc.value_mut(*mapping).into_mapping_mut()
-                            {
-                                if !m.remove(key) {
-                                    bail!("{}: failed to remove key `{key}`", path.display());
-                                }
-
-                                edited = true;
-                            }
-                        }
-                    }
-                }
-
-                if edited {
-                    writeln!(o, "{}: Fixing", path.display())?;
-                    fs::write(&path, doc.to_string())?;
-                }
+                writeln!(o, "{}: {reason}", path.display())?;
             }
 
             for change in errors {
@@ -345,39 +551,14 @@ where
                 }
             }
         }
-        Change::UpdateLib {
-            path,
-            lib: new_file,
-        } => {
-            let path = cx.to_path(path);
-            write_to(o, &col, &path, new_file, save)?;
-        }
-        Change::UpdateReadme {
-            path,
-            readme: new_file,
-        } => {
-            let path = cx.to_path(path);
-            write_to(o, &col, &path, new_file, save)?;
-        }
-        Change::CargoTomlIssues {
-            path,
-            cargo: modified_cargo,
-            issues,
-        } => {
+        Change::UpdateLib { .. } | Change::UpdateReadme { .. } => {}
+        Change::CargoTomlIssues { path, issues, .. } => {
             let path = cx.to_path(path);
 
             writeln!(o, "{}:", path.display())?;
 
             for issue in issues {
                 writeln!(o, "  {issue}")?;
-            }
-
-            if let Some(modified_cargo) = modified_cargo {
-                if save {
-                    modified_cargo.save_to(path)?;
-                } else {
-                    writeln!(o, "Would save {}", path.display())?;
-                }
             }
         }
         Change::SetRustVersion { repo, version } => {
@@ -392,40 +573,6 @@ where
                     "Would set rust version: Rust {version}"
                 );
             }
-
-            let workspace = repo.require_workspace(cx)?;
-
-            for manifest in workspace.packages() {
-                let Some(package) = manifest.as_package() else {
-                    continue;
-                };
-
-                if !package.is_publish() {
-                    continue;
-                }
-
-                let mut manifest = manifest.clone();
-                let package = manifest.ensure_package_mut()?;
-
-                if package.rust_version() != Some(*version) {
-                    if save {
-                        package.sort_package_keys()?;
-                        package.set_rust_version(version);
-
-                        tracing::info!(
-                            "Saving {} with rust-version = \"{version}\"",
-                            manifest.path()
-                        );
-
-                        manifest.save_to(cx.to_path(manifest.path()))?;
-                    } else {
-                        tracing::info!(
-                            "Would save {} with rust-version = \"{version}\"",
-                            manifest.path()
-                        );
-                    }
-                }
-            }
         }
         Change::RemoveRustVersion { repo, version } => {
             if save {
@@ -439,57 +586,14 @@ where
                     "Would clear rust version: Rust {version}"
                 );
             }
-
-            let workspace = repo.require_workspace(cx)?;
-
-            for manifest in workspace.packages() {
-                let mut manifest = manifest.clone();
-
-                let Some(package) = manifest.as_package_mut() else {
-                    continue;
-                };
-
-                if package.remove_rust_version() {
-                    if save {
-                        tracing::info!(
-                            "Saving {} without rust-version (target version outdates rust-version)",
-                            manifest.path()
-                        );
-                        manifest.save_to(cx.to_path(manifest.path()))?;
-                    } else {
-                        tracing::info!(
-                            "Would save {} without rust-version (target version outdates rust-version)",
-                            manifest.path()
-                        );
-                    }
-                }
-            }
         }
-        Change::SavePackage { manifest } => {
-            if save {
-                tracing::info!("Saving {}", manifest.path());
-                let out = cx.to_path(manifest.path());
-                manifest.save_to(out)?;
-            } else {
-                tracing::info!("Would save {}", manifest.path());
-            }
-        }
+        Change::SavePackage { .. } => {}
         Change::Replace { replaced } => {
-            if save {
-                tracing::info!(
-                    "Saving {} (replacement: {})",
-                    replaced.path().display(),
-                    replaced.replacement()
-                );
-
-                replaced.save()?;
-            } else {
-                tracing::info!(
-                    "Would save {} (replacement: {})",
-                    replaced.path().display(),
-                    replaced.replacement()
-                );
-            }
+            tracing::info!(
+                "{}: version replacement: {}",
+                replaced.path().display(),
+                replaced.replacement()
+            );
         }
         Change::ReleaseCommit { path, version } => {
             if save {
@@ -548,7 +652,7 @@ where
                 if *remove_dev || !circular_dev.is_empty() {
                     let cargo_toml = manifest_dir.join("Cargo.toml");
 
-                    let mut manifest = crate::cargo::open(cx.paths, &cargo_toml)?
+                    let mut manifest = crate::cargo::open(cx, &cargo_toml)?
                         .with_context(|| anyhow!("Missing {cargo_toml}"))?;
 
                     let removed =
@@ -860,6 +964,14 @@ pub(crate) enum Change {
     },
 }
 
+impl Change {
+    /// Test if the change is an action which runs after files are saved,
+    /// rather than one which writes files.
+    pub(crate) fn is_action(&self) -> bool {
+        matches!(self, Change::ReleaseCommit { .. } | Change::Publish { .. })
+    }
+}
+
 impl fmt::Display for Change {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -900,30 +1012,22 @@ impl fmt::Display for Change {
     }
 }
 
-/// Write a file.
-pub(crate) fn write_to<W>(
-    o: &mut W,
-    col: &Colors,
-    path: &Path,
-    new_file: &File,
-    save: bool,
-) -> Result<()>
+/// Write the diff of a pending file write.
+fn write_diff<W>(o: &mut W, col: &Colors, write: &PendingWrite) -> Result<()>
 where
     W: ?Sized + WriteColor,
 {
-    let current = match fs::read_to_string(path) {
-        Ok(current) => current,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e).context(path.display().to_string())?,
-    };
+    let original = write.original.as_deref().unwrap_or_default();
 
-    writeln!(o, "{}:", path.display())?;
-    diff(o, current.as_str(), new_file.as_str(), col)?;
-
-    if save {
-        fs::write(path, new_file.as_str()).with_context(|| path.display().to_string())?;
+    if write.original.is_none() {
+        writeln!(o, "{}: New file", write.display.display())?;
+    } else {
+        writeln!(o, "{}:", write.display.display())?;
     }
 
+    let original = String::from_utf8_lossy(original);
+    let content = String::from_utf8_lossy(&write.content);
+    diff(o, &original, &content, col)?;
     Ok(())
 }
 
@@ -987,7 +1091,10 @@ mod tests {
     use relative_path::RelativePathBuf;
     use semver::Version;
 
-    use super::{AllowDirty, Change, ChangeWrapper, ENCODING, NoVerify, apply_all, load_changes};
+    use super::{
+        AllowDirty, Change, ChangeWrapper, ENCODING, Expected, NoVerify, apply_all, load_changes,
+        save_changes,
+    };
     use crate::cargo::Manifest;
 
     fn change(path: &str, written: bool) -> ChangeWrapper {
@@ -1230,7 +1337,9 @@ mod tests {
         let path = dir.path().join("changes.gz");
         write_gz(&path, FIXTURE);
 
-        let changes = load_changes(&path).unwrap().unwrap();
+        let staged = load_changes(&path).unwrap().unwrap();
+        assert!(staged.expected.is_empty());
+        let changes = staged.changes;
         assert_eq!(ENCODING.to_vec(&changes).unwrap(), FIXTURE);
 
         let Change::SavePackage { manifest } = &changes[1].change else {
@@ -1241,6 +1350,29 @@ mod tests {
             manifest.to_toml_string(),
             "[package]\nname = \"a\" # name\nversion = \"1.2.3\"\n"
         );
+    }
+
+    #[test]
+    fn save_changes_records_expected_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("changes.gz");
+
+        let expected = vec![
+            Expected {
+                path: dir.path().join("Cargo.toml"),
+                original: Some(b"[package]\n".to_vec()),
+            },
+            Expected {
+                path: dir.path().join("new.yml"),
+                original: None,
+            },
+        ];
+
+        save_changes(&sample_changes(), &expected, &path).unwrap();
+
+        let staged = load_changes(&path).unwrap().unwrap();
+        assert_eq!(staged.expected, expected);
+        assert_eq!(ENCODING.to_vec(&staged.changes).unwrap(), FIXTURE);
     }
 
     #[test]

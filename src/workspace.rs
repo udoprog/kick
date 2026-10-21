@@ -24,7 +24,7 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Crates>> {
 
     let primary_package = cx.config.name(repo).or(repo.repo().map(|repo| repo.name));
 
-    let Some(manifest) = cargo::open(cx.paths, &manifest_path)? else {
+    let Some(manifest) = cargo::open(cx, &manifest_path)? else {
         return Ok(None);
     };
 
@@ -55,7 +55,7 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Crates>> {
             for manifest_dir in members {
                 let manifest_path = manifest_dir.join(CARGO_TOML);
 
-                let manifest = cargo::open(cx.paths, &manifest_path)
+                let manifest = cargo::open(cx, &manifest_path)
                     .with_context(|| anyhow!("{manifest_path}"))?
                     .with_context(|| anyhow!("{manifest_path}: missing file"))?;
 

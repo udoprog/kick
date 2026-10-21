@@ -8,6 +8,8 @@ use toml_edit::{Formatted, Item, TableLike, Value};
 use crate::cargo;
 use crate::changes::Change;
 use crate::cli::WithRepos;
+use crate::cli::check;
+use crate::urls::Urls;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::version_groups::{self, PackageVersion, ResolvedGroups};
@@ -36,6 +38,10 @@ pub(crate) struct Opts {
     /// the release commit without recording any change.
     #[arg(long)]
     dry_run: bool,
+    /// Don't check the repo with the changed versions, which stages fixes for
+    /// anything `kick check` finds along with the version changes.
+    #[arg(long)]
+    no_check: bool,
     /// Ignore `[[version_group]]` configuration, and only change the version of
     /// the selected crates rather than every crate in their version group.
     #[arg(long)]
@@ -338,7 +344,6 @@ fn version(
         workspace: new_workspace_version,
     } = plan;
 
-    let mut changes = Vec::new();
     let mut workspace_version_updated = false;
 
     for manifest in workspace.manifests() {
@@ -360,7 +365,7 @@ fn version(
 
                     replaced.extend(
                         replacement
-                            .replace_in(&root, "version", &version_string)
+                            .replace_in(&cx.overlay, &root, "version", &version_string)
                             .context("Failed to replace version string")?,
                     );
                 }
@@ -430,11 +435,11 @@ fn version(
         }
 
         if changed_manifest {
-            changes.push(Change::SavePackage { manifest: modified });
+            cx.change(Change::SavePackage { manifest: modified })?;
         }
 
         for replaced in replaced {
-            changes.push(Change::Replace { replaced });
+            cx.change(Change::Replace { replaced })?;
         }
     }
 
@@ -454,34 +459,20 @@ fn version(
             .new
             .clone();
 
-        changes.push(Change::ReleaseCommit {
+        cx.change(Change::ReleaseCommit {
             path: manifest.dir().to_owned(),
             version,
-        });
+        })?;
     }
 
-    for change in changes {
-        if !opts.dry_run {
-            cx.change(change);
-            continue;
-        }
+    if !opts.no_check {
+        // Check the workspace as it is with the staged version changes, so
+        // that fixes are staged against the changed versions.
+        let crates = repo.require_workspace(cx)?;
+        let mut urls = Urls::default();
 
-        match change {
-            Change::SavePackage { manifest } => {
-                println!("Would save {}", manifest.path());
-            }
-            Change::Replace { replaced } => {
-                println!(
-                    "Would save {} (replacement: {})",
-                    replaced.path().display(),
-                    replaced.replacement()
-                );
-            }
-            Change::ReleaseCommit { version, .. } => {
-                println!("Would commit `Release {version}` in {}", repo.path());
-            }
-            _ => {}
-        }
+        check::check_crates(cx, repo, &crates, &mut urls)
+            .context("Checking with the changed versions")?;
     }
 
     Ok(())
