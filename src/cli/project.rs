@@ -53,6 +53,21 @@ enum Action {
         #[arg(long, value_name = "PATH")]
         config: Option<PathBuf>,
     },
+    /// Change the directory a project is registered at.
+    ///
+    /// The project keeps its settings and its place in the global
+    /// configuration file which declares it. The directory itself is not
+    /// moved.
+    Move {
+        /// The directory of the project, or the key it is registered under.
+        old: String,
+        /// The new directory of the project.
+        new: PathBuf,
+        /// The global configuration file to move the project in, needed if
+        /// more than one declares it.
+        #[arg(long, value_name = "PATH")]
+        config: Option<PathBuf>,
+    },
     /// Edit the settings of a project in the global configuration.
     ///
     /// The `[repo."<key>"]` table of the project is written to a temporary
@@ -176,6 +191,32 @@ pub(crate) fn entry(cx: &Cx<'_>, opts: &Opts) -> Result<()> {
             println!(
                 "Removed {} from {}",
                 removed.key,
+                global::display(cx.home, projects.path())
+            );
+        }
+        Action::Move { old, new, config } => {
+            let old_dir = resolve_arg(cx, old);
+            let new_dir = resolve_arg(cx, &new.to_string_lossy());
+
+            let (mut projects, project) =
+                declaring(cx, &global, config.as_deref(), Some(old), &old_dir)?;
+
+            for path in global.files() {
+                if let Some(existing) = Projects::open(path, cx.home)?.find(None, &new_dir) {
+                    bail!(
+                        "{} is already registered as [repo.\"{}\"] in {}",
+                        new_dir.display(),
+                        existing.key,
+                        path.display()
+                    );
+                }
+            }
+
+            let key = projects.rename(&project.key, &new_dir)?;
+            projects.save()?;
+            println!(
+                "Moved {} to {key} in {}",
+                project.key,
                 global::display(cx.home, projects.path())
             );
         }
@@ -424,4 +465,137 @@ fn detect_url(git: Option<&Git>, dir: &Path) -> Result<String> {
     })?;
 
     Ok(url.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use super::{Action, Cx, Opts, entry};
+
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        home: PathBuf,
+        config: PathBuf,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let home = dir.path().join("home");
+            let config = dir.path().join("config/kick/Kick.toml");
+            fs::create_dir_all(config.parent().unwrap().join("user.d")).unwrap();
+            fs::create_dir_all(&home).unwrap();
+
+            Self {
+                _dir: dir,
+                home,
+                config,
+            }
+        }
+
+        fn user_d(&self, name: &str) -> PathBuf {
+            self.config.parent().unwrap().join("user.d").join(name)
+        }
+
+        fn mv(&self, old: &str, new: &str) -> anyhow::Result<()> {
+            let cx = Cx {
+                config: &self.config,
+                home: &self.home,
+                current_dir: &self.home,
+                git: None,
+            };
+
+            let action = Action::Move {
+                old: old.to_owned(),
+                new: PathBuf::from(new),
+                config: None,
+            };
+
+            entry(&cx, &Opts { action })
+        }
+    }
+
+    fn read(path: &Path) -> String {
+        fs::read_to_string(path).unwrap()
+    }
+
+    #[test]
+    fn moves_project_in_kick_toml() {
+        let f = Fixture::new();
+
+        fs::write(
+            &f.config,
+            "# Global\n\n[repo.\"~/a\"]\n# the a project\nurl = \"https://example.com/a\"\nos = [\"linux\"]\n\n[repo.\"~/a\".env]\nX = \"1\"\n\n[repo.\"~/b\"]\nurl = \"https://example.com/b\"\n",
+        )
+        .unwrap();
+
+        f.mv("~/a", "~/moved/a").unwrap();
+
+        assert_eq!(
+            read(&f.config),
+            "# Global\n\n[repo.\"~/moved/a\"]\n# the a project\nurl = \"https://example.com/a\"\nos = [\"linux\"]\n\n[repo.\"~/moved/a\".env]\nX = \"1\"\n\n[repo.\"~/b\"]\nurl = \"https://example.com/b\"\n",
+        );
+
+        // By resolved path rather than key, and out of the home directory.
+        f.mv(&f.home.join("b").to_string_lossy(), "/opt/b").unwrap();
+        assert!(read(&f.config).ends_with("[repo.\"/opt/b\"]\nurl = \"https://example.com/b\"\n"));
+    }
+
+    #[test]
+    fn moves_project_in_user_d() {
+        let f = Fixture::new();
+        let file = f.user_d("work.toml");
+        let kick = "[repo.\"~/a\"]\nurl = \"https://example.com/a\"\n";
+
+        fs::write(&f.config, kick).unwrap();
+        fs::write(
+            &file,
+            "[repo]\n\"~/b\" = { url = \"https://example.com/b\" } # b\n\"~/c\" = { url = \"https://example.com/c\" }\n",
+        )
+        .unwrap();
+
+        f.mv("~/b", "~/work/b").unwrap();
+
+        assert_eq!(
+            read(&file),
+            "[repo]\n\"~/work/b\" = { url = \"https://example.com/b\" } # b\n\"~/c\" = { url = \"https://example.com/c\" }\n",
+        );
+        assert_eq!(read(&f.config), kick);
+    }
+
+    #[test]
+    fn refuses_unregistered_project() {
+        let f = Fixture::new();
+        let kick = "[repo.\"~/a\"]\nurl = \"https://example.com/a\"\n";
+        fs::write(&f.config, kick).unwrap();
+
+        let error = f.mv("~/missing", "~/b").unwrap_err();
+        assert!(
+            error.to_string().contains("No project registered"),
+            "{error}"
+        );
+        assert_eq!(read(&f.config), kick);
+    }
+
+    #[test]
+    fn refuses_registered_destination() {
+        let f = Fixture::new();
+        let kick = "[repo.\"~/a\"]\nurl = \"https://example.com/a\"\n\n[repo.\"~/b\"]\nurl = \"https://example.com/b\"\n";
+        let user = "[repo.\"~/c\"]\nurl = \"https://example.com/c\"\n";
+        fs::write(&f.config, kick).unwrap();
+        fs::write(f.user_d("work.toml"), user).unwrap();
+
+        // Registered in the same file.
+        let error = f.mv("~/a", "~/b").unwrap_err();
+        assert!(error.to_string().contains("already registered"), "{error}");
+
+        // Registered in another global file.
+        let error = f.mv("~/a", "~/c").unwrap_err();
+        assert!(error.to_string().contains("already registered"), "{error}");
+
+        assert_eq!(read(&f.config), kick);
+        assert_eq!(read(&f.user_d("work.toml")), user);
+    }
 }

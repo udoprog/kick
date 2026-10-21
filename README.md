@@ -185,6 +185,7 @@ kick project add ~/src/foo --url https://github.com/udoprog/foo
 kick project add ~/src/army --config ~/.config/kick/user.d/private/repos.toml
 kick project list
 kick project remove ~/src/foo
+kick project move ~/src/bar ~/work/bar  # after moving the checkout on disk
 kick project edit ~/src/foo      # edit its settings in $VISUAL or $EDITOR
 ```
 
@@ -192,8 +193,11 @@ kick project edit ~/src/foo      # edit its settings in $VISUAL or $EDITOR
 prefix, and detects the url from the `origin` remote unless `--url` is given.
 It writes to the global `Kick.toml` unless `--config` names a file under
 `user.d/`. `kick project list` lists the projects of every global file, and
-`kick project remove` and `kick project edit` change the file which declares
-the project, or the one named with `--config` if several do.
+`kick project remove`, `kick project move` and `kick project edit` change the
+file which declares the project, or the one named with `--config` if several
+do. `kick project move` changes the directory a project is registered at,
+keeping its settings and place in the file; it does not move the directory
+itself, and refuses a directory which is already registered.
 `kick project edit` (which defaults to the git checkout of the current
 directory) writes the `[repo."<key>"]` table of a project to a temporary file
 and opens it in `$VISUAL`, `$EDITOR` or `vi` (`notepad` on Windows). Once the

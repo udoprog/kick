@@ -48,8 +48,9 @@ Inside of a project its `[repo]` sections are ignored, unless `--all` is passed,
 a `-p`/`--path` names a directory outside of the project which is inside of one
 of them, or a `-n`/`--repo-name` matches no repo in the project but one of them
 (see [`alias`](config/toplevel.md#alias)), in which case kick acts on the global
-repos instead. Use `kick project add`, `kick project list` and `kick project
-remove` to manage them; `kick project add --config <path>` registers a project
+repos instead. Use `kick project add`, `kick project list`, `kick project
+remove` and `kick project move` (which changes the directory a project is
+registered at) to manage them; `kick project add --config <path>` registers a project
 in a file under `user.d/` instead of the global `Kick.toml`.
 
 ```toml

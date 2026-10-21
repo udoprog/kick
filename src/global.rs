@@ -22,7 +22,7 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use relative_path::RelativePathBuf;
-use toml_edit::{DocumentMut, Item, Table, Value};
+use toml_edit::{DocumentMut, Item, Key, Table, Value};
 
 use crate::interpolate;
 
@@ -522,6 +522,48 @@ impl Projects {
         Ok(project)
     }
 
+    /// Register the project registered under `key` at the directory `path`
+    /// instead, returning its new key.
+    ///
+    /// The project keeps its settings, its place in the file and the comments
+    /// around it.
+    pub(crate) fn rename(&mut self, key: &str, path: &Path) -> Result<String> {
+        if let Some(existing) = self.find(None, path) {
+            bail!(
+                "{} is already registered as [repo.\"{}\"] in {}",
+                path.display(),
+                existing.key,
+                self.path.display()
+            );
+        }
+
+        let new = storage_key(&self.home, path);
+        self.repo_item(key)?;
+
+        let order = self
+            .list()
+            .into_iter()
+            .map(|p| if p.key == key { new.clone() } else { p.key })
+            .collect::<Vec<_>>();
+        let rank = |k: &Key| order.iter().position(|o| o == k.get());
+
+        match self.doc.get_mut("repo") {
+            Some(Item::Table(table)) => {
+                let (old, item) = table.remove_entry(key).context("Missing project")?;
+                table.insert_formatted(&renamed(&old, &new), item);
+                table.sort_values_by(|a, _, b, _| rank(a).cmp(&rank(b)));
+            }
+            Some(Item::Value(Value::InlineTable(table))) => {
+                let (old, value) = table.remove_entry(key).context("Missing project")?;
+                table.insert_formatted(&renamed(&old, &new), value);
+                table.sort_values_by(|a, _, b, _| rank(a).cmp(&rank(b)));
+            }
+            _ => bail!("`repo` in {} is not a table", self.path.display()),
+        }
+
+        Ok(new)
+    }
+
     /// Find the project registered under the key `raw` or at the resolved
     /// `path`, failing with an error which points at `kick project add` if
     /// there is none.
@@ -624,6 +666,14 @@ impl Projects {
         fs::write(&self.path, self.doc.to_string())
             .with_context(|| format!("Writing {}", self.path.display()))
     }
+}
+
+/// The key `old` renamed to `new`, keeping its surrounding whitespace and
+/// comments.
+fn renamed(old: &Key, new: &str) -> Key {
+    Key::new(new)
+        .with_leaf_decor(old.leaf_decor().clone())
+        .with_dotted_decor(old.dotted_decor().clone())
 }
 
 /// Clear the positions of the tables nested under `table`, so that they are
