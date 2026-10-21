@@ -38,7 +38,7 @@ pub(super) async fn entry(
     Ok(())
 }
 
-async fn run(_: &Ctxt<'_>, repo: &Repo, opts: &Opts, client: &octokit::Client) -> Result<()> {
+async fn run(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts, client: &octokit::Client) -> Result<()> {
     let Some(r) = repo.repo() else {
         return Ok(());
     };
@@ -48,7 +48,7 @@ async fn run(_: &Ctxt<'_>, repo: &Repo, opts: &Opts, client: &octokit::Client) -
     };
 
     if opts.list {
-        println!("{}:", repo.path());
+        println!("{}:", cx.display(repo.path()));
 
         let mut o = std::io::stdout().lock();
 
@@ -62,7 +62,7 @@ async fn run(_: &Ctxt<'_>, repo: &Repo, opts: &Opts, client: &octokit::Client) -
         ensure!(
             !workflows.workflows.is_empty(),
             "{}: No workflows to enable",
-            repo.path()
+            cx.display(repo.path())
         );
 
         for w in &workflows.workflows {
@@ -70,7 +70,7 @@ async fn run(_: &Ctxt<'_>, repo: &Repo, opts: &Opts, client: &octokit::Client) -
 
             println!(
                 "{}: Enabling workflow `{}`: {status}: {body}",
-                repo.path(),
+                cx.display(repo.path()),
                 w.name
             );
         }
@@ -80,7 +80,7 @@ async fn run(_: &Ctxt<'_>, repo: &Repo, opts: &Opts, client: &octokit::Client) -
         ensure!(
             !workflows.workflows.is_empty(),
             "{}: No workflows to disable",
-            repo.path()
+            cx.display(repo.path())
         );
 
         for w in &workflows.workflows {
@@ -88,7 +88,7 @@ async fn run(_: &Ctxt<'_>, repo: &Repo, opts: &Opts, client: &octokit::Client) -
 
             println!(
                 "{}: Disabling workflow `{}`: {status}: {body}",
-                repo.path(),
+                cx.display(repo.path()),
                 w.name
             );
         }

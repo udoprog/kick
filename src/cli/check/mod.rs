@@ -10,7 +10,7 @@ use clap::Parser;
 use semver::Version;
 
 use crate::changes;
-use crate::ctxt::Ctxt;
+use crate::ctxt::{Ctxt, Paths};
 use crate::model::{Repo, UpdateParams};
 use crate::urls::{UrlError, Urls};
 use crate::version_groups::{self, ResolvedGroups};
@@ -33,11 +33,12 @@ pub(crate) async fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts)
         check(cx, repo, &mut urls)
     })?;
 
+    let paths = with_repos.cx.paths;
     let o = std::io::stdout();
     let mut o = o.lock();
 
     for (url, test) in urls.bad_urls() {
-        let path = &test.path;
+        let path = paths.display(&test.path);
         let (line, column, string) =
             changes::temporary_line_fix(&test.file, test.range.start, test.line_offset)?;
 
@@ -51,7 +52,7 @@ pub(crate) async fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts)
     }
 
     if opts.url_checks {
-        url_checks(&mut o, urls).await?;
+        url_checks(&mut o, paths, urls).await?;
     }
 
     Ok(())
@@ -195,7 +196,7 @@ fn version_group_mismatches(
 }
 
 /// Perform url checks.
-async fn url_checks<O>(o: &mut O, urls: Urls) -> Result<()>
+async fn url_checks<O>(o: &mut O, paths: Paths<'_>, urls: Urls) -> Result<()>
 where
     O: Write,
 {
@@ -225,7 +226,7 @@ where
                         writeln!(o, "{count:>3}/{total} {url}: {status}")?;
 
                         for test in tests {
-                            let path = &test.path;
+                            let path = paths.display(&test.path);
                             let (line, column, string) = crate::changes::temporary_line_fix(&test.file, test.range.start, test.line_offset)?;
                             writeln!(o, "  {path}:{line}:{column}: {string}")?;
                         }

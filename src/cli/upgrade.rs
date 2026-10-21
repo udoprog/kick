@@ -83,7 +83,7 @@ fn upgrade(cx: &Ctxt<'_>, opts: &Opts, repo: &Repo) -> Result<()> {
     })?;
 
     if upgraded.is_empty() {
-        tracing::info!("{}: Nothing to upgrade", repo.path());
+        tracing::info!("{}: Nothing to upgrade", cx.display(repo.path()));
         return Ok(());
     }
 

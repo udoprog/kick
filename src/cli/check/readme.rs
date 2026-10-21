@@ -50,7 +50,7 @@ pub(crate) fn build(
             }
         }
 
-        bail!("{manifest_dir}: missing existing entrypoint")
+        bail!("{}: missing existing entrypoint", cx.display(manifest_dir))
     };
 
     let mut readme = Readme {

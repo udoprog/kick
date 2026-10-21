@@ -569,12 +569,12 @@ where
         Change::SetRustVersion { repo, version } => {
             if save {
                 tracing::info!(
-                    path = repo.path().as_str(),
+                    path = %cx.display(repo.path()),
                     "Setting rust version: Rust {version}"
                 );
             } else {
                 tracing::info!(
-                    path = repo.path().as_str(),
+                    path = %cx.display(repo.path()),
                     "Would set rust version: Rust {version}"
                 );
             }
@@ -582,12 +582,12 @@ where
         Change::RemoveRustVersion { repo, version } => {
             if save {
                 tracing::info!(
-                    path = repo.path().as_str(),
+                    path = %cx.display(repo.path()),
                     "Clearing rust version: Rust {version}"
                 );
             } else {
                 tracing::info!(
-                    path = repo.path().as_str(),
+                    path = %cx.display(repo.path()),
                     "Would clear rust version: Rust {version}"
                 );
             }
@@ -595,9 +595,9 @@ where
         Change::SavePackage { .. } => {}
         Change::Upgrade { path, .. } => {
             if save {
-                tracing::info!(path = path.as_str(), "Saving upgraded dependencies");
+                tracing::info!(path = %cx.display(path), "Saving upgraded dependencies");
             } else {
-                tracing::info!(path = path.as_str(), "Would save upgraded dependencies");
+                tracing::info!(path = %cx.display(path), "Would save upgraded dependencies");
             }
         }
         Change::Replace { replaced } => {
@@ -633,12 +633,14 @@ where
             circular_dev,
             depends_on: _,
         } => {
+            let dir = cx.display(manifest_dir);
+
             if save {
                 if cx.term.load(std::sync::atomic::Ordering::SeqCst) {
-                    bail!("{manifest_dir}: not publishing `{name}` since kick was interrupted");
+                    bail!("{dir}: not publishing `{name}` since kick was interrupted");
                 }
 
-                tracing::info!("{}: publishing: {}", manifest_dir, name);
+                tracing::info!("{dir}: publishing: {name}");
 
                 let mut command = Command::new("cargo");
                 command.args(["publish"]);
@@ -665,13 +667,17 @@ where
                     let cargo_toml = manifest_dir.join("Cargo.toml");
 
                     let mut manifest = crate::cargo::open(cx, &cargo_toml)?
-                        .with_context(|| anyhow!("Missing {cargo_toml}"))?;
+                        .with_context(|| anyhow!("Missing {}", cx.display(&cargo_toml)))?;
 
-                    let removed =
-                        publish::strip_dev_dependencies(&mut manifest, *remove_dev, circular_dev);
+                    let removed = publish::strip_dev_dependencies(
+                        cx.paths,
+                        &mut manifest,
+                        *remove_dev,
+                        circular_dev,
+                    );
 
                     for removed in &removed {
-                        tracing::info!("{manifest_dir}: Removing {removed}");
+                        tracing::info!("{dir}: Removing {removed}");
                     }
 
                     if !removed.is_empty() {
@@ -689,7 +695,7 @@ where
                 if let Some(mut backup) = backup {
                     backup
                         .restore()
-                        .with_context(|| anyhow!("{manifest_dir}: failed to restore Cargo.toml"))?;
+                        .with_context(|| anyhow!("{dir}: failed to restore Cargo.toml"))?;
                 }
 
                 let outcome = result?;
@@ -700,32 +706,30 @@ where
                 // warns about it and still packages the crate.
                 if outcome.already_exists {
                     if !*dry_run {
-                        tracing::warn!("{manifest_dir}: `{name}` is already published, skipping");
+                        tracing::warn!("{dir}: `{name}` is already published, skipping");
                         return Ok(());
                     }
 
                     tracing::warn!(
-                        "{manifest_dir}: `{name}` is already published, a real publish would skip it"
+                        "{dir}: `{name}` is already published, a real publish would skip it"
                     );
                 }
 
                 if !outcome.status.success() {
-                    bail!("{}: failed to publish: {}", manifest_dir, outcome.status);
+                    bail!("{dir}: failed to publish: {}", outcome.status);
                 }
 
                 tracing::info!("{}", outcome.status);
             } else {
-                tracing::info!("{manifest_dir}: would publish: {name}");
+                tracing::info!("{dir}: would publish: {name}");
 
                 if let Some(no_verify) = no_verify {
                     match no_verify {
                         NoVerify::Argument => {
-                            tracing::info!("{manifest_dir}: With `--no-verify` due to argument.");
+                            tracing::info!("{dir}: With `--no-verify` due to argument.");
                         }
                         NoVerify::Circular => {
-                            tracing::info!(
-                                "{manifest_dir}: With `--no-verify` due to circular dependency."
-                            );
+                            tracing::info!("{dir}: With `--no-verify` due to circular dependency.");
                         }
                     };
                 }
@@ -733,30 +737,28 @@ where
                 if let Some(allow_dirty) = allow_dirty {
                     match allow_dirty {
                         AllowDirty::DevDependency => {
-                            tracing::info!(
-                                "{manifest_dir}: With `--allow-dirty` due to `--remove-dev`."
-                            );
+                            tracing::info!("{dir}: With `--allow-dirty` due to `--remove-dev`.");
                         }
                         AllowDirty::CircularDevDependency => {
                             tracing::info!(
-                                "{manifest_dir}: With `--allow-dirty` since circular dev-dependencies are removed."
+                                "{dir}: With `--allow-dirty` since circular dev-dependencies are removed."
                             );
                         }
                         AllowDirty::Argument => {
-                            tracing::info!("{manifest_dir}: With `--allow-dirty` due to argument.");
+                            tracing::info!("{dir}: With `--allow-dirty` due to argument.");
                         }
                     }
                 }
 
                 if *remove_dev {
                     tracing::info!(
-                        "{manifest_dir}: Would remove all dev-dependencies due to `--remove-dev`."
+                        "{dir}: Would remove all dev-dependencies due to `--remove-dev`."
                     );
                 }
 
                 for dev in circular_dev {
                     tracing::info!(
-                        "{manifest_dir}: Would remove {dev}, since `{}` is published later.",
+                        "{dir}: Would remove {dev}, since `{}` is published later.",
                         dev.package
                     );
                 }

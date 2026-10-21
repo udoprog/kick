@@ -1,4 +1,5 @@
 use std::cell::{Ref, RefCell, RefMut};
+use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -98,6 +99,32 @@ impl Paths<'_> {
         path.to_path(self.root)
     }
 
+    /// Display a root-relative path relative to the current directory.
+    ///
+    /// From the root the path is shown as written. When the current directory
+    /// is outside of the root the path is joined onto the root.
+    pub(crate) fn display(self, path: impl AsRef<RelativePath>) -> DisplayPath {
+        let path = path.as_ref();
+        let rewritten = self.redirect.and_then(|r| r.rewrite(path));
+        let path = rewritten.as_deref().unwrap_or(path);
+
+        let Some(current) = self.current else {
+            return DisplayPath(path.to_path(self.root));
+        };
+
+        if current.components().next().is_none() {
+            return DisplayPath(PathBuf::from(path.as_str()));
+        }
+
+        let output = current.relative(path);
+
+        if output.components().next().is_none() {
+            return DisplayPath(PathBuf::from_iter([Component::CurDir]));
+        }
+
+        DisplayPath(PathBuf::from(output.as_str()))
+    }
+
     /// Read the given path to a string.
     ///
     /// Returns `None` if the given path does not exist.
@@ -112,6 +139,17 @@ impl Paths<'_> {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(anyhow::Error::from(e).context(format!("Reading {}", path.display()))),
         }
+    }
+}
+
+/// A path for display, see [`Paths::display`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DisplayPath(PathBuf);
+
+impl fmt::Display for DisplayPath {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.display().fmt(f)
     }
 }
 
@@ -177,6 +215,11 @@ impl<'a> Ctxt<'a> {
     /// Get a repo path that is used as the base to other paths.
     pub(crate) fn to_path(&self, path: impl AsRef<RelativePath>) -> PathBuf {
         self.paths.to_path(path)
+    }
+
+    /// Display a root-relative path relative to the current directory.
+    pub(crate) fn display(&self, path: impl AsRef<RelativePath>) -> DisplayPath {
+        self.paths.display(path)
     }
 
     /// Get repo parameters for the given package.
@@ -445,6 +488,71 @@ mod tests {
 
         assert_eq!(p.to_path("Kick.toml"), PathBuf::from("../Kick.toml"));
         assert_eq!(p.to_path("."), PathBuf::from(".."));
+    }
+
+    #[test]
+    fn display_from_root() {
+        let p = paths(Some(""), None);
+        assert_eq!(p.display("").to_string(), "");
+        assert_eq!(p.display(".").to_string(), ".");
+        assert_eq!(p.display("repos/kick").to_string(), "repos/kick");
+        assert_eq!(
+            p.display("repos/kick/Cargo.toml").to_string(),
+            "repos/kick/Cargo.toml"
+        );
+
+        let p = Paths {
+            root: Path::new("."),
+            ..paths(Some(""), None)
+        };
+        assert_eq!(p.display("repos/kick").to_string(), "repos/kick");
+    }
+
+    #[test]
+    fn display_from_nested() {
+        let p = Paths {
+            root: Path::new("../.."),
+            ..paths(Some("repos/kick"), None)
+        };
+        assert_eq!(p.display("repos/kick").to_string(), ".");
+        assert_eq!(p.display("repos/kick/src").to_string(), "src");
+        assert_eq!(p.display("repos/other").to_string(), "../other");
+        assert_eq!(p.display("").to_string(), "../..");
+        assert_eq!(p.display(".").to_string(), "../..");
+    }
+
+    #[test]
+    fn display_from_sibling() {
+        let p = Paths {
+            root: Path::new("../.."),
+            ..paths(Some("repos/kick/src"), None)
+        };
+        assert_eq!(p.display("repos/track").to_string(), "../../track");
+        assert_eq!(
+            p.display("repos/track/Cargo.toml").to_string(),
+            "../../track/Cargo.toml"
+        );
+    }
+
+    #[test]
+    fn display_outside_root() {
+        let p = paths(None, None);
+        let expected = |p: &str| Path::new("/src").join(p).display().to_string();
+        assert_eq!(p.display("repos/kick").to_string(), expected("repos/kick"));
+        assert_eq!(
+            p.display("repos/kick/Cargo.toml").to_string(),
+            expected("repos/kick/Cargo.toml")
+        );
+    }
+
+    #[test]
+    fn display_with_redirect() {
+        let p = paths(
+            Some("repos/track/.claude/worktrees/wt/src"),
+            Some(redirect()),
+        );
+        assert_eq!(p.display("repos/track").to_string(), "..");
+        assert_eq!(p.display("repos/kick").to_string(), "../../../../../kick");
     }
 
     #[test]

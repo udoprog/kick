@@ -791,7 +791,7 @@ impl Replacement {
                 let content = match overlay.read(&output_path) {
                     Ok(Some(content)) => content,
                     Ok(None) => {
-                        tracing::warn!("{path}: failed to read");
+                        tracing::warn!("{}: failed to read", output_path.display());
                         continue;
                     }
                     Err(e) => return Err(Error::from(e)).context(path),

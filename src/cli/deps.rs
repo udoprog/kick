@@ -162,7 +162,7 @@ fn deps(cx: &Ctxt<'_>, repo: &Repo, spec: &Spec) -> Result<usize> {
             .strip_prefix(repo.path())
             .unwrap_or(found.manifest);
 
-        println!("{}: {manifest} {found}", repo.path());
+        println!("{}: {manifest} {found}", cx.display(repo.path()));
     }
 
     Ok(found.len())
@@ -199,7 +199,7 @@ fn patched_entry(with_repos: &mut WithRepos<'_>, opts: &Opts) -> Result<()> {
                     .strip_prefix(repo.path())
                     .unwrap_or(found.manifest);
 
-                println!("{}: {manifest} {found}", repo.path());
+                println!("{}: {manifest} {found}", cx.display(repo.path()));
             }
 
             if !found.is_empty() {
@@ -246,7 +246,7 @@ async fn outdated_entry(with_repos: &mut WithRepos<'_>, opts: &Opts) -> Result<(
 
                     lines.push(format!(
                         "{}: {manifest} {found} (latest {latest})",
-                        repo.path()
+                        cx.display(repo.path())
                     ));
                 }
 

@@ -8,7 +8,7 @@ use clap::Parser;
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 use crate::cli::WithRepos;
-use crate::ctxt::Ctxt;
+use crate::ctxt::{Ctxt, DisplayPath};
 use crate::model::{Repo, RepoPath};
 use crate::octokit;
 
@@ -67,6 +67,7 @@ async fn do_status<'repo>(
 
     Ok(Outcome {
         repo,
+        path: cx.display(repo.path()),
         sha,
         conclusions,
     })
@@ -170,6 +171,7 @@ struct Conclusion {
 
 struct Outcome<'repo> {
     repo: &'repo Repo,
+    path: DisplayPath,
     sha: Option<String>,
     conclusions: Vec<Conclusion>,
 }
@@ -193,7 +195,7 @@ impl Outcome<'_> {
 
         let mut ok = true;
 
-        writeln!(o, "{}: {}", self.repo.path(), self.repo.url())?;
+        writeln!(o, "{}: {}", self.path, self.repo.url())?;
 
         for Conclusion { id, run, jobs } in self.conclusions {
             let failure = run.conclusion.as_deref() == Some("failure");

@@ -57,7 +57,7 @@ impl<'repo, 'a> GitCache<'repo, 'a> {
 
                 if git
                     .is_dirty(&path)
-                    .with_context(|| checking(repo.path(), "is dirty"))?
+                    .with_context(|| checking(self.paths, repo.path(), "is dirty"))?
                 {
                     self.dirty.push(repo.path());
                 }
@@ -82,7 +82,7 @@ impl<'repo, 'a> GitCache<'repo, 'a> {
 
                 if git
                     .is_cached(&path)
-                    .with_context(|| checking(repo.path(), "has cached changes"))?
+                    .with_context(|| checking(self.paths, repo.path(), "has cached changes"))?
                 {
                     self.cached.push(repo.path());
                 }
@@ -107,7 +107,7 @@ impl<'repo, 'a> GitCache<'repo, 'a> {
 
                 if git
                     .is_outdated(&path, self.fetch)
-                    .with_context(|| checking(repo.path(), "is outdated"))?
+                    .with_context(|| checking(self.paths, repo.path(), "is outdated"))?
                 {
                     self.outdated.push(repo.path());
                 }
@@ -133,7 +133,7 @@ impl<'repo, 'a> GitCache<'repo, 'a> {
                 let outcome = 'outcome: {
                     let Some(describe) = git
                         .describe_tags(&path, self.fetch)
-                        .with_context(|| checking(repo.path(), "is unreleased"))?
+                        .with_context(|| checking(self.paths, repo.path(), "is unreleased"))?
                     else {
                         tracing::trace!("No tags to describe");
                         break 'outcome true;
@@ -160,7 +160,9 @@ impl<'repo, 'a> GitCache<'repo, 'a> {
 }
 
 /// Describe checking a property of the repo at `path`.
-fn checking(path: &RelativePath, what: &str) -> String {
+fn checking(paths: Paths<'_>, path: &RelativePath, what: &str) -> String {
+    let path = paths.display(path).to_string();
+
     let path = match path.as_str() {
         "" => ".",
         path => path,

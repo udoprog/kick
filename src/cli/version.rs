@@ -327,7 +327,7 @@ fn version(
 
     if !opts.is_change() {
         for line in listing(&candidates, &groups, filter) {
-            println!("{}: {line}", repo.path());
+            println!("{}: {line}", cx.display(repo.path()));
         }
 
         return Ok(());
@@ -336,7 +336,7 @@ fn version(
     let plan = plan(&candidates, &groups, filter, version_set)?;
 
     for line in report(&candidates, workspace_version.as_ref(), &plan) {
-        println!("{}: {line}", repo.path());
+        println!("{}: {line}", cx.display(repo.path()));
     }
 
     let Plan {

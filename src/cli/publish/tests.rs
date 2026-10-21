@@ -2,7 +2,12 @@ use std::fs;
 
 use anyhow::Result;
 
+use std::path::Path;
+
+use relative_path::RelativePath;
+
 use crate::cargo::Manifest;
+use crate::ctxt::Paths;
 use crate::workspace::Crates;
 
 use super::{
@@ -17,6 +22,16 @@ fn workspace(manifests: &[(&str, &str)]) -> Result<Crates> {
         .collect::<Result<Vec<_>>>()?;
 
     Ok(Crates::from_manifests_for_test(manifests))
+}
+
+fn paths() -> Paths<'static> {
+    Paths {
+        root: Path::new("."),
+        current: Some(RelativePath::new("")),
+        config: None,
+        cache: None,
+        redirect: None,
+    }
 }
 
 fn dev(target: Option<&str>, key: &str, package: &str) -> CircularDev {
@@ -90,7 +105,7 @@ fn circular_dev_dependency() -> Result<()> {
 #[test]
 fn strips_only_circular_dev_dependency() -> Result<()> {
     let mut manifest = Manifest::parse_for_test("b/Cargo.toml", B)?;
-    let removed = strip_dev_dependencies(&mut manifest, false, &[dev(None, "a", "a")]);
+    let removed = strip_dev_dependencies(paths(), &mut manifest, false, &[dev(None, "a", "a")]);
     assert_eq!(removed.len(), 1);
 
     let output = manifest.to_toml_string();
@@ -170,7 +185,7 @@ a2 = { package = "a", path = "../a", version = "0.1.0" }
     );
 
     let mut manifest = Manifest::parse_for_test("b/Cargo.toml", b)?;
-    let removed = strip_dev_dependencies(&mut manifest, false, &circular);
+    let removed = strip_dev_dependencies(paths(), &mut manifest, false, &circular);
     assert_eq!(removed.len(), 1);
     assert!(!manifest.to_toml_string().contains("a2"));
     Ok(())
@@ -242,7 +257,7 @@ fn manifest_backup_restores() -> Result<()> {
     fs::write(&cargo_toml, B)?;
 
     let mut manifest = Manifest::parse_for_test("Cargo.toml", B)?;
-    strip_dev_dependencies(&mut manifest, false, &[dev(None, "a", "a")]);
+    strip_dev_dependencies(paths(), &mut manifest, false, &[dev(None, "a", "a")]);
 
     {
         let _backup = ManifestBackup::replace(dir.path(), &manifest)?;
@@ -266,7 +281,7 @@ fn manifest_backup_keeps_changed_manifest() -> Result<()> {
     fs::write(&cargo_toml, B)?;
 
     let mut manifest = Manifest::parse_for_test("Cargo.toml", B)?;
-    strip_dev_dependencies(&mut manifest, false, &[dev(None, "a", "a")]);
+    strip_dev_dependencies(paths(), &mut manifest, false, &[dev(None, "a", "a")]);
 
     let mut backup = ManifestBackup::replace(dir.path(), &manifest)?;
     fs::write(&cargo_toml, "edited")?;

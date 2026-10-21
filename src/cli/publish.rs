@@ -13,7 +13,7 @@ use musli::{Decode, Encode};
 use crate::cargo::{BUILD_DEPENDENCIES, DEPENDENCIES, DEV_DEPENDENCIES, Dependency, Manifest};
 use crate::changes::{AllowDirty, Change, NoVerify};
 use crate::cli::WithRepos;
-use crate::ctxt::Ctxt;
+use crate::ctxt::{Ctxt, Paths};
 use crate::model::Repo;
 use crate::process::Command;
 use crate::restore::restore_written;
@@ -477,6 +477,7 @@ impl fmt::Debug for Dep<'_> {
 /// If `all` is set, every dev-dependency table is removed, otherwise only the
 /// `circular` entries. Returns a description of what was removed.
 pub(crate) fn strip_dev_dependencies(
+    paths: Paths<'_>,
     manifest: &mut Manifest,
     all: bool,
     circular: &[CircularDev],
@@ -495,7 +496,10 @@ pub(crate) fn strip_dev_dependencies(
         if manifest.remove_dev_dependency(dev.target.as_deref(), &dev.key) {
             removed.push(format!("{dev}, since `{}` is published later", dev.package));
         } else {
-            tracing::warn!("{}: Missing dev-dependency {dev}", manifest.path());
+            tracing::warn!(
+                "{}: Missing dev-dependency {dev}",
+                paths.display(manifest.path())
+            );
         }
     }
 
