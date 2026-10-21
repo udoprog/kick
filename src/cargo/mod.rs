@@ -124,7 +124,7 @@ impl ManifestBinary {
 pub(crate) struct Manifest {
     #[musli(with = musli::serde)]
     path: Box<RelativePath>,
-    #[musli(with = crate::musli::string)]
+    #[musli(with = musli::display)]
     doc: DocumentMut,
 }
 

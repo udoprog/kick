@@ -48,15 +48,7 @@ pub(crate) fn load_changes(path: &Path) -> Result<Option<Vec<ChangeWrapper>>> {
     let mut buf = Vec::new();
     encoder.read_to_end(&mut buf)?;
 
-    let cx = musli::context::new().with_trace().with_type();
-
-    let value: Vec<ChangeWrapper> = match ENCODING.from_slice_with(&cx, &buf) {
-        Ok(value) => value,
-        Err(..) => {
-            bail!("{}", cx.report())
-        }
-    };
-
+    let value: Vec<ChangeWrapper> = ENCODING.from_slice_traced(&buf)?;
     Ok(Some(value))
 }
 
@@ -996,11 +988,15 @@ impl fmt::Display for Line {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+    use std::io::Write;
+
     use anyhow::bail;
     use relative_path::RelativePathBuf;
     use semver::Version;
 
-    use super::{Change, ChangeWrapper, apply_all};
+    use super::{AllowDirty, Change, ChangeWrapper, ENCODING, NoVerify, apply_all, load_changes};
+    use crate::cargo::Manifest;
 
     fn change(path: &str, written: bool) -> ChangeWrapper {
         ChangeWrapper {
@@ -1107,5 +1103,98 @@ mod tests {
         let failed = apply_all(&mut changes, false, |_| Ok(()));
         assert_eq!(failed, 0);
         assert!(changes.iter().all(|c| !c.written));
+    }
+
+    /// `sample_changes` as encoded by musli 0.1.8. The representation of
+    /// changes.gz must not change, or existing staged changes stop loading.
+    const FIXTURE: &[u8] = &[
+        3, 2, 0, 9, 2, 0, 8, 99, 114, 97, 116, 101, 115, 47, 97, 1, 19, 49, 46, 50, 46, 51, 45, 97,
+        108, 112, 104, 97, 46, 49, 43, 98, 117, 105, 108, 100, 1, 1, 2, 0, 7, 1, 0, 2, 0, 19, 99,
+        114, 97, 116, 101, 115, 47, 97, 47, 67, 97, 114, 103, 111, 46, 116, 111, 109, 108, 1, 46,
+        91, 112, 97, 99, 107, 97, 103, 101, 93, 10, 110, 97, 109, 101, 32, 61, 32, 34, 97, 34, 32,
+        35, 32, 110, 97, 109, 101, 10, 118, 101, 114, 115, 105, 111, 110, 32, 61, 32, 34, 49, 46,
+        50, 46, 51, 34, 10, 1, 0, 2, 0, 10, 9, 0, 1, 97, 1, 8, 99, 114, 97, 116, 101, 115, 47, 97,
+        2, 1, 3, 1, 1, 4, 1, 2, 5, 1, 6, 1, 0, 8, 45, 45, 108, 111, 99, 107, 101, 100, 7, 0, 8, 1,
+        1, 98, 1, 0,
+    ];
+
+    fn sample_changes() -> Vec<ChangeWrapper> {
+        vec![
+            ChangeWrapper {
+                change: Change::ReleaseCommit {
+                    path: RelativePathBuf::from("crates/a"),
+                    version: Version::parse("1.2.3-alpha.1+build").unwrap(),
+                },
+                written: true,
+            },
+            ChangeWrapper {
+                change: Change::SavePackage {
+                    manifest: Manifest::parse_for_test(
+                        "crates/a/Cargo.toml",
+                        "[package]\nname = \"a\" # name\nversion = \"1.2.3\"\n",
+                    )
+                    .unwrap(),
+                },
+                written: false,
+            },
+            ChangeWrapper {
+                change: Change::Publish {
+                    name: "a".to_owned(),
+                    manifest_dir: RelativePathBuf::from("crates/a"),
+                    dry_run: true,
+                    no_verify: Some(NoVerify::Circular),
+                    allow_dirty: Some(AllowDirty::CircularDevDependency),
+                    remove_dev: true,
+                    args: vec![OsString::from("--locked")],
+                    circular_dev: Vec::new(),
+                    depends_on: vec!["b".to_owned()],
+                },
+                written: false,
+            },
+        ]
+    }
+
+    fn write_gz(path: &std::path::Path, bytes: &[u8]) {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+
+        let mut w = GzEncoder::new(std::fs::File::create(path).unwrap(), Compression::default());
+        w.write_all(bytes).unwrap();
+        w.finish().unwrap();
+    }
+
+    #[test]
+    fn changes_encoding_is_stable() {
+        assert_eq!(ENCODING.to_vec(&sample_changes()).unwrap(), FIXTURE);
+    }
+
+    #[test]
+    fn load_changes_reads_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("changes.gz");
+        write_gz(&path, FIXTURE);
+
+        let changes = load_changes(&path).unwrap().unwrap();
+        assert_eq!(ENCODING.to_vec(&changes).unwrap(), FIXTURE);
+
+        let Change::SavePackage { manifest } = &changes[1].change else {
+            panic!("expected SavePackage");
+        };
+
+        assert_eq!(
+            manifest.to_toml_string(),
+            "[package]\nname = \"a\" # name\nversion = \"1.2.3\"\n"
+        );
+    }
+
+    #[test]
+    fn load_changes_reports_field_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("changes.gz");
+        write_gz(&path, &FIXTURE[..FIXTURE.len() - 4]);
+
+        let error = load_changes(&path).err().unwrap().to_string();
+        assert!(error.starts_with("[2].change"), "{error}");
+        assert!(error.contains("(at byte"), "{error}");
     }
 }

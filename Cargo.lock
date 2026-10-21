@@ -3624,9 +3624,9 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
 name = "musli"
-version = "0.1.8"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8185bb48d06d8fee380b69da15dd7fbc4e07837a0f16b821100aeee2cbb5512b"
+checksum = "bbd43d8821042ad83d0bdc92f531296271a6681ad3bd580e832316e935f60ab7"
 dependencies = [
  "loom",
  "musli-core",
@@ -3636,18 +3636,18 @@ dependencies = [
 
 [[package]]
 name = "musli-core"
-version = "0.1.7"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e1cfc4a7a715d50ea600040608a185588a3448740496cdbac397ab61405ec53"
+checksum = "5e0c6f2d387aa3f6d787eba18246fde47362eda5963634497f3ca20996ff0238"
 dependencies = [
  "musli-macros",
 ]
 
 [[package]]
 name = "musli-macros"
-version = "0.1.7"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a997b2365215ab07528dc4944ef84bc41b6758a9ac1efa0c58466102d0e1b0e"
+checksum = "104ca0b0899d9e5103b0e104429c3d6ee3d6c85d7c3800a51bb33a31b7925f31"
 dependencies = [
  "proc-macro2",
  "quote",

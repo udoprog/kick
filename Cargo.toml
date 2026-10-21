@@ -30,7 +30,7 @@ futures-util = { version = "0.3.31", default-features = false }
 handlebars = "6.2.0"
 md5 = "0.8.0"
 minijinja = { version = "2.24.0", features = ["custom_syntax"] }
-musli = { version = "0.1.8", features = ["serde", "storage"] }
+musli = { version = "0.2.0", features = ["serde", "storage"] }
 nondestructive = { version = "0.0.28", features = ["serde-edits"] }
 # The version gix uses, for its progress tree and line renderer.
 prodash = { version = "31.0.1", default-features = false, features = ["progress-tree", "render-line", "render-line-crossterm", "render-line-autoconfigure", "unit-bytes"] }
