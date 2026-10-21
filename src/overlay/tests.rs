@@ -17,13 +17,19 @@ fn reads_see_pending_writes() {
     fs::write(&a, "one\n").unwrap();
 
     let overlay = Overlay::new();
-    assert_eq!(overlay.read_to_string(&a).unwrap().as_deref(), Some("one\n"));
+    assert_eq!(
+        overlay.read_to_string(&a).unwrap().as_deref(),
+        Some("one\n")
+    );
     assert!(!overlay.is_file(&new));
 
     overlay.write(&a, b"two\n".to_vec(), 0).unwrap();
     overlay.write(&new, b"new\n".to_vec(), 1).unwrap();
 
-    assert_eq!(overlay.read_to_string(&a).unwrap().as_deref(), Some("two\n"));
+    assert_eq!(
+        overlay.read_to_string(&a).unwrap().as_deref(),
+        Some("two\n")
+    );
     assert_eq!(
         overlay.read_to_string(&new).unwrap().as_deref(),
         Some("new\n")
@@ -62,7 +68,10 @@ fn writes_keep_the_first_original() {
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].original.as_deref(), Some(&b"one\n"[..]));
     assert_eq!(pending[0].content, b"three\n");
-    assert_eq!(pending[0].changes.iter().copied().collect::<Vec<_>>(), [0, 3]);
+    assert_eq!(
+        pending[0].changes.iter().copied().collect::<Vec<_>>(),
+        [0, 3]
+    );
 
     assert_eq!(
         overlay.expected(),
@@ -122,7 +131,10 @@ fn commit_saves_every_file() {
     }
 
     assert!(overlay.pending().is_empty());
-    assert_eq!(overlay.read_to_string(&a).unwrap().as_deref(), Some("two\n"));
+    assert_eq!(
+        overlay.read_to_string(&a).unwrap().as_deref(),
+        Some("two\n")
+    );
 }
 
 #[test]

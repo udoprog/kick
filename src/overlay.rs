@@ -155,8 +155,7 @@ impl Overlay {
         let entry = match files.entry(key) {
             std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
             std::collections::btree_map::Entry::Vacant(e) => {
-                let original =
-                    read_original(path).with_context(|| path.display().to_string())?;
+                let original = read_original(path).with_context(|| path.display().to_string())?;
 
                 e.insert(Entry {
                     display: path.to_owned(),

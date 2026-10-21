@@ -9,9 +9,9 @@ use crate::cargo;
 use crate::changes::Change;
 use crate::cli::WithRepos;
 use crate::cli::check;
-use crate::urls::Urls;
 use crate::ctxt::Ctxt;
 use crate::model::Repo;
+use crate::urls::Urls;
 use crate::version_groups::{self, PackageVersion, ResolvedGroups};
 
 #[derive(Default, Debug, Parser)]

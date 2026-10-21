@@ -294,18 +294,31 @@ repos/kick: foo-macros 0.1.0 (group: foo, foo-macros)
 ```
 
 When versions change, each changed crate is reported with its old and new
-version, along with the workspace version when it changes. Changes are staged
-like any others (see [Staged changes](#staged-changes)), and `--dry-run`
-prints what would be saved and committed without recording anything:
+version, along with the workspace version when it changes. The repo is then
+checked like `kick check` does as it is with the new versions, so that what
+needs fixing is fixed in the changed files, unless `--no-check` is specified.
+Changes are staged like any others (see [Staged changes](#staged-changes)), and
+`--dry-run` shows what would be saved and committed without recording
+anything:
 
 ```text
 > kick version --minor --dry-run --commit
 repos/kick: [workspace.package] version 0.1.0 -> 0.2.0
 repos/kick: foo 0.1.0 -> 0.2.0
 repos/kick: foo-macros 0.1.0 -> 0.2.0
-Would save repos/kick/Cargo.toml
-Would save repos/kick/foo-macros/Cargo.toml
-Would commit `Release 0.2.0` in repos/kick
+repos/kick/Cargo.toml:
+5    [workspace.package]
+6   -version = "0.1.0"
+    +version = "0.2.0"
+7    edition = "2024"
+repos/kick/foo-macros/Cargo.toml:
+1    [package]
+2    name = "foo-macros"
+3   -version = "0.1.0"
+    +version = "0.2.0"
+4    edition = "2024"
+2026-10-21T12:00:00.000000Z  INFO kick::changes: Would make commit `Release 0.2.0`
+2026-10-21T12:00:00.000000Z  INFO kick::changes: Would make tag `0.2.0`
 ```
 
 And much much more!
@@ -357,15 +370,18 @@ env:
 ## Staged changes
 
 If you specify `--save`, proposed changes that can be applied to a project
-will be applied. If `--save` is not specified the collection of changes will
-be saved to `changes.gz` (in the root) to be applied later using `kick
-apply`.
+will be applied. Every file a change writes is shown as a diff against what it
+was when the change was made. If `--save` is not specified the collection of
+changes will be saved to `changes.gz` (in the root) to be reviewed later using
+`kick changes`, and applied using `kick changes --save`.
 
 ```text
 > kick check
-repos/kick/README.md: Needs update
-repos/kick/src/main.rs: Needs update
-2023-04-13T15:05:34.162247Z  WARN kick: Not writing changes since `--save` was not specified
+repos/kick/README.md:
+3    A crate.
+4   -An old description.
+    +A new description.
+5    More text.
 2023-04-13T15:05:34.162252Z  INFO kick: Writing to changes.gz, use `kick changes` to review it later
 ```
 
@@ -373,10 +389,20 @@ Applying the staged changes:
 
 ```text
 > kick changes --save
-repos/kick/README.md: Fixing
-repos/kick/src/main.rs: Fixing
-2023-04-13T15:06:23.478579Z  INFO kick: Removing ../changes.gz
+repos/kick/README.md:
+3    A crate.
+4   -An old description.
+    +A new description.
+5    More text.
+repos/kick/README.md: Saved
 ```
+
+Files are only saved if they still have the content the changes were made
+from. If any of them changed since, or one fails to be saved, nothing is saved,
+files which were already saved are restored, and no release commit or publish
+is performed. The changes have to be made again by running the command which
+proposed them. Specify `--partial` to instead save every change which can be
+saved and keep the rest staged.
 
 <br>
 

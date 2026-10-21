@@ -1083,6 +1083,9 @@ impl fmt::Display for Line {
 }
 
 #[cfg(test)]
+mod staging_tests;
+
+#[cfg(test)]
 mod tests {
     use std::ffi::OsString;
     use std::io::Write;
@@ -1194,6 +1197,30 @@ mod tests {
         assert_eq!(failed, 3);
         let written = changes.iter().map(|c| c.written).collect::<Vec<_>>();
         assert_eq!(written, [false, true, false, false, true]);
+    }
+
+    #[test]
+    fn apply_all_skips_file_changes() {
+        let mut changes = [
+            ChangeWrapper {
+                change: Change::SavePackage {
+                    manifest: Manifest::parse_for_test("Cargo.toml", "[package]\n").unwrap(),
+                },
+                written: false,
+            },
+            change("action", false),
+        ];
+
+        let mut seen = 0;
+
+        let failed = apply_all(&mut changes, true, |_| {
+            seen += 1;
+            Ok(())
+        });
+
+        assert_eq!((failed, seen), (0, 1));
+        let written = changes.iter().map(|c| c.written).collect::<Vec<_>>();
+        assert_eq!(written, [false, true]);
     }
 
     #[test]

@@ -19,7 +19,8 @@ pub(crate) fn entry(cx: &Ctxt<'_>, changes_path: &Path) -> Result<()> {
 
     for change in staged.changes {
         let what = change.change.to_string();
-        cx.stage(change).with_context(|| anyhow!("Staging: {what}"))?;
+        cx.stage(change)
+            .with_context(|| anyhow!("Staging: {what}"))?;
     }
 
     Ok(())
