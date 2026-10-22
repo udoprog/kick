@@ -354,8 +354,9 @@ fn version(
         if let Some(package) = manifest.as_package() {
             let name = package.name()?;
 
-            if let Some(VersionChange { new: version, .. }) = versions.get(name) {
+            if let Some(VersionChange { old, new: version }) = versions.get(name) {
                 let root = cx.to_path(modified.dir());
+                let old_string = old.to_string();
                 let version_string = version.to_string();
 
                 for replacement in cx.config.version(repo) {
@@ -365,7 +366,7 @@ fn version(
 
                     replaced.extend(
                         replacement
-                            .replace_in(&cx.overlay, &root, "version", &version_string)
+                            .replace_in(&cx.overlay, &root, "version", &old_string, &version_string)
                             .context("Failed to replace version string")?,
                     );
                 }

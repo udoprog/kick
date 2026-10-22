@@ -6,7 +6,8 @@ should be replaced with newly updated version.
 
 Note that replacement will be performed when a version is bumped, and only
 patterns which matches the version you previously bumped *from* will be
-replaced.
+replaced. A match which is part of a longer dotted number, like `0.0.0` in
+`0.0.0.0:3004`, is never replaced.
 
 ### `[[version]]`
 

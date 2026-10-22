@@ -771,12 +771,14 @@ pub(crate) struct Replacement {
 }
 
 impl Replacement {
-    /// Find and perform replacements in the given root path.
+    /// Find and perform replacements in the given root path, replacing only
+    /// captures of `group` which are exactly `from`.
     pub(crate) fn replace_in(
         &self,
         overlay: &Overlay,
         root: &Path,
         group: &str,
+        from: &str,
         replacement: &str,
     ) -> Result<Vec<Replaced>> {
         let mut output = Vec::new();
@@ -801,7 +803,9 @@ impl Replacement {
 
                 for cap in self.pattern.captures_iter(&content) {
                     if let Some(m) = cap.name(group)
+                        && m.as_bytes() == from.as_bytes()
                         && m.as_bytes() != replacement.as_bytes()
+                        && !is_inside_number(&content, m.range())
                     {
                         ranges.push(m.range());
                     }
@@ -820,6 +824,20 @@ impl Replacement {
 
         Ok(output)
     }
+}
+
+/// Test if `range` is part of a longer dotted number, like `0.0.0` is in
+/// `0.0.0.0:3004`.
+fn is_inside_number(content: &[u8], range: Range<usize>) -> bool {
+    let before = content[..range.start].last();
+    let mut after = content[range.end..].iter();
+
+    matches!(before, Some(b) if b.is_ascii_digit() || *b == b'.')
+        || match after.next() {
+            Some(b) if b.is_ascii_digit() => true,
+            Some(b'.') => after.next().is_some_and(u8::is_ascii_digit),
+            _ => false,
+        }
 }
 
 /// Which operating system we are on.
@@ -3201,14 +3219,55 @@ mod tests {
     use relative_path::RelativePath;
 
     use super::{
-        Build, CommandLine, ConfigCommand, Cx, Deploy, DeployKind, Section, SystemdScope,
-        load_base, validate_global_repo,
+        Build, CommandLine, ConfigCommand, Cx, Deploy, DeployKind, Replacement, Section,
+        SystemdScope, load_base, validate_global_repo,
     };
     use crate::ctxt::Paths;
     use crate::global::Global;
     use crate::shell::Shell;
     use crate::systemd;
     use crate::templates::Templating;
+
+    #[test]
+    fn version_replacement_only_replaces_old_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let docs = concat!(
+            "//! kick = \"0.1.0\"\n",
+            "//! other = \"4.1.1\"\n",
+            "//! version = \">= 0.1.0\"\n",
+            "//! args = [\"--bind\", \"10.1.0.1:3004\"]\n",
+            "//! args = [\"--bind\", \"10.0.1.0:3004\"]\n",
+        );
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/main.rs"), docs).unwrap();
+
+        let replacement = Replacement {
+            package_name: None,
+            paths: vec!["src/**/*.rs".into()],
+            pattern: regex::bytes::Regex::new(
+                "//!\\s+[a-z-]+\\s*=\\s*.+(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+).+",
+            )
+            .unwrap(),
+        };
+
+        let overlay = crate::overlay::Overlay::new();
+        let replaced = replacement
+            .replace_in(&overlay, dir.path(), "version", "0.1.0", "0.2.0")
+            .unwrap();
+
+        let [replaced] = &replaced[..] else {
+            panic!("expected one replaced file");
+        };
+
+        let mut out = Vec::new();
+        replaced.write_ranges(&mut out).unwrap();
+
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            docs.replacen("\"0.1.0\"", "\"0.2.0\"", 1)
+                .replacen(">= 0.1.0", ">= 0.2.0", 1)
+        );
+    }
 
     fn line(line: &str, sudo: bool) -> ConfigCommand {
         ConfigCommand {
