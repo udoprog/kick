@@ -1,15 +1,10 @@
-use std::path::Path;
-
 use anyhow::{Context, Result, anyhow};
 
-use crate::changes;
+use crate::changes::ChangesFile;
 use crate::ctxt::Ctxt;
 
-pub(crate) fn entry(cx: &Ctxt<'_>, changes_path: &Path) -> Result<()> {
-    let changes = changes::load_changes(changes_path)
-        .with_context(|| anyhow!("{}", changes_path.display()))?;
-
-    let Some(staged) = changes else {
+pub(crate) fn entry(cx: &Ctxt<'_>, changes: &ChangesFile) -> Result<()> {
+    let Some(staged) = changes.load()? else {
         return Ok(());
     };
 

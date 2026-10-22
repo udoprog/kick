@@ -264,21 +264,24 @@ fn save_refuses_files_changed_since_staged() {
 #[test]
 fn staged_changes_are_verified_when_loaded() {
     let project = Project::new();
-    let changes_path = project.dir.path().join("changes.gz");
+    let changes_file = super::ChangesFile {
+        path: project.dir.path().join("changes.gz"),
+        legacy: None,
+    };
 
     let ((), cx) = project.with_cx(|r| crate::cli::version::entry(r, &version(&["--minor"])));
-    super::save_changes(&cx.changes(), &cx.overlay.expected(), &changes_path).unwrap();
+    super::save_changes(&cx.changes(), &cx.overlay.expected(), &changes_file.path).unwrap();
     drop(cx);
 
     // Loading staged changes shows the same diff.
-    let ((), cx) = project.with_cx(|r| crate::cli::changes::entry(&r.cx, &changes_path));
+    let ((), cx) = project.with_cx(|r| crate::cli::changes::entry(&r.cx, &changes_file));
     let (output, _) = apply(&cx, false, false);
     assert!(output.contains("+proj = \"0.2.0\""), "{output}");
     drop(cx);
 
     fs::write(project.path("src/lib.rs"), "// edited\n").unwrap();
 
-    let ((), cx) = project.with_cx(|r| crate::cli::changes::entry(&r.cx, &changes_path));
+    let ((), cx) = project.with_cx(|r| crate::cli::changes::entry(&r.cx, &changes_file));
     let (_, failed) = apply(&cx, true, false);
     assert!(failed > 0);
     assert_eq!(project.read("README.md"), README);
@@ -292,7 +295,10 @@ fn upgrade_is_staged() {
     use crate::changes::{Change, UpgradedFile};
 
     let project = Project::new();
-    let changes_path = project.dir.path().join("changes.gz");
+    let changes_file = super::ChangesFile {
+        path: project.dir.path().join("changes.gz"),
+        legacy: None,
+    };
     let original = project.read("Cargo.toml");
     let upgraded = original.replace(
         "edition = \"2024\"",
@@ -314,10 +320,10 @@ fn upgrade_is_staged() {
     assert_eq!(failed, 0);
     assert!(output.contains("+serde = \"1.0.200\""), "{output}");
     assert_eq!(project.read("Cargo.toml"), original);
-    super::save_changes(&cx.changes(), &cx.overlay.expected(), &changes_path).unwrap();
+    super::save_changes(&cx.changes(), &cx.overlay.expected(), &changes_file.path).unwrap();
     drop(cx);
 
-    let ((), cx) = project.with_cx(|r| crate::cli::changes::entry(&r.cx, &changes_path));
+    let ((), cx) = project.with_cx(|r| crate::cli::changes::entry(&r.cx, &changes_file));
     let (output, failed) = apply(&cx, true, false);
     assert_eq!(failed, 0);
     assert!(output.contains("Cargo.toml: Saved"), "{output}");

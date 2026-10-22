@@ -46,6 +46,106 @@ pub(crate) struct Staged {
     pub(crate) expected: Vec<Expected>,
 }
 
+/// Where staged changes are kept for a project.
+pub(crate) struct ChangesFile {
+    /// The file staged changes are written to.
+    pub(crate) path: PathBuf,
+    /// Where older versions of kick kept them, read while `path` does not
+    /// exist and removed once kick next saves or clears staged changes.
+    pub(crate) legacy: Option<PathBuf>,
+}
+
+impl ChangesFile {
+    /// Locate the staged changes for the project at `root` under the user's
+    /// state directory `state`, or the global repos' when `global` is set.
+    /// `legacy` is the directory older versions of kick wrote them to.
+    pub(crate) fn new(state: Option<&Path>, root: &Path, global: bool, legacy: &Path) -> Self {
+        let legacy = legacy.join("changes.gz");
+
+        let Some(state) = state else {
+            return Self {
+                path: legacy,
+                legacy: None,
+            };
+        };
+
+        let path = if global {
+            state.join("global-changes.gz")
+        } else {
+            let root = root.canonicalize().unwrap_or_else(|_| root.to_owned());
+            let mut name = escape_path(&root);
+            name.push_str(".gz");
+            state.join("projects").join(name)
+        };
+
+        Self {
+            path,
+            legacy: Some(legacy),
+        }
+    }
+
+    /// Load staged changes, falling back to the legacy file.
+    pub(crate) fn load(&self) -> Result<Option<Staged>> {
+        let path = match &self.legacy {
+            Some(legacy) if !self.path.exists() && legacy.exists() => legacy,
+            _ => &self.path,
+        };
+
+        load_changes(path).with_context(|| anyhow!("{}", path.display()))
+    }
+
+    /// Save staged changes, removing the legacy file.
+    pub(crate) fn save(&self, changes: &[ChangeWrapper], expected: &[Expected]) -> Result<()> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).with_context(|| anyhow!("{}", parent.display()))?;
+        }
+
+        save_changes(changes, expected, &self.path)
+            .with_context(|| anyhow!("{}", self.path.display()))?;
+        self.remove_legacy()
+    }
+
+    /// Remove any staged changes.
+    pub(crate) fn clear(&self) -> Result<()> {
+        remove_if_exists(&self.path)?;
+        self.remove_legacy()
+    }
+
+    fn remove_legacy(&self) -> Result<()> {
+        match &self.legacy {
+            Some(legacy) => remove_if_exists(legacy),
+            None => Ok(()),
+        }
+    }
+}
+
+fn remove_if_exists(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).context(path.display().to_string()),
+    }
+}
+
+/// Escape a path into a single readable file name, percent-encoding every
+/// byte other than ASCII alphanumerics, `-`, `.` and `_`.
+fn escape_path(path: &Path) -> String {
+    use std::fmt::Write as _;
+
+    let path = path.to_string_lossy();
+    let mut out = String::with_capacity(path.len());
+
+    for b in path.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_') {
+            out.push(b as char);
+        } else {
+            _ = write!(out, "%{b:02X}");
+        }
+    }
+
+    out
+}
+
 /// Load staged changes from the given path.
 pub(crate) fn load_changes(path: &Path) -> Result<Option<Staged>> {
     use std::io::Read;
@@ -1119,15 +1219,17 @@ mod staging_tests;
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::fs;
     use std::io::Write;
+    use std::path::Path;
 
     use anyhow::bail;
     use relative_path::RelativePathBuf;
     use semver::Version;
 
     use super::{
-        AllowDirty, Change, ChangeWrapper, ENCODING, Expected, NoVerify, apply_all, load_changes,
-        save_changes,
+        AllowDirty, Change, ChangeWrapper, ChangesFile, ENCODING, Expected, NoVerify, apply_all,
+        escape_path, load_changes, save_changes,
     };
     use crate::cargo::Manifest;
 
@@ -1431,6 +1533,65 @@ mod tests {
         let staged = load_changes(&path).unwrap().unwrap();
         assert_eq!(staged.expected, expected);
         assert_eq!(ENCODING.to_vec(&staged.changes).unwrap(), FIXTURE);
+    }
+
+    #[test]
+    fn escape_path_is_one_readable_name() {
+        assert_eq!(
+            escape_path(Path::new("/home/me/my repo.d/a-b_c")),
+            "%2Fhome%2Fme%2Fmy%20repo.d%2Fa-b_c"
+        );
+        assert_eq!(escape_path(Path::new("/a%2Fb")), "%2Fa%252Fb");
+    }
+
+    #[test]
+    fn changes_file_is_kept_per_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+
+        let fa = ChangesFile::new(Some(&state), &a, false, &a);
+        let fb = ChangesFile::new(Some(&state), &b, false, &b);
+        let global = ChangesFile::new(Some(&state), &a, true, &state);
+
+        assert_eq!(fa.path.parent().unwrap(), state.join("projects"));
+        assert_ne!(fa.path, fb.path);
+        assert_eq!(global.path, state.join("global-changes.gz"));
+        assert_eq!(fa.legacy.as_deref(), Some(&*a.join("changes.gz")));
+
+        let without = ChangesFile::new(None, &a, false, &a);
+        assert_eq!(without.path, a.join("changes.gz"));
+        assert!(without.legacy.is_none());
+    }
+
+    #[test]
+    fn changes_file_moves_legacy_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let root = dir.path().join("project");
+        fs::create_dir_all(&root).unwrap();
+        let legacy = root.join("changes.gz");
+        write_gz(&legacy, FIXTURE);
+
+        let file = ChangesFile::new(Some(&state), &root, false, &root);
+        let staged = file.load().unwrap().unwrap();
+        assert_eq!(ENCODING.to_vec(&staged.changes).unwrap(), FIXTURE);
+
+        file.save(&staged.changes, &staged.expected).unwrap();
+        assert!(file.path.is_file());
+        assert!(!legacy.exists());
+
+        let staged = file.load().unwrap().unwrap();
+        assert_eq!(ENCODING.to_vec(&staged.changes).unwrap(), FIXTURE);
+
+        write_gz(&legacy, FIXTURE);
+        file.clear().unwrap();
+        assert!(!file.path.exists());
+        assert!(!legacy.exists());
+        assert!(file.load().unwrap().is_none());
     }
 
     #[test]

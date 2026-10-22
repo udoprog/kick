@@ -52,7 +52,7 @@ README.md:
 35
 36   The other alternative is to run kick over a collection of repositories. To
 37   add a repo to kick you can add the following to a `Kick.toml` file:
-2025-12-06T06:50:42.488966Z  INFO kick: Writing to changes.gz, use `kick changes` to review it later
+2025-12-06T06:50:42.488966Z  INFO kick: Writing to /home/user/.local/state/kick/projects/%2Fhome%2Fuser%2Frepos.gz, use `kick changes` to review it later
 ```
 
 > Note that kick uses a nondestructive approach, so running any command like
@@ -379,8 +379,13 @@ env:
 If you specify `--save`, proposed changes that can be applied to a project
 will be applied. Every file a change writes is shown as a diff against what it
 was when the change was made. If `--save` is not specified the collection of
-changes will be saved to `changes.gz` (in the root) to be reviewed later using
-`kick changes`, and applied using `kick changes --save`.
+changes will be saved to be reviewed later using `kick changes`, and applied
+using `kick changes --save`.
+
+Staged changes are kept per project in the user's state directory, such as
+`~/.local/state/kick/projects/` (`$XDG_STATE_HOME/kick`) on Linux, so they
+never end up in the project itself. A `changes.gz` left in the root by older
+versions of kick is still read, and removed once changes are saved again.
 
 ```text
 > kick check
@@ -389,7 +394,7 @@ repos/kick/README.md:
 4   -An old description.
     +A new description.
 5    More text.
-2023-04-13T15:05:34.162252Z  INFO kick: Writing to changes.gz, use `kick changes` to review it later
+2023-04-13T15:05:34.162252Z  INFO kick: Writing to /home/user/.local/state/kick/projects/%2Fhome%2Fuser%2Frepos.gz, use `kick changes` to review it later
 ```
 
 Applying the staged changes:

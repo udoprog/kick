@@ -49,7 +49,7 @@
 //! 35
 //! 36   The other alternative is to run kick over a collection of repositories. To
 //! 37   add a repo to kick you can add the following to a `Kick.toml` file:
-//! 2025-12-06T06:50:42.488966Z  INFO kick: Writing to changes.gz, use `kick changes` to review it later
+//! 2025-12-06T06:50:42.488966Z  INFO kick: Writing to /home/user/.local/state/kick/projects/%2Fhome%2Fuser%2Frepos.gz, use `kick changes` to review it later
 //! ```
 //!
 //! > Note that kick uses a nondestructive approach, so running any command like
@@ -376,8 +376,13 @@
 //! If you specify `--save`, proposed changes that can be applied to a project
 //! will be applied. Every file a change writes is shown as a diff against what it
 //! was when the change was made. If `--save` is not specified the collection of
-//! changes will be saved to `changes.gz` (in the root) to be reviewed later using
-//! `kick changes`, and applied using `kick changes --save`.
+//! changes will be saved to be reviewed later using `kick changes`, and applied
+//! using `kick changes --save`.
+//!
+//! Staged changes are kept per project in the user's state directory, such as
+//! `~/.local/state/kick/projects/` (`$XDG_STATE_HOME/kick`) on Linux, so they
+//! never end up in the project itself. A `changes.gz` left in the root by older
+//! versions of kick is still read, and removed once changes are saved again.
 //!
 //! ```text
 //! > kick check
@@ -386,7 +391,7 @@
 //! 4   -An old description.
 //!     +A new description.
 //! 5    More text.
-//! 2023-04-13T15:05:34.162252Z  INFO kick: Writing to changes.gz, use `kick changes` to review it later
+//! 2023-04-13T15:05:34.162252Z  INFO kick: Writing to /home/user/.local/state/kick/projects/%2Fhome%2Fuser%2Frepos.gz, use `kick changes` to review it later
 //! ```
 //!
 //! Applying the staged changes:
@@ -1566,7 +1571,14 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         tracing::info!("using worktree {} for repo {repo}", dir.display());
     }
 
-    let changes_path = state_dir.join("changes.gz");
+    let changes_file = changes::ChangesFile::new(
+        project_dirs
+            .as_ref()
+            .map(|p| p.state_dir().unwrap_or_else(|| p.data_local_dir())),
+        &root,
+        global_repos,
+        &state_dir,
+    );
 
     let git_credentials = match system.git.first() {
         Some(git) => match git.get_credentials("github.com", "https") {
@@ -1649,7 +1661,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             return Ok(ExitCode::SUCCESS);
         }
         Command::Changes(..) => {
-            cli::changes::entry(&with_repos.cx, &changes_path)?;
+            cli::changes::entry(&with_repos.cx, &changes_file)?;
         }
         Command::Update(shared) => {
             cli::update::entry(&mut with_repos.cx, shared).await?;
@@ -1739,16 +1751,11 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     } else if cx.can_save() {
         tracing::info!(
             "Writing to {}, use `kick changes` to review it later",
-            changes_path.display()
+            changes_file.path.display()
         );
-        changes::save_changes(&cx.changes(), &cx.overlay.expected(), &changes_path)
-            .with_context(|| anyhow!("{}", changes_path.display()))?;
+        changes_file.save(&cx.changes(), &cx.overlay.expected())?;
     } else {
-        match std::fs::remove_file(&changes_path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => Err(error).context(changes_path.display().to_string())?,
-        }
+        changes_file.clear()?;
     }
 
     let mut outcome = cx.outcome();
