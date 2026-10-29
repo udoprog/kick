@@ -43,7 +43,7 @@ where
         .get_template(NAME)
         .map_err(|error| anyhow!("Missing template: {error}"))?;
 
-    Ok(template.render(data)?)
+    Ok(template.render(minijinja::value::Serde(data))?)
 }
 
 /// Which kind of unit is being rendered.
@@ -538,7 +538,12 @@ fn env() -> minijinja::Environment<'static> {
     env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
     // NB: Unit files are expected to end with a newline like any other text
     // file, and minijinja would otherwise eat the one the template ends with.
-    env.set_keep_trailing_newline(true);
+    env.set_syntax(
+        minijinja::syntax::SyntaxConfig::builder()
+            .keep_trailing_newline(true)
+            .build()
+            .expect("default syntax with a trailing newline is valid"),
+    );
     env
 }
 

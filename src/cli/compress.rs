@@ -8,7 +8,7 @@ use std::time::SystemTime;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
 use relative_path::RelativePath;
-use time::OffsetDateTime;
+use time::{OffsetDateTime, PrimitiveDateTime};
 
 use crate::cli::WithRepos;
 use crate::config::PackageFile;
@@ -238,6 +238,7 @@ impl Archive for ZipArchive {
 
         if let Some(mtime) = mtime {
             let from = OffsetDateTime::from(mtime);
+            let from = PrimitiveDateTime::new(from.date(), from.time());
             options = options.last_modified_time(DateTime::try_from(from)?);
         }
 
