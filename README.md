@@ -39,7 +39,8 @@ This is an overview of the sections in the README:
 Kick can also be used *without* configuration in any standalone repository.
 This is really all you need to get started, I frequently make use of `kick`
 commands in regular repositories. The only pre-requisite is that there is a
-`.git` repo with an `origin` specified:
+`.git` repo. Its `origin` remote identifies the project, and without one
+the repo's directory name is used as the project name:
 
 ```sh
 $> kick check

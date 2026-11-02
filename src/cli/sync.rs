@@ -2,7 +2,7 @@ use core::str::FromStr;
 
 use std::fs;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use clap::Parser;
 
 use crate::Repo;
@@ -73,7 +73,10 @@ fn sync(cx: &Ctxt<'_>, repo: &Repo, opts: &Opts) -> Result<()> {
 
                     let git = cx.require_git()?;
                     git.init(&path)?;
-                    git.remote_add(&path, "origin", repo.url())?;
+                    let url = repo
+                        .url()
+                        .with_context(|| anyhow!("{}: no url configured", repo.path()))?;
+                    git.remote_add(&path, "origin", url)?;
                     git.fetch(&path, "origin", branch)?;
                     git.force_checkout(&path, branch)?;
 

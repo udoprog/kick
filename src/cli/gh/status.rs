@@ -195,7 +195,10 @@ impl Outcome<'_> {
 
         let mut ok = true;
 
-        writeln!(o, "{}: {}", self.path, self.repo.url())?;
+        match self.repo.url() {
+            Some(url) => writeln!(o, "{}: {url}", self.path)?,
+            None => writeln!(o, "{}", self.path)?,
+        }
 
         for Conclusion { id, run, jobs } in self.conclusions {
             let failure = run.conclusion.as_deref() == Some("failure");

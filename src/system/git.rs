@@ -397,16 +397,27 @@ impl Git {
     /// Get remote url.
     pub(crate) fn get_url(&self, dir: impl AsRef<Path>, remote: &str) -> Result<Url> {
         let dir = dir.as_ref();
+
+        let Some(url) = self.remote_url(dir, remote)? else {
+            bail!(
+                "Repository at {} has no `{remote}` remote; kick uses it to identify the project. Add one with `git remote add {remote} <url>`",
+                absolute(dir).display()
+            );
+        };
+
+        Ok(url)
+    }
+
+    /// Get remote url, or `None` if the remote does not exist.
+    pub(crate) fn remote_url(&self, dir: impl AsRef<Path>, remote: &str) -> Result<Option<Url>> {
+        let dir = dir.as_ref();
         let args = ["remote", "get-url", remote];
         let output = self.run(dir, &args)?;
 
         if !output.status.success() {
             // NB: git exits with 2 when the remote does not exist.
             if output.status.code() == Some(2) {
-                bail!(
-                    "Repository at {} has no `{remote}` remote; kick uses it to identify the project. Add one with `git remote add {remote} <url>`",
-                    absolute(dir).display()
-                );
+                return Ok(None);
             }
 
             return Err(failed(&output)).with_context(|| running(dir, &args));
@@ -414,7 +425,9 @@ impl Git {
 
         let url = String::from_utf8(output.stdout)?;
         let url = url.trim();
-        parse_url(url).with_context(|| format!("Parsing url of remote `{remote}`: {url}"))
+        let url =
+            parse_url(url).with_context(|| format!("Parsing url of remote `{remote}`: {url}"))?;
+        Ok(Some(url))
     }
 
     /// Get credentials.

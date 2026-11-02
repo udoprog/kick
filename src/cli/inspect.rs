@@ -401,7 +401,11 @@ fn build(cx: &Inspect<'_>, opts: &Opts) -> Report {
         let selected = exclusion.is_none() && cx.collected.selection_error.is_none();
 
         let sources = repo_sources(repo, &cx.collected.sources);
-        let mut urls = vec![repo.url().to_string()];
+        let mut urls = repo
+            .url()
+            .map(|url| url.to_string())
+            .into_iter()
+            .collect::<Vec<_>>();
 
         if let Some(c) = cx.config.repos.get(repo.path()) {
             for url in &c.urls {

@@ -7,7 +7,7 @@ Set the name of the primary crate.
 
 By default the name is derived as the last component of the repo it belongs to,
 so if an origin matching `https://github.com/udoprog/awesome` the name would be
-`awesome`.
+`awesome`. A repo without a GitHub `origin` uses the name of its directory.
 
 This is primarily used to figure out which is the primary crate in a workspace.
 It is also the name the repo is selected by with `-n`/`--repo-name`, unless an

@@ -22,7 +22,10 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Crates>> {
         None => repo.path().join(CARGO_TOML),
     };
 
-    let primary_package = cx.config.name(repo).or(repo.repo().map(|repo| repo.name));
+    let primary_package = match cx.config.name(repo).or(repo.repo().map(|repo| repo.name)) {
+        Some(name) => Some(Box::from(name)),
+        None => dir_name(cx, repo.path()),
+    };
 
     let Some(manifest) = cargo::open(cx, &manifest_path)? else {
         return Ok(None);
@@ -69,7 +72,7 @@ pub(crate) fn open(cx: &Ctxt<'_>, repo: &RepoRef) -> Result<Option<Crates>> {
     }
 
     Ok(Some(Crates {
-        primary_package: primary_package.map(Box::from),
+        primary_package,
         manifests,
         packages,
         workspaces,
@@ -192,6 +195,17 @@ impl Crates {
             candidates = names.join(", ")
         ))
     }
+}
+
+/// The last component of the repo's directory, which for the repo at the root
+/// is the last component of the root.
+fn dir_name(cx: &Ctxt<'_>, path: &RelativePath) -> Option<Box<str>> {
+    if let Some(name) = path.normalize().file_name() {
+        return Some(Box::from(name));
+    }
+
+    let root = cx.paths.root.canonicalize().ok()?;
+    Some(Box::from(root.file_name()?.to_str()?))
 }
 
 /// A value fetched from a package that keeps track of where it is defined.

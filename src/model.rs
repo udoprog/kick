@@ -120,17 +120,17 @@ impl fmt::Display for RepoSource {
 pub(crate) struct RepoRef {
     /// Path to module.
     path: RelativePathBuf,
-    /// URL of module.
+    /// URL of module, if it has one.
     #[musli(with = musli::serde)]
-    url: Url,
+    url: Option<Url>,
 }
 
 impl RepoRef {
     #[cfg(test)]
-    pub(crate) fn for_test(path: &str, url: Url) -> Self {
+    pub(crate) fn for_test(path: &str, url: impl Into<Option<Url>>) -> Self {
         Self {
             path: RelativePathBuf::from(path),
-            url,
+            url: url.into(),
         }
     }
 
@@ -138,34 +138,38 @@ impl RepoRef {
         &self.path
     }
 
-    pub(crate) fn url(&self) -> &Url {
-        &self.url
+    pub(crate) fn url(&self) -> Option<&Url> {
+        self.url.as_ref()
     }
 
     pub(crate) fn push_url(&self) -> Option<String> {
-        match self.url.host_str() {
+        match self.url.as_ref()?.host_str() {
             Some("github.com") => self.github_push_url(),
             _ => None,
         }
     }
 
     fn github_push_url(&self) -> Option<String> {
-        if !matches!(self.url.scheme(), "https" | "http") {
+        let url = self.url.as_ref()?;
+
+        if !matches!(url.scheme(), "https" | "http") {
             return None;
         }
 
         Some(format!(
             "git@github.com:{}.git",
-            self.url.path().trim_matches('/')
+            url.path().trim_matches('/')
         ))
     }
 
     pub(crate) fn repo(&self) -> Option<RepoPath<'_>> {
-        let Some("github.com") = self.url.domain() else {
+        let url = self.url.as_ref()?;
+
+        let Some("github.com") = url.domain() else {
             return None;
         };
 
-        let path = self.url.path().trim_matches('/');
+        let path = url.path().trim_matches('/');
         let (owner, name) = path.split_once('/')?;
         let name = name.strip_suffix(".git").unwrap_or(name);
         Some(RepoPath { owner, name })
@@ -190,7 +194,8 @@ impl RepoRef {
     fn seed_name(&self) -> &str {
         let name = self
             .url
-            .path_segments()
+            .as_ref()
+            .and_then(|url| url.path_segments())
             .and_then(|mut segments| segments.rfind(|s| !s.is_empty()))
             .map(|s| s.strip_suffix(".git").unwrap_or(s))
             .filter(|s| !s.is_empty());
@@ -273,12 +278,15 @@ impl Repo {
     pub(crate) fn new(
         sources: impl IntoIterator<Item = RepoSource>,
         path: RelativePathBuf,
-        url: Url,
+        url: impl Into<Option<Url>>,
     ) -> Self {
         Self {
             inner: Rc::new(RepoInner {
                 sources: sources.into_iter().collect(),
-                symbolic: RepoRef { path, url },
+                symbolic: RepoRef {
+                    path,
+                    url: url.into(),
+                },
                 state: Cell::new(State::Pending),
                 crates: OnceCell::new(),
             }),
@@ -385,7 +393,7 @@ impl Deref for Repo {
 pub(crate) fn load_from_git(
     root: &Path,
     git: Option<&Git>,
-) -> Result<Option<(RelativePathBuf, Url)>> {
+) -> Result<Option<(RelativePathBuf, Option<Url>)>> {
     tracing::trace!("Trying to load from git");
 
     let git_path = root.join(".git");
@@ -402,7 +410,7 @@ pub(crate) fn load_from_git(
     match url_from_github_action() {
         Ok(url) => {
             tracing::trace!("Using GitHub Actions URL: {url}");
-            return Ok(Some((RelativePathBuf::from("."), url)));
+            return Ok(Some((RelativePathBuf::from("."), Some(url))));
         }
         Err(error) => {
             tracing::trace!("Could not build repo from GitHub Actions");
@@ -417,11 +425,11 @@ pub(crate) fn load_from_git(
 }
 
 /// Process module information from a git repository.
-fn from_git<P>(git: &Git, root: P) -> Result<(RelativePathBuf, Url)>
+fn from_git<P>(git: &Git, root: P) -> Result<(RelativePathBuf, Option<Url>)>
 where
     P: AsRef<Path>,
 {
-    let url = git.get_url(root, "origin")?;
+    let url = git.remote_url(root, "origin")?;
     Ok((RelativePathBuf::from("."), url))
 }
 

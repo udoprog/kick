@@ -81,12 +81,12 @@ pub(crate) fn check_crates(
         None => None,
     };
 
-    let repo_url = repo.url().to_string();
+    let repo_url = repo.url().map(|url| url.to_string());
 
     let update_params = UpdateParams {
         license: Some(cx.config.license(repo)),
         readme: Some(readme::README_MD),
-        repository: Some(&repo_url),
+        repository: repo_url.as_deref(),
         documentation: documentation.as_deref(),
         authors: cx.config.authors(repo),
     };
@@ -239,4 +239,93 @@ where
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::fs;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    use crate::config::{self, Distribution, Os};
+    use crate::ctxt::{Ctxt, Paths};
+    use crate::env::Env;
+    use crate::overlay::Overlay;
+    use crate::repo_sets::RepoSets;
+    use crate::system::{Git, System};
+    use crate::templates::Templating;
+    use crate::urls::Urls;
+    use crate::worktree::tests::git;
+
+    #[test]
+    fn primary_package_from_directory_without_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap().join("beta");
+
+        for name in ["alpha", "beta"] {
+            fs::create_dir_all(root.join(name).join("src")).unwrap();
+            fs::write(
+                root.join(name).join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+            )
+            .unwrap();
+            fs::write(root.join(name).join("src/lib.rs"), "").unwrap();
+        }
+
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"alpha\", \"beta\"]\n",
+        )
+        .unwrap();
+
+        git(dir.path(), &["init", "-q", root.to_str().unwrap()]);
+
+        let templating = Templating::new().unwrap();
+        let defaults = config::defaults();
+
+        let paths = Paths {
+            root: &root,
+            current: None,
+            config: None,
+            cache: None,
+            redirect: None,
+        };
+
+        let loaded = config::load_all_with(paths, &templating, &defaults, None);
+        assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+
+        let git_command = Git::new("git".into());
+        let (repos, _) = crate::collect_repos(&loaded.config, &root, Some(&git_command)).unwrap();
+        assert_eq!(repos.len(), 1);
+        assert!(repos[0].url().is_none());
+
+        let mut sets = RepoSets::new(dir.path().join("sets")).unwrap();
+        let system = System::default();
+        let env = Env::new();
+
+        let cx = Ctxt {
+            term: Arc::new(AtomicBool::new(false)),
+            system: &system,
+            git_credentials: &None,
+            os: Os::Linux,
+            dist: Distribution::Other,
+            paths,
+            config: &loaded.config,
+            repos: &repos,
+            rustc_version: None,
+            warnings: RefCell::new(Vec::new()),
+            changes: RefCell::new(Vec::new()),
+            sets: &mut sets,
+            env: &env,
+            overlay: Overlay::new(),
+        };
+
+        let repo = &repos[0];
+        let crates = repo.workspace(&cx).unwrap();
+        let primary = crates.primary_package().unwrap();
+        assert_eq!(primary.ensure_package().unwrap().name().unwrap(), "beta");
+
+        super::check(&cx, repo, &mut Urls::default()).unwrap();
+    }
 }
