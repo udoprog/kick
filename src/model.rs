@@ -126,6 +126,14 @@ pub(crate) struct RepoRef {
 }
 
 impl RepoRef {
+    #[cfg(test)]
+    pub(crate) fn for_test(path: &str, url: Url) -> Self {
+        Self {
+            path: RelativePathBuf::from(path),
+            url,
+        }
+    }
+
     pub(crate) fn path(&self) -> &RelativePath {
         &self.path
     }
@@ -159,6 +167,7 @@ impl RepoRef {
 
         let path = self.url.path().trim_matches('/');
         let (owner, name) = path.split_once('/')?;
+        let name = name.strip_suffix(".git").unwrap_or(name);
         Some(RepoPath { owner, name })
     }
 
@@ -441,16 +450,12 @@ fn url_from_github_action() -> Result<Url> {
 
 #[cfg(test)]
 mod tests {
-    use relative_path::RelativePathBuf;
     use url::Url;
 
     use super::RepoRef;
 
     fn repo(path: &str, url: &str) -> RepoRef {
-        RepoRef {
-            path: RelativePathBuf::from(path),
-            url: Url::parse(url).unwrap(),
-        }
+        RepoRef::for_test(path, Url::parse(url).unwrap())
     }
 
     fn cron(repo: &RepoRef) -> String {
@@ -483,6 +488,24 @@ mod tests {
             cron(&repo(".", "https://github.com/udoprog/nondestructive/")),
             "25 9 * * 3"
         );
+    }
+
+    #[test]
+    fn repo_strips_git_suffix() {
+        for url in [
+            "https://github.com/owner/name",
+            "https://github.com/owner/name.git",
+            "https://github.com/owner/name.git/",
+        ] {
+            let r = repo(".", url);
+            let path = r.repo().unwrap();
+            assert_eq!((path.owner, path.name), ("owner", "name"), "url {url:?}");
+        }
+
+        let url = crate::system::git::parse_url("git@github.com:owner/name.git").unwrap();
+        let r = RepoRef::for_test(".", url);
+        let path = r.repo().unwrap();
+        assert_eq!((path.owner, path.name), ("owner", "name"));
     }
 
     #[test]

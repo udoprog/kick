@@ -233,3 +233,41 @@ impl<T> Deref for PackageValue<T> {
         &self.value
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::cargo::Manifest;
+    use crate::model::RepoRef;
+    use crate::system::git::parse_url;
+
+    use super::Crates;
+
+    #[test]
+    fn primary_package_from_git_suffixed_remote() {
+        let package = |dir: &str, name: &str| {
+            Manifest::parse_for_test(
+                &format!("{dir}/Cargo.toml"),
+                &format!("[package]\nname = \"{name}\"\n"),
+            )
+            .unwrap()
+        };
+
+        let repo = RepoRef::for_test(
+            ".",
+            parse_url("git@github.com:udoprog/characterize.git").unwrap(),
+        );
+
+        let mut crates = Crates::from_manifests_for_test(vec![
+            package("api", "api"),
+            package("characterize", "characterize"),
+            package("web", "web"),
+        ]);
+        crates.primary_package = repo.repo().map(|repo| repo.name.into());
+
+        let primary = crates.primary_package().unwrap();
+        assert_eq!(
+            primary.as_package().unwrap().name().unwrap(),
+            "characterize"
+        );
+    }
+}
