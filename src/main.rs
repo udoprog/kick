@@ -263,6 +263,29 @@
 //! 2 outdated declarations in 2 repos
 //! ```
 //!
+//! With `--transitive` as well, `--outdated` also reads the `Cargo.lock` next to
+//! the workspace root and checks every registry package locked there, each line
+//! labelled with what it takes to update:
+//!
+//! * `requirement` - a declaration whose requirement does not admit the newest
+//!   version, so the manifest has to change.
+//! * `locked` - a direct dependency whose requirement admits the newest version
+//!   but whose locked version is older, which `cargo update` fixes.
+//! * `transitive` - a locked package which no declaration resolves to, with the
+//!   packages that depend on it.
+//!
+//! A repo without a `Cargo.lock` only has its declarations checked, which is
+//! reported:
+//!
+//! ```text
+//! > kick deps --outdated --transitive
+//! repos/kick: requirement: Cargo.toml [dependencies] syn = "1.0.50" (latest 2.0.100)
+//! repos/kick: locked: Cargo.lock serde 1.0.100 (latest 1.0.228)
+//! repos/kick: transitive: Cargo.lock itoa 1.0.1 (latest 1.0.15, via serde_json)
+//! repos/other: no Cargo.lock, transitive dependencies not checked
+//! 3 outdated dependencies in 1 repo: 1 requirement, 1 locked, 1 transitive
+//! ```
+//!
 //! With `--patched`, it instead reports the crates overridden through
 //! `[patch.<source>]` tables and legacy `[replace]` entries in each repo's
 //! manifests, with the path or git source they point to. The crate is optional

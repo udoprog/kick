@@ -53,6 +53,10 @@ pub(crate) struct Opts {
     /// `[replace]` spec such as `foo:1.2.3`.
     #[arg(long, conflicts_with = "outdated")]
     patched: bool,
+    /// With `--outdated`, also check every registry package locked in the
+    /// workspace's `Cargo.lock`, transitive dependencies included.
+    #[arg(long, requires = "outdated", conflicts_with = "patched")]
+    transitive: bool,
     /// The index to compare against with `--outdated`: a sparse index URL
     /// (`sparse+https://...`), a `file://` URL or a local directory with the
     /// same layout.
@@ -112,6 +116,10 @@ fn parse_spec(input: &str) -> Result<Spec, String> {
 }
 
 pub(crate) async fn entry(with_repos: &mut WithRepos<'_>, opts: &Opts) -> Result<()> {
+    if opts.transitive {
+        return transitive_entry(with_repos, opts).await;
+    }
+
     if opts.outdated {
         return outdated_entry(with_repos, opts).await;
     }
@@ -276,6 +284,310 @@ async fn outdated_entry(with_repos: &mut WithRepos<'_>, opts: &Opts) -> Result<(
     Ok(())
 }
 
+#[derive(Default)]
+struct Report {
+    lines: Vec<String>,
+    counts: [usize; 3],
+}
+
+async fn transitive_entry(with_repos: &mut WithRepos<'_>, opts: &Opts) -> Result<()> {
+    let spec = optional_spec(opts)?;
+    let index = Index::open(&opts.index)?;
+    let (mut counts, mut repos) = ([0usize; 3], 0usize);
+
+    with_repos
+        .run_async(
+            "find outdated dependencies",
+            format_args!("deps --outdated --transitive: {spec:?}"),
+            async |cx, repo| {
+                let Some(crates) = workspace::open(cx, repo)? else {
+                    return Ok(Report::default());
+                };
+
+                let Some(root) = crates.manifests().next() else {
+                    return Ok(Report::default());
+                };
+
+                let lock_path = root.dir().join(CARGO_LOCK);
+                let lock = read_lock(&cx.to_path(&lock_path))?;
+                let lock_path = lock_path.strip_prefix(repo.path()).unwrap_or(&lock_path);
+                let repo_path = cx.display(repo.path());
+
+                let mut report = Report::default();
+
+                if lock.is_none() {
+                    report.lines.push(format!(
+                        "{repo_path}: no {lock_path}, transitive dependencies not checked"
+                    ));
+                }
+
+                let lock = lock.unwrap_or_default();
+
+                for found in transitive(&crates, &lock, spec.as_ref(), &index).await? {
+                    report.counts[found.category()] += 1;
+
+                    let line = match &found {
+                        Outdated::Requirement(found, latest) => {
+                            let manifest = found
+                                .manifest
+                                .strip_prefix(repo.path())
+                                .unwrap_or(found.manifest);
+                            format!("requirement: {manifest} {found} (latest {latest})")
+                        }
+                        locked => format!("{}: {lock_path} {locked}", locked.label()),
+                    };
+
+                    report.lines.push(format!("{repo_path}: {line}"));
+                }
+
+                Ok(report)
+            },
+            |report| {
+                if report.counts.iter().any(|&n| n > 0) {
+                    repos += 1;
+                }
+
+                for (count, n) in counts.iter_mut().zip(report.counts) {
+                    *count += n;
+                }
+
+                for line in report.lines {
+                    println!("{line}");
+                }
+
+                Ok(())
+            },
+        )
+        .await?;
+
+    let s = |n: usize| if n == 1 { "" } else { "s" };
+    let total = counts.iter().sum::<usize>();
+    let [requirement, locked, transitive] = counts;
+    println!(
+        "{total} outdated dependenc{} in {repos} repo{}: {requirement} requirement{}, {locked} locked, {transitive} transitive",
+        if total == 1 { "y" } else { "ies" },
+        s(repos),
+        s(requirement),
+    );
+    Ok(())
+}
+
+const CARGO_LOCK: &str = "Cargo.lock";
+
+/// An outdated dependency found with `--transitive`.
+enum Outdated<'a> {
+    /// A declaration whose requirement does not admit the latest version.
+    Requirement(Found<'a>, Version),
+    /// A locked direct dependency which `cargo update` can raise to the latest
+    /// version.
+    Locked(&'a LockedPackage, Version),
+    /// A locked package which no declaration of the workspace resolves to.
+    Transitive(&'a LockedPackage, Version),
+}
+
+impl Outdated<'_> {
+    fn category(&self) -> usize {
+        match self {
+            Outdated::Requirement(..) => 0,
+            Outdated::Locked(..) => 1,
+            Outdated::Transitive(..) => 2,
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            Outdated::Requirement(..) => "requirement",
+            Outdated::Locked(..) => "locked",
+            Outdated::Transitive(..) => "transitive",
+        }
+    }
+}
+
+impl fmt::Display for Outdated<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Outdated::Requirement(found, latest) => write!(f, "{found} (latest {latest})"),
+            Outdated::Locked(package, latest) => {
+                write!(f, "{} {} (latest {latest})", package.name, package.version)
+            }
+            Outdated::Transitive(package, latest) => {
+                write!(f, "{} {} (latest {latest}", package.name, package.version)?;
+
+                if !package.dependents.is_empty() {
+                    write!(f, ", via {}", package.dependents.join(", "))?;
+                }
+
+                write!(f, ")")
+            }
+        }
+    }
+}
+
+/// A registry package resolved in a `Cargo.lock`.
+#[derive(Debug, PartialEq, Eq)]
+struct LockedPackage {
+    name: String,
+    version: Version,
+    /// The locked packages which depend on this one.
+    dependents: Vec<String>,
+}
+
+fn read_lock(path: &std::path::Path) -> Result<Option<Vec<LockedPackage>>> {
+    let input = match fs::read_to_string(path) {
+        Ok(input) => input,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| anyhow!("Reading {}", path.display())),
+    };
+
+    let lock = parse_lock(&input).with_context(|| anyhow!("Parsing {}", path.display()))?;
+    Ok(Some(lock))
+}
+
+/// Parse the registry packages of a `Cargo.lock`.
+fn parse_lock(input: &str) -> Result<Vec<LockedPackage>> {
+    #[derive(serde::Deserialize)]
+    struct Lock {
+        #[serde(default)]
+        package: Vec<Package>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Package {
+        name: String,
+        version: String,
+        source: Option<String>,
+        #[serde(default)]
+        dependencies: Vec<String>,
+    }
+
+    let lock: Lock = toml::from_str(input)?;
+    let mut dependents = vec![Vec::new(); lock.package.len()];
+
+    // Entries are `name`, `name version` or `name version (source)`, the
+    // version only being present when the name alone is ambiguous.
+    for package in &lock.package {
+        for dependency in &package.dependencies {
+            let mut parts = dependency.split_whitespace();
+            let name = parts.next().unwrap_or_default();
+            let version = parts.next();
+
+            for (n, other) in lock.package.iter().enumerate() {
+                if other.name == name && version.is_none_or(|v| v == other.version) {
+                    dependents[n].push(package.name.clone());
+                }
+            }
+        }
+    }
+
+    let mut output = Vec::new();
+
+    for (package, mut dependents) in lock.package.into_iter().zip(dependents) {
+        let registry = package
+            .source
+            .as_deref()
+            .is_some_and(|s| s.starts_with("registry+") || s.starts_with("sparse+"));
+
+        if !registry {
+            continue;
+        }
+
+        let Ok(version) = Version::parse(&package.version) else {
+            tracing::warn!(
+                "Ignoring unparseable locked version `{}` of `{}`",
+                package.version,
+                package.name
+            );
+            continue;
+        };
+
+        dependents.sort();
+        dependents.dedup();
+
+        output.push(LockedPackage {
+            name: package.name,
+            version,
+            dependents,
+        });
+    }
+
+    Ok(output)
+}
+
+/// Find the outdated declarations of a workspace, followed by the locked
+/// packages which have a newer release on the index.
+///
+/// A locked package is direct when a declaration's requirement admits its
+/// version. If one of those requirements also excludes the latest version, it
+/// is already reported as a requirement.
+async fn transitive<'a>(
+    crates: &'a Crates,
+    lock: &'a [LockedPackage],
+    spec: Option<&Spec>,
+    index: &Index,
+) -> Result<Vec<Outdated<'a>>> {
+    let mut output = outdated(crates, spec, index)
+        .await?
+        .into_iter()
+        .map(|(found, latest)| Outdated::Requirement(found, latest))
+        .collect::<Vec<_>>();
+
+    let declared = find(crates, None)?
+        .into_iter()
+        .filter_map(|found| {
+            let requirement = VersionReq::parse(found.version?).ok()?;
+            Some((found.package, requirement))
+        })
+        .collect::<Vec<_>>();
+
+    for package in lock {
+        let selected = spec.is_none_or(|spec| {
+            spec.name == package.name
+                && spec
+                    .selector
+                    .as_ref()
+                    .is_none_or(|selector| selector.matches(&package.version))
+        });
+
+        if !selected {
+            continue;
+        }
+
+        let Some(releases) = index.releases(&package.name).await? else {
+            continue;
+        };
+
+        let Some(latest) = newest(&releases, !package.version.pre.is_empty()) else {
+            continue;
+        };
+
+        if *latest <= package.version {
+            continue;
+        }
+
+        let mut direct = false;
+        let mut blocked = false;
+
+        for (_, requirement) in declared
+            .iter()
+            .filter(|(name, r)| *name == package.name && r.matches(&package.version))
+        {
+            direct = true;
+            blocked |= !requirement.matches(latest);
+        }
+
+        let latest = latest.clone();
+
+        match (direct, blocked) {
+            (false, _) => output.push(Outdated::Transitive(package, latest)),
+            (true, false) => output.push(Outdated::Locked(package, latest)),
+            (true, true) => {}
+        }
+    }
+
+    output.sort_by_key(Outdated::category);
+    Ok(output)
+}
+
 /// Find every versioned declaration in a workspace whose requirement does not
 /// admit the latest version on the index, together with that version.
 async fn outdated<'a>(
@@ -326,8 +638,14 @@ struct Release {
 /// The newest non-yanked release, ignoring pre-releases unless the
 /// requirement names one.
 fn latest<'a>(releases: &'a [Release], requirement: &VersionReq) -> Option<&'a Version> {
-    let pre = requirement.comparators.iter().any(|c| !c.pre.is_empty());
+    newest(
+        releases,
+        requirement.comparators.iter().any(|c| !c.pre.is_empty()),
+    )
+}
 
+/// The newest non-yanked release, including pre-releases if `pre` is set.
+fn newest(releases: &[Release], pre: bool) -> Option<&Version> {
     releases
         .iter()
         .filter(|r| !r.yanked && (pre || r.version.pre.is_empty()))
@@ -1026,6 +1344,10 @@ mod tests {
         assert_eq!(opts.spec, ["serde", "<2"]);
         assert!(parse(&["--patched", "--outdated"]).is_err());
         assert!(parse(&["--patched", "--index", "dir"]).is_err());
+
+        assert!(parse(&["--outdated", "--transitive"]).unwrap().transitive);
+        assert!(parse(&["--transitive"]).is_err());
+        assert!(parse(&["--patched", "--transitive"]).is_err());
     }
 
     fn search_patched(crates: &Crates, spec: Option<&str>) -> Vec<String> {
@@ -1339,5 +1661,135 @@ mod tests {
         names.sort();
         assert_eq!(names, ["bytes", "missing", "rand", "serde", "syn"]);
         assert!(cached["missing"].get().unwrap().is_none());
+    }
+
+    const LOCK: &str = r#"
+        version = 4
+
+        [[package]]
+        name = "a"
+        version = "0.1.0"
+        dependencies = ["serde", "serde_json", "syn 1.0.100"]
+
+        [[package]]
+        name = "serde"
+        version = "1.0.100"
+        source = "registry+https://github.com/rust-lang/crates.io-index"
+
+        [[package]]
+        name = "serde_json"
+        version = "1.0.100"
+        source = "registry+https://github.com/rust-lang/crates.io-index"
+        dependencies = ["itoa", "serde", "syn 2.0.1"]
+
+        [[package]]
+        name = "itoa"
+        version = "1.0.1"
+        source = "registry+https://github.com/rust-lang/crates.io-index"
+
+        [[package]]
+        name = "syn"
+        version = "1.0.100"
+        source = "registry+https://github.com/rust-lang/crates.io-index"
+
+        [[package]]
+        name = "syn"
+        version = "2.0.1"
+        source = "registry+https://github.com/rust-lang/crates.io-index"
+
+        [[package]]
+        name = "local"
+        version = "0.1.0"
+        source = "git+https://example.com/local#abc123"
+    "#;
+
+    #[test]
+    fn lock_packages() {
+        let lock = parse_lock(LOCK).unwrap();
+
+        let names = lock
+            .iter()
+            .map(|p| format!("{} {} {:?}", p.name, p.version, p.dependents))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            [
+                "serde 1.0.100 [\"a\", \"serde_json\"]",
+                "serde_json 1.0.100 [\"a\"]",
+                "itoa 1.0.1 [\"serde_json\"]",
+                "syn 1.0.100 [\"a\"]",
+                "syn 2.0.1 [\"serde_json\"]",
+            ]
+        );
+    }
+
+    async fn search_transitive(
+        crates: &Crates,
+        lock: &[LockedPackage],
+        spec: Option<&str>,
+        index: &Index,
+    ) -> Vec<String> {
+        let spec = spec.map(|spec| parse_spec(spec).unwrap());
+
+        transitive(crates, lock, spec.as_ref(), index)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|found| match &found {
+                Outdated::Requirement(f, _) => format!("{}: {} {found}", found.label(), f.manifest),
+                _ => format!("{}: {found}", found.label()),
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn transitive_local_index() {
+        let dir = tempfile::tempdir().unwrap();
+
+        write_index(
+            dir.path(),
+            "serde",
+            &[("1.0.100", false), ("1.0.228", false)],
+        );
+        write_index(dir.path(), "serde_json", &[("1.0.100", false)]);
+        write_index(dir.path(), "itoa", &[("1.0.1", false), ("1.0.15", false)]);
+        write_index(dir.path(), "syn", &[("1.0.109", false), ("2.0.100", false)]);
+
+        let crates = crates(&[(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "a"
+
+            [dependencies]
+            serde = "1.0.100"
+            serde_json = "1"
+            syn = "1.0.50"
+            "#,
+        )]);
+
+        let lock = parse_lock(LOCK).unwrap();
+        let index = Index::open(&dir.path().display().to_string()).unwrap();
+
+        assert_eq!(
+            search_transitive(&crates, &lock, None, &index).await,
+            [
+                "requirement: Cargo.toml [dependencies] syn = \"1.0.50\" (latest 2.0.100)",
+                "locked: serde 1.0.100 (latest 1.0.228)",
+                "transitive: itoa 1.0.1 (latest 1.0.15, via serde_json)",
+                "transitive: syn 2.0.1 (latest 2.0.100, via serde_json)",
+            ]
+        );
+
+        assert_eq!(
+            search_transitive(&crates, &lock, Some("syn >=2"), &index).await,
+            ["transitive: syn 2.0.1 (latest 2.0.100, via serde_json)"]
+        );
+
+        assert_eq!(
+            search_transitive(&crates, &[], None, &index).await,
+            ["requirement: Cargo.toml [dependencies] syn = \"1.0.50\" (latest 2.0.100)"]
+        );
     }
 }
