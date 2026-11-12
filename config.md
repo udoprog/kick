@@ -44,11 +44,17 @@ lib = "data/lib.md"  # ~/.config/kick/user.d/private/data/lib.md
 
 Outside of a project (no `Kick.toml` or git checkout in the current directory
 or its parents) kick acts on the repos declared in the global configuration.
-Inside of a project its `[repo]` sections are ignored, unless `--all` is passed,
-a `-p`/`--path` names a directory outside of the project which is inside of one
-of them, or a `-n`/`--repo-name` matches no repo in the project but one of them
-(see [`alias`](config/toplevel.md#alias)), in which case kick acts on the global
-repos instead. Use `kick project add`, `kick project list`, `kick project
+Inside of a project kick acts on the project's repos instead, unless `--all` is
+passed, a `-p`/`--path` names a directory outside of the project which is inside
+of one of the global repos, or a `-n`/`--repo-name` matches no repo in the
+project but one of them (see [`alias`](config/toplevel.md#alias)), in which case
+kick acts on the global repos instead. A global `[repo]` section whose path is
+the project root or one of its repos still applies to it, layered over the rest
+of the global configuration and under the project's own configuration (a
+section for the root applies to the whole project, like its root `Kick.toml`).
+Its `url` is not used, the project decides where its repos are. The other
+global `[repo]` sections are ignored inside of a project, which `kick inspect`
+reports. Use `kick project add`, `kick project list`, `kick project
 remove` and `kick project move` (which changes the directory a project is
 registered at) to manage them; `kick project add --config <path>` registers a project
 in a file under `user.d/` instead of the global `Kick.toml`.

@@ -162,11 +162,14 @@
 //! checkout is found in the current directory or any of its parents, it acts on
 //! the repos declared in the global configuration instead. This lets you keep
 //! your list of projects per-user rather than in a `Kick.toml` hierarchy. Inside
-//! of a project the `[repo]` sections of the global configuration are ignored,
-//! unless `--all` is passed, a `-p`/`--path` names a directory outside of the
-//! project which is inside of one of them, or a `-n`/`--repo-name` matches no repo
-//! in the project but one of them, in which case kick acts on the global repos
-//! instead.
+//! of a project kick acts on the project's repos instead, unless `--all` is
+//! passed, a `-p`/`--path` names a directory outside of the project which is
+//! inside of one of the global repos, or a `-n`/`--repo-name` matches no repo in
+//! the project but one of them, in which case kick acts on the global repos
+//! instead. A global `[repo]` section whose path is the project root or one of
+//! its repos still applies to it, over the rest of the global configuration and
+//! under the project's own (one for the root applies to the whole project, like
+//! its root `Kick.toml`). The other global `[repo]` sections are ignored.
 //!
 //! ```toml
 //! # ~/.config/kick/Kick.toml
@@ -3264,8 +3267,12 @@ mod tests {
 
         // The global configuration is reported as a source.
         let global_source = loaded.sources.iter().find(|s| s.global).unwrap();
-        assert!(!global_source.repos_ignored);
-        assert!(global_source.repos.iter().any(|(p, _)| p == "a"));
+        assert!(
+            global_source
+                .repos
+                .iter()
+                .any(|r| r.path == "a" && !r.ignored)
+        );
     }
 
     #[test]
@@ -3324,7 +3331,7 @@ mod tests {
             source
                 .repos
                 .iter()
-                .any(|(p, _)| p == "../config/kick/repos/a")
+                .any(|r| r.path == "../config/kick/repos/a")
         );
 
         let (repos, _) = collect_repos(&config, &home, None).unwrap();
@@ -3503,7 +3510,7 @@ mod tests {
         // The global configuration is loaded last.
         let last = loaded.sources.last().unwrap();
         assert!(last.global);
-        assert!(last.repos_ignored);
+        assert!(last.repos.iter().all(|r| r.ignored));
 
         let config = loaded.config;
         let keys = config.repos.keys().map(|k| k.as_str()).collect::<Vec<_>>();
@@ -3515,6 +3522,136 @@ mod tests {
         assert_eq!(config.deploy(x).user.as_deref(), Some("project"));
         assert_eq!(config.license(x), "global");
         assert_eq!(config.branch(x), Some("trunk"));
+    }
+
+    #[test]
+    fn global_repo_section_applies_to_project_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("home/repo/rune");
+        fs::create_dir_all(&root).unwrap();
+
+        let user_d = dir.path().join("config/kick/user.d");
+        fs::create_dir_all(&user_d).unwrap();
+        fs::write(
+            user_d.join("a.toml"),
+            "[repo.\"~/repo/rune\"]\nlicense = \"user.d\"\n",
+        )
+        .unwrap();
+
+        let global = global_config(
+            dir.path(),
+            "branch = \"trunk\"\nlicense = \"global\"\n\n\
+             [repo.\"~/repo/rune\"]\nbranch = \"rune\"\nlicense = \"rune\"\n\n\
+             [repo.\"~/repo/other\"]\nbranch = \"other\"\n",
+            false,
+        );
+
+        let templating = Templating::new().unwrap();
+        let defaults = config::defaults();
+
+        let paths = Paths {
+            root: &root,
+            current: None,
+            config: None,
+            cache: None,
+            redirect: None,
+        };
+
+        let loaded = config::load_all_with(paths, &templating, &defaults, Some(&global));
+        assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+
+        let sections = loaded
+            .sources
+            .iter()
+            .filter(|s| s.global)
+            .flat_map(|s| &s.repos)
+            .map(|r| (r.key.as_str(), r.path.as_str(), r.ignored))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            sections,
+            [
+                ("~/repo/rune", "", false),
+                ("~/repo/other", "~/repo/other", true),
+                ("~/repo/rune", "", false),
+            ]
+        );
+
+        let config = loaded.config;
+        assert!(config.repos.is_empty());
+
+        let rune = &Repo::new([RepoSource::Git], Default::default(), None);
+
+        // Later global files are merged over earlier ones.
+        assert_eq!(config.branch(rune), Some("rune"));
+        assert_eq!(config.license(rune), "user.d");
+    }
+
+    #[test]
+    fn global_repo_section_applies_under_project_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        fs::create_dir_all(dir.path().join("home")).unwrap();
+        fs::create_dir_all(root.join("x")).unwrap();
+
+        fs::write(
+            root.join("Kick.toml"),
+            "license = \"project\"\n\n[repo.\"x\"]\nurl = \"https://example.com/x\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("x/Kick.toml"), "branch = \"own\"\n").unwrap();
+
+        let global = global_config(
+            dir.path(),
+            &format!(
+                "branch = \"trunk\"\n\n\
+                 [repo.\"{root}\"]\nbranch = \"root\"\nlicense = \"root\"\n\n\
+                 [repo.\"{root}/x\"]\nurl = \"https://example.com/global\"\nbranch = \"x\"\nlicense = \"x\"\n",
+                root = root.display()
+            ),
+            false,
+        );
+
+        let templating = Templating::new().unwrap();
+        let defaults = config::defaults();
+
+        let paths = Paths {
+            root: &root,
+            current: None,
+            config: None,
+            cache: None,
+            redirect: None,
+        };
+
+        let loaded = config::load_all_with(paths, &templating, &defaults, Some(&global));
+        assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+
+        let last = loaded.sources.last().unwrap();
+        assert!(last.global);
+        assert!(last.repos.iter().all(|r| !r.ignored));
+
+        let config = loaded.config;
+        let keys = config.repos.keys().map(|k| k.as_str()).collect::<Vec<_>>();
+        assert_eq!(keys, ["x"]);
+
+        let (repos, _) = collect_repos(&config, &root, None).unwrap();
+        let root_repo = &Repo::new([RepoSource::Git], Default::default(), None);
+        let x = repos.iter().find(|r| r.path() == "x").unwrap();
+
+        // The project's configuration takes precedence over the section.
+        assert_eq!(config.branch(root_repo), Some("root"));
+        assert_eq!(config.license(root_repo), "project");
+
+        assert_eq!(config.branch(x), Some("own"));
+        assert_eq!(config.license(x), "x");
+
+        // The url is the project's.
+        let urls = config.repos[RelativePath::new("x")]
+            .urls
+            .iter()
+            .map(|u| u.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(urls, ["https://example.com/x"]);
     }
 
     /// A variable which is never set, used to test interpolation errors and
@@ -3640,7 +3777,7 @@ mod tests {
 
         // The source lists the repos by the path they resolve to.
         let source = loaded.sources.iter().find(|s| s.global).unwrap();
-        assert!(source.repos.iter().any(|(p, _)| p == "src/kick"));
+        assert!(source.repos.iter().any(|r| r.path == "src/kick"));
     }
 
     #[test]

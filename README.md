@@ -165,11 +165,14 @@ When kick runs *outside* of a project, that is when no `Kick.toml` or git
 checkout is found in the current directory or any of its parents, it acts on
 the repos declared in the global configuration instead. This lets you keep
 your list of projects per-user rather than in a `Kick.toml` hierarchy. Inside
-of a project the `[repo]` sections of the global configuration are ignored,
-unless `--all` is passed, a `-p`/`--path` names a directory outside of the
-project which is inside of one of them, or a `-n`/`--repo-name` matches no repo
-in the project but one of them, in which case kick acts on the global repos
-instead.
+of a project kick acts on the project's repos instead, unless `--all` is
+passed, a `-p`/`--path` names a directory outside of the project which is
+inside of one of the global repos, or a `-n`/`--repo-name` matches no repo in
+the project but one of them, in which case kick acts on the global repos
+instead. A global `[repo]` section whose path is the project root or one of
+its repos still applies to it, over the rest of the global configuration and
+under the project's own (one for the root applies to the whole project, like
+its root `Kick.toml`). The other global `[repo]` sections are ignored.
 
 ```toml
 # ~/.config/kick/Kick.toml

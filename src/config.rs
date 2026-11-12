@@ -1559,17 +1559,29 @@ pub(crate) struct ConfigSource {
     pub(crate) state: SourceState,
     /// The top-level keys the file sets, except for `repo`.
     pub(crate) keys: Vec<String>,
-    /// The `[repo."<path>"]` sections the file declares, with the keys each
-    /// one sets.
-    pub(crate) repos: Vec<(RelativePathBuf, Vec<String>)>,
+    /// The `[repo."<path>"]` sections the file declares.
+    pub(crate) repos: Vec<SourceRepo>,
     /// Errors raised while loading the file.
     pub(crate) errors: Vec<String>,
     /// Whether this is the user-global configuration, which is the least
     /// specific layer even though it is loaded last.
     pub(crate) global: bool,
-    /// Whether the `[repo."<path>"]` sections in the file are ignored, which
-    /// is the case for the global configuration inside of a project.
-    pub(crate) repos_ignored: bool,
+}
+
+/// A `[repo."<path>"]` section of a configuration file.
+#[derive(Debug, Clone)]
+pub(crate) struct SourceRepo {
+    /// The key of the section as written.
+    pub(crate) key: String,
+    /// The key of the section, or the path relative to the root it resolves
+    /// to for a section of the global configuration which is used.
+    pub(crate) path: RelativePathBuf,
+    /// The keys the section sets.
+    pub(crate) keys: Vec<String>,
+    /// Whether the section is ignored, which is the case for a section of the
+    /// global configuration inside of a project which matches none of its
+    /// repos.
+    pub(crate) ignored: bool,
 }
 
 /// Configuration loaded with [`load_all`], which keeps going past errors.
@@ -1642,8 +1654,8 @@ impl<'a> Cx<'a> {
     /// resolves to an absolute path is made relative to it.
     fn repo_key(&self, key: &str) -> Result<RelativePathBuf, ErrorMarker> {
         let base = match &self.global {
-            // NB: The repos of the global configuration are ignored inside of
-            // a project, so its keys are left alone.
+            // NB: Inside of a project the keys of the global configuration
+            // are matched against its repos once they are loaded.
             Some(global) if !global.provides_repos => return Ok(RelativePathBuf::from(key)),
             Some(..) => self.paths.root.to_owned(),
             None => self.base_dir(),
@@ -1690,7 +1702,6 @@ impl<'a> Cx<'a> {
             repos: Vec::new(),
             errors: Vec::new(),
             global: self.global.is_some(),
-            repos_ignored: self.global.as_ref().is_some_and(|g| !g.provides_repos),
         });
 
         let value = self.read_config();
@@ -1703,11 +1714,19 @@ impl<'a> Cx<'a> {
 
                     // Repos declared in the global configuration are shown
                     // by the path they resolve to.
-                    if let Some(global) = self.global.as_ref().filter(|g| g.provides_repos) {
-                        for (path, _) in &mut source.repos {
+                    if let Some(global) = &self.global {
+                        for repo in &mut source.repos {
+                            repo.ignored = !global.provides_repos;
+
+                            if !global.provides_repos {
+                                continue;
+                            }
+
                             // NB: Errors are reported when the repo is loaded.
-                            if let Ok(resolved) = global.repo_path(self.paths.root, path.as_str()) {
-                                *path = resolved;
+                            if let Ok(resolved) =
+                                global.repo_path(self.paths.root, repo.path.as_str())
+                            {
+                                repo.path = resolved;
                             }
                         }
                     }
@@ -2943,8 +2962,10 @@ pub(crate) fn load_all<'a>(
 /// configuration takes precedence over it. Each of its files is loaded in
 /// turn, with later files merged over earlier ones. If it provides the repos
 /// (outside of a project) the repos declared in it are used and no project
-/// configuration is loaded at the root, otherwise its `[repo]` sections are
-/// ignored.
+/// configuration is loaded at the root. Otherwise a `[repo]` section in it
+/// whose key resolves to the root or a repo of the project applies to that
+/// repo, over the global base configuration and under the project's own, and
+/// the remaining sections are ignored.
 pub(crate) fn load_all_with<'a>(
     paths: Paths<'a>,
     templating: &Templating,
@@ -2961,7 +2982,7 @@ pub(crate) fn load_all_with<'a>(
 
     let (mut base, mut repos) = 'out: {
         if let Some(global) = provides_repos {
-            let (base, repos) = load_global(&mut cx, global);
+            let (base, repos) = load_global(&mut cx, global, None);
             break 'out (base.unwrap_or_default(), repos);
         }
 
@@ -3004,10 +3025,30 @@ pub(crate) fn load_all_with<'a>(
 
     // The global configuration is loaded last, but is merged in as the least
     // specific layer.
-    if let Some(global) = global.filter(|g| !g.provides_repos)
-        && let (Some(global), _) = load_global(&mut cx, global)
-    {
-        base = merge_under(global, base);
+    if let Some(global) = global.filter(|g| !g.provides_repos) {
+        let loaded = iter::once(RelativePathBuf::new())
+            .chain(repos.keys().cloned())
+            .map(|path| (path.normalize(), path))
+            .collect::<BTreeMap<_, _>>();
+
+        let (global, mut matched) = load_global(&mut cx, global, Some(&loaded));
+
+        let root = matched.remove(RelativePath::new(""));
+
+        let under = match (global, root) {
+            (Some(global), Some(root)) => Some(merge_under(global, root)),
+            (global, root) => global.or(root),
+        };
+
+        if let Some(under) = under {
+            base = merge_under(under, base);
+        }
+
+        for (path, config) in matched {
+            if let Some(repo) = repos.remove(&path) {
+                repos.insert(path, merge_under(config, repo));
+            }
+        }
     }
 
     Loaded {
@@ -3023,8 +3064,7 @@ pub(crate) fn load_all_with<'a>(
 
 /// The top-level keys of a configuration file other than `repo`, and the
 /// keys of each `[repo."<path>"]` section in it.
-#[allow(clippy::type_complexity)]
-fn top_level_keys(value: &toml::Value) -> (Vec<String>, Vec<(RelativePathBuf, Vec<String>)>) {
+fn top_level_keys(value: &toml::Value) -> (Vec<String>, Vec<SourceRepo>) {
     let mut keys = Vec::new();
     let mut repos = Vec::new();
 
@@ -3041,7 +3081,12 @@ fn top_level_keys(value: &toml::Value) -> (Vec<String>, Vec<(RelativePathBuf, Ve
                     .as_table()
                     .map(|t| t.keys().cloned().collect())
                     .unwrap_or_default();
-                repos.push((RelativePathBuf::from(path.as_str()), section_keys));
+                repos.push(SourceRepo {
+                    key: path.clone(),
+                    path: RelativePathBuf::from(path.as_str()),
+                    keys: section_keys,
+                    ignored: false,
+                });
             }
 
             continue;
@@ -3075,14 +3120,19 @@ fn load_base(
 }
 
 /// Load every file of the global configuration, returning their merged base
-/// configuration and, if it provides the repos, the repos declared in them
-/// keyed by their path relative to the root.
+/// configuration and the repos declared in them keyed by their path relative
+/// to the root.
+///
+/// Inside of a project, `loaded` maps the normalized paths of its repos to
+/// their keys, and only the sections which resolve to one of them are
+/// returned, keyed by it.
 ///
 /// Later files are merged over earlier ones, also for a repo declared in more
 /// than one of them.
 fn load_global(
     cx: &mut Cx<'_>,
     global: &Global,
+    loaded: Option<&BTreeMap<RelativePathBuf, RelativePathBuf>>,
 ) -> (Option<RepoConfig>, BTreeMap<RelativePathBuf, RepoConfig>) {
     let mut base = None::<RepoConfig>;
     let mut repos = BTreeMap::<RelativePathBuf, RepoConfig>::new();
@@ -3091,9 +3141,11 @@ fn load_global(
         let config_path = RelativePathBuf::from(layer.display_path());
         let old_config_path = mem::replace(&mut cx.config_path, config_path);
         let old_keys = mem::take(&mut cx.keys);
-        cx.global = Some(layer);
+        cx.global = Some(layer.clone());
 
-        let loaded = match cx.config() {
+        let index = cx.sources.borrow().len();
+
+        let config = match cx.config() {
             Ok(Some(config)) => load_base(cx, config).ok(),
             _ => None,
         };
@@ -3102,7 +3154,24 @@ fn load_global(
         cx.keys = old_keys;
         cx.config_path = old_config_path;
 
-        let Some((layer_base, declared)) = loaded else {
+        // The key of the project repo a section resolves to, if any.
+        let matches = |key: &str| {
+            let path = layer.repo_path(cx.paths.root, key).ok()?;
+            loaded?.get(&path.normalize()).cloned()
+        };
+
+        if let Some(source) = cx.sources.borrow_mut().get_mut(index)
+            && loaded.is_some()
+        {
+            for repo in &mut source.repos {
+                if let Some(path) = matches(&repo.key) {
+                    repo.path = path;
+                    repo.ignored = false;
+                }
+            }
+        }
+
+        let Some((layer_base, declared)) = config else {
             continue;
         };
 
@@ -3111,17 +3180,27 @@ fn load_global(
             None => layer_base,
         });
 
-        if global.provides_repos {
-            for (path, (key, mut config)) in declared {
-                config.sources = BTreeSet::from([RepoSource::Global(key)]);
-
-                let config = match repos.remove(&path) {
-                    Some(under) => merge_under(under, config),
-                    None => config,
+        for (path, (key, mut config)) in declared {
+            let path = if loaded.is_some() {
+                let Some(path) = matches(&key) else {
+                    continue;
                 };
 
-                repos.insert(path, config);
-            }
+                // NB: A project repo is identified by the project, so only
+                // the settings of the section apply to it.
+                config.urls.clear();
+                path
+            } else {
+                config.sources = BTreeSet::from([RepoSource::Global(key)]);
+                path
+            };
+
+            let config = match repos.remove(&path) {
+                Some(under) => merge_under(under, config),
+                None => config,
+            };
+
+            repos.insert(path, config);
         }
     }
 

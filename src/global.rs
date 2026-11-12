@@ -14,6 +14,10 @@
 //! directory holding the file which sets them, just like relative paths in a
 //! project `Kick.toml`. Environment variables are interpolated in them as
 //! described in [`crate::interpolate`].
+//!
+//! Inside of a project, a `[repo."<path>"]` section applies to the project
+//! root or the repo of the project it resolves to, over the rest of the global
+//! configuration and under the project's own. Other sections are ignored.
 
 use std::collections::HashSet;
 use std::fs;

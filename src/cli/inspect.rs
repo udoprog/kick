@@ -117,9 +117,6 @@ struct SourceReport {
     state: &'static str,
     keys: Vec<String>,
     repo_sections: Vec<RepoSectionReport>,
-    /// Whether the `[repo]` sections are ignored, which is the case for the
-    /// global configuration inside of a project.
-    repos_ignored: bool,
     errors: Vec<String>,
 }
 
@@ -127,6 +124,10 @@ struct SourceReport {
 struct RepoSectionReport {
     path: String,
     keys: Vec<String>,
+    /// Whether the section is ignored, which is the case for a section of the
+    /// global configuration inside of a project which matches none of its
+    /// repos.
+    ignored: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -323,9 +324,10 @@ fn build(cx: &Inspect<'_>, opts: &Opts) -> Report {
         state: "built-in",
         keys: defaults_keys(cx.config.defaults),
         repo_sections: Vec::new(),
-        repos_ignored: false,
         errors: Vec::new(),
     });
+
+    let provides_repos = cx.global.is_some_and(|g| g.provides_repos);
 
     for source in &cx.collected.sources {
         config.push(SourceReport {
@@ -338,17 +340,21 @@ fn build(cx: &Inspect<'_>, opts: &Opts) -> Report {
             repo_sections: source
                 .repos
                 .iter()
-                .map(|(path, keys)| RepoSectionReport {
-                    path: path.to_string(),
-                    keys: keys.clone(),
+                .map(|repo| RepoSectionReport {
+                    // NB: Inside of a project a global section is shown as
+                    // written, since it may resolve to the root.
+                    path: if source.global && !provides_repos {
+                        repo.key.clone()
+                    } else {
+                        repo.path.to_string()
+                    },
+                    keys: repo.keys.clone(),
+                    ignored: repo.ignored,
                 })
                 .collect(),
-            repos_ignored: source.repos_ignored,
             errors: source.errors.clone(),
         });
     }
-
-    let provides_repos = cx.global.is_some_and(|g| g.provides_repos);
 
     let user_config = UserConfigReport {
         dir: paths.config.map(absolute),
@@ -480,8 +486,12 @@ fn repo_sources(repo: &Repo, sources: &[ConfigSource]) -> Vec<String> {
             RepoSource::Global(key) => {
                 let files = sources
                     .iter()
-                    .filter(|s| s.global && !s.repos_ignored)
-                    .filter(|s| s.repos.iter().any(|(p, _)| p.normalize() == path))
+                    .filter(|s| s.global)
+                    .filter(|s| {
+                        s.repos
+                            .iter()
+                            .any(|r| !r.ignored && r.path.normalize() == path)
+                    })
                     .map(|s| format!("global {} [repo.\"{key}\"]", s.config_path))
                     .collect::<Vec<_>>();
 
@@ -529,16 +539,12 @@ fn layers(
                 source.keys.clone(),
             ));
 
-            if source.repos_ignored {
-                continue;
-            }
-
-            for (repo, keys) in &source.repos {
-                if repo.normalize() == path {
+            for repo in source.repos.iter().filter(|r| !r.ignored) {
+                if repo.path.normalize() == path {
                     layers.push((
-                        format!("{} [repo.\"{repo}\"]", source.config_path),
+                        format!("{} [repo.\"{}\"]", source.config_path, repo.key),
                         "loaded",
-                        keys.iter().filter(|k| *k != "url").cloned().collect(),
+                        repo.keys.iter().filter(|k| *k != "url").cloned().collect(),
                     ));
                 }
             }
@@ -1025,21 +1031,20 @@ fn write_text(o: &mut impl Write, r: &Report) -> io::Result<()> {
             None => {}
         }
 
-        if source.repos_ignored && !source.repo_sections.is_empty() {
-            writeln!(
-                o,
-                "       its [repo] sections are ignored inside of a project"
-            )?;
-        }
-
         if !source.keys.is_empty() {
             writeln!(o, "       sets: {}", source.keys.join(", "))?;
         }
 
         for section in &source.repo_sections {
+            let ignored = if section.ignored {
+                " (ignored, matches no repo of the project)"
+            } else {
+                ""
+            };
+
             writeln!(
                 o,
-                "       [repo.\"{}\"]: {}",
+                "       [repo.\"{}\"]: {}{ignored}",
                 section.path,
                 section.keys.join(", ")
             )?;
@@ -1571,7 +1576,10 @@ mod tests {
         let sources = report
             .config
             .iter()
-            .map(|s| (s.name.as_str(), s.kind, s.repos_ignored))
+            .map(|s| {
+                let ignored = s.repo_sections.iter().any(|r| r.ignored);
+                (s.name.as_str(), s.kind, ignored)
+            })
             .collect::<Vec<_>>();
 
         // Loaded last.
