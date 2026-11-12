@@ -1008,6 +1008,8 @@ pub(crate) struct RepoConfig {
     pub(crate) deploy: Deploy,
     /// Install configuration.
     pub(crate) install: Deploy,
+    /// The settings as written, without `[repo."<path>"]` sections.
+    pub(crate) table: toml::Table,
 }
 
 impl RepoConfig {
@@ -1045,6 +1047,7 @@ impl RepoConfig {
         self.install.merge_with(other.install);
 
         merge_map(&mut self.variables, other.variables);
+        merge_map(&mut self.table, other.table);
     }
 
     /// Test if this repo wants the specified readme badge.
@@ -1303,6 +1306,18 @@ impl Config<'_> {
         }
 
         variables
+    }
+
+    /// The settings which apply to the given repo, with every layer of
+    /// configuration merged as written.
+    pub(crate) fn effective(&self, repo: &RepoRef) -> toml::Table {
+        let mut table = toml::Table::new();
+
+        for repo in self.repos(repo) {
+            merge_map(&mut table, repo.table.clone());
+        }
+
+        table
     }
 
     /// Check if we should automatically include binaries.
@@ -2167,6 +2182,9 @@ impl<'a> Cx<'a> {
     }
 
     fn repo_table(&self, table: &mut toml::Table) -> Result<RepoConfig, ErrorMarker> {
+        let mut raw = table.clone();
+        raw.remove("repo");
+
         let name = self.in_key(table, "name", Self::string);
         let alias = self.in_key(table, "alias", Self::string);
         let url = self.in_key(table, "url", Self::parse);
@@ -2305,6 +2323,7 @@ impl<'a> Cx<'a> {
             build: build?.unwrap_or_default(),
             deploy: deploy?.unwrap_or_default(),
             install: install?.unwrap_or_default(),
+            table: raw,
         })
     }
 

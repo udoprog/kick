@@ -129,6 +129,15 @@ templates. It takes the same selection options as other commands, such as
 and `--json` for scripting. It exits with an error if the configuration or the
 selection would make other commands refuse to run.
 
+To see what applies to the repo in the current directory, run `kick cat`. It
+prints, as TOML, the repo's effective `name` (what `-n` selects it by), its
+effective `[config]`, which is every `Kick.toml` layer that applies to it merged
+as written with the most specific one winning per key and arrays appended, and
+its `[variables]`, the templating variables readme, lib and workflow templates
+are rendered with, such as `package.name`, `rust_versions` and the configured
+`[variables]`. It takes the same selection options as other commands, printing
+one document per repo headed by a `# <path>` comment.
+
 <br>
 
 ### Global configuration

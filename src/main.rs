@@ -126,6 +126,15 @@
 //! and `--json` for scripting. It exits with an error if the configuration or the
 //! selection would make other commands refuse to run.
 //!
+//! To see what applies to the repo in the current directory, run `kick cat`. It
+//! prints, as TOML, the repo's effective `name` (what `-n` selects it by), its
+//! effective `[config]`, which is every `Kick.toml` layer that applies to it merged
+//! as written with the most specific one winning per key and arrays appended, and
+//! its `[variables]`, the templating variables readme, lib and workflow templates
+//! are rendered with, such as `package.name`, `rust_versions` and the configured
+//! `[variables]`. It takes the same selection options as other commands, printing
+//! one document per repo headed by a `# <path>` comment.
+//!
 //! <br>
 //!
 //! ### Global configuration
@@ -816,6 +825,12 @@ static USER_AGENT: reqwest::header::HeaderValue =
 
 #[derive(Subcommand)]
 enum Command {
+    /// Print the effective name, configuration and variables of each repo.
+    ///
+    /// The configuration is every layer of `Kick.toml` which applies to the
+    /// repo merged as written, and the variables are those templates such as
+    /// the readme and workflows are rendered with.
+    Cat(SharedAction<cli::cat::Opts>),
     /// Review or apply staged changes.
     Changes(SharedOptions),
     /// Checks each repo (default action).
@@ -899,6 +914,7 @@ impl Command {
 
     fn shared(&self) -> &SharedOptions {
         match self {
+            Command::Cat(c) => &c.shared,
             Command::Changes(shared) => shared,
             Command::Check(c) => &c.shared,
             Command::Deb(c) => &c.shared,
@@ -929,6 +945,7 @@ impl Command {
 
     fn repo(&self) -> Option<&RepoOptions> {
         match self {
+            Command::Cat(c) => Some(&c.repo),
             Command::Changes(..) => None,
             Command::Check(action) => Some(&action.repo),
             Command::Deb(c) => Some(&c.repo),
@@ -1662,6 +1679,10 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
     let mut read_only = false;
 
     match &opts.action {
+        Command::Cat(opts) => {
+            read_only = true;
+            cli::cat::entry(&mut with_repos, &opts.action)?;
+        }
         Command::Check(opts) => {
             cli::check::entry(&mut with_repos, &opts.action).await?;
         }

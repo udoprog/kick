@@ -1,6 +1,7 @@
 mod with_repos;
 pub(crate) use self::with_repos::WithRepos;
 
+pub(crate) mod cat;
 pub(crate) mod changes;
 pub(crate) mod check;
 pub(crate) mod compress;
