@@ -155,8 +155,8 @@ private git checkout can live at `~/.config/kick/user.d/private/` while
 the directory holding it, so it can carry its own templates. `kick inspect`
 lists every global file which was loaded and what each one sets.
 
-Pass `--verbose` to any command to print every configuration file kick looks
-for to stderr, in load order, marking missing ones and whether each
+Pass `--verbose` (`-V`) to any command to print every configuration file kick
+looks for to stderr, in load order, marking missing ones and whether each
 `[repo."<path>"]` section was applied or ignored.
 
 Path-valued settings in any `Kick.toml` interpolate a leading `~` and

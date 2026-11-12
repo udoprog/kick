@@ -8,7 +8,7 @@ use crate::shell::Shell;
 
 use super::{RunOn, SessionConfig};
 
-#[derive(Default, Debug, Parser)]
+#[derive(Default, Debug, Clone, Parser)]
 pub(crate) struct BatchOptions {
     /// Run the command using the specified execution methods.
     #[arg(long)]
@@ -21,12 +21,12 @@ pub(crate) struct BatchOptions {
     /// what environments are passed in.
     #[arg(long, short = 'E')]
     pub(super) env: Vec<String>,
-    /// Print verbose information.
+    /// The level of the global `--verbose` flag.
     ///
     /// One level `-V` prints the environment of the command invoked. Two levels
     /// `-VV` prints the full command as run from the host operating system.
-    #[arg(long, short = 'V', action = clap::ArgAction::Count)]
-    pub(super) verbose: u8,
+    #[arg(skip)]
+    pub(crate) verbose: u8,
     /// When printing diagnostics output, exposed secrets.
     ///
     /// If this is not specified, secrets will be printed as ***.

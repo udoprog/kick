@@ -11,10 +11,10 @@ use crate::rstr::{RStr, RString};
 
 use crate::cli::WithRepos;
 
-#[derive(Default, Debug, Parser)]
+#[derive(Default, Debug, Clone, Parser)]
 pub(crate) struct Opts {
     #[command(flatten)]
-    batch_opts: BatchOptions,
+    pub(crate) batch_opts: BatchOptions,
     /// Identifier of the workflow to run.
     id: String,
     /// Inputs to the action in key=value form.

@@ -143,13 +143,13 @@ pub(crate) struct Common {
     /// it does not modify the remote host.
     #[arg(long)]
     pub(crate) dry_run: bool,
-    /// Print verbose information about what is being done.
+    /// The level of the global `--verbose` flag.
     ///
     /// One level `-V` prints the plan, the systemd unit and the install
     /// script, and traces the script as it executes. Two levels `-VV`
     /// additionally prints the access check of a deployment and passes `-v`
     /// to `ssh`.
-    #[arg(long, short = 'V', action = clap::ArgAction::Count)]
+    #[arg(skip)]
     pub(crate) verbose: u8,
 }
 
@@ -163,7 +163,7 @@ impl Common {
     }
 }
 
-#[derive(Default, Debug, Parser)]
+#[derive(Default, Debug, Clone, Parser)]
 pub(crate) struct Opts {
     #[command(flatten)]
     pub(crate) common: Common,

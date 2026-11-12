@@ -11,7 +11,7 @@ use crate::ctxt::Ctxt;
 use crate::model::Repo;
 use crate::release::{Date, ReleaseOpts, Version};
 
-#[derive(Default, Debug, Parser)]
+#[derive(Default, Debug, Clone, Parser)]
 pub(crate) struct Opts {
     /// Command to run.
     command: Option<String>,
@@ -19,7 +19,7 @@ pub(crate) struct Opts {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     args: Vec<String>,
     #[command(flatten)]
-    batch_opts: BatchOptions,
+    pub(crate) batch_opts: BatchOptions,
     /// If the specified operating system is different for the repo, execute the
     /// command using a compatibility layer which is appropriate for a supported
     /// operating system.

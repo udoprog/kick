@@ -152,8 +152,8 @@
 //! the directory holding it, so it can carry its own templates. `kick inspect`
 //! lists every global file which was loaded and what each one sets.
 //!
-//! Pass `--verbose` to any command to print every configuration file kick looks
-//! for to stderr, in load order, marking missing ones and whether each
+//! Pass `--verbose` (`-V`) to any command to print every configuration file kick
+//! looks for to stderr, in load order, marking missing ones and whether each
 //! `[repo."<path>"]` section was applied or ignored.
 //!
 //! Path-valued settings in any `Kick.toml` interpolate a leading `~` and
@@ -994,11 +994,14 @@ struct SharedOptions {
     /// Enable debug level logging.
     #[arg(long)]
     debug: bool,
-    /// Print each configuration file which is loaded to stderr, in load
+    /// Print verbose information, repeated for more.
+    ///
+    /// Prints each configuration file which is loaded to stderr, in load
     /// order, marking missing ones and the `[repo."<path>"]` sections which
-    /// apply.
-    #[arg(long)]
-    verbose: bool,
+    /// apply. `run`, `github-action`, `msrv`, `deploy` and `install` print
+    /// more as documented for them.
+    #[arg(long, short = 'V', action = clap::ArgAction::Count)]
+    verbose: u8,
     /// Provide an access token to use to access the Github API.
     ///
     /// This can also be set through the GITHUB_TOKEN environment variable, or
@@ -1458,7 +1461,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         &templating,
         &defaults,
         inspecting,
-        shared.verbose,
+        shared.verbose > 0,
         &mut report,
     )?;
 
@@ -1527,7 +1530,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
                 ..paths
             };
 
-            if shared.verbose {
+            if shared.verbose > 0 {
                 eprintln!("config: reloading for worktree {checkout}");
             }
 
@@ -1539,7 +1542,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
                 &templating,
                 &defaults,
                 inspecting,
-                shared.verbose,
+                shared.verbose > 0,
                 &mut report,
             )?;
             (paths, config)
@@ -1717,13 +1720,17 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             cli::define::entry(&mut with_repos, &opts.action)?;
         }
         Command::Deploy(opts) => {
-            cli::deploy::entry(&mut with_repos, &opts.action)?;
+            let mut action = opts.action.clone();
+            action.common.verbose = opts.shared.verbose;
+            cli::deploy::entry(&mut with_repos, &action)?;
         }
         Command::Deps(opts) => {
             cli::deps::entry(&mut with_repos, &opts.action).await?;
         }
         Command::Install(opts) => {
-            cli::install::entry(&mut with_repos, &opts.action)?;
+            let mut action = opts.action.clone();
+            action.common.verbose = opts.shared.verbose;
+            cli::install::entry(&mut with_repos, &action)?;
         }
         Command::Set(opts) => {
             cli::set::entry(&mut with_repos.cx, &opts.action)?;
@@ -1732,10 +1739,14 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             unreachable!("project is handled before configuration is loaded")
         }
         Command::Run(opts) => {
-            cli::run::entry(&mut with_repos, &opts.action)?;
+            let mut action = opts.action.clone();
+            action.batch_opts.verbose = opts.shared.verbose;
+            cli::run::entry(&mut with_repos, &action)?;
         }
         Command::Msrv(opts) => {
-            cli::msrv::entry(&mut with_repos, &opts.action)?;
+            let mut action = opts.action.clone();
+            action.verbose = opts.shared.verbose > 0;
+            cli::msrv::entry(&mut with_repos, &action)?;
         }
         Command::Version(opts) => {
             read_only = opts.action.is_read_only();
@@ -1763,7 +1774,9 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             cli::compress::entry(&mut with_repos, cli::compress::Kind::Gzip, &opts.action)?;
         }
         Command::GithubAction(opts) => {
-            cli::github_action::entry(&mut with_repos, &opts.action)?;
+            let mut action = opts.action.clone();
+            action.batch_opts.verbose = opts.shared.verbose;
+            cli::github_action::entry(&mut with_repos, &action)?;
         }
         Command::Github(opts) => {
             cli::gh::entry(&mut with_repos, &opts.action).await?;

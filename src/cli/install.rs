@@ -6,10 +6,10 @@ use crate::cli::WithRepos;
 use crate::cli::deploy::{self, Common};
 use crate::config::Section;
 
-#[derive(Default, Debug, Parser)]
+#[derive(Default, Debug, Clone, Parser)]
 pub(crate) struct Opts {
     #[command(flatten)]
-    common: Common,
+    pub(crate) common: Common,
 }
 
 pub(crate) fn entry<'repo>(with_repos: &mut WithRepos<'repo>, opts: &Opts) -> Result<()> {

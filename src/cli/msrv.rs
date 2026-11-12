@@ -26,11 +26,11 @@ const LATEST: RustVersion = RustVersion::new(1, 68);
 /// Default command to build.
 const DEFAULT_COMMAND: &[&str] = &["cargo", "build", "--all-features"];
 
-#[derive(Default, Debug, Parser)]
+#[derive(Default, Debug, Clone, Parser)]
 pub(crate) struct Opts {
-    /// Verbose output.
-    #[arg(long)]
-    verbose: bool,
+    /// Whether the global `--verbose` flag is set.
+    #[arg(skip)]
+    pub(crate) verbose: bool,
     /// Keep the existing Cargo.lock file. By default this is moved out of the
     /// way, to test that version selection selects a version of all
     /// dependencies which can compile.
