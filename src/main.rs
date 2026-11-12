@@ -1527,6 +1527,10 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
                 ..paths
             };
 
+            if shared.verbose {
+                eprintln!("config: reloading for worktree {checkout}");
+            }
+
             // Reload the configuration so that repo configuration and
             // templates are read from the worktree.
             let config = load_config(
@@ -1535,7 +1539,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
                 &templating,
                 &defaults,
                 inspecting,
-                false,
+                shared.verbose,
                 &mut report,
             )?;
             (paths, config)
