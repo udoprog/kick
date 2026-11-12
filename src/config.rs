@@ -1584,6 +1584,32 @@ pub(crate) struct SourceRepo {
     pub(crate) ignored: bool,
 }
 
+/// Describe the configuration files which were looked for, in load order, one
+/// per line, followed by the `[repo."<path>"]` sections each declares.
+pub(crate) fn describe_sources(sources: &[ConfigSource]) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::new();
+
+    for source in sources {
+        let state = match source.state {
+            SourceState::Loaded => "loaded",
+            SourceState::Missing => "missing",
+            SourceState::Invalid => "invalid",
+        };
+
+        let layer = if source.global { "global " } else { "" };
+        _ = writeln!(out, "config: {layer}{} ({state})", source.path.display());
+
+        for repo in &source.repos {
+            let applied = if repo.ignored { "ignored" } else { "applied" };
+            _ = writeln!(out, "config:   [repo.\"{}\"] {applied}", repo.key);
+        }
+    }
+
+    out
+}
+
 /// Configuration loaded with [`load_all`], which keeps going past errors.
 pub(crate) struct Loaded<'a> {
     /// The configuration which was loaded. Sections which failed to load are
@@ -2872,14 +2898,19 @@ pub(crate) fn load<'a>(
 
 /// Load configuration like [`load`], also loading the user-global
 /// configuration as described in [`load_all_with`].
+#[cfg(test)]
 pub(crate) fn load_with<'a>(
     paths: Paths<'a>,
     templating: &Templating,
     defaults: &'a toml::Table,
     global: Option<&'a Global>,
 ) -> Result<Config<'a>> {
-    let loaded = load_all_with(paths, templating, defaults, global);
+    finish_load(load_all_with(paths, templating, defaults, global))
+}
 
+/// Turn the result of [`load_all_with`] into a configuration, failing and
+/// logging if any errors were raised.
+pub(crate) fn finish_load(loaded: Loaded<'_>) -> Result<Config<'_>> {
     if !loaded.errors.is_empty() {
         let count = loaded.errors.len();
 
@@ -3306,6 +3337,43 @@ mod tests {
     use crate::shell::Shell;
     use crate::systemd;
     use crate::templates::Templating;
+
+    #[test]
+    fn describe_sources_marks_state_and_repos() {
+        use super::{ConfigSource, SourceRepo, SourceState, describe_sources};
+
+        let source = |state, global, repos| ConfigSource {
+            dir: Default::default(),
+            config_path: "Kick.toml".into(),
+            path: "/x/Kick.toml".into(),
+            state,
+            keys: Vec::new(),
+            repos,
+            errors: Vec::new(),
+            global,
+        };
+
+        let repo = |key: &str, ignored| SourceRepo {
+            key: key.into(),
+            path: key.into(),
+            keys: Vec::new(),
+            ignored,
+        };
+
+        let out = describe_sources(&[
+            source(SourceState::Missing, false, Vec::new()),
+            source(
+                SourceState::Loaded,
+                true,
+                vec![repo("a", false), repo("b", true)],
+            ),
+        ]);
+
+        assert_eq!(
+            out,
+            "config: /x/Kick.toml (missing)\nconfig: global /x/Kick.toml (loaded)\nconfig:   [repo.\"a\"] applied\nconfig:   [repo.\"b\"] ignored\n"
+        );
+    }
 
     #[test]
     fn version_replacement_only_replaces_old_version() {

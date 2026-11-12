@@ -152,6 +152,10 @@
 //! the directory holding it, so it can carry its own templates. `kick inspect`
 //! lists every global file which was loaded and what each one sets.
 //!
+//! Pass `--verbose` to any command to print every configuration file kick looks
+//! for to stderr, in load order, marking missing ones and whether each
+//! `[repo."<path>"]` section was applied or ignored.
+//!
 //! Path-valued settings in any `Kick.toml` interpolate a leading `~` and
 //! environment variables as `$VAR`, `${VAR}` or `${VAR:-default}`, and `$$` is a
 //! literal `$`. Referencing an unset variable without a `:-` fallback is an error,
@@ -990,6 +994,11 @@ struct SharedOptions {
     /// Enable debug level logging.
     #[arg(long)]
     debug: bool,
+    /// Print each configuration file which is loaded to stderr, in load
+    /// order, marking missing ones and the `[repo."<path>"]` sections which
+    /// apply.
+    #[arg(long)]
+    verbose: bool,
     /// Provide an access token to use to access the Github API.
     ///
     /// This can also be set through the GITHUB_TOKEN environment variable, or
@@ -1449,6 +1458,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         &templating,
         &defaults,
         inspecting,
+        shared.verbose,
         &mut report,
     )?;
 
@@ -1525,6 +1535,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
                 &templating,
                 &defaults,
                 inspecting,
+                false,
                 &mut report,
             )?;
             (paths, config)
@@ -1821,14 +1832,19 @@ fn load_config<'a>(
     templating: &templates::Templating,
     defaults: &'a toml::Table,
     inspecting: bool,
+    verbose: bool,
     report: &mut cli::inspect::Collected,
 ) -> Result<Config<'a>> {
-    if !inspecting {
-        return config::load_with(paths, templating, defaults, global)
-            .context("Loading kick configuration");
+    let loaded = config::load_all_with(paths, templating, defaults, global);
+
+    if verbose {
+        eprint!("{}", config::describe_sources(&loaded.sources));
     }
 
-    let loaded = config::load_all_with(paths, templating, defaults, global);
+    if !inspecting {
+        return config::finish_load(loaded).context("Loading kick configuration");
+    }
+
     report.sources = loaded.sources;
     report.errors = loaded.errors;
     Ok(loaded.config)
