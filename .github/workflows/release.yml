@@ -1,6 +1,9 @@
 name: Release
 
 on:
+  push:
+    tags:
+    - '[0-9]+.[0-9]+.[0-9]+*'
   workflow_dispatch:
     inputs:
       version:
@@ -12,7 +15,7 @@ on:
         - "%date"
 
 env:
-  KICK_VERSION: "${{github.event.inputs.version}}"
+  KICK_VERSION: "${{github.event.inputs.version}} || %{github.tag}"
   RUST_LOG: kick=trace
 
 concurrency:
@@ -44,13 +47,15 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+    # - uses: udoprog/actions@kick
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
     - uses: actions/download-artifact@v7
       with: {name: dist-macos-latest, path: dist}
     - uses: actions/download-artifact@v7
       with: {name: dist-windows-latest, path: dist}
     - uses: actions/download-artifact@v7
       with: {name: dist-ubuntu-latest, path: dist}
-    - uses: udoprog/kick@nightly
-    - run: kick gh release --upload "dist/*" --github-action
+    - run: cargo run -- gh release --upload "dist/*" --github-action
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

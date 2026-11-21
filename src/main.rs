@@ -806,8 +806,12 @@ use crate::model::Repo;
 use crate::model::{RepoSource, load_from_git};
 
 /// The version of kick in use.
+///
+/// This can be overridden at build time through `KICK_BUILD_VERSION`. Note that
+/// this is deliberately not `KICK_VERSION`, since that is the runtime version
+/// specification and is commonly set globally in CI.
 const VERSION: &str = const {
-    match option_env!("KICK_VERSION") {
+    match option_env!("KICK_BUILD_VERSION") {
         Some(version) => version,
         None => env!("CARGO_PKG_VERSION"),
     }
