@@ -3398,9 +3398,9 @@ mod tests {
     fn version_replacement_only_replaces_old_version() {
         let dir = tempfile::tempdir().unwrap();
         let docs = concat!(
-            "//! kick = \"0.1.0\"\n",
+            "//! kick = \"0.1.1\"\n",
             "//! other = \"4.1.1\"\n",
-            "//! version = \">= 0.1.0\"\n",
+            "//! version = \">= 0.1.1\"\n",
             "//! args = [\"--bind\", \"10.1.0.1:3004\"]\n",
             "//! args = [\"--bind\", \"10.0.1.0:3004\"]\n",
         );

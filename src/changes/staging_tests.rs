@@ -23,7 +23,7 @@ const LIB_RS: &str = "\
 //! A crate.
 //!
 //! ```toml
-//! proj = \"0.1.0\"
+//! proj = \"0.1.1\"
 //! ```
 
 pub fn hello() {}
