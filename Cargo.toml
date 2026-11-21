@@ -1,6 +1,6 @@
 [package]
 name = "kick"
-version = "0.0.0"
+publish = false
 authors = ["John-John Tedro <udoprog@tedro.se>"]
 edition = "2024"
 rust-version = "1.100"

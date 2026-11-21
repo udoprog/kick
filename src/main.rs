@@ -174,8 +174,7 @@
 //! Path-valued settings in any `Kick.toml` interpolate a leading `~` and
 //! environment variables as `$VAR`, `${VAR}` or `${VAR:-default}`, and `$$` is a
 //! literal `$`. Referencing an unset variable without a `:-` fallback is an error,
-//! it never expands to an empty string. See [config.md](config.md#paths-and-environment-variables)
-//! for details.
+//! it never expands to an empty string. See [config.md][config-paths] for details.
 //!
 //! When kick runs *outside* of a project, that is when no `Kick.toml` or git
 //! checkout is found in the current directory or any of its parents, it acts on
@@ -728,6 +727,7 @@
 //! `--github-action`. For other information that can be exported, see `define
 //! --help`.
 //!
+//! [config-paths]: https://github.com/udoprog/kick/blob/main/config.md#paths-and-environment-variables
 //! [config]: https://github.com/udoprog/kick/blob/main/config.md
 //! [deploy-config]: https://github.com/udoprog/kick/blob/main/config/deploy.md
 //! [deploy-profiles]: https://github.com/udoprog/kick/blob/main/config/deploy.md#profiles
