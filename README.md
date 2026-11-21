@@ -15,6 +15,12 @@ consistent style.
 Even though it's a bit opinionated `kick` also happens to be highly
 configurable, so you might want to try it out!
 
+To install a prebuilt binary, see <https://udoprog.github.io/kick/> or run:
+
+```sh
+curl -fsSL https://udoprog.github.io/kick/install.sh | sh
+```
+
 <br>
 
 ## Overview

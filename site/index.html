@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kick</title>
+<meta name="description" content="An omnibus project management tool: valid configuration, up-to-date dependencies and a consistent style across your repositories.">
+<style>
+:root {
+  --bg: #fafaf8;
+  --fg: #1d1f21;
+  --muted: #5c6370;
+  --accent: #b7410e;
+  --code-bg: #1d1f21;
+  --code-fg: #f2f2ee;
+  --border: #d8d8d2;
+  --radius: 6px;
+  --space: 1rem;
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17181a;
+    --fg: #ece8e6;
+    --muted: #a0a6b0;
+    --accent: #f08a4b;
+    --code-bg: #0d0e0f;
+    --border: #34363a;
+  }
+}
+.page { margin: 0; background: var(--bg); color: var(--fg); font: 1rem/1.6 var(--font); }
+.main { max-width: 42rem; margin: 0 auto; padding: calc(var(--space) * 3) var(--space); }
+.title { font-size: 2.5rem; margin: 0; }
+.lead { color: var(--muted); font-size: 1.15rem; }
+.heading { font-size: 1.1rem; margin-top: calc(var(--space) * 2); }
+.install { display: flex; gap: .5rem; align-items: stretch; }
+.cmd { flex: 1; margin: 0; padding: .75rem 1rem; overflow-x: auto; background: var(--code-bg); color: var(--code-fg); border-radius: var(--radius); font: .9rem var(--mono); }
+.copy { padding: 0 1rem; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); color: var(--fg); font: inherit; cursor: pointer; }
+.copy:hover, .copy:focus-visible { border-color: var(--accent); color: var(--accent); }
+.note { color: var(--muted); font-size: .9rem; }
+.links { display: flex; gap: var(--space); padding: 0; list-style: none; }
+.link { color: var(--accent); }
+</style>
+</head>
+<body class="page">
+<main class="main">
+  <h1 class="title">kick</h1>
+  <p class="lead">An omnibus project management tool. Kick makes sure all your projects have a valid configuration, up-to-date dependencies and a consistent style. It works without configuration in any standalone git repository, is nondestructive by default (changes are staged for review), and is highly configurable when you want it to be.</p>
+
+  <h2 class="heading">Install</h2>
+  <div class="install">
+    <pre class="cmd" id="cmd">curl -fsSL https://udoprog.github.io/kick/install.sh | sh</pre>
+    <button class="copy" id="copy" type="button">Copy</button>
+  </div>
+  <p class="note">Installs the latest release into <code>~/.local/bin</code> (set <code>KICK_INSTALL_DIR</code> to change it, or <code>KICK_VERSION</code> to a release tag such as <code>2026-05-04</code> to pin one) on Linux and macOS. On Windows, download the zip from the releases. Once installed, <code>kick update</code> upgrades kick itself.</p>
+
+  <h2 class="heading">Links</h2>
+  <ul class="links">
+    <li><a class="link" href="https://github.com/udoprog/kick">Repository</a></li>
+    <li><a class="link" href="https://github.com/udoprog/kick#readme">README</a></li>
+    <li><a class="link" href="https://github.com/udoprog/kick/releases">Releases</a></li>
+  </ul>
+</main>
+<script>
+document.getElementById("copy").addEventListener("click", function (e) {
+  var button = e.currentTarget;
+  var text = document.getElementById("cmd").textContent;
+  navigator.clipboard.writeText(text).then(function () {
+    button.textContent = "Copied";
+    setTimeout(function () { button.textContent = "Copy"; }, 1500);
+  }, function () {
+    button.textContent = "Press Ctrl+C";
+  });
+});
+</script>
+</body>
+</html>
