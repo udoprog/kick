@@ -373,6 +373,10 @@ changes are put back as they were, and the changes are staged like any others
 (see [Staged changes](#staged-changes)): they are shown as a diff and only
 written with `--save`, or later with `kick changes --save`.
 
+Kick can update itself with `kick update`, which replaces the running binary
+with the [latest release](https://github.com/udoprog/kick/releases/latest) for
+your platform, unless it is already up to date.
+
 And much much more!
 
 <br>

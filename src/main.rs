@@ -370,6 +370,10 @@
 //! (see [Staged changes](#staged-changes)): they are shown as a diff and only
 //! written with `--save`, or later with `kick changes --save`.
 //!
+//! Kick can update itself with `kick update`, which replaces the running binary
+//! with the [latest release](https://github.com/udoprog/kick/releases/latest) for
+//! your platform, unless it is already up to date.
+//!
 //! And much much more!
 //!
 //! <br>
@@ -904,7 +908,7 @@ enum Command {
     Set(SharedAction<cli::set::Opts>),
     /// Synchronize repositories.
     Sync(SharedAction<cli::sync::Opts>),
-    /// Update Kick itself.
+    /// Replace the running kick with the latest release.
     Update(SharedOptions),
     /// Perform a repository aware cargo upgrade. In particular this prevents
     /// packages which have been denylisted from being upgraded.

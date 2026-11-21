@@ -496,6 +496,12 @@ impl Client {
         Ok(Some(res.json().await?))
     }
 
+    /// Download a public url, such as a release asset, without credentials.
+    pub(crate) async fn download(&self, url: &str) -> Result<Bytes> {
+        let res = self.client.get(url).send().await?.error_for_status()?;
+        Ok(res.bytes().await?)
+    }
+
     /// Fetch the next page of results.
     pub(crate) async fn next_page<T>(&self, paged: &mut T) -> Result<Option<Vec<T::Item>>>
     where
@@ -572,6 +578,8 @@ pub(crate) struct Workflow {
 pub(crate) struct Asset {
     pub(crate) name: String,
     pub(crate) id: u64,
+    #[serde(default)]
+    pub(crate) browser_download_url: String,
 }
 
 #[derive(Debug, Deserialize)]
