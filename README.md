@@ -407,7 +407,7 @@ facilitate this, the Kick repo can be used in a job directly:
 ```yaml
 jobs:
   build:
-  - uses: udoprog/kick@nightly
+  - uses: udoprog/actions@kick
   - run: kick --version
 ```
 
@@ -721,7 +721,7 @@ env:
 
 jobs:
   build:
-  - uses: udoprog/kick@nightly
+  - uses: udoprog/actions@kick
   - run: kick define --github-action
     id: release
   # echo the selected version

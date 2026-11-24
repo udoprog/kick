@@ -404,7 +404,7 @@
 //! ```yaml
 //! jobs:
 //!   build:
-//!   - uses: udoprog/kick@nightly
+//!   - uses: udoprog/actions@kick
 //!   - run: kick --version
 //! ```
 //!
@@ -718,7 +718,7 @@
 //!
 //! jobs:
 //!   build:
-//!   - uses: udoprog/kick@nightly
+//!   - uses: udoprog/actions@kick
 //!   - run: kick define --github-action
 //!     id: release
 //!   # echo the selected version
