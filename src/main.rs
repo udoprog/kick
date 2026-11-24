@@ -180,14 +180,15 @@
 //! checkout is found in the current directory or any of its parents, it acts on
 //! the repos declared in the global configuration instead. This lets you keep
 //! your list of projects per-user rather than in a `Kick.toml` hierarchy. Inside
-//! of a project kick acts on the project's repos instead, unless `--all` is
-//! passed, a `-p`/`--path` names a directory outside of the project which is
-//! inside of one of the global repos, or a `-n`/`--repo-name` matches no repo in
-//! the project but one of them, in which case kick acts on the global repos
-//! instead. A global `[repo]` section whose path is the project root or one of
-//! its repos still applies to it, over the rest of the global configuration and
-//! under the project's own (one for the root applies to the whole project, like
-//! its root `Kick.toml`). The other global `[repo]` sections are ignored.
+//! of a project kick acts on the project's repos instead, unless `--all` or
+//! `--set` is passed, a `-p`/`--path` names a directory outside of the project
+//! which is inside of one of the global repos, or a `-n`/`--repo-name` matches
+//! no repo in the project but one of them, in which case kick acts on the
+//! global repos instead. A global `[repo]` section whose path is the project
+//! root or one of its repos still applies to it, over the rest of the global
+//! configuration and under the project's own (one for the root applies to the
+//! whole project, like its root `Kick.toml`). The other global `[repo]`
+//! sections are ignored.
 //!
 //! ```toml
 //! # ~/.config/kick/Kick.toml
@@ -485,7 +486,7 @@
 //!
 //! If this is set during a run, it will store sets of repos, such as the set
 //! for which a command failed. This set can then later be re-used through the
-//! `--set <id>` switch.
+//! `--set <id>` switch. Specifying `--set` implies `--all`.
 //!
 //! For a list of available sets, you can simply list the `sets` folder:
 //!
@@ -1111,7 +1112,7 @@ struct RepoOptions {
     /// @unreleased refers to repos that point to a revision which does not have
     /// a remote tag.
     ///
-    ///
+    /// Specifying `--set` implies `--all`.
     #[arg(long)]
     set: Vec<SetOperations>,
     /// Save remaining or failed repos to the specified set.
@@ -1121,6 +1122,16 @@ struct RepoOptions {
     /// specified names.
     #[arg(long)]
     set_remaining: Vec<String>,
+}
+
+impl RepoOptions {
+    fn has_set(&self) -> bool {
+        !self.set.iter().all(|s| s.is_empty())
+    }
+
+    fn is_all(&self) -> bool {
+        self.all || self.has_set()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1907,7 +1918,8 @@ fn load_config<'a>(
 ///
 /// Returns the `(repo, worktree)` pair to redirect if it is a worktree of that
 /// same repo, and errors if it is some other checkout and no repos were
-/// selected explicitly. `--all` disables the detection.
+/// selected explicitly. `--all` (or `--set`, which implies it) disables the
+/// detection.
 ///
 /// Without registered repos, the repo is the git checkout at the root itself
 /// (a standalone repo with its `Kick.toml` at the checkout root). Then only a
@@ -1923,7 +1935,7 @@ fn nested_worktree(
         return Ok(None);
     };
 
-    if opts.all {
+    if opts.is_all() {
         return Ok(None);
     }
 
@@ -1939,8 +1951,7 @@ fn nested_worktree(
         return Ok(checkout.map(|checkout| (RelativePathBuf::new(), checkout)));
     }
 
-    let explicit =
-        !opts.repos.is_empty() || !opts.names.is_empty() || !opts.set.iter().all(|s| s.is_empty());
+    let explicit = !opts.repos.is_empty() || !opts.names.is_empty() || opts.has_set();
 
     match worktree::detect(paths.root, current, repos.iter().map(|r| r.path())) {
         Some(worktree::Nested::Worktree { repo, checkout }) => Ok(Some((repo, checkout))),
@@ -2023,17 +2034,16 @@ fn apply_repo_options(
     in_repo_path: bool,
     from_group: bool,
 ) -> Result<Vec<Option<Exclusion>>> {
-    let has_set = !repo_opts.set.iter().all(|s| s.is_empty());
+    let has_set = repo_opts.has_set();
 
     // Refuse to guess when there is no explicit selection and we're running
     // from inside of a git checkout which is not one of the configured repos
     // (e.g. an unregistered worktree). Otherwise every configured repo would
     // silently be selected.
     if from_group
-        && !repo_opts.all
+        && !repo_opts.is_all()
         && repo_opts.repos.is_empty()
         && repo_opts.names.is_empty()
-        && !has_set
         && !in_repo_path
         && let Some(current) = paths.current
         && let Some(checkout) = unregistered_git_checkout(paths.root, current)
@@ -2160,7 +2170,7 @@ fn apply_repo_options(
         None
     };
 
-    let in_current_path = if !repo_opts.all && in_repo_path {
+    let in_current_path = if !repo_opts.is_all() && in_repo_path {
         paths.current
     } else {
         None
@@ -2348,7 +2358,8 @@ fn filter_repos(
         }
 
         if filters.is_empty() {
-            if let Some(path) = in_current_path
+            if set.is_none()
+                && let Some(path) = in_current_path
                 && !path.starts_with(repo.path())
             {
                 return Some(Exclusion::OutsideCurrent(path.to_owned()));
@@ -2634,8 +2645,8 @@ fn repo_containing<'r>(dir: &Path, root: &Path, repos: &'r [Repo]) -> Option<&'r
 /// the repos declared in the `global` configuration instead.
 ///
 /// This is the case if the global configuration declares repos and either
-/// `--all` is passed, or a `-p`/`--path` argument names a directory outside
-/// of the project which is inside of one of the global repos.
+/// `--all` or `--set` is passed, or a `-p`/`--path` argument names a directory
+/// outside of the project which is inside of one of the global repos.
 fn selects_global_repos(
     current_dir: &Path,
     root: &Path,
@@ -2650,7 +2661,7 @@ fn selects_global_repos(
         return false;
     }
 
-    if opts.all {
+    if opts.is_all() {
         return true;
     }
 
@@ -4120,8 +4131,18 @@ mod tests {
         assert!(switch(&opts(false, &["~/src/other/src"]), &global));
         let absolute = other.to_str().unwrap();
         assert!(switch(&opts(false, &[absolute]), &global));
-        // `--all` switches to the global repos.
+        // `--all` and `--set` switch to the global repos.
         assert!(switch(&opts(true, &[]), &global));
+        let with_set = RepoOptions {
+            set: vec!["bad".parse().unwrap()],
+            ..RepoOptions::default()
+        };
+        assert!(switch(&with_set, &global));
+        let empty_set = RepoOptions {
+            set: vec![super::SetOperations::default()],
+            ..RepoOptions::default()
+        };
+        assert!(!switch(&empty_set, &global));
 
         // Directories inside of the project, globs and directories outside of
         // any global repo stay in the project.
@@ -4134,6 +4155,7 @@ mod tests {
         // Without global repos nothing changes.
         let empty = global_config(&base, "license = \"MIT\"\n", true);
         assert!(!switch(&opts(true, &[]), &empty));
+        assert!(!switch(&with_set, &empty));
         assert!(!switch(&opts(false, &["~/src/other"]), &empty));
 
         // Once switched, the root is the home directory and the same arguments
@@ -4394,5 +4416,45 @@ mod tests {
             Some(&opts),
             &global
         ));
+    }
+
+    #[test]
+    fn set_implies_all_in_nested_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        init(root);
+        let wt = root.join("wt");
+        git(
+            root,
+            &["worktree", "add", "-b", "branch", wt.to_str().unwrap()],
+        );
+
+        let url = url::Url::parse("https://example.com/project").unwrap();
+        let repos = vec![Repo::new([RepoSource::Git], ".".into(), url)];
+        let paths = Paths {
+            root,
+            current: Some(RelativePath::new("wt")),
+            config: None,
+            cache: None,
+            redirect: None,
+        };
+
+        let plain = RepoOptions::default();
+        assert!(
+            nested_worktree(paths, Some(&plain), &repos, false)
+                .unwrap()
+                .is_some()
+        );
+
+        let with_set = RepoOptions {
+            set: vec!["bad".parse().unwrap()],
+            ..RepoOptions::default()
+        };
+        assert!(with_set.is_all());
+        assert_eq!(
+            nested_worktree(paths, Some(&with_set), &repos, false).unwrap(),
+            None
+        );
     }
 }

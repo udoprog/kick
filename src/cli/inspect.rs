@@ -378,13 +378,13 @@ fn build(cx: &Inspect<'_>, opts: &Opts) -> Report {
         .map(|e| format!("{e:#}"))
         .collect();
 
-    let current_dir = (!cx.repo_opts.all && cx.in_repo_path)
+    let current_dir = (!cx.repo_opts.is_all() && cx.in_repo_path)
         .then_some(paths.current)
         .flatten()
         .map(|c| c.to_string());
 
     let selection = SelectionReport {
-        all: cx.repo_opts.all,
+        all: cx.repo_opts.is_all(),
         paths: cx.repo_opts.repos.clone(),
         names: cx.repo_opts.names.clone(),
         sets: cx
@@ -2241,6 +2241,15 @@ mod tests {
 
         assert_eq!(
             filter(&none, None, Some(&["other/c"])),
+            [
+                (String::from("other/c"), None),
+                (String::from("repos/a"), Some(Exclusion::NotInSet)),
+                (String::from("repos/b"), Some(Exclusion::NotInSet)),
+            ]
+        );
+
+        assert_eq!(
+            filter(&none, Some("repos/b/src"), Some(&["other/c"])),
             [
                 (String::from("other/c"), None),
                 (String::from("repos/a"), Some(Exclusion::NotInSet)),
