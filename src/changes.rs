@@ -129,7 +129,7 @@ fn remove_if_exists(path: &Path) -> Result<()> {
 
 /// Escape a path into a single readable file name, percent-encoding every
 /// byte other than ASCII alphanumerics, `-`, `.` and `_`.
-fn escape_path(path: &Path) -> String {
+pub(crate) fn escape_path(path: &Path) -> String {
     use std::fmt::Write as _;
 
     let path = path.to_string_lossy();

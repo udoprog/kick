@@ -383,7 +383,7 @@ fn apply(projects: &mut Projects, global: &Global, key: &str, edited: &str) -> R
 
 /// Open `path` in the editor of the user, which is taken from `$VISUAL` or
 /// `$EDITOR` and may include arguments, such as `code --wait`.
-fn run_editor(path: &Path) -> Result<()> {
+pub(crate) fn run_editor(path: &Path) -> Result<()> {
     let editor = ["VISUAL", "EDITOR"]
         .into_iter()
         .filter_map(std::env::var_os)

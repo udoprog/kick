@@ -87,8 +87,8 @@ async fn with_repos_async<'repo, T>(
         }
     }
 
-    cx.sets.save("good", good, &hint);
-    cx.sets.save("bad", bad, &hint);
+    cx.sets.save_temporary("good", good, &hint);
+    cx.sets.save_temporary("bad", bad, &hint);
     Ok(())
 }
 
@@ -144,8 +144,8 @@ fn with_repos<'repo, T>(
         bad.insert(repo);
     }
 
-    cx.sets.save("good", good, &hint);
-    cx.sets.save("bad", bad, &hint);
+    cx.sets.save_temporary("good", good, &hint);
+    cx.sets.save_temporary("bad", bad, &hint);
 
     Ok(())
 }

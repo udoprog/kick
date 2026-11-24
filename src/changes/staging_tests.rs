@@ -123,7 +123,11 @@ impl Project {
         );
 
         let sets = Box::leak(Box::new(
-            RepoSets::new(self.dir.path().join("sets")).unwrap(),
+            RepoSets::new(
+                self.dir.path().join("sets"),
+                self.dir.path().join("tmp-sets"),
+            )
+            .unwrap(),
         ));
 
         let cx = Ctxt {

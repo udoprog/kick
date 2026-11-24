@@ -227,8 +227,9 @@ and opens it in `$VISUAL`, `$EDITOR` or `vi` (`notepad` on Windows). Once the
 editor exits the edited settings are validated and merged back into the global
 configuration; if they are invalid nothing is changed and the temporary file is
 kept so the edits are not lost.
-Repo sets and staged changes made while acting on global repos are stored in
-the user configuration directory.
+Persistent repo sets made while acting on global repos are stored in the user
+configuration directory (`~/.config/kick/sets/`), while temporary run sets and
+staged changes are stored in the user state directory (`~/.local/state/kick/`).
 
 <br>
 
@@ -470,9 +471,10 @@ saved and keep the rest staged.
 
 ## Repo sets
 
-Commands can produce sets under certain circumstances, the sets are usually
-called `good` and `bad` depending on the outcome when performing the work
-over the repo.
+Commands can produce temporary sets during a run, usually called `good` and
+`bad` depending on the outcome for each repo, or named with
+`--set-remaining <name>`. You can also maintain durable persistent sets with
+`kick set`.
 
 There are a number of special sets you can use:
 * `@all` - All repositories.
@@ -485,28 +487,36 @@ There are a number of special sets you can use:
 The `--set` parameter also supports simple set operations such as adding
 `+`, subtracting `-`, and difference `^`, and intersecting `&` between sets.
 Such as selecting all repos which *are not* outdated with `@all -
-@outdated`.
+@outdated`. Specifying `--set` implies `--all`.
 
-If this is set during a run, it will store sets of repos, such as the set
-for which a command failed. This set can then later be re-used through the
-`--set <id>` switch. Specifying `--set` implies `--all`.
+Persistent and temporary sets share one namespace in `--set <expr>`:
+persistent sets take precedence over temporary sets, and `good` and `bad`
+are reserved for temporary runs.
 
-For a list of available sets, you can simply list the `sets` folder:
+* **Persistent sets** live as plain, hand-editable line-per-repo files in
+  `<root>/sets/` (or `~/.config/kick/sets/` when acting on global repos),
+  with no timestamped snapshots and never pruned.
+* **Temporary sets** (`good`, `bad`, `--set-remaining`) live in the user's
+  state directory (`$XDG_STATE_HOME/kick/sets/`), keeping the three most
+  recent timestamped snapshots of each set.
 
-```text
-sets\bad
-sets\bad-20230414050517
-sets\bad-20230414050928
-sets\bad-20230414051046
-sets\good-20230414050517
-sets\good-20230414050928
-sets\good-20230414051046
+Use `kick set` to inspect and manage sets:
+
+```sh
+kick set ls                            # list persistent and temporary sets
+kick set show core                     # print the repos in a set
+kick set create core -p repos/kick     # create a persistent set
+kick set create retry --set bad        # promote a temporary set
+kick set add core -n rune              # add repos to a persistent set
+kick set remove core -p repos/kick     # remove repos from a persistent set
+kick set rename core primary           # rename a persistent set
+kick set edit primary                  # edit in $VISUAL or $EDITOR
+kick set delete bad                    # delete a persistent or temporary set
 ```
 
-> **Note** the three most recent versions of each set will be retained.
-
-Set files are simply lists of repositories, which supports comments by
-prefixing lines with `#`. They are intended to be edited by hand if needed.
+Set files are simply lists of repositories, supporting blank lines and
+comments prefixed with `#`. They are intended to be edited by hand if needed,
+and `kick set add` / `kick set remove` preserve existing comments and order:
 
 ```text
 repos/kick

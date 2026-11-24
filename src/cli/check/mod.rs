@@ -300,7 +300,7 @@ mod tests {
         assert_eq!(repos.len(), 1);
         assert!(repos[0].url().is_none());
 
-        let mut sets = RepoSets::new(dir.path().join("sets")).unwrap();
+        let mut sets = RepoSets::new(dir.path().join("sets"), dir.path().join("tmp-sets")).unwrap();
         let system = System::default();
         let env = Env::new();
 

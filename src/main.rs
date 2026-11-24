@@ -224,8 +224,9 @@
 //! editor exits the edited settings are validated and merged back into the global
 //! configuration; if they are invalid nothing is changed and the temporary file is
 //! kept so the edits are not lost.
-//! Repo sets and staged changes made while acting on global repos are stored in
-//! the user configuration directory.
+//! Persistent repo sets made while acting on global repos are stored in the user
+//! configuration directory (`~/.config/kick/sets/`), while temporary run sets and
+//! staged changes are stored in the user state directory (`~/.local/state/kick/`).
 //!
 //! <br>
 //!
@@ -467,9 +468,10 @@
 //!
 //! ## Repo sets
 //!
-//! Commands can produce sets under certain circumstances, the sets are usually
-//! called `good` and `bad` depending on the outcome when performing the work
-//! over the repo.
+//! Commands can produce temporary sets during a run, usually called `good` and
+//! `bad` depending on the outcome for each repo, or named with
+//! `--set-remaining <name>`. You can also maintain durable persistent sets with
+//! `kick set`.
 //!
 //! There are a number of special sets you can use:
 //! * `@all` - All repositories.
@@ -482,28 +484,36 @@
 //! The `--set` parameter also supports simple set operations such as adding
 //! `+`, subtracting `-`, and difference `^`, and intersecting `&` between sets.
 //! Such as selecting all repos which *are not* outdated with `@all -
-//! @outdated`.
+//! @outdated`. Specifying `--set` implies `--all`.
 //!
-//! If this is set during a run, it will store sets of repos, such as the set
-//! for which a command failed. This set can then later be re-used through the
-//! `--set <id>` switch. Specifying `--set` implies `--all`.
+//! Persistent and temporary sets share one namespace in `--set <expr>`:
+//! persistent sets take precedence over temporary sets, and `good` and `bad`
+//! are reserved for temporary runs.
 //!
-//! For a list of available sets, you can simply list the `sets` folder:
+//! * **Persistent sets** live as plain, hand-editable line-per-repo files in
+//!   `<root>/sets/` (or `~/.config/kick/sets/` when acting on global repos),
+//!   with no timestamped snapshots and never pruned.
+//! * **Temporary sets** (`good`, `bad`, `--set-remaining`) live in the user's
+//!   state directory (`$XDG_STATE_HOME/kick/sets/`), keeping the three most
+//!   recent timestamped snapshots of each set.
 //!
-//! ```text
-//! sets\bad
-//! sets\bad-20230414050517
-//! sets\bad-20230414050928
-//! sets\bad-20230414051046
-//! sets\good-20230414050517
-//! sets\good-20230414050928
-//! sets\good-20230414051046
+//! Use `kick set` to inspect and manage sets:
+//!
+//! ```sh
+//! kick set ls                            # list persistent and temporary sets
+//! kick set show core                     # print the repos in a set
+//! kick set create core -p repos/kick     # create a persistent set
+//! kick set create retry --set bad        # promote a temporary set
+//! kick set add core -n rune              # add repos to a persistent set
+//! kick set remove core -p repos/kick     # remove repos from a persistent set
+//! kick set rename core primary           # rename a persistent set
+//! kick set edit primary                  # edit in $VISUAL or $EDITOR
+//! kick set delete bad                    # delete a persistent or temporary set
 //! ```
 //!
-//! > **Note** the three most recent versions of each set will be retained.
-//!
-//! Set files are simply lists of repositories, which supports comments by
-//! prefixing lines with `#`. They are intended to be edited by hand if needed.
+//! Set files are simply lists of repositories, supporting blank lines and
+//! comments prefixed with `#`. They are intended to be edited by hand if needed,
+//! and `kick set add` / `kick set remove` preserve existing comments and order:
 //!
 //! ```text
 //! repos/kick
@@ -905,8 +915,8 @@ enum Command {
     Project(ProjectAction),
     /// Run a custom command.
     Run(SharedAction<cli::run::Opts>),
-    /// Manage sets.
-    Set(SharedAction<cli::set::Opts>),
+    /// Manage persistent and temporary repository sets.
+    Set(SetAction),
     /// Synchronize repositories.
     Sync(SharedAction<cli::sync::Opts>),
     /// Replace the running kick with the latest release.
@@ -980,7 +990,7 @@ impl Command {
             Command::Publish(c) => Some(&c.repo),
             Command::Rpm(c) => Some(&c.repo),
             Command::Run(c) => Some(&c.repo),
-            Command::Set(c) => Some(&c.repo),
+            Command::Set(c) => c.action.repo(),
             Command::Sync(c) => Some(&c.repo),
             Command::Update(..) => None,
             Command::Upgrade(c) => Some(&c.repo),
@@ -991,7 +1001,11 @@ impl Command {
 
     #[inline]
     fn needs_ctrlc_handler(&self) -> bool {
-        !matches!(self, Command::Login(..) | Command::Project(..))
+        match self {
+            Command::Login(..) | Command::Project(..) => false,
+            Command::Set(c) => !c.action.is_edit(),
+            _ => true,
+        }
     }
 }
 
@@ -1063,7 +1077,7 @@ impl SharedOptions {
 }
 
 #[derive(Default, Debug, Parser)]
-struct RepoOptions {
+pub(crate) struct RepoOptions {
     /// Force processing of all repos, even if the current directory is inside
     /// of one of them.
     ///
@@ -1311,6 +1325,15 @@ struct ProjectAction {
     shared: SharedOptions,
 }
 
+#[derive(Parser)]
+#[command(version = None)]
+struct SetAction {
+    #[command(flatten)]
+    action: cli::set::Opts,
+    #[command(flatten)]
+    shared: SharedOptions,
+}
+
 /// Give your projects a good 🦶!
 ///
 /// Kick optionally reads Kick.toml, for how to configure projects. See the
@@ -1549,7 +1572,13 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         Err(error) => return Err(error),
     };
 
-    let mut sets = repo_sets::RepoSets::new(state_dir.join("sets"))?;
+    let state_base = project_dirs
+        .as_ref()
+        .map(|p| p.state_dir().unwrap_or_else(|| p.data_local_dir()));
+    let persistent_sets_dir = state_dir.join("sets");
+    let temporary_sets_dir =
+        repo_sets::RepoSets::temporary_dir(state_base, &root, global_repos, &persistent_sets_dir);
+    let mut sets = repo_sets::RepoSets::new(persistent_sets_dir, temporary_sets_dir)?;
 
     // When running from a git worktree nested inside of a registered repo, use
     // the worktree as that repo's working directory.
@@ -1658,14 +1687,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         tracing::info!("using worktree {} for repo {repo}", dir.display());
     }
 
-    let changes_file = changes::ChangesFile::new(
-        project_dirs
-            .as_ref()
-            .map(|p| p.state_dir().unwrap_or_else(|| p.data_local_dir())),
-        &root,
-        global_repos,
-        &state_dir,
-    );
+    let changes_file = changes::ChangesFile::new(state_base, &root, global_repos, &state_dir);
 
     let git_credentials = match system.git.first() {
         Some(git) => match git.get_credentials("github.com", "https") {
@@ -1779,6 +1801,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
             cli::install::entry(&mut with_repos, &action)?;
         }
         Command::Set(opts) => {
+            read_only = true;
             cli::set::entry(&mut with_repos.cx, &opts.action)?;
         }
         Command::Project(..) => {
@@ -1876,7 +1899,7 @@ async fn entry(opts: Opts) -> Result<ExitCode> {
         }
 
         for name in opts.set_remaining.iter() {
-            sets.save(name, remaining.clone(), "Remaining repo set");
+            sets.save_temporary(name, remaining.clone(), "Remaining repo set");
         }
     }
 
