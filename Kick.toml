@@ -1,2 +1,5 @@
+lib_badges = ["-crates.io"]
+readme_badges = ["-crates.io"]
+
 [package]
 binaries = true
