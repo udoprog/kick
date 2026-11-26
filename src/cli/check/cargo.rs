@@ -132,37 +132,11 @@ pub(crate) fn work_cargo_toml(
             issues.push(CargoIssue::PackageDescription);
         }
 
-        if let Some(categories) = package.categories().filter(|value| !value.is_empty()) {
-            let categories = categories
-                .iter()
-                .flat_map(|v| Some(v.as_str()?.to_owned()))
-                .collect::<Vec<_>>();
-            let mut sorted = categories.clone();
-            sorted.sort();
-
-            if categories != sorted {
-                issues.push(CargoIssue::PackageCategoriesNotSorted);
-                changed = true;
-                package.insert_categories(sorted)?;
-            }
-        } else {
+        if package.categories().filter(|value| !value.is_empty()).is_none() {
             issues.push(CargoIssue::PackageCategories);
         }
 
-        if let Some(keywords) = package.keywords().filter(|value| !value.is_empty()) {
-            let keywords = keywords
-                .iter()
-                .flat_map(|v| Some(v.as_str()?.to_owned()))
-                .collect::<Vec<_>>();
-            let mut sorted = keywords.clone();
-            sorted.sort();
-
-            if keywords != sorted {
-                issues.push(CargoIssue::PackageKeywordsNotSorted);
-                changed = true;
-                package.insert_keywords(sorted)?;
-            }
-        } else {
+        if package.keywords().filter(|value| !value.is_empty()).is_none() {
             issues.push(CargoIssue::PackageKeywords);
         }
 
@@ -181,6 +155,41 @@ pub(crate) fn work_cargo_toml(
                 issues.push(CargoIssue::NoPublishVersion);
                 changed = true;
                 modified_manifest.ensure_package_mut()?.remove_version();
+            }
+        }
+    }
+
+    // Sort categories and keywords even if the package is not published.
+    {
+        let package = modified_manifest.ensure_package_mut()?;
+
+        if let Some(categories) = package.categories() {
+            let categories = categories
+                .iter()
+                .flat_map(|v| Some(v.as_str()?.to_owned()))
+                .collect::<Vec<_>>();
+            let mut sorted = categories.clone();
+            sorted.sort();
+
+            if categories != sorted {
+                issues.push(CargoIssue::PackageCategoriesNotSorted);
+                changed = true;
+                package.insert_categories(sorted)?;
+            }
+        }
+
+        if let Some(keywords) = package.keywords() {
+            let keywords = keywords
+                .iter()
+                .flat_map(|v| Some(v.as_str()?.to_owned()))
+                .collect::<Vec<_>>();
+            let mut sorted = keywords.clone();
+            sorted.sort();
+
+            if keywords != sorted {
+                issues.push(CargoIssue::PackageKeywordsNotSorted);
+                changed = true;
+                package.insert_keywords(sorted)?;
             }
         }
     }
