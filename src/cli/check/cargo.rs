@@ -14,11 +14,12 @@ use crate::version_groups::{self, PackageVersion};
 use crate::workspace::Crates;
 
 macro_rules! cargo_keys {
-    ($($ident:ident => $name:literal),* $(,)?) => {
+    ($($ident:ident => $name:literal = $tag:literal),* $(,)?) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Encode, Decode)]
         #[serde(tag = "kind")]
+        #[musli(name(type = usize))]
         pub(crate) enum CargoKey {
-            $($ident,)*
+            $(#[musli(name = $tag)] $ident,)*
         }
 
         impl fmt::Display for CargoKey {
@@ -39,21 +40,26 @@ macro_rules! cargo_keys {
 }
 
 // Order from: https://doc.rust-lang.org/cargo/reference/manifest.html
+//
+// Keys sort in the order they are listed. The number is how a key is encoded
+// in staged changes, so it must never change for an existing key: give a new
+// key the next unused number.
 cargo_keys! {
-    Name => "name",
-    Version => "version",
-    Authors => "authors",
-    Edition => "edition",
-    RustVersion => "rust-version",
-    Description => "description",
-    Documentation => "documentation",
-    Readme => "readme",
-    Homepage => "homepage",
-    Repository => "repository",
-    License => "license",
-    Keywords => "keywords",
-    Categories => "categories",
-    Resolver => "resolver",
+    Name => "name" = 0,
+    Version => "version" = 1,
+    Authors => "authors" = 2,
+    Edition => "edition" = 3,
+    RustVersion => "rust-version" = 4,
+    Description => "description" = 5,
+    Documentation => "documentation" = 6,
+    Readme => "readme" = 7,
+    Homepage => "homepage" = 8,
+    Repository => "repository" = 9,
+    License => "license" = 10,
+    Keywords => "keywords" = 11,
+    Categories => "categories" = 12,
+    Publish => "publish" = 14,
+    Resolver => "resolver" = 13,
 }
 
 /// Validate the main `Cargo.toml`.
@@ -132,11 +138,19 @@ pub(crate) fn work_cargo_toml(
             issues.push(CargoIssue::PackageDescription);
         }
 
-        if package.categories().filter(|value| !value.is_empty()).is_none() {
+        if package
+            .categories()
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
             issues.push(CargoIssue::PackageCategories);
         }
 
-        if package.keywords().filter(|value| !value.is_empty()).is_none() {
+        if package
+            .keywords()
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
             issues.push(CargoIssue::PackageKeywords);
         }
 
@@ -270,4 +284,49 @@ pub(crate) fn work_cargo_toml(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use musli::storage::Encoding;
+
+    use super::CargoKey;
+
+    /// Keys are part of staged changes, so their encoding must not change
+    /// when keys are added or reordered.
+    #[test]
+    fn encoding_is_stable() {
+        let keys = [
+            CargoKey::Name,
+            CargoKey::Version,
+            CargoKey::Authors,
+            CargoKey::Edition,
+            CargoKey::RustVersion,
+            CargoKey::Description,
+            CargoKey::Documentation,
+            CargoKey::Readme,
+            CargoKey::Homepage,
+            CargoKey::Repository,
+            CargoKey::License,
+            CargoKey::Keywords,
+            CargoKey::Categories,
+            CargoKey::Resolver,
+            CargoKey::Publish,
+        ];
+
+        let encoding = Encoding::new();
+        let bytes = encoding.to_vec(&keys).unwrap();
+        assert_eq!(
+            bytes,
+            [15, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+        );
+        let decoded: Vec<CargoKey> = encoding.from_slice(&bytes).unwrap();
+        assert_eq!(decoded, keys);
+    }
+
+    #[test]
+    fn publish_sorts_between_categories_and_resolver() {
+        assert!(CargoKey::Categories < CargoKey::Publish);
+        assert!(CargoKey::Publish < CargoKey::Resolver);
+    }
 }
