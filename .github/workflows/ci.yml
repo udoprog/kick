@@ -20,7 +20,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     - uses: dtolnay/rust-toolchain@1.100
     - run: cargo build --workspace
 
@@ -31,7 +31,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     - uses: dtolnay/rust-toolchain@stable
     - run: cargo test --workspace --all-targets
       if: matrix.os == 'ubuntu-latest'
@@ -39,7 +39,7 @@ jobs:
   clippy:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     - uses: dtolnay/rust-toolchain@stable
       with:
         components: clippy
@@ -48,7 +48,7 @@ jobs:
   rustfmt:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     - uses: dtolnay/rust-toolchain@stable
       with:
         components: rustfmt
