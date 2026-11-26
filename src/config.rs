@@ -980,6 +980,8 @@ pub(crate) struct RepoConfig {
     pub(crate) lib: Option<Template>,
     /// Custom readme template.
     pub(crate) readme: Option<Template>,
+    /// Wordmark shown above the badges of the primary crate.
+    pub(crate) wordmark: Option<ConfigWordmark>,
     /// Custom badges for a specific project.
     pub(crate) badges: Vec<ConfigBadge>,
     /// Path to Cargo.toml to build.
@@ -1032,6 +1034,8 @@ impl RepoConfig {
         self.authors.append(&mut other.authors);
         self.documentation = other.documentation.or(self.documentation.take());
         self.lib = other.lib.or(self.lib.take());
+        self.readme = other.readme.or(self.readme.take());
+        self.wordmark = other.wordmark.or(self.wordmark.take());
         self.badges.append(&mut other.badges);
         self.cargo_toml = other.cargo_toml.or(self.cargo_toml.take());
         self.disabled.extend(other.disabled);
@@ -1432,6 +1436,14 @@ impl Config<'_> {
             .next()
     }
 
+    /// Get the wordmark for the given repo.
+    pub(crate) fn wordmark(&self, repo: &RepoRef) -> Option<&ConfigWordmark> {
+        self.repos(repo)
+            .rev()
+            .flat_map(|r| r.wordmark.as_ref())
+            .next()
+    }
+
     /// Get crate for the given repo.
     pub(crate) fn name<'a>(&'a self, repo: &RepoRef) -> Option<&'a str> {
         self.repos(repo)
@@ -1519,6 +1531,23 @@ impl Config<'_> {
         path: &RelativePath,
     ) -> impl DoubleEndedIterator<Item = &'a RepoConfig> + Clone {
         [&self.base].into_iter().chain(self.repos.get(path))
+    }
+}
+
+/// A wordmark configuration, rendered above the badges.
+#[derive(Debug)]
+pub(crate) struct ConfigWordmark {
+    markdown: Template,
+    html: Template,
+}
+
+impl ConfigWordmark {
+    pub(crate) fn markdown(&self, params: &RepoParams<'_>) -> Result<String> {
+        self.markdown.render(params)
+    }
+
+    pub(crate) fn html(&self, params: &RepoParams<'_>) -> Result<String> {
+        self.html.render(params)
     }
 }
 
@@ -2209,6 +2238,34 @@ impl<'a> Cx<'a> {
         let lib = self.in_key(table, "lib", Self::compile_path);
         let readme = self.in_key(table, "readme", Self::compile_path);
 
+        let wordmark = self.in_key(table, "wordmark", |cx, value| {
+            cx.with_table(value, |cx, table| {
+                let alt = cx.in_key(table, "alt", Self::string);
+                let src = cx.require_in_key(table, "src", Self::string);
+                let href = cx.in_key(table, "href", Self::string);
+                let height = cx.in_key(table, "height", Self::string);
+
+                let (alt, src, href, height) = (alt?, src?, href?, height?);
+
+                let alt = FormatOptional(alt.as_ref(), |f, alt| write!(f, " alt=\"{alt}\""));
+                let height = FormatOptional(height.as_ref(), |f, h| write!(f, " height=\"{h}\""));
+                let img = format!("<img{alt} src=\"{src}\"{height}>");
+
+                let (markdown, html) = match &href {
+                    Some(href) => (
+                        format!("[{img}]({href})"),
+                        format!("<a href=\"{href}\">{img}</a>"),
+                    ),
+                    None => (img.clone(), img),
+                };
+
+                Ok(ConfigWordmark {
+                    markdown: cx.compile_str(markdown)?,
+                    html: cx.compile_str(html)?,
+                })
+            })
+        });
+
         let badges = self.in_array(table, "badges", None, |cx, value| {
             cx.with_table(value, |cx, table| {
                 let id = cx.in_key(table, "id", Self::string);
@@ -2309,6 +2366,7 @@ impl<'a> Cx<'a> {
             documentation: documentation?,
             lib: lib?,
             readme: readme?,
+            wordmark: wordmark?,
             badges: badges?,
             cargo_toml: cargo_toml?,
             disabled: disabled?,

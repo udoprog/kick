@@ -70,6 +70,38 @@ readme_badges = ["-docs.rs", "-crates.io", "+discord"]
 
 <br>
 
+### `wordmark`
+
+An image, such as a logo or wordmark, to put above the badges of the primary
+crate. It is added to the documentation header of its entrypoint, its
+`README.md` and the `README.md` of the repo.
+
+* `src` the source of the image (required).
+* `alt` the alt text of the image.
+* `height` the height of the image.
+* `href` a link to wrap the image in.
+
+These are [handlebars templates](./templates.md#handlebars), expanded with the
+[`variables`](./variables.md) section.
+
+When a wordmark is set, any standalone `<img ...>` line in the documentation
+header is treated as part of the generated header and replaced, so an image
+which was added by hand above or between the badges is not duplicated.
+
+A custom [`lib` or `readme`](#lib-and-readme) template can place it with
+`wordmark.markdown` or `wordmark.html`.
+
+<br>
+
+#### Examples
+
+```toml
+[repo."~/repo/evalite"]
+wordmark = { alt = "evalite", src = "https://raw.githubusercontent.com/{{package.repo}}/main/assets/wordmark.svg", height = "64" }
+```
+
+<br>
+
 ### `license`
 
 Defines the license for the current repo.
@@ -143,6 +175,8 @@ variables are available for expansion, beyond what's defined in the
 * `body` the rest of the comment, which does not include the generated
   header.
 * `badges` a list of badges, each `{html: string, markdown: string}`.
+* `wordmark` the [`wordmark`](#wordmark) of the primary crate, as
+  `{html: string, markdown: string}` (optional).
 * `header_marker` a header marker that can be used to indicate the end of a
   generated documentation header, this will only be set if there's a
   trailing documentation section in use (optional).

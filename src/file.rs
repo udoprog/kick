@@ -113,6 +113,7 @@ where
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Lines<'a> {
     iter: core::str::Lines<'a>,
 }
@@ -127,6 +128,7 @@ impl<'a> Iterator for Lines<'a> {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Line<'a> {
     line: &'a str,
 }

@@ -125,6 +125,7 @@ pub(crate) fn check_crates(
             urls,
             true,
             false,
+            true,
         )?;
 
         for manifest in crates.packages() {
@@ -147,6 +148,7 @@ pub(crate) fn check_crates(
                 urls,
                 manifest.dir() != repo.path(),
                 true,
+                manifest.dir() == primary_manifest.dir(),
             )?;
         }
     }

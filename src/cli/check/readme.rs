@@ -1,3 +1,4 @@
+use std::iter::Peekable;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -10,7 +11,7 @@ use serde::Serialize;
 use crate::cargo::Manifest;
 use crate::changes::{Change, Warning};
 use crate::ctxt::Ctxt;
-use crate::file::File;
+use crate::file::{File, Lines};
 use crate::model::{Repo, RepoParams};
 use crate::urls::Urls;
 
@@ -28,6 +29,7 @@ struct Readme<'a, 'outer> {
     urls: &'outer mut Urls,
     do_readme: bool,
     do_lib: bool,
+    primary: bool,
 }
 
 /// Perform readme change.
@@ -40,6 +42,7 @@ pub(crate) fn build(
     urls: &mut Urls,
     do_readme: bool,
     do_lib: bool,
+    primary: bool,
 ) -> Result<()> {
     let readme_path = manifest_dir.join(README_MD);
 
@@ -61,6 +64,7 @@ pub(crate) fn build(
         urls,
         do_readme,
         do_lib,
+        primary,
     };
 
     validate(cx, &mut readme).with_context(|| anyhow!("{readme_path}: readme change"))?;
@@ -95,7 +99,15 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
         });
     }
 
-    let (file, lib_rs, comments) = process_lib_rs(cx, rm, &lib_badges)?;
+    let wordmark = match cx.config.wordmark(rm.repo) {
+        Some(wordmark) if rm.primary => Some(WordmarkParams {
+            markdown: wordmark.markdown(rm.params)?,
+            html: wordmark.html(rm.params)?,
+        }),
+        _ => None,
+    };
+
+    let (file, lib_rs, comments) = process_lib_rs(cx, rm, wordmark.as_ref(), &lib_badges)?;
 
     if rm.do_lib && *file != *lib_rs {
         cx.change(Change::UpdateLib {
@@ -133,7 +145,8 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
         });
     }
 
-    let readme_from_lib_rs = readme_from_lib_rs(cx, rm, &comments, &readme_badges)?;
+    let readme_from_lib_rs =
+        readme_from_lib_rs(cx, rm, &comments, wordmark.as_ref(), &readme_badges)?;
 
     let path = cx.to_path(rm.readme_path);
 
@@ -175,6 +188,50 @@ fn is_badge_comment(c: &str) -> bool {
     false
 }
 
+/// Test if line is a standalone image, such as a wordmark.
+fn is_image_comment(c: &str) -> bool {
+    let c = c.trim();
+    c.starts_with("<img ") && c.ends_with('>')
+}
+
+/// Test if the line is part of the generated header.
+fn is_header_comment(c: &str, wordmark: bool) -> bool {
+    is_badge_comment(c) || (wordmark && is_image_comment(c))
+}
+
+/// Skip over the generated header, including blank lines which separate parts
+/// of it such as the wordmark and the badges.
+fn skip_header(lines: &mut Peekable<Lines<'_>>, wordmark: bool) {
+    loop {
+        let mut ahead = lines.clone();
+
+        while ahead
+            .peek()
+            .and_then(|line| line.as_rust_comment())
+            .is_some_and(|line| line.trim().is_empty())
+        {
+            ahead.next();
+        }
+
+        let Some(line) = ahead.peek().and_then(|line| line.as_rust_comment()) else {
+            break;
+        };
+
+        if !is_header_comment(line, wordmark) {
+            break;
+        }
+
+        ahead.next();
+        *lines = ahead;
+    }
+}
+
+#[derive(Serialize)]
+struct WordmarkParams {
+    html: String,
+    markdown: String,
+}
+
 #[derive(Serialize)]
 struct BadgeParams {
     html: Option<String>,
@@ -183,6 +240,7 @@ struct BadgeParams {
 
 #[derive(Serialize)]
 struct TemplateParams<'a> {
+    wordmark: Option<&'a WordmarkParams>,
     badges: &'a [BadgeParams],
     body: Option<&'a str>,
     header_marker: Option<&'a str>,
@@ -193,6 +251,7 @@ struct TemplateParams<'a> {
 #[derive(Serialize)]
 struct ReadmeParams<'a> {
     body: Option<&'a str>,
+    wordmark: Option<&'a WordmarkParams>,
     badges: &'a [BadgeParams],
     #[serde(flatten)]
     params: &'a RepoParams<'a>,
@@ -202,6 +261,7 @@ struct ReadmeParams<'a> {
 fn process_lib_rs(
     cx: &Ctxt<'_>,
     rm: &Readme<'_, '_>,
+    wordmark: Option<&WordmarkParams>,
     badges: &[BadgeParams],
 ) -> Result<(Arc<File>, Arc<File>, File)> {
     let path = cx.to_path(rm.entry);
@@ -239,6 +299,7 @@ fn process_lib_rs(
             .collect();
 
         let lib = lib.render(&TemplateParams {
+            wordmark,
             badges,
             params: rm.params,
             header_marker,
@@ -264,13 +325,16 @@ fn process_lib_rs(
         comments
     } else {
         let mut comments = File::new();
+        let has_wordmark = wordmark.is_some();
 
-        while let Some(line) = source_lines.peek().and_then(|line| line.as_rust_comment()) {
-            if !is_badge_comment(line) {
-                break;
+        skip_header(&mut source_lines, has_wordmark);
+
+        if let Some(wordmark) = wordmark {
+            lib_rs.line(format_args!("//! {}", wordmark.markdown));
+
+            if badges.iter().any(|b| b.markdown.is_some()) {
+                lib_rs.line("//!");
             }
-
-            source_lines.next();
         }
 
         for badge in badges {
@@ -426,6 +490,7 @@ fn readme_from_lib_rs(
     cx: &Ctxt<'_>,
     rm: &mut Readme<'_, '_>,
     comments: &File,
+    wordmark: Option<&WordmarkParams>,
     badges: &[BadgeParams],
 ) -> Result<File> {
     let mut body = File::new();
@@ -459,6 +524,7 @@ fn readme_from_lib_rs(
     let mut readme = if let Some(readme) = cx.config.readme(rm.repo) {
         let output = readme.render(&ReadmeParams {
             body: body.as_non_empty_str(),
+            wordmark,
             badges,
             params: rm.params,
         })?;
@@ -473,6 +539,11 @@ fn readme_from_lib_rs(
     } else {
         let mut readme = File::new();
         readme.line(format!("# {name}", name = rm.params.name()));
+
+        if let Some(wordmark) = wordmark {
+            readme.line("");
+            readme.line(&wordmark.markdown);
+        }
 
         if !badges.is_empty() {
             readme.line("");
@@ -525,4 +596,46 @@ fn filter_code_block(comment: &str) -> (Vec<String>, String) {
     }
 
     (out, ticks.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rest(source: &str, wordmark: bool) -> String {
+        let file = File::from_string(source.to_owned());
+        let mut lines = file.lines().peekable();
+        skip_header(&mut lines, wordmark);
+        lines.map(|l| format!("{l}\n")).collect()
+    }
+
+    const BADGE: &str = "//! [<img alt=\"a\" src=\"b\" height=\"20\">](c)";
+    const WORDMARK: &str = "//! <img alt=\"w\" src=\"w.svg\" height=\"64\">";
+
+    #[test]
+    fn skips_badges() {
+        let source = format!("{BADGE}\n{BADGE}\n//!\n//! Body.\n");
+        assert_eq!(rest(&source, false), "//!\n//! Body.\n");
+    }
+
+    #[test]
+    fn keeps_image_without_wordmark() {
+        let source = format!("{BADGE}\n{WORDMARK}\n//!\n//! Body.\n");
+        assert_eq!(
+            rest(&source, false),
+            format!("{WORDMARK}\n//!\n//! Body.\n")
+        );
+    }
+
+    #[test]
+    fn skips_wordmark_and_duplicated_badges() {
+        let source = format!("{BADGE}\n{WORDMARK}\n//!\n{BADGE}\n//!\n//! Body.\n");
+        assert_eq!(rest(&source, true), "//!\n//! Body.\n");
+    }
+
+    #[test]
+    fn stops_at_code() {
+        let source = format!("{WORDMARK}\n//!\n{BADGE}\n\nuse std::fmt;\n");
+        assert_eq!(rest(&source, true), "\nuse std::fmt;\n");
+    }
 }
