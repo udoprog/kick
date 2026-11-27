@@ -2,16 +2,25 @@
 //! generated README.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::ops::Range;
+use std::rc::Rc;
 
 use anyhow::Result;
 use pulldown_cmark::{BrokenLink, CowStr, Event, LinkType, Options, Parser, Tag};
 use relative_path::{RelativePath, RelativePathBuf};
 use reqwest::Url;
 
+use super::items::{self, File, Member, Syntax};
+
 /// Upper bound on the number of module files visited when looking for
 /// exported macros.
 const MAX_MODULES: usize = 1024;
+
+/// Upper bound on the number of re-exports followed to find an item.
+const MAX_REEXPORTS: usize = 16;
+
+const UNSUPPORTED: &str = "re-exports other than `pub use self::..` or `pub use crate::..`, external crates and items defined by macros are not supported";
 
 /// Access to the crate sources.
 pub(super) trait Sources {
@@ -227,237 +236,345 @@ fn other(reason: impl Into<String>) -> Unresolved {
     Unresolved::Other(reason.into())
 }
 
-/// A public item declared at the top level of a module file.
-struct Item<'a> {
-    kind: Kind,
-    name: &'a str,
-    inline: bool,
-}
-
-fn split_word(s: &str) -> (&str, &str) {
-    let index = s
-        .find(|c: char| !(c.is_alphanumeric() || c == '_'))
-        .unwrap_or(s.len());
-    (
-        s.get(..index).unwrap_or_default(),
-        s.get(index..).unwrap_or_default(),
-    )
-}
-
-/// Parse a public item declaration starting at column zero, which is where
-/// rustfmt puts module-level items.
-fn parse_item(line: &str) -> Option<Item<'_>> {
-    let mut rest = line.strip_prefix("pub ")?.trim_start();
-
-    loop {
-        let (word, tail) = split_word(rest);
-        let tail = tail.trim_start();
-
-        let kind = match word {
-            "unsafe" | "async" => {
-                rest = tail;
-                continue;
-            }
-            "extern" => {
-                rest = match tail.strip_prefix('"') {
-                    Some(abi) => abi.split_once('"')?.1.trim_start(),
-                    None => tail,
-                };
-                continue;
-            }
-            "const" => {
-                if matches!(split_word(tail).0, "fn" | "unsafe" | "async" | "extern") {
-                    rest = tail;
-                    continue;
-                }
-
-                Kind::Const
-            }
-            "static" => {
-                let (next, after) = split_word(tail);
-
-                if next == "mut" {
-                    rest = after.trim_start();
-                    let (name, _) = split_word(rest);
-                    return is_ident(name).then_some(Item {
-                        kind: Kind::Static,
-                        name,
-                        inline: false,
-                    });
-                }
-
-                Kind::Static
-            }
-            "struct" => Kind::Struct,
-            "enum" => Kind::Enum,
-            "trait" => Kind::Trait,
-            "union" => Kind::Union,
-            "mod" => Kind::Mod,
-            "fn" => Kind::Fn,
-            "type" => Kind::Type,
-            _ => return None,
-        };
-
-        let (name, after) = split_word(tail);
-
-        if !is_ident(name) {
-            return None;
-        }
-
-        let inline = kind == Kind::Mod && !after.trim_start().starts_with(';');
-        return Some(Item { kind, name, inline });
-    }
-}
-
-/// Parse a `mod name;` declaration of any visibility.
-fn parse_mod_decl(line: &str) -> Option<&str> {
-    let mut rest = line.trim_start();
-
-    if let Some(after) = rest.strip_prefix("pub") {
-        rest = match after.trim_start().strip_prefix('(') {
-            Some(vis) => vis.split_once(')')?.1,
-            None => after,
-        }
-        .trim_start();
-    }
-
-    let (name, after) = split_word(rest.strip_prefix("mod ")?.trim_start());
-    (is_ident(name) && after.trim_start().starts_with(';')).then_some(name)
-}
-
-/// Find a `#[macro_export]`ed `macro_rules!` definition of `name`.
-fn defines_exported_macro(source: &str, name: &str) -> bool {
-    let lines = source.lines().collect::<Vec<_>>();
-
-    for (index, line) in lines.iter().enumerate() {
-        let Some(rest) = line.trim_start().strip_prefix("macro_rules!") else {
-            continue;
-        };
-
-        if split_word(rest.trim_start()).0 != name {
-            continue;
-        }
-
-        let attributes = lines
-            .get(..index)
-            .unwrap_or_default()
-            .iter()
-            .rev()
-            .map(|line| line.trim())
-            .take_while(|line| line.starts_with("#[") || line.starts_with("//"));
-
-        if attributes
-            .into_iter()
-            .any(|line| line.starts_with("#[macro_export"))
-        {
-            return true;
-        }
-    }
-
-    false
-}
-
-/// Test if a method named `name` is declared in an impl block of the source.
-fn defines_method(source: &str, name: &str) -> bool {
-    source.lines().any(|line| {
-        if !line.starts_with(char::is_whitespace) {
-            return false;
-        }
-
-        parse_item(line.trim_start()).is_some_and(|item| item.kind == Kind::Fn && item.name == name)
+fn item_kind(syntax: Syntax) -> Option<Kind> {
+    Some(match syntax {
+        Syntax::Fn => Kind::Fn,
+        Syntax::Struct => Kind::Struct,
+        Syntax::Enum => Kind::Enum,
+        Syntax::Union => Kind::Union,
+        Syntax::Trait => Kind::Trait,
+        Syntax::TypeAlias => Kind::Type,
+        Syntax::Const => Kind::Const,
+        Syntax::Static => Kind::Static,
+        Syntax::Mod => Kind::Mod,
+        _ => return None,
     })
 }
 
+/// A module, which is a file and a path of inline modules inside of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Module {
     path: RelativePathBuf,
     /// Whether child modules are found next to this file, as for `lib.rs`
     /// and `mod.rs`.
     is_root: bool,
+    inline: Vec<String>,
 }
 
 impl Module {
+    /// The directory of child module files.
     fn child_dir(&self) -> Option<RelativePathBuf> {
         let parent = self.path.parent()?;
 
-        if self.is_root {
-            Some(parent.to_owned())
+        let mut dir = if self.is_root {
+            parent.to_owned()
         } else {
-            Some(parent.join(self.path.file_stem()?))
+            parent.join(self.path.file_stem()?)
+        };
+
+        for name in &self.inline {
+            dir.push(name);
         }
+
+        Some(dir)
+    }
+
+    /// The directory `#[path]` attributes are relative to.
+    fn path_dir(&self) -> Option<RelativePathBuf> {
+        if self.inline.is_empty() {
+            Some(self.path.parent()?.to_owned())
+        } else {
+            self.child_dir()
+        }
+    }
+
+    fn inline(&self, name: &str) -> Self {
+        let mut inline = self.inline.clone();
+        inline.push(name.to_owned());
+
+        Self {
+            path: self.path.clone(),
+            is_root: self.is_root,
+            inline,
+        }
+    }
+}
+
+impl fmt::Display for Module {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "`{}`", self.path)?;
+
+        if !self.inline.is_empty() {
+            write!(f, " (inline module `{}`)", self.inline.join("::"))?;
+        }
+
+        Ok(())
+    }
+}
+
+/// A module in which items are looked up.
+#[derive(Clone)]
+struct Place {
+    module: Module,
+    /// The directory of the module documentation relative to the crate root.
+    url: String,
+    /// Whether the module is reachable through public modules.
+    public: bool,
+}
+
+/// An item found in a module.
+#[derive(Clone)]
+struct Found {
+    kind: Kind,
+    /// The directory of the documentation page of the item.
+    url: String,
+    /// The name of the documentation page of the item.
+    name: String,
+    /// Whether the item is reachable through public items.
+    public: bool,
+    /// The module the item is defined in, and its name there.
+    def: Module,
+    def_name: String,
+    /// For modules, where their items are.
+    target: Option<Result<Module, String>>,
+}
+
+impl Found {
+    fn enter(&self) -> Result<Place, Unresolved> {
+        let module = match &self.target {
+            Some(Ok(module)) => module.clone(),
+            Some(Err(reason)) => return Err(other(reason.clone())),
+            None => return Err(other(format!("`{}` is not a module", self.name))),
+        };
+
+        Ok(Place {
+            module,
+            url: format!("{}{}/", self.url, self.name),
+            public: self.public,
+        })
     }
 }
 
 struct Resolver<'a> {
     docs: &'a DocsRs<'a>,
     sources: &'a dyn Sources,
-    cache: HashMap<RelativePathBuf, Option<String>>,
+    cache: HashMap<RelativePathBuf, Option<Rc<File>>>,
 }
 
 impl Resolver<'_> {
-    fn read(&mut self, path: &RelativePath) -> Result<Option<&str>, Unresolved> {
-        if !self.cache.contains_key(path) {
-            let source = self
-                .sources
-                .read(path)
-                .map_err(|e| other(format!("{path}: {e}")))?;
-            self.cache.insert(path.to_owned(), source);
+    fn file(&mut self, path: &RelativePath) -> Result<Option<Rc<File>>, Unresolved> {
+        if let Some(file) = self.cache.get(path) {
+            return Ok(file.clone());
         }
 
-        Ok(self.cache.get(path).and_then(|s| s.as_deref()))
+        let file = match self
+            .sources
+            .read(path)
+            .map_err(|e| other(format!("{path}: {e}")))?
+        {
+            Some(source) => Some(Rc::new(
+                items::parse(source).map_err(|e| other(format!("{path}: {e}")))?,
+            )),
+            None => None,
+        };
+
+        self.cache.insert(path.to_owned(), file.clone());
+        Ok(file)
+    }
+
+    fn module_file(&mut self, module: &Module) -> Result<Rc<File>, Unresolved> {
+        self.file(&module.path)?
+            .ok_or_else(|| other(format!("cannot read the module source `{}`", module.path)))
     }
 
     fn root(&self) -> Module {
         Module {
             path: self.docs.entry.to_owned(),
             is_root: true,
+            inline: Vec::new(),
         }
     }
 
-    fn child(&mut self, module: &Module, name: &str) -> Result<Module, Unresolved> {
-        let dir = module
-            .child_dir()
-            .ok_or_else(|| other(format!("cannot find the directory of `{}`", module.path)))?;
-
-        let file = dir.join(format!("{name}.rs"));
-
-        if self.read(&file)?.is_some() {
-            return Ok(Module {
-                path: file,
-                is_root: false,
-            });
+    fn root_place(&self) -> Place {
+        Place {
+            module: self.root(),
+            url: String::new(),
+            public: true,
         }
+    }
 
-        let file = dir.join(name).join("mod.rs");
+    fn child(
+        &mut self,
+        module: &Module,
+        name: &str,
+        path: Option<&str>,
+    ) -> Result<Module, Unresolved> {
+        if let Some(path) = path {
+            let file = module
+                .path_dir()
+                .ok_or_else(|| other(format!("cannot find the directory of {module}")))?
+                .join_normalized(path);
 
-        if self.read(&file)?.is_some() {
+            if self.file(&file)?.is_none() {
+                return Err(other(format!(
+                    "cannot find the source of module `{name}` at `{file}`"
+                )));
+            }
+
             return Ok(Module {
                 path: file,
                 is_root: true,
+                inline: Vec::new(),
             });
         }
 
-        Err(other(format!(
-            "cannot find the source of module `{name}` (`#[path]` attributes are not supported)"
-        )))
-    }
+        let dir = module
+            .child_dir()
+            .ok_or_else(|| other(format!("cannot find the directory of {module}")))?;
 
-    fn items(&mut self, module: &Module, name: &str) -> Result<Vec<(Kind, bool)>, Unresolved> {
-        let source = self
-            .read(&module.path)?
-            .ok_or_else(|| other(format!("cannot read the module source `{}`", module.path)))?;
-
-        let mut items = Vec::new();
-
-        for line in source.lines() {
-            if let Some(item) = parse_item(line)
-                && item.name == name
-                && !items.contains(&(item.kind, item.inline))
-            {
-                items.push((item.kind, item.inline));
+        for (file, is_root) in [
+            (dir.join(format!("{name}.rs")), false),
+            (dir.join(name).join("mod.rs"), true),
+        ] {
+            if self.file(&file)?.is_some() {
+                return Ok(Module {
+                    path: file,
+                    is_root,
+                    inline: Vec::new(),
+                });
             }
         }
 
-        Ok(items)
+        Err(other(format!("cannot find the source of module `{name}`")))
+    }
+
+    /// Find the items named `name` in a module, of any visibility, including
+    /// those re-exported with a simple `pub use`.
+    fn find(&mut self, place: &Place, name: &str, depth: usize) -> Result<Vec<Found>, Unresolved> {
+        let file = self.module_file(&place.module)?;
+
+        let scope = file
+            .scope(&place.module.inline)
+            .ok_or_else(|| other(format!("cannot find {}", place.module)))?;
+
+        let mut found = Vec::new();
+        let mut reexports = Vec::new();
+
+        for item in scope.items() {
+            if item.kind() == Syntax::Use {
+                if item.is_public()
+                    && let Some(tree) = item.use_tree()
+                    && tree.name() == Some(name)
+                {
+                    reexports.push(
+                        tree.path
+                            .iter()
+                            .map(|s| (*s).to_owned())
+                            .collect::<Vec<_>>(),
+                    );
+                }
+
+                continue;
+            }
+
+            if item.name() != Some(name) {
+                continue;
+            }
+
+            let Some(kind) = item_kind(item.kind()) else {
+                continue;
+            };
+
+            let target = if kind == Kind::Mod {
+                Some(match item.block() {
+                    Some(..) => Ok(place.module.inline(name)),
+                    None => self
+                        .child(&place.module, name, item.path_attribute())
+                        .map_err(Unresolved::into_reason),
+                })
+            } else {
+                None
+            };
+
+            found.push(Found {
+                kind,
+                url: place.url.clone(),
+                name: name.to_owned(),
+                public: place.public && item.is_public(),
+                def: place.module.clone(),
+                def_name: name.to_owned(),
+                target,
+            });
+        }
+
+        for path in reexports {
+            found.extend(self.reexport(place, name, &path, depth)?);
+        }
+
+        Ok(found)
+    }
+
+    /// Follow a `pub use self::..` or `pub use crate::..` re-export.
+    fn reexport(
+        &mut self,
+        place: &Place,
+        name: &str,
+        path: &[String],
+        depth: usize,
+    ) -> Result<Vec<Found>, Unresolved> {
+        let depth = depth.saturating_add(1);
+
+        if depth > MAX_REEXPORTS {
+            return Err(other(format!(
+                "too many nested re-exports when looking for `{name}`"
+            )));
+        }
+
+        let (mut current, rest) = match path.split_first() {
+            Some((first, rest)) if first == "crate" => (self.root_place(), rest),
+            Some((first, rest)) if first == "self" => (place.clone(), rest),
+            _ => return Ok(Vec::new()),
+        };
+
+        let Some((last, modules)) = rest.split_last() else {
+            return Ok(Vec::new());
+        };
+
+        for segment in modules {
+            let found = self.find(&current, segment, depth)?;
+
+            let Some(module) = found.iter().find(|f| f.kind == Kind::Mod) else {
+                return Ok(Vec::new());
+            };
+
+            current = module.enter()?;
+        }
+
+        let targets = self.find(&current, last, depth)?;
+
+        // Items which are not reachable where they are defined are documented
+        // where they are re-exported.
+        Ok(targets
+            .into_iter()
+            .map(|target| {
+                if target.public {
+                    return target;
+                }
+
+                Found {
+                    url: place.url.clone(),
+                    name: name.to_owned(),
+                    public: place.public,
+                    ..target
+                }
+            })
+            .collect())
+    }
+
+    fn find_public(&mut self, place: &Place, name: &str) -> Result<Vec<Found>, Unresolved> {
+        let mut found = self.find(place, name, 0)?;
+        found.retain(|f| f.public);
+        Ok(found)
     }
 
     fn find_macro(&mut self, name: &str) -> Result<bool, Unresolved> {
@@ -469,23 +586,39 @@ impl Resolver<'_> {
                 continue;
             }
 
-            let Some(source) = self.read(&module.path)? else {
+            let Some(file) = self.file(&module.path)? else {
                 continue;
             };
 
-            if defines_exported_macro(source, name) {
-                return Ok(true);
-            }
+            let Some(root) = file.scope::<String>(&[]) else {
+                continue;
+            };
 
-            let children = source
-                .lines()
-                .filter_map(parse_mod_decl)
-                .map(str::to_owned)
-                .collect::<Vec<_>>();
+            let mut scopes = vec![(root, module)];
 
-            for child in children {
-                if let Ok(child) = self.child(&module, &child) {
-                    queue.push(child);
+            while let Some((scope, module)) = scopes.pop() {
+                for item in scope.items() {
+                    match item.kind() {
+                        Syntax::MacroRules
+                            if item.name() == Some(name) && item.is_macro_export() =>
+                        {
+                            return Ok(true);
+                        }
+                        Syntax::Mod => {
+                            let Some(child) = item.name() else {
+                                continue;
+                            };
+
+                            if let Some(block) = item.block() {
+                                scopes.push((block, module.inline(child)));
+                            } else if let Ok(child) =
+                                self.child(&module, child, item.path_attribute())
+                            {
+                                queue.push(child);
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
@@ -561,53 +694,56 @@ impl Resolver<'_> {
             return Ok(format!("macro.{name}.html"));
         }
 
-        let mut module = self.root();
-        let mut url = String::new();
+        let mut place = self.root_place();
 
         for (index, segment) in modules.iter().enumerate() {
-            let items = self.items(&module, segment)?;
+            let found = self.find_public(&place, segment)?;
 
-            if items.contains(&(Kind::Mod, false)) {
-                module = self.child(&module, segment)?;
-                url.push_str(segment);
-                url.push('/');
+            if let Some(module) = found.iter().find(|f| f.kind == Kind::Mod) {
+                place = module.enter()?;
                 continue;
             }
 
-            if items.contains(&(Kind::Mod, true)) {
-                return Err(other(format!("inline module `{segment}` is not supported")));
-            }
-
             if index.checked_add(1) == Some(modules.len())
-                && let Some((kind, _)) = items.iter().find(|(kind, _)| kind.is_type())
+                && let Some(parent) = found.iter().find(|f| f.kind.is_type())
             {
-                let page = kind
-                    .page(segment)
+                let page = parent
+                    .kind
+                    .page(&parent.name)
                     .ok_or_else(|| other("unsupported parent item"))?;
-                let anchor = self.member(*kind, &module, name, link)?;
-                return Ok(format!("{url}{page}#{anchor}"));
+                let anchor = self.member(parent, name, link)?;
+                return Ok(format!("{}{page}#{anchor}", parent.url));
             }
 
             return Err(Unresolved::NotFound(format!(
-                "no public module or type `{segment}` declared in `{}` (re-exports, external crates and items defined by macros are not supported)",
-                module.path
+                "no public module or type `{segment}` declared in {} ({UNSUPPORTED})",
+                place.module
             )));
         }
 
-        let candidates = self
-            .items(&module, name)?
-            .into_iter()
-            .filter(|(kind, _)| link.filter.allows(*kind))
-            .filter(|(kind, _)| link.suffix != Suffix::Parens || *kind == Kind::Fn)
-            .map(|(kind, _)| kind)
-            .collect::<Vec<_>>();
+        let mut candidates = Vec::<Found>::new();
 
-        let kind = match candidates.as_slice() {
-            [kind] => *kind,
+        for found in self.find_public(&place, name)? {
+            if !link.filter.allows(found.kind)
+                || (link.suffix == Suffix::Parens && found.kind != Kind::Fn)
+            {
+                continue;
+            }
+
+            if !candidates
+                .iter()
+                .any(|c| c.kind == found.kind && c.url == found.url && c.name == found.name)
+            {
+                candidates.push(found);
+            }
+        }
+
+        let found = match candidates.as_slice() {
+            [found] => found,
             [] => {
                 return Err(Unresolved::NotFound(format!(
-                    "no matching public item `{name}` declared in `{}` (re-exports, external crates and items defined by macros are not supported)",
-                    module.path
+                    "no matching public item `{name}` declared in {} ({UNSUPPORTED})",
+                    place.module
                 )));
             }
             _ => {
@@ -617,20 +753,20 @@ impl Resolver<'_> {
             }
         };
 
-        let page = kind
-            .page(name)
+        let page = found
+            .kind
+            .page(&found.name)
             .ok_or_else(|| other("unsupported item kind"))?;
-        Ok(format!("{url}{page}"))
+        Ok(format!("{}{page}", found.url))
     }
 
     fn member(
         &mut self,
-        parent: Kind,
-        module: &Module,
+        parent: &Found,
         name: &str,
         link: &ItemLink<'_>,
     ) -> Result<String, Unresolved> {
-        if parent == Kind::Trait {
+        if parent.kind == Kind::Trait {
             return Err(other("links to trait members are not supported"));
         }
 
@@ -640,26 +776,39 @@ impl Resolver<'_> {
             Filter::Kinds(&[Kind::Const]) => Kind::Const,
             Filter::Kinds(&[Kind::Fn, Kind::Method]) => Kind::Method,
             Filter::Any if link.suffix == Suffix::Parens => Kind::Method,
-            Filter::Any if parent == Kind::Enum && name.starts_with(|c: char| c.is_uppercase()) => {
-                Kind::Variant
-            }
             Filter::Any => {
-                let source = self.read(&module.path)?.unwrap_or_default();
+                let file = self.module_file(&parent.def)?;
 
-                if !defines_method(source, name) {
-                    return Err(other(format!(
-                        "cannot tell what kind of member `{name}` is, add a disambiguator such as `method@` or `field@`"
-                    )));
+                let members = file
+                    .scope(&parent.def.inline)
+                    .map(|scope| scope.members(&parent.def_name, name))
+                    .unwrap_or_default();
+
+                match members.as_slice() {
+                    [Member::Method] => Kind::Method,
+                    [Member::Const] => Kind::Const,
+                    [Member::Type] => Kind::Type,
+                    [Member::Variant] => Kind::Variant,
+                    [Member::Field] => Kind::Field,
+                    [] => {
+                        return Err(other(format!(
+                            "cannot tell what kind of member `{name}` is, add a disambiguator such as `method@` or `field@`"
+                        )));
+                    }
+                    _ => {
+                        return Err(other(format!(
+                            "`{name}` is ambiguous, add a disambiguator such as `method@` or `field@`"
+                        )));
+                    }
                 }
-
-                Kind::Method
             }
             _ => return Err(other("unsupported member disambiguator")),
         };
 
-        let anchor = match (parent, kind) {
+        let anchor = match (parent.kind, kind) {
             (_, Kind::Method) => "method",
             (_, Kind::Const) => "associatedconstant",
+            (_, Kind::Type) => "associatedtype",
             (Kind::Enum, Kind::Variant) => "variant",
             (Kind::Struct | Kind::Union, Kind::Field) => "structfield",
             _ => return Err(other("unsupported member for this kind of item")),

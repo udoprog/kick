@@ -15,6 +15,7 @@ use crate::file::{File, Lines};
 use crate::model::{Repo, RepoParams};
 use crate::urls::Urls;
 
+mod items;
 mod links;
 
 /// Name of README to generate.
@@ -893,7 +894,7 @@ macro_rules! nested {}
             ("[`std::fmt::Debug`]", "no public module or type `std`"),
             ("[`Vec<T>`]", "generic parameters"),
             ("[`twice`]", "ambiguous"),
-            ("[`inline::Item`]", "inline module `inline`"),
+            ("[`inline::Item`]", "no matching public item `Item`"),
             ("[`Run::run`]", "trait members"),
             ("[`Foo::missing`]", "cannot tell what kind of member"),
             ("[`super::Foo`]", "relative paths"),
@@ -918,6 +919,112 @@ macro_rules! nested {}
                 .iter()
                 .all(|e| e.reason.contains("no library target"))
         );
+    }
+
+    const STRUCTURED_LIB_RS: &str = r#"
+pub mod outer {
+    pub mod inner {
+        pub struct Deep;
+
+        #[macro_export]
+        macro_rules! inline_macro { () => {} }
+    }
+
+    mod private {
+        pub struct Hidden;
+    }
+
+    pub use self::private::Hidden as Shown;
+}
+
+#[path = "elsewhere/custom.rs"]
+pub mod custom;
+
+pub use crate::outer::inner::Deep as Renamed;
+pub use self::outer::Shown;
+pub use std::fmt::Debug;
+pub use outer::inner::*;
+
+pub struct Foo { pub field: u32, private: u32, pub both: u32 }
+pub struct Other;
+pub enum Kind { Lower, r#Upper(u32) }
+
+impl Foo {
+    pub fn method(&self) {}
+    pub fn both(&self) {}
+    pub const LIMIT: u32 = 1;
+    fn private_method(&self) {}
+}
+
+impl Iterator for Other {
+    type Item = u32;
+    fn next(&mut self) -> Option<u32> { None }
+}
+
+impl Other {
+    /// A string with `pub fn method() {}` in it is not a method.
+    pub const TEXT: &str = "pub fn method() {}";
+}
+"#;
+
+    const STRUCTURED: MapSources = MapSources(&[
+        ("my-crate/src/lib.rs", STRUCTURED_LIB_RS),
+        (
+            "my-crate/src/elsewhere/custom.rs",
+            "pub fn custom() {}\npub mod nested;\n",
+        ),
+        ("my-crate/src/elsewhere/nested.rs", "pub struct Nested;\n"),
+    ]);
+
+    #[test]
+    fn rewrites_structured_items() {
+        for (input, page) in [
+            ("outer::inner::Deep", "outer/inner/struct.Deep.html"),
+            ("outer::Shown", "outer/struct.Shown.html"),
+            ("Shown", "outer/struct.Shown.html"),
+            ("Renamed", "outer/inner/struct.Deep.html"),
+            ("custom::custom", "custom/fn.custom.html"),
+            ("custom::nested::Nested", "custom/nested/struct.Nested.html"),
+            ("inline_macro!", "macro.inline_macro.html"),
+            ("Foo::field", "struct.Foo.html#structfield.field"),
+            ("Foo::LIMIT", "struct.Foo.html#associatedconstant.LIMIT"),
+            ("Foo::method", "struct.Foo.html#method.method"),
+            ("Other::next", "struct.Other.html#method.next"),
+            ("Other::Item", "struct.Other.html#associatedtype.Item"),
+            ("Kind::Lower", "enum.Kind.html#variant.Lower"),
+            ("Kind::Upper", "enum.Kind.html#variant.Upper"),
+        ] {
+            assert_eq!(
+                rewrite_with(&STRUCTURED, &format!("[`{input}`]\n")),
+                format!("[`{input}`]({BASE}{page})\n"),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unresolvable_structured_links() {
+        for (input, reason) in [
+            ("[`Other::method`]", "cannot tell what kind of member"),
+            ("[`Foo::private`]", "cannot tell what kind of member"),
+            ("[`Foo::private_method`]", "cannot tell what kind of member"),
+            ("[`Foo::both`]", "`both` is ambiguous"),
+            ("[`Hidden`]", "no matching public item `Hidden`"),
+            (
+                "[`outer::private::Hidden`]",
+                "no public module or type `private`",
+            ),
+            ("[`Debug`]", "no matching public item `Debug`"),
+            ("[`Deep`]", "no matching public item `Deep`"),
+        ] {
+            let errors = match links::rewrite(&format!("{input}\n"), &docs(true), &STRUCTURED) {
+                Ok(output) => panic!("{input}: expected error, got {output}"),
+                Err(errors) => errors.into_iter().map(|e| e.reason).collect::<Vec<_>>(),
+            };
+
+            assert_eq!(errors.len(), 1, "{input}: {errors:?}");
+            assert!(errors[0].contains(reason), "{input}: {errors:?}");
+        }
     }
 
     #[test]
