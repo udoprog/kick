@@ -15,6 +15,8 @@ use crate::file::{File, Lines};
 use crate::model::{Repo, RepoParams};
 use crate::urls::Urls;
 
+mod links;
+
 /// Name of README to generate.
 pub(crate) const README_MD: &str = "README.md";
 
@@ -27,6 +29,7 @@ struct Readme<'a, 'outer> {
     entry: &'a RelativePath,
     params: &'a RepoParams<'a>,
     urls: &'outer mut Urls,
+    docs: links::DocsRs<'a>,
     do_readme: bool,
     do_lib: bool,
     primary: bool,
@@ -56,12 +59,34 @@ pub(crate) fn build(
         bail!("{}: missing existing entrypoint", cx.display(manifest_dir))
     };
 
+    let package = manifest.as_package();
+    let lib_name = manifest
+        .lib()
+        .and_then(|lib| lib.get("name"))
+        .and_then(|name| name.as_str());
+
+    let crate_ident = if manifest.lib().is_some() || entry.file_name() == Some("lib.rs") {
+        lib_name
+            .or_else(|| package.and_then(|p| p.name().ok()))
+            .map(|name| name.replace('-', "_"))
+    } else {
+        None
+    };
+
+    let docs = links::DocsRs {
+        package: package.and_then(|p| p.name().ok()),
+        version: package.and_then(|p| p.version()),
+        crate_ident,
+        entry: &entry,
+    };
+
     let mut readme = Readme {
         repo,
         readme_path: &readme_path,
         entry: &entry,
         params,
         urls,
+        docs,
         do_readme,
         do_lib,
         primary,
@@ -144,6 +169,8 @@ fn validate(cx: &Ctxt<'_>, rm: &mut Readme<'_, '_>) -> Result<()> {
             html: badge.html(rm.params)?,
         });
     }
+
+    let comments = rewrite_links(cx, rm, &file, &comments)?;
 
     let readme_from_lib_rs =
         readme_from_lib_rs(cx, rm, &comments, wordmark.as_ref(), &readme_badges)?;
@@ -452,8 +479,9 @@ fn visit_url(
     range: &Range<usize>,
     checks: &MarkdownChecks,
 ) -> Result<()> {
-    // Link to anchor does nothing.
-    if url.starts_with('#') {
+    // Links to anchors do nothing, and intra-doc links are rewritten when the
+    // README is generated.
+    if url.starts_with('#') || links::is_item_link(url) {
         return Ok(());
     }
 
@@ -483,6 +511,54 @@ fn visit_url(
     );
 
     Ok(())
+}
+
+struct CtxtSources<'a, 'cx>(&'a Ctxt<'cx>);
+
+impl links::Sources for CtxtSources<'_, '_> {
+    fn read(&self, path: &RelativePath) -> Result<Option<String>> {
+        self.0.read_path_to_string(&self.0.to_path(path))
+    }
+}
+
+/// Rewrite intra-doc links in the crate documentation to docs.rs.
+fn rewrite_links(
+    cx: &Ctxt<'_>,
+    rm: &Readme<'_, '_>,
+    source: &File,
+    comments: &File,
+) -> Result<File> {
+    let errors = match links::rewrite(comments.as_str(), &rm.docs, &CtxtSources(cx)) {
+        Ok(rewritten) => return Ok(File::from_string(rewritten)),
+        Err(errors) => errors,
+    };
+
+    // The documentation comments are the trailing `//!` lines of the source.
+    let comment_lines = source
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.as_rust_comment().is_some())
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+
+    let skip = comment_lines.len().saturating_sub(comments.lines().count());
+
+    let mut message = String::from("cannot rewrite intra-doc links for the README:");
+
+    for error in errors {
+        let (position, _) = comments.line_column(error.offset)?;
+
+        let line = comment_lines
+            .get(skip.saturating_add(position.line))
+            .map_or(0, |index| index.saturating_add(1));
+
+        message.push_str(&format!(
+            "\n  {}:{line}: `{}`: {}",
+            rm.entry, error.link, error.reason
+        ));
+    }
+
+    bail!(message)
 }
 
 /// Generate a readme.
@@ -631,6 +707,217 @@ mod tests {
     fn skips_wordmark_and_duplicated_badges() {
         let source = format!("{BADGE}\n{WORDMARK}\n//!\n{BADGE}\n//!\n//! Body.\n");
         assert_eq!(rest(&source, true), "//!\n//! Body.\n");
+    }
+
+    struct MapSources(&'static [(&'static str, &'static str)]);
+
+    impl links::Sources for MapSources {
+        fn read(&self, path: &RelativePath) -> Result<Option<String>> {
+            Ok(self
+                .0
+                .iter()
+                .find(|(p, _)| *p == path.as_str())
+                .map(|(_, s)| (*s).to_owned()))
+        }
+    }
+
+    const LIB_RS: &str = "\
+pub struct Foo;
+pub enum Color { Red }
+pub trait Run {}
+pub union Bits { a: u32 }
+pub const fn make() {}
+pub const LIMIT: u32 = 1;
+pub static mut STATE: u32 = 0;
+pub type Alias = u32;
+pub mod a;
+pub mod inline {}
+pub fn twice() {}
+pub mod twice {}
+
+impl Foo {
+    pub fn method(&self) {}
+}
+
+#[macro_export]
+macro_rules! root {}
+";
+
+    const A_RS: &str = "\
+pub mod b;
+pub struct Bar { pub field: u32 }
+";
+
+    const B_RS: &str = "\
+pub fn deep() {}
+";
+
+    const NESTED_RS: &str = "\
+#[macro_export]
+/// Docs.
+macro_rules! nested {}
+";
+
+    const SOURCES: MapSources = MapSources(&[
+        ("my-crate/src/lib.rs", LIB_RS),
+        ("my-crate/src/a.rs", A_RS),
+        ("my-crate/src/a/b/mod.rs", B_RS),
+        ("my-crate/src/a/b/nested.rs", NESTED_RS),
+    ]);
+
+    const B_WITH_NESTED: MapSources = MapSources(&[
+        ("my-crate/src/lib.rs", LIB_RS),
+        ("my-crate/src/a.rs", A_RS),
+        ("my-crate/src/a/b/mod.rs", "mod nested;\n"),
+        ("my-crate/src/a/b/nested.rs", NESTED_RS),
+    ]);
+
+    const BASE: &str = "https://docs.rs/my-crate/1.2.3/my_crate/";
+
+    fn docs(lib: bool) -> links::DocsRs<'static> {
+        links::DocsRs {
+            package: Some("my-crate"),
+            version: Some("1.2.3"),
+            crate_ident: lib.then(|| "my_crate".to_owned()),
+            entry: RelativePath::new("my-crate/src/lib.rs"),
+        }
+    }
+
+    fn rewrite_with(sources: &MapSources, input: &str) -> String {
+        match links::rewrite(input, &docs(true), sources) {
+            Ok(output) => output,
+            Err(errors) => panic!("{input}: {errors:?}"),
+        }
+    }
+
+    fn rewrite(input: &str) -> String {
+        rewrite_with(&SOURCES, input)
+    }
+
+    fn rewrite_err(input: &str) -> Vec<String> {
+        match links::rewrite(input, &docs(true), &SOURCES) {
+            Ok(output) => panic!("{input}: expected error, got {output}"),
+            Err(errors) => errors.into_iter().map(|e| e.reason).collect(),
+        }
+    }
+
+    #[test]
+    fn rewrites_item_kinds() {
+        for (input, page) in [
+            ("[Foo]", "struct.Foo.html"),
+            ("[`Foo`]", "struct.Foo.html"),
+            ("[`crate::Foo`]", "struct.Foo.html"),
+            ("[`self::Foo`]", "struct.Foo.html"),
+            ("[`Color`]", "enum.Color.html"),
+            ("[`Run`]", "trait.Run.html"),
+            ("[`Bits`]", "union.Bits.html"),
+            ("[`make`]", "fn.make.html"),
+            ("[`make()`]", "fn.make.html"),
+            ("[`LIMIT`]", "constant.LIMIT.html"),
+            ("[`STATE`]", "static.STATE.html"),
+            ("[`Alias`]", "type.Alias.html"),
+            ("[`a`]", "a/index.html"),
+            ("[`crate`]", "index.html"),
+            ("[`root!`]", "macro.root.html"),
+            ("[`macro@root`]", "macro.root.html"),
+            ("[`struct@Foo`]", "struct.Foo.html"),
+            ("[`fn@twice`]", "fn.twice.html"),
+            ("[`mod@twice`]", "twice/index.html"),
+            ("[`twice()`]", "fn.twice.html"),
+        ] {
+            let text = input.trim_start_matches('[').trim_end_matches(']');
+            assert_eq!(
+                rewrite(&format!("See {input}.\n")),
+                format!("See [{text}]({BASE}{page}).\n"),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn rewrites_members_and_modules() {
+        for (input, page) in [
+            ("a::Bar", "a/struct.Bar.html"),
+            ("crate::a::b::deep", "a/b/fn.deep.html"),
+            ("a::b", "a/b/index.html"),
+            ("Foo::method", "struct.Foo.html#method.method"),
+            ("Foo::other()", "struct.Foo.html#method.other"),
+            ("Color::Red", "enum.Color.html#variant.Red"),
+            ("field@a::Bar::field", "a/struct.Bar.html#structfield.field"),
+            ("const@Foo::MAX", "struct.Foo.html#associatedconstant.MAX"),
+        ] {
+            assert_eq!(
+                rewrite(&format!("[`{input}`]\n")),
+                format!("[`{input}`]({BASE}{page})\n"),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn rewrites_link_forms() {
+        assert_eq!(
+            rewrite("[text](Foo) and [text](<crate::Foo> \"title\")\n"),
+            format!("[text]({BASE}struct.Foo.html) and [text]({BASE}struct.Foo.html \"title\")\n")
+        );
+
+        assert_eq!(
+            rewrite("[text][Foo] and [Foo][]\n"),
+            format!("[text]({BASE}struct.Foo.html) and [Foo]({BASE}struct.Foo.html)\n")
+        );
+
+        assert_eq!(
+            rewrite("[text][foo] and [foo]\n\n[foo]: crate::Foo\n[url]: https://example.com\n"),
+            format!(
+                "[text][foo] and [foo]\n\n[foo]: {BASE}struct.Foo.html\n[url]: https://example.com\n"
+            )
+        );
+
+        assert_eq!(
+            rewrite_with(&B_WITH_NESTED, "[`nested!`]\n"),
+            format!("[`nested!`]({BASE}macro.nested.html)\n")
+        );
+    }
+
+    #[test]
+    fn leaves_other_text_alone() {
+        let input = "[x] [some words] [unknown] [#anchor](#anchor) [web](https://example.com)\n\n```rust\n// [`Foo`]\n```\n";
+        assert_eq!(rewrite(input), input);
+    }
+
+    #[test]
+    fn rejects_unresolvable_links() {
+        for (input, reason) in [
+            ("[`Missing`]", "no matching public item `Missing`"),
+            ("[text](Missing)", "no matching public item `Missing`"),
+            ("[`std::fmt::Debug`]", "no public module or type `std`"),
+            ("[`Vec<T>`]", "generic parameters"),
+            ("[`twice`]", "ambiguous"),
+            ("[`inline::Item`]", "inline module `inline`"),
+            ("[`Run::run`]", "trait members"),
+            ("[`Foo::missing`]", "cannot tell what kind of member"),
+            ("[`super::Foo`]", "relative paths"),
+            ("[`nested!`]", "no `#[macro_export]` macro named `nested`"),
+            ("[`prim@str`]", "not supported"),
+            ("[guide](config.md)", "relative links"),
+            ("[guide]\n\n[guide]: ./config.md", "relative links"),
+        ] {
+            let errors = rewrite_err(&format!("{input}\n"));
+            assert_eq!(errors.len(), 1, "{input}: {errors:?}");
+            assert!(errors[0].contains(reason), "{input}: {errors:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_links_without_lib_target() {
+        let errors =
+            links::rewrite("[`Foo`] [Foo] [unknown]\n", &docs(false), &SOURCES).unwrap_err();
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(
+            errors
+                .iter()
+                .all(|e| e.reason.contains("no library target"))
+        );
     }
 
     #[test]

@@ -241,6 +241,13 @@ Kick can `check`, which performs a project-specific sanity such as checking
 that READMEs are up-to-date with their corresponding sources, badges are
 configured, github actions are correctly configured and much more.
 
+Since the README is generated from the crate documentation, rustdoc intra-doc
+links in it such as `[Foo]` or `[text](crate::module::function)` are rewritten
+to links to the item on docs.rs, for the version of the package in
+`Cargo.toml`. Links that can't be resolved, such as items in other crates,
+re-exports, relative paths, or any item link in a crate without a library
+target, make `check` fail instead of producing a README with broken links.
+
 Kick can effortlessly package your Rust projects using actions such
 `gzip`,`zip`, or packaging systems such as `rpm`, `deb`, or `msi` preparing
 them for distribution.
