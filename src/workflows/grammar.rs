@@ -53,7 +53,7 @@ fn expr(p: &mut Parser<'_>, min: u8) -> Result<Outcome, ExprError> {
         Not => {
             p.bump(Not)?;
             ok &= expr(p, 0)?;
-            p.tree.close_at(&c, Unary)?;
+            p.tree.close_at(c, Unary)?;
         }
         OpenParen => {
             ok &= group(p, CloseParen)?;
@@ -66,11 +66,11 @@ fn expr(p: &mut Parser<'_>, min: u8) -> Result<Outcome, ExprError> {
 
             if p.eat(OpenParen)? {
                 ok &= function(p)?;
-                p.tree.close_at(&c, Function)?;
+                p.tree.close_at(c, Function)?;
             } else if lookup(p)? {
-                p.tree.close_at(&c, Lookup)?;
+                p.tree.close_at(c, Lookup)?;
             } else {
-                p.tree.close_at(&c, Error)?;
+                p.tree.close_at(c, Error)?;
             }
         }
         tok @ (Number | Null | Bool | SingleString | DoubleString) => {
@@ -98,7 +98,7 @@ fn expr(p: &mut Parser<'_>, min: u8) -> Result<Outcome, ExprError> {
     }
 
     if operation {
-        p.tree.close_at(&c, Binary)?;
+        p.tree.close_at(c, Binary)?;
     }
 
     Ok(ok)
@@ -153,7 +153,7 @@ fn group(p: &mut Parser, until: Syntax) -> Result<Outcome, ExprError> {
     p.token()?;
     let c = p.tree.checkpoint()?;
     let mut ok = expr(p, 0)?;
-    p.tree.close_at(&c, Group)?;
+    p.tree.close_at(c, Group)?;
 
     if !p.eat(until)? {
         p.bump(Error)?;
@@ -175,7 +175,7 @@ pub(crate) fn root(p: &mut Parser<'_>) -> Result<(), ExprError> {
         // Simple error recovery where we consume until we find an operator
         // which will be consumed as an expression next.
         p.advance_until(is_expr_start)?;
-        p.tree.close_at(&c, Error)?;
+        p.tree.close_at(c, Error)?;
     }
 
     Ok(())
