@@ -767,7 +767,7 @@ impl Resolver<'_> {
         link: &ItemLink<'_>,
     ) -> Result<String, Unresolved> {
         if parent.kind == Kind::Trait {
-            return Err(other("links to trait members are not supported"));
+            return self.trait_member(parent, name, link);
         }
 
         let kind = match link.filter {
@@ -812,6 +812,65 @@ impl Resolver<'_> {
             (Kind::Enum, Kind::Variant) => "variant",
             (Kind::Struct | Kind::Union, Kind::Field) => "structfield",
             _ => return Err(other("unsupported member for this kind of item")),
+        };
+
+        Ok(format!("{anchor}.{name}"))
+    }
+
+    /// The anchor of the member `name` of a trait. Its body decides whether a
+    /// method is required or provided, so it is always looked into.
+    fn trait_member(
+        &mut self,
+        parent: &Found,
+        name: &str,
+        link: &ItemLink<'_>,
+    ) -> Result<String, Unresolved> {
+        let wanted: &[Member] = match link.filter {
+            Filter::Kinds(&[Kind::Fn, Kind::Method]) => &[Member::RequiredMethod, Member::Method],
+            Filter::Kinds(&[Kind::Const]) => &[Member::Const],
+            Filter::Kinds(&[Kind::Type]) | Filter::Kinds(TYPE_NS) => &[Member::Type],
+            Filter::Any if link.suffix == Suffix::Parens => {
+                &[Member::RequiredMethod, Member::Method]
+            }
+            Filter::Any => &[
+                Member::RequiredMethod,
+                Member::Method,
+                Member::Const,
+                Member::Type,
+            ],
+            _ => return Err(other("unsupported member disambiguator")),
+        };
+
+        let file = self.module_file(&parent.def)?;
+
+        let members = file
+            .scope(&parent.def.inline)
+            .map(|scope| scope.members(&parent.def_name, name))
+            .unwrap_or_default();
+
+        let mut members = members.into_iter().filter(|m| wanted.contains(m));
+
+        let anchor = match (members.next(), members.next()) {
+            (Some(member), None) => match member {
+                Member::RequiredMethod => "tymethod",
+                Member::Method => "method",
+                Member::Const => "associatedconstant",
+                Member::Type => "associatedtype",
+                Member::Variant | Member::Field => {
+                    return Err(other("unsupported member for this kind of item"));
+                }
+            },
+            (None, _) => {
+                return Err(Unresolved::NotFound(format!(
+                    "no matching member `{name}` declared in trait `{}`",
+                    parent.def_name
+                )));
+            }
+            (Some(_), Some(_)) => {
+                return Err(other(format!(
+                    "`{name}` is ambiguous, add a disambiguator such as `method@` or `type@`"
+                )));
+            }
         };
 
         Ok(format!("{anchor}.{name}"))

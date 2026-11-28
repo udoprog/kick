@@ -1,9 +1,9 @@
 //! A small Rust source parser which finds the items declared in a module file.
 //!
 //! It only looks at item headers and into the containers needed to find items
-//! and members: inline module bodies, impl blocks, enum variants and struct
-//! fields. Everything else is skipped as a balanced token tree, and input it
-//! does not understand is skipped up to the next item.
+//! and members: inline module bodies, impl blocks, trait bodies, enum
+//! variants and struct fields. Everything else is skipped as a balanced token
+//! tree, and input it does not understand is skipped up to the next item.
 
 use syntree::{Builder, FlavorDefault, Node, Tree};
 
@@ -30,7 +30,7 @@ pub(super) enum Syntax {
     Name,
     /// A balanced token tree which is not looked into.
     Group,
-    /// The items of an inline module or an impl block.
+    /// The items of an inline module, an impl block or a trait.
     Block,
     Variants,
     Variant,
@@ -589,10 +589,15 @@ impl<'a> Parser<'a> {
         let kind = self.kind()?;
 
         match kind {
-            Fn | Trait => {
+            Fn => {
                 self.bump()?;
                 self.name()?;
                 self.skip_rest()?;
+            }
+            Trait => {
+                self.bump()?;
+                self.name()?;
+                self.trait_rest(depth)?;
             }
             Struct | Union => {
                 self.bump()?;
@@ -655,6 +660,21 @@ impl<'a> Parser<'a> {
         }
 
         self.tree.close_at(c, kind)?;
+        Ok(())
+    }
+
+    /// The header and items of a trait, positioned after its name.
+    fn trait_rest(&mut self, depth: usize) -> Result<()> {
+        while let Some(syntax) = self.peek() {
+            match syntax {
+                OpenBrace => return self.block(depth),
+                OpenParen | OpenBracket => self.group()?,
+                syntax if is_close(syntax) => break,
+                _ if self.is(";") => return self.bump(),
+                _ => self.bump()?,
+            }
+        }
+
         Ok(())
     }
 
@@ -976,7 +996,8 @@ impl<'a> Scope<'a> {
     }
 
     /// The members named `name` of the type `ty` declared in this scope:
-    /// its variants or fields, and the items of its impl blocks in the file.
+    /// its variants or fields, the items of a trait, and the items of its
+    /// impl blocks in the file.
     pub(super) fn members(self, ty: &str, name: &str) -> Vec<Member> {
         let mut members = Vec::new();
 
@@ -985,6 +1006,25 @@ impl<'a> Scope<'a> {
                 Enum if item.variants().any(|v| v == name) => members.push(Member::Variant),
                 Struct | Union if item.fields().any(|(field, public)| public && field == name) => {
                     members.push(Member::Field)
+                }
+                Trait => {
+                    let Some(block) = item.block() else {
+                        continue;
+                    };
+
+                    for item in block.items().filter(|item| item.name() == Some(name)) {
+                        let member = match item.kind() {
+                            Fn if item.has_body() => Member::Method,
+                            Fn => Member::RequiredMethod,
+                            Const => Member::Const,
+                            TypeAlias => Member::Type,
+                            _ => continue,
+                        };
+
+                        if !members.contains(&member) {
+                            members.push(member);
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -1018,7 +1058,11 @@ impl<'a> Scope<'a> {
 /// A member of a type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Member {
+    /// A method with a body: an inherent method, an implemented trait method
+    /// or a provided method of a trait.
     Method,
+    /// A method of a trait without a default body.
+    RequiredMethod,
     Const,
     Type,
     Variant,
@@ -1116,7 +1160,16 @@ impl<'a> Item<'a> {
         value.strip_prefix('"')?.strip_suffix('"')
     }
 
-    /// The items of an inline module or impl block.
+    /// Whether a function has a `{ .. }` body, as opposed to ending in `;`.
+    fn has_body(self) -> bool {
+        self.node
+            .children()
+            .filter_map(|e| e.into_node())
+            .next_back()
+            .is_some_and(|n| n.value() == Group && self.file.text(n).starts_with('{'))
+    }
+
+    /// The items of an inline module, impl block or trait.
     pub(super) fn block(self) -> Option<Scope<'a>> {
         Some(Scope {
             file: self.file,

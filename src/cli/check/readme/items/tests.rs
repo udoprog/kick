@@ -145,6 +145,58 @@ impl crate::Color where Self: Sized {
 }
 
 #[test]
+fn trait_members() {
+    let file = file(
+        "
+pub trait Run<T>: Sized where T: Fn() -> [u8; 3] {
+    type Output;
+    const LIMIT: usize = 1;
+    const REQUIRED: u32;
+    fn run(&self) -> Self::Output;
+    fn array() -> [u8; 3];
+    fn provided(&self) -> u32 { 1 }
+    #[doc(hidden)]
+    unsafe fn both(&self) where Self: Sized {}
+    fn r#async();
+}
+
+pub trait Alias = Run<u32>;
+
+impl dyn Run<u32> {
+    pub fn inherent(&self) {}
+    fn hidden(&self) {}
+}
+
+pub fn after() {}
+",
+    );
+
+    let root = file.scope::<&str>(&[]).unwrap();
+
+    assert_eq!(
+        names(root),
+        [
+            (Trait, "Run".to_owned(), true),
+            (Trait, "Alias".to_owned(), true),
+            (Fn, "after".to_owned(), true),
+        ]
+    );
+
+    assert_eq!(root.members("Run", "Output"), [Member::Type]);
+    assert_eq!(root.members("Run", "LIMIT"), [Member::Const]);
+    assert_eq!(root.members("Run", "REQUIRED"), [Member::Const]);
+    assert_eq!(root.members("Run", "run"), [Member::RequiredMethod]);
+    assert_eq!(root.members("Run", "array"), [Member::RequiredMethod]);
+    assert_eq!(root.members("Run", "provided"), [Member::Method]);
+    assert_eq!(root.members("Run", "both"), [Member::Method]);
+    assert_eq!(root.members("Run", "async"), [Member::RequiredMethod]);
+    assert_eq!(root.members("Run", "inherent"), [Member::Method]);
+    assert_eq!(root.members("Run", "hidden"), []);
+    assert_eq!(root.members("Run", "missing"), []);
+    assert_eq!(root.members("Alias", "run"), []);
+}
+
+#[test]
 fn attributes() {
     let file = file(
         r#"

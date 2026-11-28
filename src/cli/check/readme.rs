@@ -725,7 +725,13 @@ mod tests {
     const LIB_RS: &str = "\
 pub struct Foo;
 pub enum Color { Red }
-pub trait Run {}
+pub trait Run {
+    type Output;
+    const LIMIT: usize = 1;
+    fn run(&self) -> Self::Output;
+    fn provided(&self) {}
+    fn Output() {}
+}
 pub union Bits { a: u32 }
 pub const fn make() {}
 pub const LIMIT: u32 = 1;
@@ -846,6 +852,18 @@ macro_rules! nested {}
             ("Color::Red", "enum.Color.html#variant.Red"),
             ("field@a::Bar::field", "a/struct.Bar.html#structfield.field"),
             ("const@Foo::MAX", "struct.Foo.html#associatedconstant.MAX"),
+            ("Run::run", "trait.Run.html#tymethod.run"),
+            ("Run::run()", "trait.Run.html#tymethod.run"),
+            ("method@Run::run", "trait.Run.html#tymethod.run"),
+            ("Run::provided", "trait.Run.html#method.provided"),
+            ("fn@Run::provided", "trait.Run.html#method.provided"),
+            ("Run::LIMIT", "trait.Run.html#associatedconstant.LIMIT"),
+            (
+                "const@Run::LIMIT",
+                "trait.Run.html#associatedconstant.LIMIT",
+            ),
+            ("type@Run::Output", "trait.Run.html#associatedtype.Output"),
+            ("Run::Output()", "trait.Run.html#method.Output"),
         ] {
             assert_eq!(
                 rewrite(&format!("[`{input}`]\n")),
@@ -895,7 +913,17 @@ macro_rules! nested {}
             ("[`Vec<T>`]", "generic parameters"),
             ("[`twice`]", "ambiguous"),
             ("[`inline::Item`]", "no matching public item `Item`"),
-            ("[`Run::run`]", "trait members"),
+            (
+                "[`Run::missing`]",
+                "no matching member `missing` declared in trait `Run`",
+            ),
+            (
+                "[`const@Run::run`]",
+                "no matching member `run` declared in trait `Run`",
+            ),
+            ("[`type@Run::provided`]", "no matching member `provided`"),
+            ("[`Run::Output`]", "`Output` is ambiguous"),
+            ("[`field@Run::run`]", "unsupported member disambiguator"),
             ("[`Foo::missing`]", "cannot tell what kind of member"),
             ("[`super::Foo`]", "relative paths"),
             ("[`nested!`]", "no `#[macro_export]` macro named `nested`"),
